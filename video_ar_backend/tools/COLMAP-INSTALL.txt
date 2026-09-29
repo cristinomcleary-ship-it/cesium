@@ -1,0 +1,20 @@
+COLMAP portable runtime for DJI Video AR Extractor
+==================================================
+
+Installed: 2026-08-30
+Archive: colmap-x64-windows-cuda-4.0.4.zip
+Archive SHA-256: F4496C3DD9FFCCFB4BFDA225401B738B545068302AB6487F5539B5B28861B143
+Downloaded from: https://github.com/colmap/colmap/releases
+Runtime reports: COLMAP 4.1.0.dev0 (Commit 5b76f53 on 2026-04-27 with CUDA)
+Launcher: COLMAP/COLMAP.bat
+Native executable used by the extractor: COLMAP/bin/colmap.exe
+
+COLMAP is distributed under the BSD license. The upstream COLMAP.bat bundled
+with this runtime retains the complete copyright notice, redistribution terms,
+and disclaimer. COLMAP is a separate external process and is not imported into
+the Cesium frontend or the real-time Python backend.
+
+Official documentation:
+- https://colmap.github.io/
+- https://colmap.github.io/cli.html
+- https://colmap.github.io/format.html

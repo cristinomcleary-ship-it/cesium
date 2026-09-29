@@ -1,0 +1,39 @@
+node_modules/
+dist/
+.vite/
+.pnpm-store/
+.model-cache/
+.cad-cache/
+.local-imagery-cache/
+.basemap-cache/
+.render-errors/
+model-converters.json
+*.log
+.env.local
+video_ar_backend/.env
+video_ar_backend/.venv/
+video_ar_backend/data/
+video_ar_backend/dji_extractor_launcher.log
+video_ar_backend/**/__pycache__/
+video_ar_backend/**/*.pyc
+
+# Local configuration and credentials (keep configuration templates)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Temporary artifacts and locally installed tools
+/tmp/
+/output/
+acad.err
+**/__pycache__/
+*.pyc
+/tools/NavisworksBridge/bin/
+/video_ar_backend/tools/COLMAP/
+/video_ar_backend/tools/FFmpeg/
+/video_ar_backend/tools/*.zip
+
+# Offline backup and local-only configuration snapshots
+/.local-backups/

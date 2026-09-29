@@ -1,0 +1,8 @@
+# Exact runtime dependencies for the initial GitHub backup (2026-09-30).
+# Python 3.12.14 on Windows; requirements.txt documents supported version ranges.
+websockets==13.1
+paho-mqtt==2.1.0
+opencv-python-headless==4.14.0.94
+numpy==2.3.5
+openpyxl==3.1.5
+et_xmlfile==2.0.0

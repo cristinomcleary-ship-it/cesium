@@ -1,0 +1,13 @@
+{
+  "asset": { "version": "1.0" },
+  "extensionsUsed": ["3DTILES_content_gltf"],
+  "extensionsRequired": ["3DTILES_content_gltf"],
+  "geometricError": 100,
+  "root": {
+    "transform": [-0.8660254037844387, -0.49999999999999983, 0, 0, 0.25000000989777926, -0.4330127190356761, 0.8660253923554673, 0, -0.43301269617773347, 0.7499999901022205, 0.5000000197955587, 0, -2764149.9702815115, 4787648.188267582, 3170398.7353836372, 1],
+    "boundingVolume": { "box": [0, 0, 0, 50, 0, 0, 0, 50, 0, 0, 0, 5] },
+    "geometricError": 0,
+    "refine": "ADD",
+    "content": { "uri": "triangle.gltf" }
+  }
+}

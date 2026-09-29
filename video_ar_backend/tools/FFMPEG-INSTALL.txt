@@ -1,0 +1,33 @@
+Bundled FFmpeg/FFprobe provenance
+=================================
+
+Purpose:
+  Inspect MP4/MOV streams and export an existing standard subtitle stream.
+  This build cannot manufacture DJI telemetry that was not recorded.
+
+Source listed by the FFmpeg project's Windows download page:
+  https://ffmpeg.org/download.html
+
+Binary provider and fixed release:
+  BtbN/FFmpeg-Builds
+  https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-08-29-13-12
+
+Asset:
+  ffmpeg-n9.0.1-11-ge47273f4d9-win64-lgpl-shared-9.0.zip
+
+SHA256:
+  E452726C9282E9D8B640DD29F012DB91BF6133B490B5490A37E8B0A4D3EC7AE9
+
+Verification:
+  The hash matches tools/ffmpeg-checksums.sha256 downloaded from the same
+  fixed GitHub release.  The original ZIP is retained beside this file.
+
+Installed directory:
+  tools/FFmpeg/
+
+Version checked on 2026-08-30:
+  ffmpeg/ffprobe n9.0.1-11-ge47273f4d9-20260829
+
+Distribution:
+  LGPL shared build.  Keep the entire bin directory (including DLLs), the
+  provider's LICENSE.txt, this provenance record and the original archive.

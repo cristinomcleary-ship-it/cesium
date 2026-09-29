@@ -1,0 +1,291 @@
+.video-ar-panel {
+  --video-ar-accent: #44dfff;
+  --video-ar-green: #2ee6a7;
+}
+
+.video-ar-intro {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid rgba(68, 223, 255, 0.2);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 100% 0, rgba(68, 223, 255, 0.14), transparent 45%),
+    rgba(8, 25, 40, 0.74);
+}
+
+.video-ar-intro small {
+  color: var(--video-ar-accent);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+}
+
+.video-ar-intro strong {
+  color: #f2fbff;
+  font-size: 17px;
+}
+
+.video-ar-intro p {
+  margin: 0;
+  color: #90a9bc;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.video-ar-file-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  margin-top: 8px;
+  border: 1px dashed rgba(68, 223, 255, 0.45);
+  border-radius: 9px;
+  color: #dffaff;
+  background: rgba(28, 84, 105, 0.2);
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.video-ar-file-button:hover {
+  border-color: var(--video-ar-accent);
+  background: rgba(39, 123, 149, 0.28);
+}
+
+.video-ar-file-button.secondary-file {
+  min-height: 34px;
+  border-style: solid;
+  color: #a8c9d8;
+  background: rgba(21, 43, 56, 0.55);
+}
+
+.video-ar-selection {
+  min-height: 20px;
+  padding: 5px 2px 0;
+  overflow: hidden;
+  color: #758da2;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-ar-selection-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.video-ar-selection-row .video-ar-selection {
+  flex: 1;
+  min-width: 0;
+}
+
+.video-ar-inline-clear {
+  flex: none;
+  margin-top: 4px;
+  padding: 4px 7px;
+  border: 1px solid rgba(125, 157, 180, 0.22);
+  border-radius: 6px;
+  color: #91adbd;
+  background: rgba(13, 35, 49, 0.72);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.video-ar-inline-clear:hover:not(:disabled) {
+  border-color: rgba(68, 223, 255, 0.55);
+  color: #dffaff;
+}
+
+.video-ar-source-details,
+.video-ar-live {
+  margin-top: 12px;
+  border: 1px solid rgba(125, 157, 180, 0.16);
+  border-radius: 10px;
+  background: rgba(5, 17, 29, 0.38);
+}
+
+.video-ar-source-details > summary,
+.video-ar-live > summary {
+  padding: 11px 12px;
+  color: #a9c5d5;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.video-ar-source-details[open],
+.video-ar-live[open] {
+  padding: 0 10px 10px;
+}
+
+.video-ar-fields {
+  margin-top: 14px;
+}
+
+.video-ar-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.video-ar-actions .primary {
+  grid-column: 1 / -1;
+}
+
+.video-ar-preview {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 154px;
+  margin-top: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(68, 223, 255, 0.22);
+  border-radius: 12px;
+  background:
+    linear-gradient(rgba(68, 223, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(68, 223, 255, 0.045) 1px, transparent 1px),
+    #07131f;
+  background-size: 18px 18px;
+}
+
+.video-ar-preview canvas,
+.video-ar-preview video {
+  display: block;
+  width: 100%;
+  max-height: 230px;
+  object-fit: contain;
+  background: #02070b;
+}
+
+.video-ar-preview canvas.hidden {
+  display: none;
+}
+
+.video-ar-preview video[hidden] {
+  display: none;
+}
+
+#videoArPreviewPlaceholder {
+  position: absolute;
+  color: #587184;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+#videoArProjectionMode {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  padding: 4px 7px;
+  border: 1px solid rgba(68, 223, 255, 0.2);
+  border-radius: 999px;
+  color: #d7f9ff;
+  background: rgba(3, 15, 25, 0.82);
+  font-size: 10px;
+  backdrop-filter: blur(5px);
+}
+
+.video-ar-telemetry {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.video-ar-telemetry > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid rgba(119, 154, 178, 0.13);
+  border-radius: 8px;
+  background: rgba(7, 22, 35, 0.65);
+}
+
+.video-ar-telemetry small {
+  color: #648096;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+
+.video-ar-telemetry b {
+  overflow: hidden;
+  color: #d9eaf2;
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-ar-player {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(119, 154, 178, 0.13);
+  border-radius: 10px;
+  background: rgba(5, 18, 30, 0.75);
+}
+
+.video-ar-player-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+
+.video-ar-player-buttons button {
+  min-width: 42px;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid rgba(68, 223, 255, 0.25);
+  border-radius: 8px;
+  color: #dffaff;
+  background: rgba(36, 99, 124, 0.24);
+}
+
+.video-ar-player-buttons button:disabled {
+  opacity: 0.38;
+}
+
+.video-ar-player input[type="range"] {
+  width: 100%;
+  accent-color: var(--video-ar-accent);
+}
+
+.video-ar-time {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 3px;
+  color: #7891a4;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.video-ar-live label {
+  margin-top: 7px;
+}
+
+.video-ar-live button {
+  margin-top: 9px;
+}
+
+.video-ar-status {
+  min-height: 36px;
+  margin-top: 10px;
+  line-height: 1.55;
+}
+
+.video-ar-status.error {
+  color: #ff8e96;
+}
+
+@media (max-width: 720px) {
+  .video-ar-telemetry,
+  .video-ar-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .video-ar-actions .primary {
+    grid-column: auto;
+  }
+}

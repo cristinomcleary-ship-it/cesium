@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#08111f" />
+    <title>Cesium 工程数据浏览器</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="fileProtocolHelp" style="display:none;min-height:100vh;padding:12vh 24px;text-align:center;font-family:'Microsoft YaHei',sans-serif;background:#08111f;color:#dbe8f8">
+      <div style="max-width:620px;margin:auto;padding:38px;border:1px solid #29415d;border-radius:14px;background:#101b2b">
+        <h1 style="margin:0 0 18px;font-size:25px">需要先启动 Cesium 服务</h1>
+        <p style="color:#9fb3cc;line-height:1.8">请关闭这个页面，返回项目文件夹，双击 <strong style="color:#43d7ff">启动Cesium.cmd</strong>。启动器会自动打开正确的页面。</p>
+        <p style="margin-top:22px;color:#637f9e;font-size:13px">不能直接双击 index.html，因为浏览器会阻止 Cesium 所需的模块和资源加载。</p>
+      </div>
+    </div>
+    <script>
+      if (location.protocol === "file:") {
+        document.getElementById("app").style.display = "none";
+        document.getElementById("fileProtocolHelp").style.display = "block";
+      }
+    </script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

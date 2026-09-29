@@ -1,0 +1,502 @@
+{
+  "version": "v1.0.0-initial",
+  "hash_algorithm": "SHA256",
+  "scope": "Initial repository files excluding this manifest. Hashes cover original file bytes.",
+  "files": [
+    {
+      "path": ".env.example",
+      "bytes": 117,
+      "sha256": "13faef4a04106b97e1c86c2f66dd157cbf909adc67ead8c50dc4331585d2ebeb"
+    },
+    {
+      "path": ".gitignore",
+      "bytes": 735,
+      "sha256": "dc63e825d5273034f3008ef01eec1a9c3fa1aefcb3854d76ea62862626d5b63c"
+    },
+    {
+      "path": "README.md",
+      "bytes": 19996,
+      "sha256": "f478ab3fce7dfe42b63ba0169e2c7431ab70c8719086319bd1960ef14875a3b8"
+    },
+    {
+      "path": "docs/INITIAL_VERSION.md",
+      "bytes": 4479,
+      "sha256": "b48c4cd4c24c6f6e451e1fca30bd2a2f711e56d0446bd0af06b6695ab78ef909"
+    },
+    {
+      "path": "docs/initial-runtime.sha256",
+      "bytes": 223,
+      "sha256": "22ecc16f27bb6a50793c1221b79ad8f83097cb10ed318408e6875344539518ee"
+    },
+    {
+      "path": "index.html",
+      "bytes": 1373,
+      "sha256": "d4a19c530eac0807e95a5cdae52a72d6fe6a3c505bb5ceadeb8bfe36593271dc"
+    },
+    {
+      "path": "model-converters.example.json",
+      "bytes": 525,
+      "sha256": "7ca44bddd30530e8a205c50be6674d9babc678d83e91459d2913fbe8a21b65e9"
+    },
+    {
+      "path": "package.json",
+      "bytes": 588,
+      "sha256": "b347925a77d96ca6f42349d964d98f042d987e31c0548648257dfe1ae23ffbb5"
+    },
+    {
+      "path": "pnpm-lock.yaml",
+      "bytes": 35824,
+      "sha256": "f8d704d35517d27df4c67d5927f2429dd16814ab55c3f86913375af8bc82a137"
+    },
+    {
+      "path": "pnpm-workspace.yaml",
+      "bytes": 85,
+      "sha256": "3e5580f814448930ee1fdca3142f1708fba90ba6d745c821f36126ee409542a6"
+    },
+    {
+      "path": "public/examples/sample-site.dxf",
+      "bytes": 313,
+      "sha256": "f189741ca0c50e4a40a1027225b05e178410f74be2f1c2d84d6ed89b8c22473c"
+    },
+    {
+      "path": "server/inspect_lyr.py",
+      "bytes": 2738,
+      "sha256": "1725947cc7409d92faa5b89e18d6bbb22bb6dff0a8fbb1342cbabb0dda25ea49"
+    },
+    {
+      "path": "server/localImageryMiddleware.ts",
+      "bytes": 6547,
+      "sha256": "8e8f7a6788c9cca3ab321d42d049261bccbdade788d6ca35fc5da084584a66ed"
+    },
+    {
+      "path": "server/modelMiddleware.ts",
+      "bytes": 20223,
+      "sha256": "8927859ae27b9cb915ffc503875c77a7e16a24c62a1bdf3988d154bca4b94890"
+    },
+    {
+      "path": "src/cadImport.ts",
+      "bytes": 20496,
+      "sha256": "7b44ded2f9fcc220fa566fe8797b8ea44087ed2c91c41ab43e652dc9f137e876"
+    },
+    {
+      "path": "src/cadImport.worker.ts",
+      "bytes": 954,
+      "sha256": "4d4c02462faccf09c70dc52bd52ce235f85b2a43aa8c48cc4ffeee41e79c251b"
+    },
+    {
+      "path": "src/cadImportWorkerClient.ts",
+      "bytes": 2199,
+      "sha256": "f12aef24225a35d0d6ebb7ec2a75799f5f3327a39957f98e7715a9703397ad1c"
+    },
+    {
+      "path": "src/cadPrimitiveLoader.ts",
+      "bytes": 16489,
+      "sha256": "218db9a5d859f32c421a9f648d0a09ad626a960fd019e7ca24510c1a9b5108cc"
+    },
+    {
+      "path": "src/coordinateUtils.ts",
+      "bytes": 2845,
+      "sha256": "6a343439cacffc0295f35c8f73d1e90aeffb6a1ece27d42c4eb3ac2cb8e926a1"
+    },
+    {
+      "path": "src/digitalTwinDataCenter.test.ts",
+      "bytes": 7549,
+      "sha256": "bb71302f39a02871e40f34d479319d1bedae403e6e54fcaf6339034781787bd3"
+    },
+    {
+      "path": "src/digitalTwinDataCenter.ts",
+      "bytes": 29377,
+      "sha256": "b7fb06b801d19195f203777bd1b13818a33ced6e5ed1e90b7e9a51cd2bcdc0ca"
+    },
+    {
+      "path": "src/digitalTwinOverview.ts",
+      "bytes": 16701,
+      "sha256": "05cd657cbe87b6841675013abb06fc2ae3dab4f7730eb96ea8d1c0615b7d9630"
+    },
+    {
+      "path": "src/dxfLoader.ts",
+      "bytes": 12873,
+      "sha256": "b35423c08d26a33b3a5035716a50db8341d3c91ad8a9a42d59f37e5f745b07ba"
+    },
+    {
+      "path": "src/electronicSandTable.ts",
+      "bytes": 30135,
+      "sha256": "1e5c631c6d91668c0610a025b50b7d1e8a859d87d3746cf4a9ed780b469c2c3e"
+    },
+    {
+      "path": "src/electronicSandTablePresentation.ts",
+      "bytes": 37252,
+      "sha256": "3c6237980d5e69725f84b00a02d17ef05ed3a69a7dcfbcd8bb2b516bc462a3b8"
+    },
+    {
+      "path": "src/foundationPitMonitoring.ts",
+      "bytes": 139053,
+      "sha256": "61195a0f4f52dae973a222ca4b1051cf42b0b16891299f31d0fc2a7ae4049465"
+    },
+    {
+      "path": "src/imageryOverzoom.ts",
+      "bytes": 2893,
+      "sha256": "ade5f51cea4416b997d8f52e11e8cf89aa8fa73c99b3ced76298c4a465db3957"
+    },
+    {
+      "path": "src/localImagery.ts",
+      "bytes": 8877,
+      "sha256": "235120057d253f63aa1c98400b54c8224f226666318ac534a754493e6bb00811"
+    },
+    {
+      "path": "src/main.ts",
+      "bytes": 128670,
+      "sha256": "cc41b82e7ca87164fdfc695b6a8a9f91a2192eca146afd12d228df1622eeb43b"
+    },
+    {
+      "path": "src/markupTools.css",
+      "bytes": 6206,
+      "sha256": "26644436945fef7717dfe4f13ded5f1fa8c5361730d289592497e104dfff8a00"
+    },
+    {
+      "path": "src/markupTools.ts",
+      "bytes": 89772,
+      "sha256": "97b4adc81fc7cdda5308b6d054ecfd25270b925042bf3a9e8398fcb6af94cbe5"
+    },
+    {
+      "path": "src/modelEditor.ts",
+      "bytes": 6579,
+      "sha256": "884d0efe5d68d765d28a83905f5ef39af001900c68c7e9fc402b6bca414077e1"
+    },
+    {
+      "path": "src/reportComposer.css",
+      "bytes": 22133,
+      "sha256": "bcc51daef95b0c0d409ce24543d677cebbaed2dc0e3af0cb0832e6883efe0e92"
+    },
+    {
+      "path": "src/reportComposer.ts",
+      "bytes": 51881,
+      "sha256": "614612184a57bca0b8d9b340c57b1226f45757b2beb5a19764861a4737bca61b"
+    },
+    {
+      "path": "src/sandTableFacilities.css",
+      "bytes": 5972,
+      "sha256": "ee374badda1f35b077633c935f4322c584ca7449727cc62c27eb6e0d2ec8ea94"
+    },
+    {
+      "path": "src/sandTableFacilities.ts",
+      "bytes": 51913,
+      "sha256": "d1c4f2df9afef48c09080b4c8df298bf7ec293b556e33181d79fda8cb62dd13d"
+    },
+    {
+      "path": "src/sandTableProjectControl.ts",
+      "bytes": 36623,
+      "sha256": "7b56017b5ebba0d5db2596e6fcdf453bdf2a69475f18e9c8c4cf628db6756b46"
+    },
+    {
+      "path": "src/style.css",
+      "bytes": 59273,
+      "sha256": "5ad39d8c03d4d1430345cd7ea9b41eb7394c0c2c84434aafba86f5886450be52"
+    },
+    {
+      "path": "src/subsurfaceTools.ts",
+      "bytes": 58031,
+      "sha256": "26f6b88bdd359545edb1f1567ca660a5ef14493275c761e37c7e272d602f0a80"
+    },
+    {
+      "path": "src/threeDReport.css",
+      "bytes": 12655,
+      "sha256": "f255fc84000dd6b77635c092968dde8db7262047fe511ccc7966904d157d625a"
+    },
+    {
+      "path": "src/threeDReport.ts",
+      "bytes": 64458,
+      "sha256": "50c5d2796385dd22256572b8f74134ed5be8a1cb2e3010fa950ee08a1a11ceef"
+    },
+    {
+      "path": "src/types.ts",
+      "bytes": 1107,
+      "sha256": "ac77713434f972cfb23938f69d0fa5a88a6c9ce140d81a001dce41fe3cceaf10"
+    },
+    {
+      "path": "src/videoArFusion.css",
+      "bytes": 5339,
+      "sha256": "c4075bc659e2b4c2b110a79f17bee2a7d5fca636dfc2e88cec9ae50fb6edbc4e"
+    },
+    {
+      "path": "src/videoArFusion.ts",
+      "bytes": 190264,
+      "sha256": "b9d92314cc67d1beb9272c81b29f6206bb19452f6287a400061ffaff7e99cd9b"
+    },
+    {
+      "path": "src/videoArGeoreference.test.ts",
+      "bytes": 8841,
+      "sha256": "0b5268c7d2c24b36ee8d197662ec94643d06af01ffbf22af4a8b0b5f36f87076"
+    },
+    {
+      "path": "src/videoArGeoreference.ts",
+      "bytes": 36798,
+      "sha256": "00faa2c204d30898f193c1d18b12f9ac8f228f1054575a77f95b8833c94f595d"
+    },
+    {
+      "path": "src/videoArGeoreference.worker.ts",
+      "bytes": 1550,
+      "sha256": "2936198c320891fa627f6d9b190af68e4099ca7bddc7d0c29115c79dbe2426ae"
+    },
+    {
+      "path": "src/videoArProjection.test.ts",
+      "bytes": 2280,
+      "sha256": "ff5fd1f627e1cd884ef0c633fc681b8e57d89724e52e126c59e30e19bbc0c85b"
+    },
+    {
+      "path": "src/videoArProjection.ts",
+      "bytes": 5696,
+      "sha256": "72be53aafd7f550b7e53cc913d3a4048d6586775346c87abb122e22db7109295"
+    },
+    {
+      "path": "src/vite-env.d.ts",
+      "bytes": 862,
+      "sha256": "35e5160f9d3fa13181da322f73fc407b34f5296c7aee0aa917659f0fd3c1f73a"
+    },
+    {
+      "path": "tools/NavisworksBridge/BridgePlugin.cs",
+      "bytes": 2032,
+      "sha256": "92adf569b9292bd0a423127e6a314f26fbd4162c15b954de5ccec04c2e38e3e8"
+    },
+    {
+      "path": "tools/NavisworksBridge/BridgeRunner.cs",
+      "bytes": 2054,
+      "sha256": "f28584d6c617076dad18b748ce14160b3691335b7a6ea85f5e24b110a21f8b77"
+    },
+    {
+      "path": "tools/NavisworksBridge/build.ps1",
+      "bytes": 1313,
+      "sha256": "46f15288ecddfd89219839b6a9689ba68f21fc8a12534fb5adbfa205582fc6c4"
+    },
+    {
+      "path": "tools/blender_fbx_to_glb.py",
+      "bytes": 310,
+      "sha256": "b2fc122d192b7fe55af9a39e18a65d01da476d2e5f7a2602e8c991c8f960fd9a"
+    },
+    {
+      "path": "tools/fixtures/ar-projector/tileset.json",
+      "bytes": 596,
+      "sha256": "40c54f0f04bc5c753eb9ebd5d886e8b22b8866f80f6e4516adc8f7485c07d3b4"
+    },
+    {
+      "path": "tools/fixtures/ar-projector/triangle.gltf",
+      "bytes": 893,
+      "sha256": "f1cd251afd622c89440eace93d35a915ef955cf85d0d4e5bfa10c05b0d56c987"
+    },
+    {
+      "path": "tools/navisworks-to-glb.cmd",
+      "bytes": 652,
+      "sha256": "eb1587bc49cace1e367581b184e9c17b22bd56bda0e2554b3ea7457441e78814"
+    },
+    {
+      "path": "tools/sketchup-to-glb.cmd",
+      "bytes": 819,
+      "sha256": "cc5645b51e54bba42b74d48b19db5b993826b57c172b5a20dc9d4ad0c3c839a4"
+    },
+    {
+      "path": "tools/sketchup_export_glb.rb",
+      "bytes": 1370,
+      "sha256": "3f21d183905174e692e3486f9b9e926c2f2b6fa92d33489b04dae5c3a3f47f96"
+    },
+    {
+      "path": "tsconfig.json",
+      "bytes": 485,
+      "sha256": "42483a596108f9cb0600644caa3cb6b273c2e22ade841f3aac01796b3b3fc269"
+    },
+    {
+      "path": "video_ar_backend/.env.example",
+      "bytes": 2202,
+      "sha256": "ac35535a9e72d53d9ac17f42541bcb1e31d54ce599f3ea67af958f61173d0e78"
+    },
+    {
+      "path": "video_ar_backend/DJI_Extractor_Launcher.cmd",
+      "bytes": 3675,
+      "sha256": "98bbdd9e117cf8284db046e5e42d3a0235ad16932199605edef2576cbc6fa46a"
+    },
+    {
+      "path": "video_ar_backend/DJI_SRT_Extractor_Launcher.cmd",
+      "bytes": 3920,
+      "sha256": "9648da809faff49b051944bee050ab050d21ada570c746a7a0e4ed00e8348996"
+    },
+    {
+      "path": "video_ar_backend/README.md",
+      "bytes": 21102,
+      "sha256": "2948d22f3996fbfa37dd54a4eaa3c3e27199d8591b881f246e8924f57fe3b8d3"
+    },
+    {
+      "path": "video_ar_backend/backend_v1/__init__.py",
+      "bytes": 60,
+      "sha256": "557ba304d86128dc1db2b35d4f6dcca195c662dc3f4355f4a286ecae439bb230"
+    },
+    {
+      "path": "video_ar_backend/backend_v1/config.py",
+      "bytes": 13817,
+      "sha256": "429411416efa3463168900a0161dbd6a72ef8e6c9a82f6012ef53695fce39f86"
+    },
+    {
+      "path": "video_ar_backend/backend_v1/data_saver.py",
+      "bytes": 11311,
+      "sha256": "d800aa97a14f6ce9b822ef63f5e68d26dc4f1f073d661b460a741b0115dd0bd6"
+    },
+    {
+      "path": "video_ar_backend/backend_v1/dji_srt_exporter.py",
+      "bytes": 27480,
+      "sha256": "7423cb17eb0b894657a742283ecf1ca57c64e7d01c1bd54bb553fb7d7e1e5f5c"
+    },
+    {
+      "path": "video_ar_backend/backend_v1/dji_telemetry_extractor.py",
+      "bytes": 58077,
+      "sha256": "67a521be40d4c5672204b5f80c6e7154a119c4d5ee393b41682ff5a0cec44683"
+    },
+    {
+      "path": "video_ar_backend/backend_v1/main.py",
+      "bytes": 16993,
+      "sha256": "a44ee7c4c1457d401fe1df06c97ba7bcdc582422af709c8a70322fa300546145"
+    },
+    {
+      "path": "video_ar_backend/backend_v1/main_fixed.py",
+      "bytes": 469,
+      "sha256": "09699bcf9c4ff4f5bd19cc8e1709586a7f09b157c921dcac91b616d73f58a9a2"
+    },
+    {
+      "path": "video_ar_backend/backend_v1/models.py",
+      "bytes": 9993,
+      "sha256": "87b0ddc99d1a6afbb510bbe58484b1f074e621f075b255e79d7af6e78d100a1d"
+    },
+    {
+      "path": "video_ar_backend/backend_v1/mqtt_client.py",
+      "bytes": 21033,
+      "sha256": "9c10a19f6f82a4e18211a79a18caaed6ec01a74d5d06224cd5ed91276e0819e6"
+    },
+    {
+      "path": "video_ar_backend/backend_v1/packager.py",
+      "bytes": 1652,
+      "sha256": "b9b97bea5c332d4c7515927186f803842bbcca723931c75836198d9fd8d96621"
+    },
+    {
+      "path": "video_ar_backend/backend_v1/video_processor.py",
+      "bytes": 16673,
+      "sha256": "e9e4f406424370d607d2f54b1edc490b97016d7f08ba4ed67dc44934af10b735"
+    },
+    {
+      "path": "video_ar_backend/backend_v1/video_streamer.py",
+      "bytes": 9956,
+      "sha256": "f14b4b765e0aad1d88e92dd6e0f6991abea949c8dff37e9c75aad32f6bde6299"
+    },
+    {
+      "path": "video_ar_backend/backend_v1/video_websocket_server.py",
+      "bytes": 5939,
+      "sha256": "a79f070ca16efb128184d07dd74cb41b430614968396764145fed7b95c247bb3"
+    },
+    {
+      "path": "video_ar_backend/backend_v1/websocket_server.py",
+      "bytes": 5937,
+      "sha256": "ba9616aa91051d44b2765664264e44877d64c9f8cd84564966f8053048849ca0"
+    },
+    {
+      "path": "video_ar_backend/dji_srt_extractor.py",
+      "bytes": 17455,
+      "sha256": "9d56bd25496f54db8c74b661f3f7bfb312b6c29ff156b999f08431d6fa677e19"
+    },
+    {
+      "path": "video_ar_backend/dji_video_extractor.py",
+      "bytes": 69130,
+      "sha256": "fb3750a8a8aa0279c9611f83e48ae1a705814c34f78a47adbc2933e8e9f97e16"
+    },
+    {
+      "path": "video_ar_backend/projection_reconstruction.py",
+      "bytes": 115040,
+      "sha256": "48ae90d21257209a3b405ab4db5c7e8bbc65c2068f8a8a035e0b0dd446bdfbf8"
+    },
+    {
+      "path": "video_ar_backend/requirements.initial.txt",
+      "bytes": 270,
+      "sha256": "167813939d3a30ea688103c139326323d42dbb9d69da8f95345b6147fe0692e1"
+    },
+    {
+      "path": "video_ar_backend/requirements.txt",
+      "bytes": 177,
+      "sha256": "c388f39932a1c486ac145c7ebca430d8659f01d723826f96c7f49e1554e1aeed"
+    },
+    {
+      "path": "video_ar_backend/start.py",
+      "bytes": 7031,
+      "sha256": "c0341ae57d16ec515f916446dd5e46c54074f414ebbf49729f30f781cb7a10c3"
+    },
+    {
+      "path": "video_ar_backend/tests/test_backend.py",
+      "bytes": 23855,
+      "sha256": "0f0505410bcf1462b8daa655f801fc389385d32faade2d7f740eab2689714f5e"
+    },
+    {
+      "path": "video_ar_backend/tests/test_dji_srt_exporter.py",
+      "bytes": 21946,
+      "sha256": "55b727dfe0695fcbd5bf91a059bdc0d818582452782d702373de98237e5985a6"
+    },
+    {
+      "path": "video_ar_backend/tests/test_dji_telemetry_extractor.py",
+      "bytes": 23774,
+      "sha256": "aabf309de0d80fc96e9e0c084f19508794c429b29c69556dc77fa02151a3930a"
+    },
+    {
+      "path": "video_ar_backend/tests/test_dji_video_extractor.py",
+      "bytes": 23527,
+      "sha256": "8d88288f8a5294430cae94815f2c78905975b7aa59aca7a3ed10d8ab054ba9b5"
+    },
+    {
+      "path": "video_ar_backend/tests/test_projection_reconstruction.py",
+      "bytes": 24468,
+      "sha256": "779e71200f7c6be51322338a4b3930d95559549c76391c1c9cb80e7e3829f256"
+    },
+    {
+      "path": "video_ar_backend/tools/.gitkeep",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "video_ar_backend/tools/COLMAP-INSTALL.txt",
+      "bytes": 893,
+      "sha256": "d12304e899a3ddaefbf84fe51a1c6ce936c4f380eeb8a233ed7b4db038349895"
+    },
+    {
+      "path": "video_ar_backend/tools/FFMPEG-INSTALL.txt",
+      "bytes": 1040,
+      "sha256": "6654054e81851551c38c583ae18480263fb4dbf08b444e1fcb6fe64ba959ced5"
+    },
+    {
+      "path": "video_ar_backend/tools/ffmpeg-checksums.sha256",
+      "bytes": 5728,
+      "sha256": "3d9d4aaf0d4b1a9cb28f36847680e5c585a71fe29f40e5f948d211e8735be056"
+    },
+    {
+      "path": "video_ar_backend/启动视频AR后端.cmd",
+      "bytes": 610,
+      "sha256": "ae1ab52cdbf27e33935f1f85617eb969075e1b1135642facd684be1d18106e24"
+    },
+    {
+      "path": "video_ar_backend/提取大疆航拍视频信息.cmd",
+      "bytes": 323,
+      "sha256": "61cef74232a3dc48274ac2b8447e96c92263a193abb2152950fbbf364b598996"
+    },
+    {
+      "path": "video_ar_backend/提取大疆视频SRT.cmd",
+      "bytes": 324,
+      "sha256": "39814ed92aa851b4b994a6abc9c8d5e600c1b3349aa2969fd99e71f3674c2ab6"
+    },
+    {
+      "path": "vite.config.ts",
+      "bytes": 28601,
+      "sha256": "d631cc4953a0e8c28a6ec6837e7cff219ea59461172d95660460d0095dc512fe"
+    },
+    {
+      "path": "启动Cesium.cmd",
+      "bytes": 1403,
+      "sha256": "cfbf22b2e574bfc9d53f41dc9dbb32dd91b4ee8873647ac1c971dbe1e84395c9"
+    },
+    {
+      "path": "启动开发环境.ps1",
+      "bytes": 1082,
+      "sha256": "e4d8f1d3782cdc4521fef1ae20650127631b0c1a24c96f0db32590a1e2c9e7b5"
+    }
+  ]
+}
