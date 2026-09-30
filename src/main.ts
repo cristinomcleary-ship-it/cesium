@@ -610,6 +610,7 @@ projectLibrary = new SceneLibrary({
   setBasemap, getBasemap: () => activeBasemapKey, notify: toast,
   restoreVideo: (files, settings) => videoArFusion.restoreReplay(files, settings), clearVideo: () => videoArFusion.clear(), layersChanged: renderLayers,
 });
+videoArFusion.onReplaySettingsChanged = controls => projectLibrary?.updateVideoControls(controls);
 videoArFusion.onReplayLoaded = async snapshot => {
   await projectLibrary!.ready;
   const files = Object.fromEntries(Object.entries(snapshot.files).map(([slot, file]) => [slot, { name: file.name, blob: file }]));

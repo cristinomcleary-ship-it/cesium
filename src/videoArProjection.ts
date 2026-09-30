@@ -4,105 +4,151 @@ export type ProjectionPoint3 = Readonly<{ x: number; y: number; z: number }>;
 export type ProjectiveGrid = {
   points: ProjectionPoint3[];
   textureCoordinates: number[];
+  /** Interpolate (u*q, v*q, q), then divide by q in the fragment shader. */
+  textureWeights: number[];
   indices: number[];
   projective: boolean;
 };
 
 type QuadMapper = {
   pointAt: (u: number, v: number) => ProjectionPoint3;
+  homogeneousWeightAt: (u: number, v: number) => number;
   projective: boolean;
 };
 
-const EPSILON = 1e-10;
+const EPSILON = 1e-12;
 
 function finitePoint(point: ProjectionPoint3) {
   return Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z);
 }
 
-function bilinearPoint(
-  [topLeft, topRight, bottomLeft, bottomRight]: readonly ProjectionPoint3[],
-  u: number,
-  v: number,
-): ProjectionPoint3 {
-  const topWeight = 1 - v;
-  const leftWeight = 1 - u;
+function subtract(left: ProjectionPoint3, right: ProjectionPoint3): ProjectionPoint3 {
+  return { x: left.x - right.x, y: left.y - right.y, z: left.z - right.z };
+}
+
+function cross(left: ProjectionPoint3, right: ProjectionPoint3): ProjectionPoint3 {
   return {
-    x: topLeft.x * leftWeight * topWeight
-      + topRight.x * u * topWeight
-      + bottomLeft.x * leftWeight * v
-      + bottomRight.x * u * v,
-    y: topLeft.y * leftWeight * topWeight
-      + topRight.y * u * topWeight
-      + bottomLeft.y * leftWeight * v
-      + bottomRight.y * u * v,
-    z: topLeft.z * leftWeight * topWeight
-      + topRight.z * u * topWeight
-      + bottomLeft.z * leftWeight * v
-      + bottomRight.z * u * v,
+    x: left.y * right.z - left.z * right.y,
+    y: left.z * right.x - left.x * right.z,
+    z: left.x * right.y - left.y * right.x,
   };
 }
 
+function dominantPlane(corners: readonly ProjectionPoint3[]) {
+  const origin = corners[0];
+  const translated = corners.map((point) => subtract(point, origin));
+  const scale = Math.max(...translated.map((point) => Math.hypot(point.x, point.y, point.z)));
+  if (!Number.isFinite(scale) || scale <= 0) throw new Error("Projection quad is degenerate");
+  const local = translated.map((point) => ({ x: point.x / scale, y: point.y / scale, z: point.z / scale }));
+  const boundary = [local[0], local[1], local[3], local[2]];
+  // Newell's normal is stable for tilted/vertical quads and avoids selecting
+  // a nearly collinear three-corner subset.
+  const normal = { x: 0, y: 0, z: 0 };
+  for (let index = 0; index < boundary.length; index += 1) {
+    const value = cross(boundary[index], boundary[(index + 1) % boundary.length]);
+    normal.x += value.x;
+    normal.y += value.y;
+    normal.z += value.z;
+  }
+  const magnitude = Math.hypot(normal.x, normal.y, normal.z);
+  if (!Number.isFinite(magnitude) || magnitude <= EPSILON) throw new Error("Projection quad is degenerate or self-intersecting");
+  normal.x /= magnitude;
+  normal.y /= magnitude;
+  normal.z /= magnitude;
+  const planarityError = Math.max(...local.map((point) => Math.abs(
+    point.x * normal.x + point.y * normal.y + point.z * normal.z,
+  ))) * scale;
+  // Source heights may be rounded and an ENU footprint may have small curvature.
+  // Greater relief needs explicit triangles; a homography cannot model it.
+  const planarityTolerance = Math.max(0.1, scale * 1e-4);
+  if (planarityError > planarityTolerance) {
+    throw new Error("Projection quad is nonplanar; provide an explicit visible-surface mesh");
+  }
+  const largest = Math.max(Math.abs(normal.x), Math.abs(normal.y), Math.abs(normal.z));
+  const points = local.map((point) => largest === Math.abs(normal.x)
+    ? { x: point.y, y: point.z }
+    : largest === Math.abs(normal.y)
+      ? { x: point.z, y: point.x }
+      : { x: point.x, y: point.y });
+  const boundary2 = [points[0], points[1], points[3], points[2]];
+  let sign = 0;
+  for (let index = 0; index < boundary2.length; index += 1) {
+    const a = boundary2[index];
+    const b = boundary2[(index + 1) % boundary2.length];
+    const c = boundary2[(index + 2) % boundary2.length];
+    const turn = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (!Number.isFinite(turn) || Math.abs(turn) <= EPSILON) throw new Error("Projection quad has a degenerate edge");
+    const currentSign = Math.sign(turn);
+    if (sign && sign !== currentSign) throw new Error("Projection quad must be convex and must not self-intersect");
+    sign = currentSign;
+  }
+  return points;
+}
+
 /**
- * Build a square-to-quadrilateral homography in a local Cartesian frame.
+ * Build a square-to-quadrilateral homography in the quad's dominant plane.
  *
- * A video projected by a pinhole camera onto a plane is projective, not
- * bilinear.  Interpolating only the four corner UVs therefore produces the
- * familiar two-triangle seam and severe stretching in an oblique footprint.
+ * A pinhole image projected onto a plane is projective, not bilinear.
+ * The homogeneous texture weight makes triangle interpolation exact, including
+ * strongly oblique and vertical surfaces; increasing mesh density alone cannot.
  */
 export function createProjectiveQuadMapper(
   corners: readonly [ProjectionPoint3, ProjectionPoint3, ProjectionPoint3, ProjectionPoint3],
 ): QuadMapper {
-  if (!corners.every(finitePoint)) throw new Error("Projection quad contains a non-finite coordinate");
-  const [topLeft, topRight, bottomLeft, bottomRight] = corners;
+  if (corners.length !== 4 || !corners.every(finitePoint)) {
+    throw new Error("Projection quad must contain four finite coordinates");
+  }
+  const [topLeft, topRight, bottomLeft, bottomRight] = dominantPlane(corners);
   const dx1 = topRight.x - bottomRight.x;
   const dx2 = bottomLeft.x - bottomRight.x;
   const dx3 = topLeft.x - topRight.x + bottomRight.x - bottomLeft.x;
   const dy1 = topRight.y - bottomRight.y;
   const dy2 = bottomLeft.y - bottomRight.y;
   const dy3 = topLeft.y - topRight.y + bottomRight.y - bottomLeft.y;
-  const projectiveDelta = Math.max(Math.abs(dx3), Math.abs(dy3));
+  const projective = Math.max(Math.abs(dx3), Math.abs(dy3)) > EPSILON;
   const determinant = dx1 * dy2 - dx2 * dy1;
-
-  if (projectiveDelta <= EPSILON || Math.abs(determinant) <= EPSILON) {
-    return {
-      pointAt: (u, v) => bilinearPoint(corners, u, v),
-      projective: false,
-    };
+  if (!Number.isFinite(determinant) || Math.abs(determinant) <= EPSILON) {
+    throw new Error("Projection homography is singular");
   }
-
-  const g = (dx3 * dy2 - dx2 * dy3) / determinant;
-  const h = (dx1 * dy3 - dx3 * dy1) / determinant;
-  if (!Number.isFinite(g) || !Number.isFinite(h)) {
-    return {
-      pointAt: (u, v) => bilinearPoint(corners, u, v),
-      projective: false,
-    };
+  const g = projective ? (dx3 * dy2 - dx2 * dy3) / determinant : 0;
+  const h = projective ? (dx1 * dy3 - dx3 * dy1) / determinant : 0;
+  const denominators = [1, 1 + g, 1 + h, 1 + g + h];
+  // The denominator is affine, so positive corners exclude poles throughout
+  // the entire source image. Never silently replace a pole with bilinear data.
+  if (!denominators.every((value) => Number.isFinite(value) && value > EPSILON)) {
+    throw new Error("Projection homography crosses a pole");
   }
-
-  const a = {
-    x: topRight.x - topLeft.x + g * topRight.x,
-    y: topRight.y - topLeft.y + g * topRight.y,
-    z: topRight.z - topLeft.z + g * topRight.z,
+  const homogeneousWeightAt = (u: number, v: number) => {
+    const denominator = 1 + g * u + h * v;
+    if (!Number.isFinite(u) || !Number.isFinite(v) || !Number.isFinite(denominator) || denominator <= EPSILON) {
+      throw new Error("Projection sample crosses a homography pole");
+    }
+    return 1 / denominator;
   };
-  const b = {
-    x: bottomLeft.x - topLeft.x + h * bottomLeft.x,
-    y: bottomLeft.y - topLeft.y + h * bottomLeft.y,
-    z: bottomLeft.z - topLeft.z + h * bottomLeft.z,
-  };
-
   return {
     pointAt: (u, v) => {
-      const denominator = g * u + h * v + 1;
-      if (!Number.isFinite(denominator) || Math.abs(denominator) <= EPSILON) {
-        return bilinearPoint(corners, u, v);
+      const weight = homogeneousWeightAt(u, v);
+      if ((u === 0 || u === 1) && (v === 0 || v === 1)) return corners[v * 2 + u];
+      // For coplanar corners the uv cross term cancels exactly. Keeping the
+      // corner-weight form also preserves small accepted height-rounding
+      // residuals instead of silently discarding bottomRight.z.
+      const blends = [
+        (1 - u) * (1 - v) * denominators[0],
+        u * (1 - v) * denominators[1],
+        (1 - u) * v * denominators[2],
+        u * v * denominators[3],
+      ];
+      // Translate to the first corner to avoid precision loss in ECEF input.
+      const result = { ...corners[0] };
+      for (let index = 1; index < corners.length; index += 1) {
+        result.x += (corners[index].x - corners[0].x) * blends[index] * weight;
+        result.y += (corners[index].y - corners[0].y) * blends[index] * weight;
+        result.z += (corners[index].z - corners[0].z) * blends[index] * weight;
       }
-      return {
-        x: (a.x * u + b.x * v + topLeft.x) / denominator,
-        y: (a.y * u + b.y * v + topLeft.y) / denominator,
-        z: (a.z * u + b.z * v + topLeft.z) / denominator,
-      };
+      return result;
     },
-    projective: true,
+    homogeneousWeightAt,
+    projective,
   };
 }
 
@@ -124,21 +170,19 @@ export function buildProjectiveGrid(
   const mapper = createProjectiveQuadMapper(corners);
   const points: ProjectionPoint3[] = [];
   const textureCoordinates: number[] = [];
+  const textureWeights: number[] = [];
   const indices: number[] = [];
   const stride = columns + 1;
 
   for (let row = 0; row <= rows; row += 1) {
-    // Oblique aerial images change scale fastest near the far (top) edge.
-    // Concentrating rows there removes most of the residual error of the
-    // piecewise-linear WebGL triangles without materially increasing buffers.
     const v = Math.pow(row / rows, verticalSamplingExponent);
     const sourceV = sourceTopFraction + (1 - sourceTopFraction) * v;
     for (let column = 0; column <= columns; column += 1) {
       const u = column / columns;
       points.push(mapper.pointAt(u, v));
-      // WebGL texture coordinates start at the bottom-left while video pixels
-      // and the projection grid are enumerated from the top-left.
+      // Video pixels are top-left based; WebGL texture coordinates bottom-left.
       textureCoordinates.push(u, 1 - sourceV);
+      textureWeights.push(mapper.homogeneousWeightAt(u, v));
     }
   }
 
@@ -151,6 +195,5 @@ export function buildProjectiveGrid(
       indices.push(topLeft, bottomLeft, topRight, topRight, bottomLeft, bottomRight);
     }
   }
-
-  return { points, textureCoordinates, indices, projective: mapper.projective };
+  return { points, textureCoordinates, textureWeights, indices, projective: mapper.projective };
 }

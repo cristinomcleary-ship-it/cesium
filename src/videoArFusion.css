@@ -151,6 +151,7 @@
 
 .video-ar-preview canvas,
 .video-ar-preview video {
+  grid-area: 1 / 1;
   display: block;
   width: 100%;
   max-height: 230px;

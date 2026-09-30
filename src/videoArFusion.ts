@@ -20,7 +20,6 @@ import {
   Material,
   MaterialAppearance,
   Math as CesiumMath,
-  Matrix3,
   Matrix4,
   NearFarScalar,
   Primitive,
@@ -45,6 +44,9 @@ import {
   type GeoProjectionVideoIdentity,
 } from "./videoArGeoreference";
 import { buildProjectiveGrid } from "./videoArProjection";
+import { cameraPixelToEnuDirection, cameraDirectionToEnu, validateCameraIntrinsics, type CameraIntrinsics, type LensDistortion, type CameraAttitude } from "./videoArCamera";
+import { buildRaySurfaceGrid } from "./videoArSurface";
+import { VIDEO_AR_VERTEX_SHADER, VIDEO_AR_FRAGMENT_SHADER } from "./videoArShaders";
 
 type Notify = (message: string, error?: boolean) => void;
 
@@ -135,13 +137,16 @@ type LivePoseSample = {
 
 type ProjectionSource = "none" | "zip-frames" | "directory-frames" | "independent-video" | "live";
 
+type CameraRayModel = { intrinsics: CameraIntrinsics; distortion: LensDistortion; aircraft?: CameraAttitude };
+
 type ProjectionSurface = {
   readonly positions: readonly Cartesian3[];
   readonly textureCoordinates?: Float32Array;
+  readonly textureWeights?: Float32Array;
   readonly indices?: Uint16Array;
   readonly boundingSphere?: BoundingSphere;
   readonly sourceTopFraction: number;
-  readonly kind: "projective-quad" | "wgs84-control-mesh";
+  readonly kind: "projective-quad" | "wgs84-control-mesh" | "camera-ray-mesh";
 };
 
 type ReusableMaterialTexture = {
@@ -272,26 +277,50 @@ export const videoArFusionPanelHtml = `
     </details>
 
     <div class="field-grid video-ar-fields">
-      <label>水平视场角<input id="videoArHfov" type="number" min="1" max="179" step="0.1" value="84" /></label>
-      <label>垂直视场角<input id="videoArVfov" type="number" min="1" max="179" step="0.1" value="53" /></label>
+      <label>水平视场角（普通轨迹）<input id="videoArHfov" type="number" min="1" max="179" step="0.1" value="84" /></label>
+      <label>垂直视场角（普通轨迹）<input id="videoArVfov" type="number" min="1" max="179" step="0.1" value="53" /></label>
       <label>高程校正（米）<input id="videoArHeightOffset" type="number" step="0.1" value="0" /></label>
-      <label>数据地表高程（米）<input id="videoArGroundHeight" type="number" step="0.1" placeholder="自动：轨迹低位高程" /></label>
+      <label>数据地表高程（普通轨迹）<input id="videoArGroundHeight" type="number" step="0.1" placeholder="自动：轨迹低位高程" /></label>
       <label>视锥诊断距离<input id="videoArFallbackDistance" type="number" min="1" max="5000" step="1" value="60" /></label>
       <label>纹理刷新上限<select id="videoArFps"><option value="8">8 FPS（低配）</option><option value="12" selected>12 FPS（推荐）</option><option value="18">18 FPS</option></select></label>
       <label>播放速度<select id="videoArSpeed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
     </div>
     <details class="video-ar-source-details video-ar-calibration">
-      <summary>投影配准校正（位置 / 大小 / 旋转）</summary>
+      <summary>投影配准校正（位置 / 镜头 / 高程）</summary>
+      <label class="check-label"><input id="videoArEnableCalibration" type="checkbox" /> 启用 DJI 手动校准</label>
+      <p class="hint">先暂停在清晰的一帧，对照道路交叉口或地面标志调整。勾选后校正才作用于 DJI 估算；实测四角和三维控制网格仍使用原配准。</p>
       <div class="field-grid video-ar-fields">
         <label>方位校正（度）<input id="videoArYawCorrection" type="number" min="-180" max="180" step="0.1" value="0" /></label>
         <label>俯仰校正（度）<input id="videoArPitchCorrection" type="number" min="-45" max="45" step="0.1" value="0" /></label>
+        <label>横滚校正（度）<input id="videoArRollCorrection" type="number" min="-45" max="45" step="0.1" value="0" /></label>
         <label>画幅比例<input id="videoArFootprintScale" type="number" min="0.1" max="5" step="0.01" value="1" /></label>
         <label>视频时间校正（秒）<input id="videoArTimeOffset" type="number" min="-120" max="120" step="0.05" value="0" /></label>
         <label>投影东移（米）<input id="videoArEastOffset" type="number" min="-10000" max="10000" step="0.1" value="0" /></label>
         <label>投影北移（米）<input id="videoArNorthOffset" type="number" min="-10000" max="10000" step="0.1" value="0" /></label>
       </div>
+      <div class="field-grid video-ar-fields">
+        <label>投影表面<select id="videoArSurfaceMode"><option value="terrain">当前高程地形（无高程时使用平面）</option><option value="plane">指定基准平面</option></select></label>
+        <label>起飞点椭球高（米）<input id="videoArTakeoffHeight" type="number" min="-1000" max="10000" step="0.1" placeholder="空白：首帧地面高程估算" /></label>
+        <label>投影平面椭球高（米）<input id="videoArSurfaceHeight" type="number" min="-1000" max="10000" step="0.1" placeholder="空白：与起飞点基准相同" /></label>
+      </div>
+      <details class="video-ar-source-details">
+        <summary>镜头标定参数（可选）</summary>
+        <p class="hint">使用原视频分辨率的标定值；留空使用轨迹内参。畸变系数默认 0，已去畸变的视频不要重复填写。主点为左上原点像素坐标。</p>
+        <div class="field-grid video-ar-fields">
+          <label>焦距 fx（像素）<input id="videoArCameraFx" type="number" min="1" step="0.1" placeholder="轨迹 / 视场角" /></label>
+          <label>焦距 fy（像素）<input id="videoArCameraFy" type="number" min="1" step="0.1" placeholder="轨迹 / 视场角" /></label>
+          <label>主点 cx（像素）<input id="videoArCameraCx" type="number" step="0.1" placeholder="轨迹 / 画面中心" /></label>
+          <label>主点 cy（像素）<input id="videoArCameraCy" type="number" step="0.1" placeholder="轨迹 / 画面中心" /></label>
+          <label>径向 k1<input id="videoArK1" type="number" step="0.001" value="0" /></label>
+          <label>径向 k2<input id="videoArK2" type="number" step="0.001" value="0" /></label>
+          <label>径向 k3<input id="videoArK3" type="number" step="0.001" value="0" /></label>
+          <label>切向 p1<input id="videoArP1" type="number" step="0.001" value="0" /></label>
+          <label>切向 p2<input id="videoArP2" type="number" step="0.001" value="0" /></label>
+        </div>
+      </details>
+      <button id="videoArResetCalibration" class="secondary" type="button">重置手动校准</button>
       <label class="check-label"><input id="videoArLockAspect" type="checkbox" checked /> 按视频宽高比自动约束垂直视场角</label>
-      <p class="hint">可信 DJI 轨迹会锁定逐帧 PTS、SRT 姿态、镜头 FOV 和相对高度，避免旧的人工参数造成错位；手动校正只用于普通轨迹。WGS84 实测四角始终最高优先。</p>
+      <p class="hint">DJI 相对高度以起飞点为基准，并非每一帧距地高度。视频时间校正只用于普通轨迹；DJI 始终按视频帧时间绑定。自动基准和等效焦距仍属于估算，精确定位请使用实测高程、镜头标定或三维控制网格。</p>
     </details>
     <label class="check-label"><input id="videoArTerrain" type="checkbox" checked /> 投影到当前地形 / 地表基准面</label>
     <label class="check-label"><input id="videoArAutoGround" type="checkbox" /> 俯仰缺失时允许按正下方估算（非真实配准）</label>
@@ -760,6 +789,8 @@ export class VideoArFusion {
   private mediaSourceHeight = 0;
   private sourceAspectRatio?: number;
   private lastVideoTextureTime = Number.NaN;
+  private decodedVideoTime = Number.NaN;
+  private usesDecodedFrameCallbacks = false;
   private pendingVideoTextureTime = Number.NaN;
   private stableTextureUpload = false;
   private pendingTextureUpload = false;
@@ -773,6 +804,9 @@ export class VideoArFusion {
   private projectionCandidateSurface?: ProjectionSurface;
   private pendingProjectionSurface?: ProjectionSurface;
   private pendingProjectionAtomic = false;
+  private removeTerrainProgressListener: () => void;
+  private removeTerrainProviderListener: () => void;
+  private terrainRefreshTimer = 0;
   private readonly removeProjectionPostRenderListener: () => void;
   private readonly removeCameraMoveStartListener: () => void;
   private readonly removeCameraMoveEndListener: () => void;
@@ -814,7 +848,36 @@ export class VideoArFusion {
   private zipReader: BrowserZipReader | null = null;
   private replayZipFile: File | null = null;
   private restoringReplay = false;
+  private replaySettingsReady = false;
   onReplayLoaded?: (snapshot: SavedReplay) => Promise<void>;
+  onReplaySettingsChanged?: (controls: Record<string, string | boolean>) => void;
+
+  private resetCalibration() {
+      for (const id of ["HeightOffset", "YawCorrection", "PitchCorrection", "RollCorrection", "TimeOffset", "EastOffset", "NorthOffset", "K1", "K2", "K3", "P1", "P2"]) this.element<HTMLInputElement>("#videoAr" + id).value = "0";
+      for (const id of ["CameraFx", "CameraFy", "CameraCx", "CameraCy", "TakeoffHeight", "SurfaceHeight"]) this.element<HTMLInputElement>("#videoAr" + id).value = "";
+      this.element<HTMLInputElement>("#videoArFootprintScale").value = "1";
+      this.element<HTMLInputElement>("#videoArEnableCalibration").checked = false;
+      this.element<HTMLSelectElement>("#videoArSurfaceMode").value = "terrain";
+  }
+
+  private newReplaySelection() {
+    this.replaySettingsReady = false;
+    this.pause();
+    this.resetCalibration();
+  }
+
+  private replayControls() {
+    const controls: Record<string, string | boolean> = {};
+    document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input[id^="videoAr"], select[id^="videoAr"]').forEach(input => {
+      if (input.type === "file" || /Socket|Progress|FlightSelect/i.test(input.id)) return;
+      controls[input.id] = input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input.value;
+    });
+    return controls;
+  }
+
+  private saveReplayControls() {
+    if (this.points.length && this.replaySettingsReady && !this.restoringReplay) this.onReplaySettingsChanged?.(this.replayControls());
+  }
 
   private snapshotReplay(name: string): SavedReplay {
     const files: Record<string, File> = {};
@@ -834,18 +897,23 @@ export class VideoArFusion {
       }
     }
     if (this.georeferenceFile) files.georeference = this.georeferenceFile;
-    const controls: Record<string, string | boolean> = {};
-    document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input[id^="videoAr"], select[id^="videoAr"]').forEach(input => {
-      if (input.type === "file" || /Socket|Progress|FlightSelect/i.test(input.id)) return;
-      controls[input.id] = input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input.value;
-    });
+    const controls = this.replayControls();
     return { name, files, settings: { flight: this.element<HTMLSelectElement>("#videoArFlightSelect").value, framePaths, controls } };
   }
 
   async restoreReplay(files: Record<string, File>, settings: SavedReplaySettings) {
     this.restoringReplay = true;
     try {
-      this.clear(); this.zipReader = null; this.replayZipFile = null;
+      this.clear();
+      // Old saved records predate these controls: never inherit the preceding video's calibration.
+      document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input[id^="videoAr"], select[id^="videoAr"]').forEach(input => {
+        if (input.type === "file" || /Socket|Progress|FlightSelect/i.test(input.id)) return;
+        if (input instanceof HTMLInputElement) {
+          if (input.type === "checkbox") input.checked = input.defaultChecked;
+          else input.value = input.defaultValue;
+        } else input.selectedIndex = Math.max(0, [...input.options].findIndex(option => option.defaultSelected));
+      });
+      this.zipReader = null; this.replayZipFile = null;
       this.frameFiles.clear(); this.trajectoryFile = null; this.videoFile = null;
       const source = files.source;
       if (!source) throw new Error("缺少已保存的回放数据");
@@ -925,6 +993,7 @@ export class VideoArFusion {
   private automaticGroundHeight?: number;
   private liveGroundHeight?: number;
   private djiProjectionGroundHeight?: number;
+  private djiGroundTerrainProvider?: Viewer["terrainProvider"];
   private footprintPositionCache = new Map<string, Cartesian3[]>();
   private projectionMeshSurfaceCache = new Map<GeoProjectionMesh, { surface: ProjectionSurface; corners: Cartesian3[] }>();
 
@@ -951,6 +1020,8 @@ export class VideoArFusion {
       closed: false,
       flat: true,
       faceForward: true,
+      vertexShaderSource: VIDEO_AR_VERTEX_SHADER,
+      fragmentShaderSource: VIDEO_AR_FRAGMENT_SHADER,
       renderState: {
         depthTest: { enabled: true },
         depthMask: true,
@@ -960,6 +1031,15 @@ export class VideoArFusion {
     });
     this.dataSourceReady = this.viewer.dataSources.add(this.dataSource);
     this.removeProjectionPostRenderListener = this.viewer.scene.postRender.addEventListener(() => this.finishProjectionCandidate());
+    const refreshTerrain = () => {
+      if (this.terrainRefreshTimer || !this.panelActive || !this.points.length || this.playing) return;
+      this.terrainRefreshTimer = window.setTimeout(() => {
+        this.terrainRefreshTimer = 0;
+        if (this.panelActive && !this.playing) this.refreshCurrentGeometry();
+      }, 250);
+    };
+    this.removeTerrainProgressListener = this.viewer.scene.globe.tileLoadProgressEvent.addEventListener(refreshTerrain);
+    this.removeTerrainProviderListener = this.viewer.scene.globe.terrainProviderChanged.addEventListener(refreshTerrain);
     this.removeCameraMoveStartListener = this.viewer.camera.moveStart.addEventListener(() => {
       if (!this.panelActive) return;
       this.cameraInteracting = true;
@@ -1081,6 +1161,9 @@ export class VideoArFusion {
 
   destroy() {
     this.removeProjectionPostRenderListener();
+    this.removeTerrainProgressListener();
+    this.removeTerrainProviderListener();
+    window.clearTimeout(this.terrainRefreshTimer);
     this.removeCameraMoveStartListener();
     this.removeCameraMoveEndListener();
     this.clear();
@@ -1099,6 +1182,7 @@ export class VideoArFusion {
     const signal = this.abortController.signal;
     this.element<HTMLInputElement>("#videoArZipFile").addEventListener("change", () => void this.prepareZip(), { signal });
     this.element<HTMLInputElement>("#videoArTrajectoryFile").addEventListener("change", (event) => {
+      this.newReplaySelection();
       this.trajectoryFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null;
       this.element("#videoArTrajectorySelection").textContent = this.trajectoryFile?.name ?? "尚未选择轨迹";
       if (this.trajectoryFile) {
@@ -1116,6 +1200,7 @@ export class VideoArFusion {
         this.setStatus("为防止跨航次错配，独立视频不能覆盖 ZIP 内同步帧", true);
         return;
       }
+      this.newReplaySelection();
       this.videoFile = selected;
       this.element("#videoArVideoSelection").textContent = this.videoFile?.name ?? "也可使用轨迹中的逐帧图片";
     }, { signal });
@@ -1170,9 +1255,16 @@ export class VideoArFusion {
       "#videoArFallbackDistance", "#videoArTerrain", "#videoArAutoGround", "#videoArAbsoluteGimbal",
       "#videoArYawCorrection", "#videoArPitchCorrection", "#videoArFootprintScale",
       "#videoArTimeOffset", "#videoArEastOffset", "#videoArNorthOffset", "#videoArLockAspect",
+      "#videoArEnableCalibration", "#videoArRollCorrection", "#videoArTakeoffHeight", "#videoArSurfaceHeight", "#videoArSurfaceMode",
+      "#videoArCameraFx", "#videoArCameraFy", "#videoArCameraCx", "#videoArCameraCy",
+      "#videoArK1", "#videoArK2", "#videoArK3", "#videoArP1", "#videoArP2",
     ]) {
-      this.element(selector).addEventListener("change", () => this.refreshCurrentGeometry(), { signal });
+      this.element(selector).addEventListener("change", () => { this.refreshCurrentGeometry(); this.saveReplayControls(); }, { signal });
     }
+    this.element("#videoArResetCalibration").addEventListener("click", () => {
+      this.resetCalibration();
+      this.refreshCurrentGeometry(); this.saveReplayControls();
+    }, { signal });
     this.element<HTMLInputElement>("#videoArShowFrustum").addEventListener("change", () => this.applyVisibility(), { signal });
     this.element<HTMLInputElement>("#videoArShowTrajectory").addEventListener("change", () => this.applyVisibility(), { signal });
     this.element("#videoArConnectLive").addEventListener("click", () => {
@@ -1184,6 +1276,7 @@ export class VideoArFusion {
   private async prepareZip(savedFile?: File) {
     const file = savedFile ?? this.element<HTMLInputElement>("#videoArZipFile").files?.[0];
     if (!file) return;
+    if (!savedFile) this.newReplaySelection();
     const generation = ++this.loadGeneration;
     this.pause();
     this.setBusy(true, "正在索引 ZIP（不会整体解压）…");
@@ -1226,6 +1319,7 @@ export class VideoArFusion {
   }
 
   private async loadSelectedSource() {
+    this.replaySettingsReady = false;
     const generation = ++this.loadGeneration;
     this.pause();
     this.disconnectLive();
@@ -1297,8 +1391,10 @@ export class VideoArFusion {
       if (generation === this.loadGeneration && !this.restoringReplay && this.onReplayLoaded) {
         this.setStatus("正在保存回放文件，完成前请不要退出…");
         await this.onReplayLoaded(this.snapshotReplay(label));
+        if (generation !== this.loadGeneration) return;
         this.setStatus("回放已保存到本机");
       }
+      if (generation === this.loadGeneration) { this.replaySettingsReady = true; this.saveReplayControls(); }
     } catch (error) {
       if (generation !== this.loadGeneration) return;
       this.resetFailedLoadState();
@@ -1499,17 +1595,42 @@ export class VideoArFusion {
     }
     this.mediaSourceWidth = this.video.videoWidth;
     this.mediaSourceHeight = this.video.videoHeight;
+    let frameCallback = 0;
+    this.usesDecodedFrameCallbacks = typeof this.video.requestVideoFrameCallback === "function";
     const drawFirstDecodedFrame = (forceUpload = false) => {
       if (generation !== this.loadGeneration || this.videoObjectUrl !== url || this.video.readyState < 2) return;
+      if (this.usesDecodedFrameCallbacks && !Number.isFinite(this.decodedVideoTime)) return;
       if (this.points.length && this.projectionSource === "independent-video") {
         this.updateAtPlayback(this.playbackMs, true);
       }
       this.drawTexture(this.video, forceUpload);
     };
+    const decoded = (now: number, metadata: VideoFrameCallbackMetadata) => {
+      if (generation !== this.loadGeneration || this.videoObjectUrl !== url) return;
+      this.decodedVideoTime = metadata.mediaTime;
+      frameCallback = this.video.requestVideoFrameCallback(decoded);
+      const interval = 1000 / Math.min(this.targetFps(), MAX_CONTINUOUS_GEOMETRY_FPS);
+      if (this.points.length && this.panelActive && !this.cameraInteracting && !this.video.seeking
+          && (!this.playing || now - this.lastProjectionUpdate >= interval || this.awaitingDecodedTexture)) {
+        this.lastProjectionUpdate = now;
+        this.updateAtPlayback(this.playbackMs, !this.playing);
+        this.drawTexture(this.video, !this.playing);
+        this.viewer.scene.requestRender();
+      }
+    };
+    if (this.usesDecodedFrameCallbacks) frameCallback = this.video.requestVideoFrameCallback(decoded);
+    const seeking = () => {
+      this.decodedVideoTime = Number.NaN;
+      this.awaitingDecodedTexture = true;
+      this.cancelPendingProjectionUpdates();
+    };
+    this.video.addEventListener("seeking", seeking);
     const loadedData = () => drawFirstDecodedFrame();
     const seeked = () => drawFirstDecodedFrame(true);
     this.video.addEventListener("seeked", seeked);
     this.removePreparedVideoListeners = () => {
+      if (frameCallback) this.video.cancelVideoFrameCallback(frameCallback);
+      this.video.removeEventListener("seeking", seeking);
       this.video.removeEventListener("loadeddata", loadedData);
       this.video.removeEventListener("seeked", seeked);
     };
@@ -1801,14 +1922,14 @@ export class VideoArFusion {
       positions.push(Cartesian3.fromDegrees(
         point.longitude,
         point.latitude,
-        this.renderedAltitude(point.longitude, point.latitude, point.altitude),
+        this.renderedAltitude(point.longitude, point.latitude, point.altitude, point.djiSrtPoseProjection?.relativeAltitudeMeters),
       ));
     }
     const last = points[points.length - 1];
     const lastPosition = Cartesian3.fromDegrees(
       last.longitude,
       last.latitude,
-      this.renderedAltitude(last.longitude, last.latitude, last.altitude),
+      this.renderedAltitude(last.longitude, last.latitude, last.altitude, last.djiSrtPoseProjection?.relativeAltitudeMeters),
     );
     if (!positions.length || !Cartesian3.equals(positions[positions.length - 1], lastPosition)) positions.push(lastPosition);
     this.trajectoryEntity = this.dataSource.entities.add({
@@ -1879,7 +2000,28 @@ export class VideoArFusion {
     return Number.isFinite(loadedHeight) ? loadedHeight! : 0;
   }
 
-  private renderedAltitude(longitude: number, latitude: number, sourceAltitude: number) {
+  private djiReferenceHeight() {
+    if (this.djiGroundTerrainProvider !== this.viewer.terrainProvider) {
+      this.djiProjectionGroundHeight = undefined;
+      this.djiGroundTerrainProvider = this.viewer.terrainProvider;
+    }
+    const anchor = this.points[0];
+    if (!anchor) return undefined;
+    if (this.djiProjectionGroundHeight === undefined) {
+      const height = this.hasElevationTerrain()
+        ? this.viewer.scene.globe.getHeight(Cartographic.fromDegrees(anchor.longitude, anchor.latitude)) : 0;
+      if (Number.isFinite(height)) this.djiProjectionGroundHeight = height;
+    }
+    return this.djiProjectionGroundHeight;
+  }
+
+  private renderedAltitude(longitude: number, latitude: number, sourceAltitude: number, relativeAltitude?: number) {
+    if (this.independentDjiPoseProjection) {
+      const calibrated = this.element<HTMLInputElement>("#videoArEnableCalibration").checked;
+      const datum = (calibrated ? this.optionalNumberInput("#videoArTakeoffHeight") : undefined) ?? this.djiReferenceHeight() ?? 0;
+      const relative = relativeAltitude ?? sourceAltitude - (this.automaticGroundHeight ?? 0);
+      return datum + relative + (calibrated ? this.numberInput("#videoArHeightOffset", 0) : 0);
+    }
     const heightOffset = this.numberInput("#videoArHeightOffset", 0);
     const sourceGround = this.sourceGroundHeight();
     if (sourceGround === undefined) return sourceAltitude + heightOffset;
@@ -1947,9 +2089,9 @@ export class VideoArFusion {
       ? Math.min(this.targetFps(), MAX_CONTINUOUS_GEOMETRY_FPS)
       : this.targetFps();
     const interval = 1000 / effectiveFps;
-    if (time - this.lastProjectionUpdate >= interval || this.playbackMs >= this.durationMs) {
+    if (!(this.videoObjectUrl && this.usesDecodedFrameCallbacks) && (time - this.lastProjectionUpdate >= interval || this.playbackMs >= this.durationMs)) {
       this.lastProjectionUpdate = time;
-      if (!this.cameraInteracting) {
+      if (!this.cameraInteracting && !(this.videoObjectUrl && this.usesDecodedFrameCallbacks)) {
         this.updateAtPlayback(this.playbackMs);
         if (this.videoObjectUrl && this.video.readyState >= 2) this.drawTexture(this.video);
       }
@@ -1969,12 +2111,14 @@ export class VideoArFusion {
           : 0;
       const seekThresholdSeconds = force ? 0.0005 : 0.008;
       if (Math.abs(this.video.currentTime - target) > seekThresholdSeconds) {
+        this.decodedVideoTime = Number.NaN;
+        this.cancelPendingProjectionUpdates();
         this.video.currentTime = target;
         requestedVideoSeek = true;
         this.awaitingDecodedTexture = true;
       }
     }
-    this.updateAtPlayback(this.playbackMs, force);
+    if (!requestedVideoSeek) this.updateAtPlayback(this.playbackMs, force);
     if (this.videoObjectUrl && this.video.readyState >= 2 && !requestedVideoSeek && !this.video.seeking) {
       this.drawTexture(this.video, force);
     }
@@ -1989,17 +2133,24 @@ export class VideoArFusion {
 
   private updateAtPlayback(milliseconds: number, force = false) {
     if (!this.points.length) return;
+    if (this.videoObjectUrl && this.usesDecodedFrameCallbacks) {
+      if (!Number.isFinite(this.decodedVideoTime) || this.video.seeking) return;
+      milliseconds = this.independentVideoExactTimeline
+        ? this.decodedVideoTime * 1000 - this.independentVideoFirstTimeMs
+        : this.video.duration > 0 ? this.decodedVideoTime / this.video.duration * this.durationMs : 0;
+      this.playbackMs = Math.max(0, Math.min(this.durationMs, milliseconds));
+    }
     const mediaTimeOffset = this.videoObjectUrl && !this.independentDjiPoseProjection && !this.exactMediaBinding
       ? Math.min(120_000, Math.max(-120_000, this.numberInput("#videoArTimeOffset", 0) * 1000))
       : 0;
     const targetTimestamp = this.points[0].timestampMs + milliseconds + mediaTimeOffset;
-    const index = this.pointIndexAt(targetTimestamp);
+    let index = this.pointIndexAt(targetTimestamp);
     const current = this.points[index];
     let state = this.stateAtTimestamp(targetTimestamp);
     if (this.videoObjectUrl) {
       const projectionMesh = this.projectionMeshAtTimestamp(
         targetTimestamp,
-        Number.isFinite(this.video.currentTime) ? this.video.currentTime * 1000 : undefined,
+        Number.isFinite(this.decodedVideoTime) ? this.decodedVideoTime * 1000 : this.video.currentTime * 1000,
       );
       const holdLastMeshFrame = this.projectionMeshPoints.length > 0 && !projectionMesh;
       this.meshVideoFrameReady = !holdLastMeshFrame;
@@ -2012,7 +2163,10 @@ export class VideoArFusion {
       const djiPosePoint = !projectionMesh && !footprint && this.independentDjiPoseProjection
         ? this.djiPosePointAtTimestamp(targetTimestamp)
         : undefined;
-      if (djiPosePoint) state = this.stateFromPoint(djiPosePoint);
+      if (djiPosePoint) {
+        state = this.stateFromPoint(djiPosePoint);
+        index = djiPosePoint.videoSampleIndex ?? index;
+      }
       const allowProjection = Boolean(projectionMesh || footprint || djiPosePoint);
       const blockReason = allowProjection
         ? ""
@@ -2051,7 +2205,9 @@ export class VideoArFusion {
   }
 
   private djiPosePointAtTimestamp(targetTimestamp: number) {
-    const point = this.points[this.pointIndexAt(targetTimestamp)];
+    const index = this.pointIndexAt(targetTimestamp);
+    const point = [this.points[index], this.points[index + 1]].filter(Boolean)
+      .sort((a, b) => Math.abs(a.timestampMs - targetTimestamp) - Math.abs(b.timestampMs - targetTimestamp))[0];
     if (!point?.djiSrtPoseProjection) return undefined;
     if (Math.abs(targetTimestamp - point.timestampMs) > MAX_DJI_SRT_POSE_GAP_MS) return undefined;
     return point;
@@ -2275,30 +2431,27 @@ export class VideoArFusion {
   ) {
     if (this.cameraInteracting && (this.videoObjectUrl || this.liveOnline)) return;
     this.ensureLiveEntities();
-    const heightOffset = djiSrtPoseProjection || projectionMesh ? 0 : this.numberInput("#videoArHeightOffset", 0);
+    const calibrated = !groundFootprint && !projectionMesh && (!djiSrtPoseProjection || this.element<HTMLInputElement>("#videoArEnableCalibration").checked);
+    const heightOffset = calibrated ? this.numberInput("#videoArHeightOffset", 0) : 0;
     const sourceGroundHeight = this.sourceGroundHeight();
     const currentTerrainGroundHeight = this.hasElevationTerrain()
-      ? this.viewer.scene.globe.getHeight(Cartographic.fromDegrees(state.longitude, state.latitude))
-      : 0;
-    if (
-      djiSrtPoseProjection
-      && this.djiProjectionGroundHeight === undefined
-      && Number.isFinite(currentTerrainGroundHeight)
-    ) this.djiProjectionGroundHeight = currentTerrainGroundHeight!;
+      ? this.viewer.scene.globe.getHeight(Cartographic.fromDegrees(state.longitude, state.latitude)) : 0;
+    const manualTakeoff = calibrated && djiSrtPoseProjection ? this.optionalNumberInput("#videoArTakeoffHeight") : undefined;
     const loadedTerrainGroundHeight = djiSrtPoseProjection
-      ? this.djiProjectionGroundHeight
+      ? manualTakeoff ?? this.djiReferenceHeight()
       : currentTerrainGroundHeight;
     const djiTerrainGroundReady = !this.hasElevationTerrain() || Number.isFinite(loadedTerrainGroundHeight);
-    const renderGroundHeight = Number.isFinite(loadedTerrainGroundHeight) ? loadedTerrainGroundHeight! : 0;
+    const datumHeight = Number.isFinite(loadedTerrainGroundHeight) ? loadedTerrainGroundHeight! : 0;
+    const renderGroundHeight = calibrated ? this.optionalNumberInput("#videoArSurfaceHeight") ?? datumHeight : datumHeight;
     const agl = djiSrtPoseProjection
-      ? djiSrtPoseProjection.relativeAltitudeMeters
+      ? djiSrtPoseProjection.relativeAltitudeMeters + heightOffset
       : sourceGroundHeight === undefined
         ? undefined
         : state.altitude - sourceGroundHeight + heightOffset;
-    const renderAltitude = agl === undefined ? state.altitude + heightOffset : renderGroundHeight + agl;
+    const renderAltitude = agl === undefined ? state.altitude + heightOffset : datumHeight + agl;
     const telemetryOrigin = Cartesian3.fromDegrees(state.longitude, state.latitude, renderAltitude);
-    const eastOffset = groundFootprint || djiSrtPoseProjection || projectionMesh ? 0 : Math.min(10_000, Math.max(-10_000, this.numberInput("#videoArEastOffset", 0)));
-    const northOffset = groundFootprint || djiSrtPoseProjection || projectionMesh ? 0 : Math.min(10_000, Math.max(-10_000, this.numberInput("#videoArNorthOffset", 0)));
+    const eastOffset = !calibrated ? 0 : Math.min(10_000, Math.max(-10_000, this.numberInput("#videoArEastOffset", 0)));
+    const northOffset = !calibrated ? 0 : Math.min(10_000, Math.max(-10_000, this.numberInput("#videoArNorthOffset", 0)));
     const offsetTransform = Transforms.eastNorthUpToFixedFrame(telemetryOrigin);
     const offsetVector = Matrix4.multiplyByPointAsVector(
       offsetTransform,
@@ -2316,43 +2469,50 @@ export class VideoArFusion {
       1,
       djiSrtPoseProjection?.verticalFovDegrees ?? this.numberInput("#videoArVfov", 53),
     )));
-    const footprintScale = djiSrtPoseProjection
-      ? 1
-      : Math.min(5, Math.max(0.1, this.numberInput("#videoArFootprintScale", 1)));
-    const horizontalTangent = Math.tan(configuredHfov / 2) * footprintScale;
+    const footprintScale = calibrated ? Math.min(5, Math.max(0.1, this.numberInput("#videoArFootprintScale", 1))) : 1;
+    const horizontalTangent = Math.tan(configuredHfov / 2);
     const lockAspect = this.element<HTMLInputElement>("#videoArLockAspect").checked;
-    const verticalTangent = djiSrtPoseProjection
-      ? Math.tan(configuredVfov / 2) * footprintScale
-      : lockAspect && this.sourceAspectRatio
-        ? horizontalTangent / this.sourceAspectRatio
-        : Math.tan(configuredVfov / 2) * footprintScale;
+    const verticalTangent = !djiSrtPoseProjection && lockAspect && this.sourceAspectRatio
+      ? horizontalTangent / this.sourceAspectRatio : Math.tan(configuredVfov / 2);
     const hfov = 2 * Math.atan(horizontalTangent);
     const vfov = 2 * Math.atan(verticalTangent);
-    const absoluteGimbal = Boolean(djiSrtPoseProjection)
-      || this.element<HTMLInputElement>("#videoArAbsoluteGimbal").checked;
-    const yawDegrees = (absoluteGimbal ? state.gimbal.yaw : state.attitude.heading + state.gimbal.yaw)
-      + (djiSrtPoseProjection ? 0 : this.numberInput("#videoArYawCorrection", 0));
-    const pitchDegrees = (absoluteGimbal ? state.gimbal.pitch : state.attitude.pitch + state.gimbal.pitch)
-      + (djiSrtPoseProjection ? 0 : this.numberInput("#videoArPitchCorrection", 0));
-    const rollDegrees = absoluteGimbal ? state.gimbal.roll : state.attitude.roll + state.gimbal.roll;
-    const measuredDirections = this.cameraDirections(origin, yawDegrees, pitchDegrees, rollDegrees, hfov, vfov);
-    const safeDjiProjection = djiSrtPoseProjection
-      ? this.safeDjiProjectionDirections(
-          origin,
-          yawDegrees,
-          pitchDegrees,
-          rollDegrees,
-          hfov,
-          vfov,
-          djiSrtPoseProjection.relativeAltitudeMeters,
-        )
-      : undefined;
+    const absoluteGimbal = Boolean(djiSrtPoseProjection) || this.element<HTMLInputElement>("#videoArAbsoluteGimbal").checked;
+    const yawDegrees = state.gimbal.yaw + (calibrated ? this.numberInput("#videoArYawCorrection", 0) : 0);
+    const pitchDegrees = state.gimbal.pitch + (calibrated ? this.numberInput("#videoArPitchCorrection", 0) : 0);
+    const rollDegrees = state.gimbal.roll + (calibrated ? this.numberInput("#videoArRollCorrection", 0) : 0);
+    const width = djiSrtPoseProjection?.dataset.videoWidth ?? (this.mediaSourceWidth || 1600);
+    const height = djiSrtPoseProjection?.dataset.videoHeight ?? (this.mediaSourceHeight || 900);
+    const optional = (id: string) => calibrated ? this.optionalNumberInput("#videoAr" + id) : undefined;
+    const model: CameraRayModel = {
+      intrinsics: {
+        width, height,
+        fx: (optional("CameraFx") ?? djiSrtPoseProjection?.fxPx ?? width / (2 * horizontalTangent)) / footprintScale,
+        fy: (optional("CameraFy") ?? djiSrtPoseProjection?.fyPx ?? height / (2 * verticalTangent)) / footprintScale,
+        cx: optional("CameraCx") ?? djiSrtPoseProjection?.cxPx ?? width / 2,
+        cy: optional("CameraCy") ?? djiSrtPoseProjection?.cyPx ?? height / 2,
+      },
+      distortion: { k1: optional("K1") ?? 0, k2: optional("K2") ?? 0, k3: optional("K3") ?? 0, p1: optional("P1") ?? 0, p2: optional("P2") ?? 0 },
+      aircraft: absoluteGimbal ? undefined : { yaw: state.attitude.heading, pitch: state.attitude.pitch, roll: state.attitude.roll },
+    };
+    let measuredDirections: ReturnType<VideoArFusion["cameraDirections"]>;
+    let safeDjiProjection: ReturnType<VideoArFusion["safeDjiProjectionDirections"]>;
+    try {
+      validateCameraIntrinsics(model.intrinsics);
+      measuredDirections = this.cameraDirections(origin, yawDegrees, pitchDegrees, rollDegrees, hfov, vfov, 0, model);
+      safeDjiProjection = djiSrtPoseProjection
+        ? this.safeDjiProjectionDirections(origin, yawDegrees, pitchDegrees, rollDegrees, hfov, vfov, Math.max(0, renderAltitude - renderGroundHeight), model)
+        : undefined;
+    } catch {
+      this.hideProjectionPrimitive();
+      this.element("#videoArProjectionMode").textContent = "未投影：镜头标定值无效或畸变无法逆解，请检查焦距、主点与畸变系数";
+      return;
+    }
     const terrainPreferred = this.element<HTMLInputElement>("#videoArTerrain").checked;
     const autoGround = !djiSrtPoseProjection && this.element<HTMLInputElement>("#videoArAutoGround").checked;
     const fallbackDistance = Math.min(5_000, Math.max(1, this.numberInput("#videoArFallbackDistance", 60)));
     const manualGroundHeight = this.optionalNumberInput("#videoArGroundHeight") !== undefined;
     const groundDescription = djiSrtPoseProjection
-      ? `DJI SRT AGL ${agl!.toFixed(1)}m`
+      ? `相对起飞点 ${agl!.toFixed(1)}m · ${manualTakeoff === undefined ? "首帧地面估算基准" : "手动起飞基准"} ${datumHeight.toFixed(1)}m${calibrated ? " · 手动校准已启用" : ""}`
       : sourceGroundHeight === undefined
         ? "椭球基面"
         : `${manualGroundHeight ? "手动" : "自动"}数据基准 ${sourceGroundHeight.toFixed(1)}m · AGL ${agl!.toFixed(1)}m`;
@@ -2361,7 +2521,6 @@ export class VideoArFusion {
     let projectionCorners: Cartesian3[] | undefined;
     let projectionSurface: ProjectionSurface | undefined;
     let projectionMode = "";
-    let measuredHitCount = 0;
 
     if (!allowProjection) {
       projectionMode = projectionBlockReason || "未投影：媒体与地理数据未通过同步校验";
@@ -2412,47 +2571,66 @@ export class VideoArFusion {
         projectionMode = "未投影：同帧地理角点与相机位置跨度异常";
       }
     } else if (terrainPreferred) {
-      const measuredHits = projectionDirections.corners.map((direction) => this.pickGround(
-        origin, direction, state.longitude, state.latitude, renderGroundHeight, Boolean(djiSrtPoseProjection),
-      ));
-      measuredHitCount = measuredHits.filter(Boolean).length;
-      const allMeasuredHits = measuredHits.every((point): point is Cartesian3 => Boolean(point));
-      const usableMeasuredProjection = allMeasuredHits && (
-        djiSrtPoseProjection
-          ? this.isUsableDjiSrtPoseProjection(
-              origin,
-              measuredHits,
-              projectionDirections.corners,
-              djiSrtPoseProjection.relativeAltitudeMeters,
-            )
-          : this.isUsableGroundProjection(origin, measuredHits)
+      const useTerrain = this.hasElevationTerrain() && this.element<HTMLSelectElement>("#videoArSurfaceMode").value !== "plane";
+      const maximumDistance = djiSrtPoseProjection
+        ? Math.max(120, Math.min(1_500, Math.max(0, renderAltitude - renderGroundHeight) * MAX_DJI_PROJECTION_RANGE_FACTOR))
+        : MAX_GROUND_PROJECTION_DISTANCE;
+      const intersect = (direction: Cartesian3) => {
+        if (-Cartesian3.dot(direction, this.viewer.scene.globe.ellipsoid.geodeticSurfaceNormal(origin, new Cartesian3())) < 0.005) return undefined;
+        try {
+          // A missing elevation tile stays a hole. Mixing successful terrain hits
+          // with a fallback plane would stretch the image across two surfaces.
+          const hit = useTerrain
+            ? this.viewer.scene.globe.pick(new Ray(origin, direction), this.viewer.scene)
+            : this.pickGround(origin, direction, state.longitude, state.latitude, renderGroundHeight, true);
+          if (!hit || Cartesian3.distance(origin, hit) > maximumDistance) return undefined;
+          return hit;
+        } catch { return undefined; }
+      };
+      const sample = (directions: typeof measuredDirections) => buildRaySurfaceGrid(
+        PROJECTION_GRID_COLUMNS, PROJECTION_GRID_ROWS, sourceTopFraction,
+        (u, v) => {
+          try {
+            const direction = directions.rayAt(u, v);
+            const hit = intersect(direction);
+            if (!hit) return undefined;
+            // Move along the same source ray: depth bias must not shift the pixel.
+            const position = Cartesian3.subtract(hit, Cartesian3.multiplyByScalar(direction, MESH_CAMERA_BIAS_METERS, new Cartesian3()), new Cartesian3());
+            const depth = Cartesian3.dot(Cartesian3.subtract(position, origin, new Cartesian3()), directions.center);
+            return { position, depth };
+          } catch { return undefined; }
+        },
       );
-      if (usableMeasuredProjection) {
-        projectionCorners = measuredHits.map((point) => this.raiseAboveSurface(point, SURFACE_LIFT_METERS));
-        projectionMode = djiSrtPoseProjection
-          ? `DJI SRT 姿态 + 稳定地面单应网格（估算） · 镜头 ${djiSrtPoseProjection.horizontalFovDegrees.toFixed(2)}°×${djiSrtPoseProjection.verticalFovDegrees.toFixed(2)}° · ${groundDescription}${sourceTopFraction > 0 ? ` · 顶部安全裁切 ${(sourceTopFraction * 100).toFixed(1)}%` : ""}`
-          : `${this.projectionSource === "live" ? "实时" : "回放"}相机姿态射线估算 · ${groundDescription}`;
-      } else if (djiSrtPoseProjection) {
-        projectionMode = measuredHitCount < 4
-          ? `未投影：DJI 视锥未完整落地（${measuredHitCount}/4）`
-          : "未投影：DJI 视线过于接近地平线或估算覆盖范围异常";
-      } else if (autoGround) {
-        // Some DJI exports omit gimbal pitch and write 0° even for a nadir frame.  A
-        // fixed-distance camera plane is never a valid ground projection, so retry
-        // with an explicit nadir optical axis and clearly report the correction.
-        const nadirDirections = this.cameraDirections(origin, yawDegrees, -90, 0, hfov, vfov);
-        const nadirHits = nadirDirections.corners.map((direction) => this.pickGround(
-          origin, direction, state.longitude, state.latitude, renderGroundHeight,
-        ));
-        if (nadirHits.every((point): point is Cartesian3 => Boolean(point)) && this.isUsableGroundProjection(origin, nadirHits)) {
-          projectionDirections = nadirDirections;
-          projectionCorners = nadirHits.map((point) => this.raiseAboveSurface(point, SURFACE_LIFT_METERS));
-          projectionMode = `正下方估算（非真实配准） · ${groundDescription} · 原俯仰 ${pitchDegrees.toFixed(1)}°`;
-        } else {
-          projectionMode = `未投影：视锥未完整落地（${measuredHitCount}/4）`;
-        }
+      let grid = sample(projectionDirections);
+      let nadir = false;
+      if (!grid.indices.length && autoGround) {
+        projectionDirections = this.cameraDirections(origin, yawDegrees, -90, 0, hfov, vfov, 0, { ...model, aircraft: undefined });
+        grid = sample(projectionDirections);
+        nadir = true;
+      }
+      if (grid.indices.length) {
+        const positions = grid.positions.map(point => new Cartesian3(point.x, point.y, point.z));
+        const textureCoordinates = grid.textureCoordinates.slice();
+        for (let index = 1; index < textureCoordinates.length; index += 2) textureCoordinates[index] = 1 - textureCoordinates[index];
+        projectionSurface = { positions, textureCoordinates, textureWeights: grid.textureWeights, indices: grid.indices,
+          sourceTopFraction, kind: "camera-ray-mesh" };
+        // Diagnostic outline follows the nearest surviving source-image corners.
+        projectionCorners = [[0,sourceTopFraction],[1,sourceTopFraction],[0,1],[1,1]].map(([u,v]) => {
+          let closest = 0, distance = Infinity;
+          for (let index=0; index<positions.length; index++) {
+            const delta = Math.hypot(grid.textureCoordinates[index*2]-u, grid.textureCoordinates[index*2+1]-v);
+            if (delta<distance) { closest=index;distance=delta; }
+          }
+          return positions[closest];
+        });
+        projectionMode = (djiSrtPoseProjection ? "DJI SRT " : nadir ? "正下方估算（非真实配准） " : "姿态估算 ")
+          + "相机射线网格 · " + (useTerrain ? "当前高程地形" : "基准平面估算") + " · " + groundDescription
+          + (Object.values(model.distortion).some(value=>value !== 0) ? " · 镜头去畸变" : "")
+          + (grid.rejectedTriangles ? " · 未命中或深度突变区域已留空" : "")
+          + (sourceTopFraction ? " · 顶部裁切 " + (sourceTopFraction*100).toFixed(1) + "%" : "");
       } else {
-        projectionMode = `未投影：视锥未完整落地（${measuredHitCount}/4）`;
+        projectionMode = useTerrain ? "未投影：地形尚未覆盖相机视野或视线无法落地，请等待地形加载或选择已知基准平面"
+          : "未投影：视线无法落到基准平面，请检查高度、俯仰和镜头参数";
       }
     } else {
       projectionMode = "地面投影已关闭（仅显示视锥）";
@@ -2534,43 +2712,16 @@ export class VideoArFusion {
     return Cartesian3.magnitude(Cartesian3.cross(topEdge, leftEdge, new Cartesian3())) > 0.01;
   }
 
-  private isUsableDjiSrtPoseProjection(
-    origin: Cartesian3,
-    corners: Cartesian3[],
-    directions: Cartesian3[],
-    aglMeters: number,
-  ) {
-    if (!Number.isFinite(aglMeters) || aglMeters <= 2 || directions.length !== 4) return false;
-    if (!this.isUsableGroundProjection(origin, corners)) return false;
-    const localUp = this.viewer.scene.globe.ellipsoid.geodeticSurfaceNormal(origin, new Cartesian3());
-    if (directions.some((direction) => -Cartesian3.dot(direction, localUp) < MIN_DJI_DOWNWARD_DOT)) return false;
-    const maximumSpan = Math.max(120, Math.min(1_500, aglMeters * MAX_DJI_PROJECTION_RANGE_FACTOR));
-    if (corners.some((corner) => Cartesian3.distance(origin, corner) > maximumSpan)) return false;
-    const boundary = [corners[0], corners[1], corners[3], corners[2]];
-    let windingSign = 0;
-    for (let index = 0; index < boundary.length; index += 1) {
-      const current = boundary[index];
-      const next = boundary[(index + 1) % boundary.length];
-      const afterNext = boundary[(index + 2) % boundary.length];
-      const firstEdge = Cartesian3.subtract(next, current, new Cartesian3());
-      const secondEdge = Cartesian3.subtract(afterNext, next, new Cartesian3());
-      const turn = Cartesian3.dot(Cartesian3.cross(firstEdge, secondEdge, new Cartesian3()), localUp);
-      if (!Number.isFinite(turn) || Math.abs(turn) <= 0.01) return false;
-      const sign = Math.sign(turn);
-      if (windingSign && sign !== windingSign) return false;
-      windingSign = sign;
-    }
-    return true;
-  }
-
   private createProjectionGeometry(surface: ProjectionSurface) {
     let renderedPositions: readonly Cartesian3[];
     let textureCoordinates: Float32Array;
+    let textureWeights: Float32Array;
     let indices: Uint16Array;
-    if (surface.kind === "wgs84-control-mesh") {
+    if (surface.kind !== "projective-quad") {
       if (!surface.textureCoordinates || !surface.indices) throw new Error("三维控制网格拓扑缺失");
       renderedPositions = surface.positions;
       textureCoordinates = surface.textureCoordinates;
+      textureWeights = surface.textureWeights ?? new Float32Array(surface.positions.length).fill(1);
       indices = surface.indices;
     } else {
       if (surface.positions.length !== 4) throw new Error("四角投影几何无效");
@@ -2603,6 +2754,7 @@ export class VideoArFusion {
         new Cartesian3(),
       ));
       textureCoordinates = new Float32Array(grid.textureCoordinates);
+      textureWeights = new Float32Array(grid.textureWeights);
       indices = new Uint16Array(grid.indices);
     }
     const positionValues = new Float64Array(renderedPositions.length * 3);
@@ -2630,6 +2782,9 @@ export class VideoArFusion {
       componentsPerAttribute: 3,
       values: normalValues,
     });
+    (attributes as GeometryAttributes & { projectionWeight: GeometryAttribute }).projectionWeight = new GeometryAttribute({
+      componentDatatype: ComponentDatatype.FLOAT, componentsPerAttribute: 1, values: textureWeights,
+    });
     attributes.st = new GeometryAttribute({
       componentDatatype: ComponentDatatype.FLOAT,
       componentsPerAttribute: 2,
@@ -2652,7 +2807,7 @@ export class VideoArFusion {
     if (
       surface.positions.length < 3
       || (surface.kind === "projective-quad" && surface.positions.length !== 4)
-      || (surface.kind === "wgs84-control-mesh" && (!surface.textureCoordinates || !surface.indices))
+      || (surface.kind !== "projective-quad" && (!surface.textureCoordinates || !surface.indices))
     ) {
       this.hideProjectionPrimitive();
       return;
@@ -2669,6 +2824,7 @@ export class VideoArFusion {
       && surface.positions.every((position, index) => Cartesian3.distance(position, reference.positions[index]) < PROJECTION_POSITION_EPSILON_METERS)
       && Math.abs(reference.sourceTopFraction - surface.sourceTopFraction) < 1e-5
       && sameNumbers(reference.textureCoordinates, surface.textureCoordinates)
+      && sameNumbers(reference.textureWeights, surface.textureWeights)
       && sameNumbers(reference.indices, surface.indices)
     );
     if (
@@ -2895,40 +3051,23 @@ export class VideoArFusion {
   }
 
   private cameraDirections(
-    origin: Cartesian3,
-    yawDegrees: number,
-    pitchDegrees: number,
-    rollDegrees: number,
-    hfov: number,
-    vfov: number,
-    sourceTopFraction = 0,
+    origin: Cartesian3, yawDegrees: number, pitchDegrees: number, rollDegrees: number,
+    hfov: number, vfov: number, sourceTopFraction = 0, model?: CameraRayModel,
   ) {
-    const yaw = CesiumMath.toRadians(yawDegrees);
-    const pitch = CesiumMath.toRadians(pitchDegrees);
-    const roll = CesiumMath.toRadians(rollDegrees);
-    const rollMatrix = Matrix3.fromRotationX(roll);
-    const pitchMatrix = Matrix3.fromRotationY(pitch);
-    const yawMatrix = Matrix3.fromRotationZ(yaw);
-    let rotation = Matrix3.multiply(pitchMatrix, rollMatrix, new Matrix3());
-    rotation = Matrix3.multiply(yawMatrix, rotation, rotation);
+    const intrinsics = model?.intrinsics ?? { width: 2, height: 2, fx: 1 / Math.tan(hfov / 2), fy: 1 / Math.tan(vfov / 2), cx: 1, cy: 1 };
+    const attitude = { yaw: yawDegrees, pitch: pitchDegrees, roll: rollDegrees };
     const transform = Transforms.eastNorthUpToFixedFrame(origin);
-    const toWorld = (ned: Cartesian3) => {
-      const rotated = Matrix3.multiplyByVector(rotation, ned, new Cartesian3());
-      const enu = new Cartesian3(rotated.y, rotated.x, -rotated.z);
-      const world = Matrix4.multiplyByPointAsVector(transform, enu, new Cartesian3());
+    const toWorld = (enu: { x: number; y: number; z: number }) => {
+      const world = Matrix4.multiplyByPointAsVector(transform, new Cartesian3(enu.x, enu.y, enu.z), new Cartesian3());
       return Cartesian3.normalize(world, world);
     };
-    const horizontal = Math.tan(hfov / 2);
-    const vertical = Math.tan(vfov / 2);
-    const croppedTop = -vertical + 2 * vertical * sourceTopFraction;
+    const rayAt = (u: number, v: number) => toWorld(cameraPixelToEnuDirection(
+      intrinsics, u * intrinsics.width, v * intrinsics.height, attitude, model?.distortion, model?.aircraft,
+    ));
     return {
-      corners: [
-        toWorld(new Cartesian3(1, -horizontal, croppedTop)),
-        toWorld(new Cartesian3(1, horizontal, croppedTop)),
-        toWorld(new Cartesian3(1, -horizontal, vertical)),
-        toWorld(new Cartesian3(1, horizontal, vertical)),
-      ],
-      center: toWorld(new Cartesian3(1, 0, 0)),
+      corners: [rayAt(0, sourceTopFraction), rayAt(1, sourceTopFraction), rayAt(0, 1), rayAt(1, 1)],
+      center: toWorld(cameraDirectionToEnu({ x: 0, y: 0 }, attitude, model?.aircraft)),
+      rayAt,
     };
   }
 
@@ -2940,6 +3079,7 @@ export class VideoArFusion {
     hfov: number,
     vfov: number,
     relativeAltitudeMeters: number,
+    model?: CameraRayModel,
   ) {
     if (!Number.isFinite(relativeAltitudeMeters) || relativeAltitudeMeters <= 2) return undefined;
     const localUp = this.viewer.scene.globe.ellipsoid.geodeticSurfaceNormal(origin, new Cartesian3());
@@ -2961,6 +3101,7 @@ export class VideoArFusion {
         hfov,
         vfov,
         sourceTopFraction,
+        model,
       );
       const stable = directions.corners.every((direction) => {
         const downwardDot = -Cartesian3.dot(direction, localUp);
@@ -3007,11 +3148,6 @@ export class VideoArFusion {
     } catch {
       return undefined;
     }
-  }
-
-  private raiseAboveSurface(point: Cartesian3, meters: number) {
-    const up = this.viewer.scene.globe.ellipsoid.geodeticSurfaceNormal(point, new Cartesian3());
-    return Cartesian3.add(point, Cartesian3.multiplyByScalar(up, meters, new Cartesian3()), new Cartesian3());
   }
 
   private ensureLiveEntities() {
@@ -3289,7 +3425,7 @@ export class VideoArFusion {
       && !forceUpload
       && !this.pendingTextureUpload
       && Number.isFinite(this.lastVideoTextureTime)
-      && Math.abs(source.currentTime - this.lastVideoTextureTime) < 0.0001
+      && Math.abs((Number.isFinite(this.decodedVideoTime) ? this.decodedVideoTime : source.currentTime) - this.lastVideoTextureTime) < 0.0001
     ) return;
     const scale = Math.min(1, MAX_TEXTURE_EDGE / Math.max(sourceWidth, sourceHeight));
     const width = Math.max(2, Math.round(sourceWidth * scale));
@@ -3312,7 +3448,7 @@ export class VideoArFusion {
       if (this.textureTransactionPending()) {
         this.pendingTextureCanvas = nextTextureCanvas;
         this.pendingTextureUpload = true;
-        this.pendingVideoTextureTime = source instanceof HTMLVideoElement ? source.currentTime : Number.NaN;
+        this.pendingVideoTextureTime = source instanceof HTMLVideoElement ? (Number.isFinite(this.decodedVideoTime) ? this.decodedVideoTime : source.currentTime) : Number.NaN;
         this.awaitingDecodedTexture = false;
       } else {
         const previousCanvas = this.textureCanvas;
@@ -3336,7 +3472,7 @@ export class VideoArFusion {
         this.pendingTextureCanvas = undefined;
         if (newTextureReady) {
           this.awaitingDecodedTexture = false;
-          if (source instanceof HTMLVideoElement) this.lastVideoTextureTime = source.currentTime;
+          if (source instanceof HTMLVideoElement) this.lastVideoTextureTime = Number.isFinite(this.decodedVideoTime) ? this.decodedVideoTime : source.currentTime;
         }
       }
     } else {
@@ -3350,7 +3486,7 @@ export class VideoArFusion {
       if (this.textureTransactionPending()) {
         this.pendingTextureUpload = true;
         this.pendingTextureCanvas = undefined;
-        this.pendingVideoTextureTime = source instanceof HTMLVideoElement ? source.currentTime : Number.NaN;
+        this.pendingVideoTextureTime = source instanceof HTMLVideoElement ? (Number.isFinite(this.decodedVideoTime) ? this.decodedVideoTime : source.currentTime) : Number.NaN;
         this.awaitingDecodedTexture = false;
       } else {
         const uploadSource = this.textureCanvas;
@@ -3362,7 +3498,7 @@ export class VideoArFusion {
             this.pendingTextureUpload = false;
             this.pendingTextureCanvas = undefined;
             this.pendingVideoTextureTime = Number.NaN;
-            if (source instanceof HTMLVideoElement) this.lastVideoTextureTime = source.currentTime;
+            if (source instanceof HTMLVideoElement) this.lastVideoTextureTime = Number.isFinite(this.decodedVideoTime) ? this.decodedVideoTime : source.currentTime;
             this.stableTextureUpload = true;
             this.awaitingDecodedTexture = false;
           } catch (error) {
@@ -3387,6 +3523,9 @@ export class VideoArFusion {
   }
 
   private updateTexturePreview(source: HTMLVideoElement | ImageBitmap, sourceWidth: number, sourceHeight: number) {
+    // The GPU texture canvas may be detached; hide both actual DOM staging canvases.
+    this.canvasA.classList.add("hidden");
+    this.canvasB.classList.add("hidden");
     this.textureCanvas.classList.add("hidden");
     if (source instanceof HTMLVideoElement) {
       this.previewCanvas.classList.add("hidden");
@@ -3441,7 +3580,7 @@ export class VideoArFusion {
         .map((point) => Cartesian3.fromDegrees(
           point.longitude,
           point.latitude,
-          this.renderedAltitude(point.longitude, point.latitude, point.altitude),
+          this.renderedAltitude(point.longitude, point.latitude, point.altitude, point.djiSrtPoseProjection?.relativeAltitudeMeters),
         ))
       : this.liveTrajectory;
     if (!positions.length) return;
@@ -3557,6 +3696,8 @@ export class VideoArFusion {
 
   private releaseVideo() {
     this.removePreparedVideoListeners?.();
+    this.decodedVideoTime = Number.NaN;
+    this.usesDecodedFrameCallbacks = false;
     this.removePreparedVideoListeners = undefined;
     this.video.pause();
     this.video.removeAttribute("src");

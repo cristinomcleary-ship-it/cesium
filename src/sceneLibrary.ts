@@ -251,6 +251,12 @@ export class SceneLibrary {
       this.failures.set(id, this.message(error));
     } finally { this.restoring.delete(id); this.render(); this.hooks.layersChanged(); if (!this.starting) this.saveView(); }
   }
+  updateVideoControls(controls: Record<string, string | boolean>) {
+    const record = this.records.get(this.activeVideoId);
+    if (!record || record.kind !== "Drone Video") return;
+    this.queueUpdate(record.id, { settings: { video: { ...record.settings.video, controls } } });
+  }
+
   markVideo(id: string) { this.activeVideoId = id; this.render(); this.saveView(); }
   markImagery(id: string) { this.activeImageryId = id; this.render(); this.saveView(); }
   async delete(id: string, confirm = true) {
