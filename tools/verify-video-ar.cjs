@@ -19,11 +19,11 @@ const webglErrors = [];
 let server, browser, page;
 let serverLog = "";
 const deadline = setTimeout(() => {
-  console.error("Video AR browser verification exceeded 120 seconds", runRoot);
+  console.error("Video AR browser verification exceeded 240 seconds", runRoot);
   process.exitCode = 1;
   void browser?.close();
   server?.kill();
-}, 120000);
+}, 240000);
 deadline.unref();
 
 async function run(program, args) {
@@ -130,7 +130,7 @@ async function newPage() {
   page.on("dialog", dialog => dialog.accept());
   const mapImage = await fs.readFile(path.join(root, "node_modules/cesium/Build/Cesium/Assets/Textures/NaturalEarthII/0/0/0.jpg"));
   await page.route("**/__basemap/**", route => route.fulfill({ status: 200, contentType: "image/jpeg", body: mapImage }));
-  await page.goto(base, { waitUntil: "domcontentloaded" });
+  await page.goto(base, { waitUntil: "domcontentloaded", timeout: 45000 });
   await page.waitForFunction(() => document.querySelector("#libraryStatus")?.textContent?.includes("已保存到本机"));
   await page.locator('[data-tab="videoar"]').click();
   return context;
@@ -259,6 +259,25 @@ async function createFixtures() {
   console.log("DJI video decoded and projected; testing calibration and persistence");
 
   await openCalibration();
+  await page.locator("#videoArSurfaceMode").selectOption("model");
+  await page.waitForFunction(() => document.querySelector("#videoArProjectionMode")?.textContent?.includes("倾斜摄影三维表面投影"));
+  await page.waitForFunction(() => document.querySelector("#videoArModelStatus")?.textContent?.includes("没有显示"));
+  await until("model surface choice saved", async () => (await records())[0]?.settings.video.controls.videoArSurfaceMode === "model");
+  await page.locator(".video-ar-control-picker [data-action=start]").click();
+  await page.waitForFunction(() => document.querySelector(".vacp-body")?.hidden === false);
+  const frozenSize = await page.locator(".video-ar-control-picker canvas").evaluate(canvas => [canvas.width, canvas.height]);
+  assert.deepEqual(frozenSize, [640, 360], "Control-point editor must freeze the original frame dimensions");
+  await page.locator(".video-ar-control-picker [data-action=cancel]").click();
+  await page.waitForFunction(() => document.querySelector(".vacp-body")?.hidden === true);
+  await page.locator("#videoArPlay").click();
+  await sleep(370);
+  await page.locator("#videoArPlay").click();
+  await page.locator(".video-ar-control-picker [data-action=start]").click();
+  await page.waitForFunction(() => document.querySelector(".vacp-body")?.hidden === false);
+  await page.locator(".video-ar-control-picker [data-action=cancel]").click();
+  checks.push("Pausing between throttled geometry updates still freezes a matching decoded frame for calibration");
+
+  checks.push("Model mode saves without a flat fallback when no model is loaded; frozen DJI control-point editor opens and cancels cleanly");
   await page.locator("#videoArEnableCalibration").check();
   const overrides = {
     videoArEastOffset: "12", videoArNorthOffset: "-8", videoArHeightOffset: "1.5",
@@ -326,6 +345,11 @@ async function createFixtures() {
   assert.equal(await page.locator("#videoArK1").inputValue(), "0");
   assert.equal(await page.locator("#videoArCameraFx").inputValue(), "");
   assert.equal(await page.locator("#videoArTakeoffHeight").inputValue(), "");
+  await openCalibration();
+  await page.locator(".video-ar-control-picker [data-action=start]").click();
+  assert.equal(await page.locator(".vacp-body").isVisible(), false, "Selecting a new source must not expose the old replay calibration frame");
+  assert.ok((await page.locator(".vacp-status").textContent()).includes("请先加载"));
+  checks.push("A newly selected but not yet loaded video cannot inherit control-point calibration from the old frame");
   await page.locator("#videoArLoad").click();
   await until("second video upload deliberately held", () => uploadHeld);
   await openCalibration();

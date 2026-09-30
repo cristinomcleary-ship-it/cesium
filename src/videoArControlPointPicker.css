@@ -1,0 +1,67 @@
+.video-ar-control-picker {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid rgba(143, 172, 197, .28);
+  border-radius: 9px;
+  background: rgba(22, 35, 49, .45);
+  color: inherit;
+}
+.video-ar-control-picker .vacp-title,
+.video-ar-control-picker .vacp-toolbar,
+.video-ar-control-picker .vacp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+.video-ar-control-picker button {
+  min-height: 30px;
+  padding: 6px 10px;
+  border: 1px solid rgba(143, 172, 197, .38);
+  border-radius: 5px;
+  color: inherit;
+  background: rgba(89, 125, 153, .2);
+  cursor: pointer;
+}
+.video-ar-control-picker button:disabled { opacity: .45; cursor: default; }
+.video-ar-control-picker [data-action="solve"] { background: #176b82; color: white; }
+.video-ar-control-picker .vacp-status,
+.video-ar-control-picker .vacp-guide {
+  margin: 8px 0;
+  line-height: 1.6;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.video-ar-control-picker .vacp-status { color: #91ddcd; }
+.video-ar-control-picker .vacp-status.vacp-error { color: #ffbc92; }
+.video-ar-control-picker .vacp-guide { opacity: .8; }
+.video-ar-control-picker .vacp-toolbar { margin: 8px 0; font-size: 12px; }
+.video-ar-control-picker .vacp-toolbar label { display: flex; align-items: center; gap: 6px; }
+.video-ar-control-picker .vacp-toolbar select { width: auto; min-width: 66px; }
+.video-ar-control-picker .vacp-image-scroll {
+  width: 100%;
+  max-height: 360px;
+  overflow: auto;
+  border-radius: 5px;
+  background: #080d12;
+  border: 1px solid rgba(143, 172, 197, .3);
+}
+.video-ar-control-picker canvas {
+  display: block;
+  width: 100%;
+  max-width: none;
+  height: auto;
+  cursor: crosshair;
+  touch-action: pan-x pan-y;
+}
+.video-ar-control-picker .vacp-point-list {
+  max-height: 130px;
+  overflow: auto;
+  padding: 0;
+  margin: 8px 0;
+  list-style: none;
+  font: 11px/1.7 ui-monospace, Consolas, monospace;
+}
+.video-ar-control-picker .vacp-actions { justify-content: flex-start; margin-top: 8px; }
+.video-ar-control-picker [hidden] { display: none !important; }

@@ -589,6 +589,12 @@ function toast(message: string, error = false) {
 }
 
 const videoArFusion = new VideoArFusion(viewer, toast, setStatus);
+videoArFusion.onShowProjectionModels = () => {
+  const models = imports.filter(item => item.kind === "3D Tiles");
+  for (const item of models) if (!item.visible) setImportVisibility(item, true, { silent: true, deferRender: true });
+  renderLayers(); viewer.scene.requestRender();
+  return models.length;
+};
 
 function updateModelTools(item: EditableModel | null, mode: EditMode) {
   $("#modelTools").classList.toggle("hidden", !item);
