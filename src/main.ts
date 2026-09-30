@@ -1,3 +1,4 @@
+import { SceneLibrary } from "./sceneLibrary";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import {
   BoundingSphere,
@@ -98,9 +99,13 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <section class="layers-section scene-explorer" aria-labelledby="sceneExplorerTitle">
         <div class="section-title">
           <div class="scene-explorer-title"><small>SCENE CONTENT</small><span id="sceneExplorerTitle">图层与标绘</span></div>
-          <button id="clearAll" class="text-button">清除图层</button>
+          <button id="clearAll" class="text-button" title="删除全部保存资料，退出软件不需要清空">删除全部资料</button>
         </div>
         <div id="layers" class="layers-empty">尚未加载工程数据</div>
+        <details class="saved-library">
+          <summary>本机资料库 <span id="libraryStatus">正在读取资料…</span></summary>
+          <div id="savedLibrary"></div>
+        </details>
         <button id="openMarkupWorkspace" class="scene-markup-overview" type="button">
           <span><small>MARKUPS</small><strong>标绘对象</strong></span>
           <span><b id="sceneMarkupCount">0</b><small id="sceneMarkupOverview">尚未创建</small></span>
@@ -559,6 +564,7 @@ viewer.scene.fog.enabled = true;
 viewer.camera.setView({ destination: Cartesian3.fromDegrees(105, 35, 18_000_000) });
 
 const imports: ImportRecord[] = [];
+let projectLibrary: SceneLibrary | undefined;
 const tilesetSourceIds = new Map<string, string>();
 let selectedCad: File | null = null;
 let selectedGis: File | null = null;
@@ -588,11 +594,29 @@ function updateModelTools(item: EditableModel | null, mode: EditMode) {
   $("#modelTools").classList.toggle("hidden", !item);
   document.querySelectorAll<HTMLButtonElement>("[data-edit-mode]").forEach((button) => button.classList.toggle("active", button.dataset.editMode === mode));
   if (!item) return;
+  projectLibrary?.queueUpdate(item.id, { settings: {
+    matrix: Matrix4.toArray(item.model.modelMatrix), scale: item.model.scale,
+    editor: { baseMatrix: Matrix4.toArray(item.baseMatrix), center: [item.center.x, item.center.y, item.center.z],
+      east: item.east, north: item.north, up: item.up, heading: item.heading },
+  } });
   $("#editingModelName").textContent = item.name;
   $("#modelTransformReadout").textContent = `东 ${item.east.toFixed(2)}m · 北 ${item.north.toFixed(2)}m · 高 ${item.up.toFixed(2)}m · 旋转 ${CesiumMath.toDegrees(item.heading).toFixed(2)}°`;
 }
 
 const modelEditor = new ModelEditor(viewer, updateModelTools);
+projectLibrary = new SceneLibrary({
+  viewer, getImports: () => imports, addImport, removeImport, modelEditor,
+  waitForModelReady, cacheGisBoundingSphere, replaceImagery: replaceLocalImagery,
+  setBasemap, getBasemap: () => activeBasemapKey, notify: toast,
+  restoreVideo: (files, settings) => videoArFusion.restoreReplay(files, settings), clearVideo: () => videoArFusion.clear(), layersChanged: renderLayers,
+});
+videoArFusion.onReplayLoaded = async snapshot => {
+  await projectLibrary!.ready;
+  const files = Object.fromEntries(Object.entries(snapshot.files).map(([slot, file]) => [slot, { name: file.name, blob: file }]));
+  const saved = await projectLibrary!.save(crypto.randomUUID(), snapshot.name, "Drone Video",
+    { video: snapshot.settings as unknown as Record<string, unknown> }, files);
+  projectLibrary!.markVideo(saved.id);
+};
 function showCustomBasemapPanel() {
   const config = savedCustomBasemap();
   if (config) {
@@ -654,6 +678,7 @@ $("#localBasemapFile").addEventListener("change", () => {
   $("#localImageBounds").classList.toggle("hidden", /\.(mbtiles|tiff?|lyrx?)$/i.test(selectedLocalImageryFile.name));
 });
 $("#applyLocalBasemap").addEventListener("click", async () => {
+  await projectLibrary?.ready;
   if (!selectedLocalImageryFile) return toast("请先选择已下载的影像文件", true);
   try {
     setStatus("正在读取本地卫星影像…");
@@ -687,7 +712,10 @@ $("#applyLocalBasemap").addEventListener("click", async () => {
           tileDiscardPolicy: new UnavailableMapTileDiscardPolicy(),
         });
         const result: LocalImageryResult = { provider, name: selected.label, rectangle: provider.rectangle, details: "LYR 历史影像瓦片", dispose: () => undefined };
+        const saved = await projectLibrary!.save(crypto.randomUUID(), selected.label, "Imagery", { imageryUrl: selected.url },
+          { source: { name: sourceFile.name, blob: sourceFile } });
         replaceLocalImagery(result);
+        projectLibrary!.markImagery(saved.id);
         $<HTMLSelectElement>("#basemap").value = "local";
         $("#localBasemapPanel").classList.add("hidden");
         toast(`历史卫星底图已加载：${selected.label}`);
@@ -695,7 +723,13 @@ $("#applyLocalBasemap").addEventListener("click", async () => {
       }
     }
     const result = await loadLocalImagery(sourceFile, sourceBounds);
+    let saved;
+    try {
+      saved = await projectLibrary!.save(crypto.randomUUID(), result.name, "Imagery", { bounds: sourceBounds },
+        { source: { name: sourceFile.name, blob: sourceFile } });
+    } catch (error) { result.dispose(); throw error; }
     replaceLocalImagery(result);
+    projectLibrary!.markImagery(saved.id);
     $<HTMLSelectElement>("#basemap").value = "local";
     $("#localBasemapPanel").classList.add("hidden");
     viewer.camera.flyTo({ destination: result.rectangle, duration: 1.2 });
@@ -713,6 +747,7 @@ function locateImport(item: ImportRecord) {
 }
 
 function renderLayers() {
+  projectLibrary?.render();
   if (digitalTwinSyncReady) scheduleDigitalTwinSync();
   scheduleElectronicSandTableRefresh();
   const root = $("#layers");
@@ -727,12 +762,16 @@ function renderLayers() {
     row.querySelector(".visibility")?.addEventListener("click", () => setImportVisibility(item, !item.visible));
     row.querySelector(".fly")?.addEventListener("click", () => locateImport(item));
     name.addEventListener("click", () => item.kind === "Model" && item.visible && modelEditor.select(item.id));
-    row.querySelector(".remove")?.addEventListener("click", () => removeImport(item));
+    row.querySelector(".remove")?.addEventListener("click", () => {
+      if (projectLibrary?.records.has(item.id)) void projectLibrary.delete(item.id);
+      else removeImport(item);
+    });
   });
 }
 
 function setImportVisibility(item: ImportRecord, visible: boolean, options: { silent?: boolean; deferRender?: boolean } = {}) {
   item.visible = visible;
+  projectLibrary?.queueUpdate(item.id, { visible });
   if (item.kind === "3D Tiles") (item.resource as Cesium3DTileset).show = visible;
   else if (item.kind === "Model") {
     (item.resource as Model).show = visible;
@@ -758,7 +797,8 @@ function removeImport(item: ImportRecord) {
   else {
     viewer.dataSources.remove(item.resource as never, true);
   }
-  imports.splice(imports.indexOf(item), 1);
+  const removeIndex = imports.indexOf(item);
+  if (removeIndex >= 0) imports.splice(removeIndex, 1);
   subsurfaceTools.refreshClipping();
   renderLayers();
   toast(`已移除 ${item.name}`);
@@ -768,7 +808,7 @@ function addImport(
   name: string,
   kind: ImportRecord["kind"],
   resource: unknown,
-  id = crypto.randomUUID(),
+  id: string = crypto.randomUUID(),
   metadata: Pick<ImportRecord, "representation" | "boundingSphere"> = {},
 ) {
   imports.push({ id, name, kind, resource, visible: true, adjustable: kind === "Model", ...metadata });
@@ -2026,6 +2066,7 @@ $("#modelCentralMeridian").addEventListener("input", updateModelZoneNumber);
 $("#modelZoneWidth").addEventListener("change", updateModelZoneNumber);
 
 $("#loadModel").addEventListener("click", async () => {
+  await projectLibrary?.ready;
   if (modelLoadBusy) return;
   if (!selectedModelFile) return toast("请先选择 DWG、RVT、SKP 或 GLB 文件", true);
   const extension = selectedModelFile.name.split(".").pop()?.toLowerCase() ?? "";
@@ -2085,6 +2126,12 @@ $("#loadModel").addEventListener("click", async () => {
     viewer.scene.primitives.add(model);
     try { await waitForModelReady(model, 30_000, controller.signal); }
     catch (error) { viewer.scene.primitives.remove(model); throw error; }
+    try {
+      await projectLibrary!.save(id, selectedModelFile.name, "Model", {
+        matrix: Matrix4.toArray(model.modelMatrix), scale: model.scale,
+      }, { source: { name: selectedModelFile.name, blob: selectedModelFile } },
+      extension === "glb" ? undefined : { type: "model", url: result.url });
+    } catch (error) { viewer.scene.primitives.remove(model); throw error; }
     addImport(selectedModelFile.name, "Model", model, id);
     modelEditor.add(id, selectedModelFile.name, model);
     viewer.camera.flyToBoundingSphere(model.boundingSphere, { duration: 1.5 });
@@ -2168,9 +2215,11 @@ updateZoneNumber();
 updateModelZoneNumber();
 
 $("#loadCad").addEventListener("click", async () => {
+  await projectLibrary?.ready;
   if (cadLoadBusy) return;
   if (!selectedCad) return toast("请先选择 DWG 或 .cadimport 文件", true);
   const cadFile = selectedCad;
+  const cadId = crypto.randomUUID();
   const lowerName = cadFile.name.toLowerCase();
   if (!lowerName.endsWith(".dwg") && !lowerName.endsWith(".cadimport")) return toast("CAD 图纸只接受 DWG 或 .cadimport 文件", true);
   const mode = value("#cadMode");
@@ -2210,6 +2259,10 @@ $("#loadCad").addEventListener("click", async () => {
     if (displayMode === "model" && !imports.some((item) => item.kind === "3D Tiles" || item.kind === "Model")) {
       throw new Error("依附模型模式需要先加载倾斜摄影或三维模型");
     }
+    await projectLibrary!.save(cadId, imported.source.name, "CAD", { coordinates: options, displayMode }, {
+      source: { name: cadFile.name, blob: cadFile },
+      data: { name: lowerName.endsWith(".cadimport") ? cadFile.name : cadImportFileName(cadFile.name), blob: lowerName.endsWith(".dwg") ? generatedCadImport!.blob : cadFile },
+    });
     let clampedVertices = 0;
     let skippedClampVertices = 0;
     const hasTileset = imports.some((item) => item.kind === "3D Tiles");
@@ -2240,7 +2293,7 @@ $("#loadCad").addEventListener("click", async () => {
       useSampledCadHeights(dataSource);
       cadBoundingSphere = getCadBoundingSphere(dataSource);
       featureCount = dataSource.entities.values.length;
-      addImport(imported.source.name, "CAD", dataSource, crypto.randomUUID(), {
+      addImport(imported.source.name, "CAD", dataSource, cadId, {
         representation: "dataSource",
         boundingSphere: cadBoundingSphere,
       });
@@ -2262,7 +2315,7 @@ $("#loadCad").addEventListener("click", async () => {
       cadBoundingSphere = result.boundingSphere;
       featureCount = result.featureCount;
       runtimeSkipped = result.skippedCount;
-      addImport(imported.source.name, "CAD", result.collection, crypto.randomUUID(), {
+      addImport(imported.source.name, "CAD", result.collection, cadId, {
         representation: "primitive",
         boundingSphere: cadBoundingSphere,
       });
@@ -2343,7 +2396,13 @@ function applyTilesQuality(updateLoaded = true) {
   const quality = selectedTilesQuality();
   if (quality !== "custom") $<HTMLInputElement>("#tilesSse").value = String(tilesQualityPresets[quality]);
   if (updateLoaded) {
-    imports.filter((item) => item.kind === "3D Tiles").forEach((item) => configureTilesetQuality(item.resource as Cesium3DTileset));
+    imports.filter((item) => item.kind === "3D Tiles").forEach((item) => {
+      configureTilesetQuality(item.resource as Cesium3DTileset);
+      projectLibrary?.queueUpdate(item.id, { settings: {
+        quality, tiles: { ...(projectLibrary.records.get(item.id)?.settings.tiles ?? tilesetOptions()),
+          maximumScreenSpaceError: numeric("#tilesSse", 4) },
+      } });
+    });
   }
 }
 
@@ -2419,7 +2478,8 @@ async function createAndLoadTileset(url: string, assetId: number, localFolderPat
   if (!url && !assetId) throw new Error("请填写 tileset.json 地址或 ion Asset ID");
   if (assetId && !token) throw new Error("使用 ion Asset ID 前，请在 .env.local 中配置 VITE_CESIUM_ION_TOKEN");
   const sourceKey = normalizedTilesSource(url, assetId, localFolderPath);
-  const existingId = tilesetSourceIds.get(sourceKey);
+  const existingId = tilesetSourceIds.get(sourceKey) ?? [...(projectLibrary?.records.values() ?? [])].find(record =>
+    record.kind === "3D Tiles" && normalizedTilesSource(record.settings.url ?? "", record.settings.assetId ?? 0, record.settings.localPath) === sourceKey)?.id;
   const existing = existingId ? imports.find((item) => item.id === existingId && item.kind === "3D Tiles") : undefined;
   if (existing) {
     const existingTileset = existing.resource as Cesium3DTileset;
@@ -2486,7 +2546,13 @@ async function createAndLoadTileset(url: string, assetId: number, localFolderPat
       tileset.modelMatrix = Matrix4.fromTranslation(Cartesian3.subtract(offset, surface, new Cartesian3()));
     }
     const label = assetId ? `ion 资产 ${assetId}` : entry?.split(/[\\/]/).pop() || new URL(url, location.href).pathname.split("/").pop() || "倾斜摄影";
-    importId = addImport(label, "3D Tiles", tileset);
+    importId = crypto.randomUUID();
+    setStatus(localFolderPath ? "正在保存完整倾斜摄影成果，请稍候…" : "正在保存倾斜摄影图层…");
+    await projectLibrary!.save(importId, label, "3D Tiles", {
+      url: assetId ? undefined : url, assetId, localPath: localFolderPath, tiles: options, quality,
+      matrix: Matrix4.toArray(tileset.modelMatrix),
+    }, {}, localFolderPath ? { type: "tiles", path: localFolderPath } : undefined);
+    addImport(label, "3D Tiles", tileset, importId);
     tilesetSourceIds.set(sourceKey, importId);
     await viewer.zoomTo(tileset);
     toast("倾斜摄影模型已加载");
@@ -2495,6 +2561,7 @@ async function createAndLoadTileset(url: string, assetId: number, localFolderPat
     if (importId) {
       const failedImport = imports.find((item) => item.id === importId);
       if (failedImport) removeImport(failedImport);
+      else if (tileset && !tileset.isDestroyed()) viewer.scene.primitives.remove(tileset);
     } else if (tileset && !tileset.isDestroyed()) {
       viewer.scene.primitives.remove(tileset);
     }
@@ -2503,6 +2570,7 @@ async function createAndLoadTileset(url: string, assetId: number, localFolderPat
 }
 
 $("#loadCcFolder").addEventListener("click", async () => {
+  await projectLibrary?.ready;
   const folderPath = value("#ccFolderPath").trim().replace(/^['\"]|['\"]$/g, "");
   if (!folderPath) return toast("请粘贴 CC 的 Data 文件夹或生产目录完整路径", true);
   if (tilesLoadBusy) return toast("倾斜摄影正在加载，请稍候");
@@ -2515,6 +2583,7 @@ $("#loadCcFolder").addEventListener("click", async () => {
 });
 
 $("#loadTiles").addEventListener("click", async () => {
+  await projectLibrary?.ready;
   if (tilesLoadBusy) return toast("倾斜摄影正在加载，请稍候");
   setTilesLoadBusy(true);
   try {
@@ -2537,16 +2606,20 @@ $("#loadTiles").addEventListener("click", async () => {
 });
 
 $("#loadGis").addEventListener("click", async () => {
+  await projectLibrary?.ready;
   if (!selectedGis) return toast("请先选择 GIS 文件", true);
-  const extension = selectedGis.name.split(".").pop()?.toLowerCase();
+  const gisFile = selectedGis;
+  const extension = gisFile.name.split(".").pop()?.toLowerCase();
   try {
     setStatus("正在读取 GIS 数据…");
     let dataSource;
-    if (extension === "kml" || extension === "kmz") dataSource = await KmlDataSource.load(selectedGis, { camera: viewer.scene.camera, canvas: viewer.scene.canvas, clampToGround: true });
-    else if (extension === "czml") dataSource = await CzmlDataSource.load(JSON.parse(await selectedGis.text()));
-    else dataSource = await GeoJsonDataSource.load(JSON.parse(await selectedGis.text()), { clampToGround: true, stroke: Color.fromCssColorString("#f9d65c"), fill: Color.fromCssColorString("#f9d65c").withAlpha(0.25), strokeWidth: 3 });
+    if (extension === "kml" || extension === "kmz") dataSource = await KmlDataSource.load(gisFile, { camera: viewer.scene.camera, canvas: viewer.scene.canvas, clampToGround: true });
+    else if (extension === "czml") dataSource = await CzmlDataSource.load(JSON.parse(await gisFile.text()));
+    else dataSource = await GeoJsonDataSource.load(JSON.parse(await gisFile.text()), { clampToGround: true, stroke: Color.fromCssColorString("#f9d65c"), fill: Color.fromCssColorString("#f9d65c").withAlpha(0.25), strokeWidth: 3 });
+    const id = crypto.randomUUID();
+    await projectLibrary!.save(id, gisFile.name, "GIS", {}, { source: { name: gisFile.name, blob: gisFile } });
     await viewer.dataSources.add(dataSource);
-    const importId = addImport(selectedGis.name, "GIS", dataSource);
+    const importId = addImport(gisFile.name, "GIS", dataSource, id);
     void cacheGisBoundingSphere(importId, dataSource);
     await viewer.flyTo(dataSource);
     toast("GIS 数据已加载");
@@ -2554,11 +2627,9 @@ $("#loadGis").addEventListener("click", async () => {
   finally { setStatus("Cesium 已就绪"); }
 });
 
-$("#clearAll").addEventListener("click", () => {
-  cadLoadController?.abort();
-  [...imports].forEach(removeImport);
-  videoArFusion.clear();
-  toast("已清除全部工程数据");
+$("#clearAll").addEventListener("click", async () => {
+  await projectLibrary?.ready;
+  await projectLibrary?.clear();
 });
 $("#homeView").addEventListener("click", () => viewer.camera.flyTo({
   destination: Cartesian3.fromDegrees(105, 35, 18_000_000),
@@ -2573,3 +2644,9 @@ pointer.setInputAction((movement: { endPosition: Cartesian2 }) => {
   const position = viewer.scene.globe.ellipsoid.cartesianToCartographic(point);
   $("#coords").textContent = `经度 ${CesiumMath.toDegrees(position.longitude).toFixed(6)} · 纬度 ${CesiumMath.toDegrees(position.latitude).toFixed(6)} · 高程 ${position.height.toFixed(1)}m`;
 }, ScreenSpaceEventType.MOUSE_MOVE);
+
+void projectLibrary.start().then(() => { renderLayers(); viewer.scene.requestRender(); });
+$("#basemap").addEventListener("change", () => projectLibrary?.saveView());
+
+$("#videoArClear").textContent = "关闭回放";
+$("#videoArClear").title = "关闭当前回放，已保存资料仍保留；永久删除请使用本机资料库";

@@ -1,3 +1,4 @@
+import type { LibrarySettings } from "./projectLibrary";
 import {
   Cartesian2,
   Cartesian3,
@@ -46,17 +47,17 @@ export class ModelEditor {
     this.bindMouse();
   }
 
-  add(id: string, name: string, model: Model) {
+  add(id: string, name: string, model: Model, saved?: LibrarySettings["editor"]) {
     const editable: EditableModel = {
       id,
       name,
       model,
-      baseMatrix: Matrix4.clone(model.modelMatrix),
-      center: Cartesian3.clone(model.boundingSphere.center),
-      east: 0,
-      north: 0,
-      up: 0,
-      heading: 0,
+      baseMatrix: saved ? Matrix4.fromArray(saved.baseMatrix) : Matrix4.clone(model.modelMatrix),
+      center: saved ? Cartesian3.fromArray(saved.center) : Cartesian3.clone(model.boundingSphere.center),
+      east: saved?.east ?? 0,
+      north: saved?.north ?? 0,
+      up: saved?.up ?? 0,
+      heading: saved?.heading ?? 0,
     };
     model.id = { engineeringModelId: id };
     this.models.set(id, editable);

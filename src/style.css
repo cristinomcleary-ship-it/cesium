@@ -162,3 +162,19 @@ body.sand-table-immersive .shell { grid-template-columns:0 minmax(0,1fr); grid-t
 .sand-control-progress { position:relative; height:16px; overflow:hidden; border:1px solid #29465b; border-radius:999px; background:#0b2332; }.sand-control-progress i { position:absolute; inset:0 auto 0 0; max-width:100%; background:linear-gradient(90deg,#237991,#43c7d4); }.sand-control-progress b { position:absolute; inset:0; display:grid; place-items:center; color:#e4fbff; font-size:7px; text-shadow:0 1px 2px #001018; }
 .sand-control-item__actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; }.sand-control-item__actions button { margin:0; padding:5px 7px; border:1px solid #31546b; border-radius:5px; color:#81bdca; background:#102536; cursor:pointer; font-size:7px; }.sand-control-item__actions button:hover { color:#e0fbff; border-color:#42bdd3; }.sand-control-item__actions button.danger { color:#eb92a0; border-color:#633747; background:#28161d; }.sand-control-item__actions button:disabled { opacity:.38; cursor:not-allowed; }
 @media (max-width:400px) { .sand-control-stats { grid-template-columns:repeat(2,1fr); }.sand-control-toolbar { grid-template-columns:1fr; }.sand-control-form { grid-template-columns:1fr; }.sand-control-form .wide { grid-column:auto; } }
+
+.saved-library { flex:0 0 auto; border-top:1px solid #22354f; margin-top:8px; padding-top:8px; color:#aebfd2; font-size:11px; }
+.saved-library summary { cursor:pointer; }
+#libraryStatus { display:block; padding:5px 0; font-size:10px; color:#73c9af; overflow-wrap:anywhere; }
+#libraryStatus.error-text { color:#ffba77; }
+#savedLibrary { max-height:170px; overflow:auto; }
+.saved-record { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:5px; padding:9px 0; border-top:1px solid #22354f; }
+.saved-record>span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.saved-record>small { grid-column:1 / -1; color:#8ba2bc; overflow-wrap:anywhere; }
+.saved-record button { border:1px solid #304560; background:#10263a; color:#aeddf0; border-radius:4px; padding:3px 7px; cursor:pointer; }
+.saved-record button:disabled { opacity:.5; cursor:wait; }
+.saved-record a { color:#70c6e6; font-size:10px; }
+
+.scene-explorer:has(.saved-library[open]) { max-height:min(52vh,500px); }
+#layers.layers-list { flex:1 1 auto; min-height:42px; }
+.saved-library[open] #savedLibrary { max-height:150px; }

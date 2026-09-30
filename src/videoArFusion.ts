@@ -1,3 +1,5 @@
+export type SavedReplaySettings = { flight: string; framePaths: Record<string, string[]>; controls: Record<string, string | boolean> };
+export type SavedReplay = { name: string; settings: SavedReplaySettings; files: Record<string, File> };
 import {
   BoundingSphere,
   Cartesian2,
@@ -810,6 +812,75 @@ export class VideoArFusion {
   private cameraResumeTimer = 0;
   private loadGeneration = 0;
   private zipReader: BrowserZipReader | null = null;
+  private replayZipFile: File | null = null;
+  private restoringReplay = false;
+  onReplayLoaded?: (snapshot: SavedReplay) => Promise<void>;
+
+  private snapshotReplay(name: string): SavedReplay {
+    const files: Record<string, File> = {};
+    const framePaths: Record<string, string[]> = {};
+    if (this.zipReader && this.replayZipFile) files.source = this.replayZipFile;
+    else {
+      if (this.trajectoryFile) files.source = this.trajectoryFile;
+      if (this.videoFile) files.video = this.videoFile;
+      const slots = new Map<File, string>();
+      for (const [path, file] of this.frameFiles) {
+        let slot = slots.get(file);
+        if (!slot) {
+          slot = "frame_" + slots.size;
+          slots.set(file, slot); files[slot] = file; framePaths[slot] = [];
+        }
+        framePaths[slot].push(path);
+      }
+    }
+    if (this.georeferenceFile) files.georeference = this.georeferenceFile;
+    const controls: Record<string, string | boolean> = {};
+    document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input[id^="videoAr"], select[id^="videoAr"]').forEach(input => {
+      if (input.type === "file" || /Socket|Progress|FlightSelect/i.test(input.id)) return;
+      controls[input.id] = input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input.value;
+    });
+    return { name, files, settings: { flight: this.element<HTMLSelectElement>("#videoArFlightSelect").value, framePaths, controls } };
+  }
+
+  async restoreReplay(files: Record<string, File>, settings: SavedReplaySettings) {
+    this.restoringReplay = true;
+    try {
+      this.clear(); this.zipReader = null; this.replayZipFile = null;
+      this.frameFiles.clear(); this.trajectoryFile = null; this.videoFile = null;
+      const source = files.source;
+      if (!source) throw new Error("缺少已保存的回放数据");
+      if (source.name.toLowerCase().endsWith(".zip")) {
+        await this.prepareZip(source);
+        if (!this.zipReader) throw new Error("已保存 ZIP 无法建立索引");
+        this.element<HTMLSelectElement>("#videoArFlightSelect").value = settings.flight;
+      } else {
+        this.trajectoryFile = source;
+        this.element("#videoArTrajectorySelection").textContent = source.name;
+        this.element("#videoArFlightField").classList.add("hidden");
+      }
+      this.videoFile = files.video ?? null;
+      this.georeferenceFile = files.georeference ?? null;
+      for (const [slot, paths] of Object.entries(settings.framePaths ?? {})) {
+        if (!files[slot]) throw new Error("回放图片缺失：" + slot);
+        for (const path of paths) this.frameFiles.set(path, files[slot]);
+      }
+      for (const [id, value] of Object.entries(settings.controls ?? {})) {
+        const input = document.getElementById(id);
+        if (!id.startsWith("videoAr") || /Socket|Progress|FlightSelect/i.test(id)) continue;
+        if (input instanceof HTMLInputElement && input.type !== "file") {
+          if (input.type === "checkbox") input.checked = value === true;
+          else input.value = String(value);
+        } else if (input instanceof HTMLSelectElement) input.value = String(value);
+      }
+      this.element("#videoArVideoSelection").textContent = this.videoFile?.name ?? "使用已保存逐帧图片";
+      this.element("#videoArGeoreferenceSelection").textContent = this.georeferenceFile?.name ?? "无独立配准文件";
+      this.element("#videoArFramesSelection").textContent = "已恢复 " + new Set(this.frameFiles.values()).size + " 个图片文件";
+      await this.loadSelectedSource();
+      if (!this.points.length) throw new Error("回放未能通过轨迹与媒体校验，原资料已保留");
+      this.pause();
+    } finally { this.restoringReplay = false; }
+  }
+
   private zipFramePrefix = "";
   private trajectoryFile: File | null = null;
   private videoFile: File | null = null;
@@ -1110,8 +1181,8 @@ export class VideoArFusion {
     }, { signal });
   }
 
-  private async prepareZip() {
-    const file = this.element<HTMLInputElement>("#videoArZipFile").files?.[0];
+  private async prepareZip(savedFile?: File) {
+    const file = savedFile ?? this.element<HTMLInputElement>("#videoArZipFile").files?.[0];
     if (!file) return;
     const generation = ++this.loadGeneration;
     this.pause();
@@ -1122,6 +1193,7 @@ export class VideoArFusion {
       const trajectories = [...reader.entries.keys()].filter((name) => /(^|\/)trajectory_[^/]*\.json$/i.test(name)).sort();
       if (!trajectories.length) throw new Error("ZIP 中未找到 trajectory_*.json");
       this.zipReader = reader;
+      this.replayZipFile = file;
       this.trajectoryFile = null;
       this.videoFile = null;
       this.resetGeoreferenceSelection();
@@ -1222,6 +1294,11 @@ export class VideoArFusion {
       if (generation !== this.loadGeneration) return;
       this.projectionSource = projectionSource;
       await this.initializeFlight(points, label, generation);
+      if (generation === this.loadGeneration && !this.restoringReplay && this.onReplayLoaded) {
+        this.setStatus("正在保存回放文件，完成前请不要退出…");
+        await this.onReplayLoaded(this.snapshotReplay(label));
+        this.setStatus("回放已保存到本机");
+      }
     } catch (error) {
       if (generation !== this.loadGeneration) return;
       this.resetFailedLoadState();

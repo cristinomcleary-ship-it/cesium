@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import { createProjectLibrary } from "./server/projectLibrary";
 import { viteStaticCopy } from "vite-plugin-static-copy";
 import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { mkdir as mkdirAsync, open as openAsync, stat as statAsync, writeFile as writeFileAsync } from "node:fs/promises";
@@ -545,16 +546,23 @@ const localImageryPlugin = {
   configurePreviewServer(server: { middlewares: { use: (handler: ReturnType<typeof createLocalImageryMiddleware>) => void } }) { server.middlewares.use(createLocalImageryMiddleware(process.cwd())); },
 };
 
+const projectLibraryPlugin = {
+  name: "persistent-project-library",
+  configureServer(server: { middlewares: { use: (handler: ReturnType<typeof createProjectLibrary>["middleware"]) => void } }) { server.middlewares.use(createProjectLibrary(process.cwd(), { resolveTiles: findTileset, storageRoot: process.env.CESIUM_DATA_DIR }).middleware); },
+  configurePreviewServer(server: { middlewares: { use: (handler: ReturnType<typeof createProjectLibrary>["middleware"]) => void } }) { server.middlewares.use(createProjectLibrary(process.cwd(), { resolveTiles: findTileset, storageRoot: process.env.CESIUM_DATA_DIR }).middleware); },
+};
+
 export default defineConfig({
   define: {
     CESIUM_BASE_URL: JSON.stringify("/cesiumStatic"),
   },
   server: {
     watch: {
-      ignored: ["**/video_ar_backend/data/**", "**/video_ar_backend/.venv/**"],
+      ignored: ["**/video_ar_backend/data/**", "**/video_ar_backend/.venv/**", "**/project-data/**", "**/.local-backups/**", "**/tmp/**"],
     },
   },
   plugins: [
+    projectLibraryPlugin,
     basemapAndDiagnosticsPlugin,
     localImageryPlugin,
     engineeringModelsPlugin,
