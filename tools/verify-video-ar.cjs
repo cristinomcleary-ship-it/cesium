@@ -331,6 +331,7 @@ async function createFixtures() {
   assert.deepEqual(canceledPausedFrame.textureFrames.committedModel, canceledPausedFrame.textureFrames.uploaded);
   assert.equal(canceledPausedFrame.committedModelCamera.videoTimeMs, canceledPausedFrame.textureFrames.uploaded.mediaTimeMs);
   checks.push("Canceling a paused selection retains the committed texture identity and restores model projection without another decoded frame");
+  await page.locator("summary").filter({ hasText: "三维投影深度检查" }).click();
   await page.locator("#videoArDepthDiagnostic").selectOption("rejection-reason");
   const depthMode = await readHeightDiagnostic();
   assert.equal(depthMode.rendering.model.diagnostic.mode, "rejection-reason");
