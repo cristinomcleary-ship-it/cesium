@@ -323,6 +323,12 @@ async function createFixtures() {
   assert.deepEqual(frozenSize, [640, 360], "Control-point editor must freeze the original frame dimensions");
   await page.locator(".video-ar-control-picker [data-action=cancel]").click();
   await page.waitForFunction(() => document.querySelector(".vacp-body")?.hidden === true);
+  const canceledPausedFrame = await readHeightDiagnostic();
+  assert.equal(canceledPausedFrame.rendering.model.enabled, true, "Canceling paused control-point selection restores the committed model projector");
+  assert.ok(Number.isFinite(canceledPausedFrame.media.textureTimeSeconds));
+  assert.deepEqual(canceledPausedFrame.textureFrames.committedModel, canceledPausedFrame.textureFrames.uploaded);
+  assert.equal(canceledPausedFrame.committedModelCamera.videoTimeMs, canceledPausedFrame.textureFrames.uploaded.mediaTimeMs);
+  checks.push("Canceling a paused selection retains the committed texture identity and restores model projection without another decoded frame");
   await page.locator("#videoArPlay").click();
   await sleep(370);
   await page.locator("#videoArPlay").click();

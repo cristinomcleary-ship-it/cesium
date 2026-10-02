@@ -26,3 +26,5 @@ test("unknown and incomplete datums are distinct",()=>{
  i.resolvedHeight=resolveDjiHeight({mode:"relative",sourceAltitude:99.117,relativeAltitude:70.001,correctionMeters:0});const missing=resolveCameraFrame(i);assert.equal(missing.allowProjection,false);assert.equal(missing.quality.height,"missing");
 });
 test("model texture commit requires same decoded PTS",()=>{const f=resolveCameraFrame(input());assert.equal(cameraMatchesTexture(f,10010),true);assert.equal(cameraMatchesTexture(f,9976.667),false);assert.equal(cameraMatchesTexture(f,NaN),false);assert.equal(cameraMatchesTexture(undefined,10010),false);});
+
+test("raw telemetry wall clock is independent from decoded and pose media PTS",()=>{const i=input();i.rawRecordedAt="2026-08-19 16:20:26.010";const f=resolveCameraFrame(i);assert.equal(f.rawRecordedAt,i.rawRecordedAt);assert.equal(f.videoTimeMs,10010);assert.equal(f.poseTimeMs,10010);});

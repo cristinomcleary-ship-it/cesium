@@ -6,6 +6,8 @@ type ReadonlyDeep<T> = T extends object ? { readonly [P in keyof T]: ReadonlyDee
 export type CameraFrameInput = {
   sourceIdentity: { session: string | number; video: { name: string; sizeBytes: number; lastModified: number } | null; trajectory: { name: string; sizeBytes: number; lastModified: number } | null };
   videoTimeMs: number; poseTimeMs?: number; videoSampleIndex?: number;
+  /** Original telemetry wall clock, retained without converting it into media PTS. */
+  rawRecordedAt?: string;
   longitude: number; latitude: number; rawAbsAltitude: number; rawRelativeAltitude?: number;
   /** Non-DJI path supplies its existing height mapping here. DJI supplies explicit resolvedHeight. */
   mappedHeightMeters: number; resolvedHeight?: ResolvedDjiHeight;
@@ -76,7 +78,7 @@ export function resolveCameraFrame(input: CameraFrameInput) {
   return immutable({
     schema: "resolved-video-camera/v1" as const, parameterStage: "resolved-camera" as const,
     sourceIdentity: { ...structuredClone(input.sourceIdentity), calibration: configId(configuration), identityStrength: "file-metadata-and-load-session; media-content-hash-not-computed" },
-    videoTimeMs: input.videoTimeMs, poseTimeMs: input.poseTimeMs,
+    videoTimeMs: input.videoTimeMs, poseTimeMs: input.poseTimeMs, rawRecordedAt: input.rawRecordedAt,
     frameTime: input.videoTimeMs / 1000, poseVideoTimeMs: input.poseTimeMs, videoSampleIndex: input.videoSampleIndex,
     referenceWidth: width, referenceHeight: heightPixels, intrinsics, distortion,
     rawAbsAltitude: input.rawAbsAltitude, rawRelativeAltitude: input.rawRelativeAltitude, sourceAltitude: input.rawAbsAltitude,
