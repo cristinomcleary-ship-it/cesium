@@ -1,52 +1,111 @@
-# 视频 AR 执行任务书落实记录
+# 无人机视频 AR 执行与接手记录 · 2026-10-02
 
-基线：2ce8fc4。分支：codex/video-ar-execution-p0-p3。保持 Cesium 1.144.0，原始资料只读。此前粗选点试算不作为正式校准或独立精度验收。
+## 当前结论
 
-## P0：统一相机（代码已完成，真实精度未验收）
+已完成具备输入条件的 P0、P1 工具、P2 深度修复和 P3 解码/运行参数采集。**真实定位与建筑贴合精度仍未验收**：当前没有人工确认的拟合点及独立检查点，不能给出 RMS≤3px 的结论。此前粗选 14 点未作为正式配准输入，没有自动写入 +29.116m、其他位姿补偿或替换视频。
 
-- 新增 videoArCameraFrame.ts 的纯 resolveCameraFrame，返回深度冻结的 ResolvedCameraFrame：视频/轨迹元数据身份、校准配置标识、解码及姿态 PTS、原始与有效高程、ECEF 位姿、K/畸变、实际校正、来源与质量。
-- 身份明确是文件元数据及加载会话，配置 FNV 标识不是媒体内容哈希；用户声明的高度转换不冒充独立测量认证。
-- Fusion 的模型投影、射线、标记、控制点冻结状态及 UI 读取统一对象。模型纹理提交须匹配该对象的解码 PTS；已解析与已提交的相机在诊断中分别记录，提交时标记和遥测同步更新。
-- 未启用 DJI 手动校准时，界面明确标注位置、姿态、镜头及高程修正未生效，高程基准模式独立生效。
-- 高程三种模式沿用第一轮已通过的显式契约，没有写入 +29.116 的默认补偿。
+保持 Cesium 1.144.0，保留原视频、轨迹与 CC 模型。没有引入 Mars3D、全量重建或 P4 视觉定位。新代码在本机分支，未推送 GitHub。
 
-验证：5 项相机状态单元测试；完整应用 15 项浏览器回归通过，报告 tmp/video-ar-browser-1790920907444/result.json。后续 P1/P2 完成后补跑最终整体验证。上述为合成媒体/几何与状态契约，不是实拍配准精度。
+证据入口：[本轮证据](../output/video-ar-execution-20261002/index.html)。输出和正式用户数据均遵循既有 .gitignore 留在本机；源码提交不包含原视频或模型。
 
-## P1：稳健外参及独立 CPU 核验（工具完成，真实点待补）
+## 分支及独立提交
 
-- `videoArControlPoints.ts/refineCameraPose` 固定 K 求六自由度位姿，加入确定性共识筛选；只有拟合点参与，保留每个原点、异常点索引、全部误差及内点误差。至少保留 5 点且不少于拟合点的三分之二，否则失败。不能识别自洽但错误的多数配对，仍须独立检查点。
-- `videoArCpuReprojection.ts` 独立实现 NED 旋转矩阵、光学坐标转换和 Brown–Conrady 投影，没有复用求解器或 shader 的投影函数。session 的误差表用这个实现重新计算。
-- `videoArControlPointPicker.ts` 新增“导出 CPU 检查图”：实际冻结原帧、前后叠加图、全部拟合点/异常点/检查点、1920 宽等比误差、可下载 JSON。Cesium 图只有已提交纹理 PTS/相机和有效源深度一致时才采集，缺失则明确标注。
-- `videoArCalibrationReview.ts` 生成可离线打开的 HTML；session 继续持久保存来源、原始二维/三维配对、fit/check 用途、求解结果和上下文模型状态。
+基线 `2ce8fc4`，分支 `codex/video-ar-execution-p0-p3`。
 
-验证：15 项求解器、5 项 session、6 项独立 CPU 单元测试通过。选点浏览器 10 项检查通过：`tmp/video-ar-controls-1790921920303/result.json`，检查图 `cpu-review.html`/`cpu-review.png` 已视觉核对。浏览器测试分开验证实际合成模型屋顶拾取、注入的确定性配对、未参与拟合的错误检查点、保存失败与旧帧拦截；不代表真实 DJI 素材已配准。
+| 阶段 | 提交 | 内容 |
+| --- | --- | --- |
+| P0 | `1c74078` | 不可变 ResolvedCameraFrame、实际参数和同 PTS 提交 |
+| P1 | `77f566a` | 稳健固定 K 位姿求解、独立 CPU 检查图 |
+| P0 补充 | `2fc4394` | 暂停恢复、无 RVFC 和位图纹理身份；原始墙钟另存 |
+| P2 | `2528dce` | 一致导数、轮廓外推约束、深度掩膜与真实同帧对照 |
+| P3 / 最终验证 | `7a6d56c` | 原始 HEVC、真实完整应用诊断、完整应用回归 |
 
-## 后续阶段
+回退按依赖关系逆序使用 `git revert <提交号>`；不要强制 reset 分支或删除 project-data。正式资料始终独立保存，回退代码不删除上传内容。
 
-P2 深度修复/真实掩膜对照及 P3 原始 HEVC 解码已取得证据，正在整理提交；P0 状态审查发现的暂停选点/无 RVFC/位图帧配对问题继续修正。当前恢复的视频为 `111f64c7-062e-4ac5-bc8c-26c27f4374ed`，模型模式、估算高程、手动校准开启且修正为零，已保存同名点 session 为 0。并非只有读取最早导入记录即可代表当前状态。
+## 代码变化
 
-真实 10.01s 及 30/60/90/114s 没有人工确认的独立检查点，暂不能产生合格误差表。P4 条件尚不成立，不启动全量重建或把粗配准作为生产定位。
+| 文件 / 入口 | 实际变化和原因 |
+| --- | --- |
+| `src/videoArCameraFrame.ts/resolveCameraFrame` | 无 DOM/地形采样的纯解析，复制并深冻结来源、配置标识、PTS、K/畸变、高程、ECEF 位姿、有效修正及质量；显式高程只应用一次。K 优先 DJI 值或已启用手动值，未知基准保持 estimated。 |
+| `src/videoArTextureFrame.ts` | 来源会话、帧键和媒体时间共同识别纹理；不能仅凭相同时间配对不同来源/位图。 |
+| `src/videoArFusion.ts/updateSceneGeometry/commitModelCamera/drawTexture` | 模型、射线、标记、选点与实际参数读取统一相机。视频/位图上传成功后才能提交匹配相机；取消选点保留已提交身份，无 RVFC 使用 video.currentTime；来源切换清理旧配对。 |
+| `src/videoArFusion.ts` 诊断和界面 | 显示未生效校正；导出 resolved/committed 相机、active/uploaded/committed/pending 纹理和实际 GPU 状态。rawRecordedAt 独立保留，未修改 PTS 或猜测传感器时延。深度检查颜色不持久保存为校准。 |
+| `src/videoArControlPoints.ts/refineCameraPose` | 固定 K 的有界六自由度求解，确定性异常点筛选；仅拟合点参与，至少保留 5 点且不少于总拟合点三分之二。全部原点及误差保留，内点统计单列；不识别自洽的错误多数，仍需独立检查。 |
+| `src/videoArCpuReprojection.ts`、`videoArControlPointSession.ts` | 独立 NED 旋转矩阵、光学坐标及 Brown–Conrady 实现，未复用求解器/GPU 投影函数；逐点重算全部拟合点及检查点，无效点保留并使相应统计无效。 |
+| `src/videoArControlPointPicker.ts`、`videoArCalibrationReview.ts` | 保存原始二维/三维配对、角色、帧及来源/模型上下文；导出原帧、CPU 前后叠加图、异常点和检查点、1920 宽等比误差及 JSON。只有匹配的已提交 GPU 相机/纹理/源深度才附 Cesium 截图。 |
+| `src/videoArModelProjector.ts` | 导数在一致控制流中计算；无效深度用有限占位值后统一拒绝。中心及源/观察邻域连续性均通过才允许外推；保留双向 0.35m 首表面阈值和 2m 外推上限。新增五种深度诊断。 |
 
-回退：保留基线和每阶段独立提交；需要撤回时使用对应提交的 git revert，不强制重置用户分支或资料。
+文件元数据/加载会话标识及 FNV 配置标识不是媒体内容哈希。独立源资料 SHA256 见 `acceptance/source-bindings.json`；模型哈希只绑定入口 JSON 与记录，未逐文件哈希全套瓦片。用户声明的高程转换不冒充独立测量认证。
 
-## P0 补充：提交帧身份（代码完成）
+## 深度证据及边界
 
-暂停取消选点只请求下次刷新，不清掉仍在 GPU 的已提交帧。新增 `videoArTextureFrame.ts` 用来源会话、帧键和媒体 PTS 判断视频/位图身份；无 RVFC 时相机和纹理统一读取 video.currentTime；位图成功上传后才提交同帧相机，失败保持旧的完整配对或隐藏投影。诊断同时列出 active/uploaded/committed/pending 身份，便于核对事务顺序。
+[同帧前后图、深度差与拒绝掩膜](../output/video-ar-execution-20261002/depth/run-1790921629720/preview.html)使用原视频 10.010s 抽帧与实际 CC 模型。旧版临时读取 `git show 2ce8fc4:src/videoArModelProjector.ts`，没有回退工作区。固定相机/K/观察视角/画幅；99.117m **仅为未核定试验输入**，不是当前项目实际高度。
 
-`recorded_at` 原样另存为 `rawRecordedAt`，不转换或覆盖媒体 PTS。6 项相机、2 项纹理身份测试和 5 项实际 Fusion 方法 CPU 状态断言通过；后者使用惰性渲染替身验证调用顺序，不冒充 GPU 测试。完整应用新增暂停取消选点断言，等待最终统一浏览器验证。
+旧新 SSE 均 1、源 cast 均 700、请求均 0；没有形式冻结每个三角网，仍有 LOD 差异风险。1440000 个屏幕像素中：接受 172556，无观察表面 238244，源视锥外 909454，无源深度 229，首表面拒绝 105354，UV 越界 14163。没有独立可见表面真值，**这些计数不是真实有效覆盖率或遮挡准确率**。红色可能包括正确遮挡、几何误差及 LOD 差异。
 
-## P2：深度连续性与真实同帧对照（代码及限定证据完成）
+两幅深度图统一使用源相机光轴米，差值为纹素中心修正后的观察深度减首表面深度；请求归零只代表加载状态。
 
-`videoArModelProjector.ts` 将导数放在一致控制流，中心及邻域缺深度时使用有限占位值并统一拒绝；观察与源深度的局部连续性都通过后才允许纹素中心外推。保留双向 0.35 米首表面容差、2 米外推上限。未把大阈值用作补洞。
+**已纠正的归因：**normalOffset 和 polygonOffset 是不同机制，但当前 Edge 在 Cesium 引擎中已因 UA 分支关闭 polygonOffset；合成 SwiftShader 和真实默认 Edge 的原状态均为 enabled=false。factor1.1/units4 只是未生效的默认数值，不能把本机画面变化归因于“关闭偏移”。本次显式禁用、重建实际状态及兼容性断言用于跨浏览器一致性保护；不兼容会报中文错误并停止模型投影，不回退到平面。
 
-本机 Cesium 1.144.0 / engine 26.2 中，normalOffset=false 并不关闭投射深度的 polygonOffset；现已对专用源深度 ShadowMap 关闭该偏移并重建实际渲染状态。增加接口结构和 primitive/terrain 实际状态断言；不兼容时清理专用资源、显示错误并停止模型投影。
+## 真实输入与 P3
 
-模型投影面板新增源深度、观察深度、差值、拒绝原因、外推掩膜五种检查视图。前两者统一为源相机光轴米；“请求数为 0”只表示加载状态。诊断选项不写入校准设置，换来源回到正常模式。
+当前活动视频记录 `111f64c7-062e-4ac5-bc8c-26c27f4374ed`，模型记录 `8bc58629-cf26-45de-986e-086479db11a0`。当前模型可见，估算高程模式、用户现存试算基准 0m，手动校准开启且修正为零，正式 calibrationSessions 为 0。
 
-合成 GPU 验证 17 项通过：`tmp/video-ar-model-browser-1790921094696/result.json`。独立射线/AABB 真值统计：普通视角 285/285 可见样本接受，74 个遮挡样本无误投；掠射视角 246/248 可见样本接受，38 个遮挡样本无误投。两组轮廓像素 1824/1275 未跨背景外推；402 次实际源深度绘制关闭 polygon offset。样本真值仅对这组合成几何成立。
+[真实运行诊断](../output/video-ar-execution-20261002/frame_10.01/runtime-camera.json)通过完整应用原有按钮导出。实际 10.01s 相机采用约 **70.001m**，rawAbsAltitude=99.117m、rawRelativeAltitude=70.001m，K=2560/2560/1920/1080，参考画幅3840×2160。原始 recorded_at 为2026-08-19T16:20:26.572，独立于媒体时间。相机、轨迹及提交纹理对应10010ms；原保存设置逐项一致。高程差29.116m不能直接认定为已知椭球基准。
 
-真实 CC 模型 + 10.010 秒原视频抽帧的前后对照：`output/video-ar-execution-20261002/depth/run-1790921629720/preview.html`。固定试验高度 99.117 米（未核定）、同一 K/位姿/观察视角/画幅；旧版取自 2ce8fc4 临时模块，无工作区回退。两版 SSE=1，源 cast 均 700，请求均为 0；未形式冻结每个三角网，仍可能有 LOD 差异。原记录/轨迹/帧/模型入口哈希未变。
+真实运行等待20.162秒后，model.ready、currentFrameDepth、shaderSourceDepthAccepted均为true，535条source/cast命令，请求队列清零；纹理和相机仍为10.01s。早期未就绪的记录以preload-runtime-*独立保留。实际画面仍有破碎/差异，未分离模型本身与配准/遮挡原因，运行就绪不等于定位达标。
 
-真实掩膜 1,440,000 个屏幕像素中：接受 172556、无观察表面 238244、源视锥外 909454、无源深度 229、首表面深度拒绝 105354、UV 越界 14163。仅为屏幕分类计数，缺少独立可见表面真值，不能算实际有效覆盖率或遮挡准确率，也不证明定位修复。
+运行图及模型深度就绪的实测范围以 [runtime-README](../output/video-ar-execution-20261002/frame_10.01/runtime-README.md) 和 `runtime-checks.json` 为准。六个正式文件（MP4、轨迹、入口模型、两条record、view）SHA256前后一致；测试只复制小JSON并用隔离浏览器只读映射读取原始媒体/瓦片，没有修改正式数据。
 
-P0～P2 集成后，71 项视频 AR 单元测试、TypeScript 和 Vite 正式构建通过。最终完整应用回归及真实运行参数采集另附。
+原始 HEVC 在本机 Edge149.0.4022.98 默认 GPU 模式通过 0、10.01、30、60、90、114s 的seek、暂停、RVFC和实际4K图像读取，并通过10.01s后约1.5秒/45帧短段播放。未验证整段115.68秒连续性能，不证明曝光与SRT传感器同步。强制SwiftShader的完整app试验曾出现HEVC解码配置不支持，默认GPU重跑通过；没有换代理视频或改源身份。
+
+| 请求秒 | 原片解码 PTS 秒 | 正式检查点 | RMS/P95/max（1920×1080尺度） | 真实覆盖率 |
+| --- | --- | --- | --- | --- |
+| 10.01 | 10.01 | 0 | 未测量 | 未测量 |
+| 30 | 29.996633 | 0 | 未测量 | 未测量 |
+| 60 | 59.993267 | 0 | 未测量 | 未测量 |
+| 90 | 89.9899 | 0 | 未测量 | 未测量 |
+| 114 | 113.980533 | 0 | 未测量 | 未测量 |
+
+`frame_10.01` 提供原帧、基准及运行相机、空的正式 fit/check 点集、明确缺项的 result。CPU真实叠加图及误差需真实点集；重建工具可立即导出，不能用合成点补齐。0秒天空已解码，但此航次天空区域的真实融合未独立验收；合成GPU验证了无模型/无深度不生成投影平面。
+
+## 验证结果
+
+| 范围 | 结果 | 证据与限制 |
+| --- | --- | --- |
+| 视频 AR 单元测试 | 71项通过 | `tests/unit-tests.txt`，含相机/K/姿态、高程、稳健求解、独立CPU及纹理身份 |
+| 实际 Fusion 方法 CPU 状态 | 5项通过 | `tools/verify-video-ar-frame-state.cjs`，惰性渲染替身验证提交顺序，不是GPU像素 |
+| 选点与报告浏览器 | 10项通过 | `tests/controls-result.json`，实际合成模型拾取、确定性配对、错误检查点和保存失败；CPU检查图已视觉核对 |
+| 合成模型 GPU | 17项通过 | `tests/model-gpu-result.json`；普通视角285/285可见样本、74遮挡样本无误投；掠射246/248可见样本、38遮挡样本无误投；1824/1275轮廓像素无跨背景外推；402次cast无偏移 |
+| 完整应用浏览器 | 17项通过 | `tests/application-result.json`，合成H.264/轨迹；暂停恢复、诊断切换、保存重启、来源隔离、同PTS seek/播放；页面和WebGL错误为空 |
+| 原片解码 / 真实相机 | 通过限定项目 | `media/result.json`、`frame_10.01/runtime-checks.json`；不等于地理配准验收 |
+| 类型与正式构建 | 通过 | `tests/build.txt`；保留现有bundle大小提示 |
+
+表中 tests 路径位于 `output/video-ar-execution-20261002/`。不得把不同类别测试数量相加后当成真实精度证明。
+
+## 使用与复现
+
+正常运行继续使用 `npm run dev`；已有 localhost:5173 服务无需重复启动。视频AR → 投影配准校正 → 三维投影深度检查，可切换诊断图；“导出当前帧诊断与选点记录”导出实际状态。无模型覆盖或隐藏时不生成楼体摊平的fallback，启用模型使用原有明确按钮。
+
+本机验证命令（项目根目录；脚本隔离资料目录和浏览器，完成后关闭自身服务）：
+
+```powershell
+$env:PLAYWRIGHT_MODULE='C:\Users\胡航\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\node_modules\playwright'
+& 'F:\Node.js\node.exe' --experimental-strip-types tools/verify-video-ar-frame-state.cjs
+& 'F:\Node.js\node.exe' tools/verify-video-ar-controls.cjs
+& 'F:\Node.js\node.exe' tools/verify-video-ar-model.cjs
+& 'F:\Node.js\node.exe' tools/verify-video-ar.cjs
+& 'F:\Node.js\node.exe' tools/verify-video-ar-original-media.cjs
+& 'F:\Node.js\node.exe' tools/verify-video-ar-real-camera.cjs
+& 'F:\Node.js\node.exe' tools/verify-video-ar-real-depth.cjs
+npm run build
+```
+
+GPU脚本顺序执行，避免显存竞争；原媒体脚本读取localhost:5173原文件。真实深度脚本生成新run目录。各脚本的原始材料路径/记录ID在脚本顶部，没有自动修改源记录。
+
+## 最短补齐步骤
+
+1. 冻结10.01s，确认显示当前模型；选8～12对稳定拟合点，另留至少6对独立检查点，覆盖地面/桥面/楼顶，另以立面点复核。对应同一物理角点，避开水面、车辆、树冠及发生变化的施工部位。
+2. 使用“保存当前记录”保存完整配对，固定现有K先求外参，再导出CPU检查图与诊断；检查点不得参与异常点筛选。如果用检查点继续调参，最终另留新检查点。
+3. 同一校准原样应用30/60/90/114s，再各取独立检查点。建议目标RMS≤3px、P95≤6px、max≤10px；达不到则报告实值和原因，不逐帧手调冒充全段有效。
+4. CPU和Cesium都错，核查配对/相机/模型基准；CPU准而Cesium错，查渲染；多帧同K均出现中心准边缘偏，才进入多帧镜头标定。P0～P3证据足够后才决定P4，不在本轮启动。
