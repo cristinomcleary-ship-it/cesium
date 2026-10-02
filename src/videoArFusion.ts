@@ -29,7 +29,7 @@ import {
   type Viewer,
 } from "cesium";
 import "./videoArFusion.css";
-import { VideoArModelProjector, type ModelProjectionFrame } from "./videoArModelProjector";
+import { VideoArModelProjector, type ModelProjectionDiagnosticMode, type ModelProjectionFrame } from "./videoArModelProjector";
 import { VideoArControlPointPicker, type ControlPointFrame } from "./videoArControlPointPicker";
 import type { ControlPointSession } from "./videoArControlPointSession";
 import { resolveCameraFrame, cameraFrameRay, cameraMatchesTexture, type ResolvedCameraFrame } from "./videoArCameraFrame";
@@ -336,6 +336,15 @@ export const videoArFusionPanelHtml = `
       <p id="videoArModelStatus" class="hint" hidden></p>
       <div id="videoArControlPointHost"></div>
       <p id="videoArEffectiveCamera" class="hint">实际相机参数：等待同帧姿态</p>
+      <details class="video-ar-source-details">
+        <summary>三维投影深度检查</summary>
+        <label>检查画面<select id="videoArDepthDiagnostic">
+          <option value="off">正常视频投影</option><option value="source-depth">源相机首表面深度</option>
+          <option value="observer-depth">观察表面深度（换算至源相机）</option><option value="depth-difference">首表面深度差</option>
+          <option value="rejection-reason">投影接受 / 拒绝原因</option><option value="extrapolation-mask">轮廓外推有效范围</option>
+        </select></label>
+        <p id="videoArDepthLegend" class="hint">仅用于倾斜摄影模型投影。诊断画面不改变相机参数，切换来源后恢复正常投影。</p>
+      </details>
       <button id="videoArExportDiagnostics" class="secondary" type="button">导出当前帧诊断与选点记录</button>
       <p class="hint">高程基准独立于手动校准开关。未知模式可填试算基准作同帧对照，但不代表高程已确认。导出含实际相机参数、模型状态和当前画面；检查点精度需另行验收。</p>
       <button id="videoArResetCalibration" class="secondary" type="button">重置手动校准</button>
@@ -906,6 +915,23 @@ export class VideoArFusion {
       this.element<HTMLInputElement>("#videoArFootprintScale").value = "1";
       this.element<HTMLInputElement>("#videoArEnableCalibration").checked = false;
       this.element<HTMLSelectElement>("#videoArSurfaceMode").value = "terrain";
+      this.element<HTMLSelectElement>("#videoArDepthDiagnostic").value = "off";
+      this.updateDepthDiagnostic();
+  }
+
+  private updateDepthDiagnostic() {
+    const mode = this.element<HTMLSelectElement>("#videoArDepthDiagnostic").value as ModelProjectionDiagnosticMode;
+    this.modelProjector?.setDiagnosticMode(mode);
+    const legends: Record<ModelProjectionDiagnosticMode, string> = {
+      off: "仅用于倾斜摄影模型投影。诊断画面不改变相机参数，切换来源后恢复正常投影。",
+      "source-depth": "源相机首表面距离；按源相机光轴米计，亮度由近到远，范围见导出记录。",
+      "observer-depth": "当前观察表面换算至源相机光轴的距离；与源深度使用同一单位。",
+      "depth-difference": "纹素中心修正后的观察深度减源首表面深度：红为正、蓝为负，显示范围 ±2 米；遮挡判定仍为 ±0.35 米。",
+      "rejection-reason": "绿：接受；灰：源通道未就绪；深蓝：无观察表面；橙：源视锥外；紫：无源深度；红：首表面深度不符；青：视频 UV 越界。计数不等于真实有效覆盖率。",
+      "extrapolation-mask": "绿：局部连续性检查允许外推；红：禁止；黑：不可用。局部连续不代表几何或配准精度已验证。",
+    };
+    this.element("#videoArDepthLegend").textContent = legends[mode];
+    this.viewer.scene.requestRender();
   }
 
   /** Captures resolved state; form values alone are never evidence of rendered parameters. */
@@ -997,7 +1023,7 @@ export class VideoArFusion {
   private replayControls() {
     const controls: Record<string, string | boolean> = {};
     document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input[id^="videoAr"], select[id^="videoAr"]').forEach(input => {
-      if (input.type === "file" || /Socket|Progress|FlightSelect/i.test(input.id)) return;
+      if (input.type === "file" || /Socket|Progress|FlightSelect|DepthDiagnostic/i.test(input.id)) return;
       controls[input.id] = input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input.value;
     });
     return controls;
@@ -1478,6 +1504,7 @@ export class VideoArFusion {
     ]) {
       this.element(selector).addEventListener("change", () => { this.refreshCurrentGeometry(); this.updateControls(); this.saveReplayControls(); }, { signal });
     }
+    this.element("#videoArDepthDiagnostic").addEventListener("change", () => this.updateDepthDiagnostic(), { signal });
     this.element("#videoArExportDiagnostics").addEventListener("click", () => this.exportDiagnostics(), { signal });
     this.element("#videoArShowModels").addEventListener("click", () => {
       const count = this.onShowProjectionModels?.() ?? 0;
@@ -2807,13 +2834,24 @@ export class VideoArFusion {
         }
       }
     } else if (terrainPreferred && modelMode) {
-      this.modelProjectionFrame = { origin, direction: vector(camera.directionEcef), up: vector(camera.upEcef), intrinsics: camera.intrinsics, distortion: camera.distortion, maxDistance: 2500 };
-      if (!this.modelProjector) this.modelProjector = new VideoArModelProjector(this.viewer, () => this.readyMaterialTexture(this.textureCanvas));
-      this.modelProjectionAllowed = true;
-      if (this.projectionPrimitive || this.projectionCandidate || this.pendingProjectionSurface) this.removeProjectionPrimitive();
-      this.commitModelCamera();
-      projectionMode = "倾斜摄影三维表面投影 · 屋顶 / 立面 / 遮挡检测 · " + groundDescription
-        + (resolvedHeight?.estimated ? " · 高度尚未确认" : "");
+      try {
+        this.modelProjectionFrame = { origin, direction: vector(camera.directionEcef), up: vector(camera.upEcef), intrinsics: camera.intrinsics, distortion: camera.distortion, maxDistance: 2500 };
+        if (!this.modelProjector) {
+          this.modelProjector = new VideoArModelProjector(this.viewer, () => this.readyMaterialTexture(this.textureCanvas));
+          this.updateDepthDiagnostic();
+        }
+        this.modelProjectionAllowed = true;
+        if (this.projectionPrimitive || this.projectionCandidate || this.pendingProjectionSurface) this.removeProjectionPrimitive();
+        this.commitModelCamera();
+        projectionMode = "倾斜摄影三维表面投影 · 屋顶 / 立面 / 遮挡检测 · " + groundDescription
+          + (resolvedHeight?.estimated ? " · 高度尚未确认" : "");
+      } catch (error) {
+        this.modelProjectionAllowed = false;
+        this.modelProjectionFrame = undefined;
+        this.modelProjector?.setEnabled(false);
+        this.removeProjectionPrimitive();
+        projectionMode = error instanceof Error ? error.message : "三维投影初始化失败";
+      }
     } else if (djiSrtPoseProjection && !safeDjiProjection) {
       projectionMode = "未投影：镜头过于接近地平线，可靠地面区域不足";
     } else if (djiSrtPoseProjection && !djiTerrainGroundReady) {

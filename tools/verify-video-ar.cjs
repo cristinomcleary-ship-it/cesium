@@ -37,7 +37,9 @@ async function run(program, args) {
   });
 }
 async function start() {
-  server = spawn(process.execPath, [path.join(root, "node_modules/vite/bin/vite.js"), "--host", "127.0.0.1", "--port", String(port), "--strictPort"], {
+  const configPath=path.join(runRoot,"vite-evidence.config.mjs");
+  await fs.writeFile(configPath,`import config from ${JSON.stringify(path.join(root,"vite.config.ts").replaceAll("\\","/"))};export default {...config,server:{...config.server,hmr:false,watch:null}};`);
+  server = spawn(process.execPath, [path.join(root, "node_modules/vite/bin/vite.js"), "--config", configPath, "--host", "127.0.0.1", "--port", String(port), "--strictPort"], {
     cwd: root, env: { ...process.env, CESIUM_DATA_DIR: dataRoot },
     windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
   });
@@ -329,6 +331,14 @@ async function createFixtures() {
   assert.deepEqual(canceledPausedFrame.textureFrames.committedModel, canceledPausedFrame.textureFrames.uploaded);
   assert.equal(canceledPausedFrame.committedModelCamera.videoTimeMs, canceledPausedFrame.textureFrames.uploaded.mediaTimeMs);
   checks.push("Canceling a paused selection retains the committed texture identity and restores model projection without another decoded frame");
+  await page.locator("#videoArDepthDiagnostic").selectOption("rejection-reason");
+  const depthMode = await readHeightDiagnostic();
+  assert.equal(depthMode.rendering.model.diagnostic.mode, "rejection-reason");
+  assert.deepEqual(depthMode.committedModelCamera, canceledPausedFrame.committedModelCamera);
+  assert.equal(depthMode.inputs.videoArDepthDiagnostic, undefined, "Diagnostic colors must not become replay calibration settings");
+  await page.locator("#videoArDepthDiagnostic").selectOption("off");
+  checks.push("Depth diagnostic selector reaches the projector without changing the camera or persisted calibration");
+
   await page.locator("#videoArPlay").click();
   await sleep(370);
   await page.locator("#videoArPlay").click();

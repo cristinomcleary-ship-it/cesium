@@ -15,6 +15,9 @@ export type ModelProjectionFrame = Readonly<{
   opacity?: number;
 }>;
 
+export type ModelProjectionDiagnosticMode = "off" | "source-depth" | "observer-depth" | "depth-difference" | "rejection-reason" | "extrapolation-mask";
+const DIAGNOSTIC_MODES: readonly ModelProjectionDiagnosticMode[] = ["off", "source-depth", "observer-depth", "depth-difference", "rejection-reason", "extrapolation-mask"];
+
 /** A detached runtime snapshot. Null means unavailable, never an assumed zero. */
 export type ModelProjectionDiagnosticState = Readonly<{
   enabled: boolean;
@@ -60,7 +63,19 @@ export type ModelProjectionDiagnosticState = Readonly<{
     opacity: number;
     maxDistance: number;
   }> | null;
+  diagnostic: Readonly<{
+    mode: ModelProjectionDiagnosticMode;
+    depthRangeMeters: readonly [number, number];
+    differenceRangeMeters: readonly [number, number];
+    depthConvention: string;
+    coverageMeaning: string;
+    rejectionLegend: Readonly<Record<string, string>>;
+  }>;
   settings: Readonly<{
+    polygonOffset: Readonly<{ enabled: boolean; factor: number; units: number }> | null;
+    originalPolygonOffset: Readonly<{ enabled: boolean; factor: number; units: number }>;
+    observerContinuityMeters: number;
+    sourceContinuityMeters: number;
     normalOffset: boolean | null;
     softShadows: boolean | null;
     shadowMapMaximumDistance: number | null;
@@ -72,6 +87,12 @@ export type ModelProjectionDiagnosticState = Readonly<{
 type GpuTexture = { isDestroyed?: () => boolean; width?: number; height?: number };
 type ShadowInternals = ShadowMap & {
   fromLightSource: boolean;
+  _primitiveBias: { polygonOffset: boolean; polygonOffsetFactor: number; polygonOffsetUnits: number };
+  _terrainBias: { polygonOffset: boolean; polygonOffsetFactor: number; polygonOffsetUnits: number };
+  _pointBias: { polygonOffset: boolean; polygonOffsetFactor: number; polygonOffsetUnits: number };
+  _primitiveRenderState: { polygonOffset: { enabled: boolean; factor: number; units: number } };
+  _terrainRenderState: { polygonOffset: { enabled: boolean; factor: number; units: number } };
+  debugCreateRenderStates(): void;
   normalOffset: boolean;
   _shadowMapTexture?: GpuTexture;
   _shadowMapMatrix: Matrix4;
@@ -111,79 +132,147 @@ uniform vec2 arSourceDepthSize;
 uniform float arOpacity;
 uniform float arHasSourceDepth;
 uniform float arNativeDepth;
+uniform float arDiagnosticMode;
 in vec2 v_textureCoordinates;
 
 float linearSourceDepth(float depth) {
-  float nearValue = arNearFar.x;
-  float farValue = arNearFar.y;
-  return (nearValue * farValue) / (farValue - depth * (farValue - nearValue));
+  return (arNearFar.x * arNearFar.y) / max(0.00000001, arNearFar.y - depth * (arNearFar.y - arNearFar.x));
 }
-
+float sourceDepthAt(vec2 uv) {
+  vec4 packedDepth = texture(arSourceDepth, uv);
+  return arNativeDepth > 0.5 ? packedDepth.r : czm_unpackDepth(packedDepth);
+}
+bool validDepth(float depth) { return depth > 0.0 && depth < 0.9999999; }
+vec3 observerEye(vec2 offset, out bool valid) {
+  vec2 uv = v_textureCoordinates + offset / czm_viewport.zw;
+  float depth = czm_unpackDepth(texture(depthTexture, uv));
+  vec4 eye = czm_windowToEyeCoordinates(gl_FragCoord.xy + offset, clamp(depth, 0.0000001, 0.9999999));
+  valid = validDepth(depth) && abs(eye.w) > 0.00000001
+    && all(greaterThanEqual(uv, vec2(0.0))) && all(lessThanEqual(uv, vec2(1.0)));
+  // Finite placeholders participate in derivatives, then the validity mask
+  // rejects them and blocks extrapolation across the boundary.
+  float safeW = (eye.w < 0.0 ? -1.0 : 1.0) * max(abs(eye.w), 0.00000001);
+  return eye.xyz / safeW;
+}
+vec3 rejectionColor(float reason) {
+  if (reason < 0.5) return vec3(0.0, 1.0, 0.0); // accepted
+  if (reason < 1.5) return vec3(0.5);            // source pass not ready
+  if (reason < 2.5) return vec3(0.0, 0.0, 0.5); // no observer surface
+  if (reason < 3.5) return vec3(1.0, 0.5, 0.0); // source frustum
+  if (reason < 4.5) return vec3(1.0, 0.0, 1.0); // no source depth
+  if (reason < 5.5) return vec3(1.0, 0.0, 0.0); // first-surface rejection
+  return vec3(0.0, 1.0, 1.0);                  // video UV outside
+}
 void main() {
   vec4 original = texture(colorTexture, v_textureCoordinates);
-  out_FragColor = original;
-  if (arHasSourceDepth < 0.5) return;
-  float sceneDepth = czm_unpackDepth(texture(depthTexture, v_textureCoordinates));
-  if (sceneDepth <= 0.0 || sceneDepth >= 1.0) return;
-  vec4 eye = czm_windowToEyeCoordinates(gl_FragCoord.xy, sceneDepth);
-  if (abs(eye.w) < 0.00000001) return;
-  eye /= eye.w;
+  bool centerValid, leftValid, rightValid, downValid, upValid;
+  vec3 eyePosition = observerEye(vec2(0.0), centerValid);
+  vec3 leftEye = observerEye(vec2(-1.0, 0.0), leftValid);
+  vec3 rightEye = observerEye(vec2(1.0, 0.0), rightValid);
+  vec3 downEye = observerEye(vec2(0.0, -1.0), downValid);
+  vec3 upEye = observerEye(vec2(0.0, 1.0), upValid);
+  vec4 eye = vec4(eyePosition, 1.0);
   vec3 source = (arEyeToSource * eye).xyz;
   float distanceToSource = -source.z;
-  if (distanceToSource <= arNearFar.x || distanceToSource >= arNearFar.y) return;
-
-  // Match the FIRST visible source-camera surface. A building cannot cast its
-  // video pixels onto the ground behind it, or onto another facade behind it.
   vec4 shadowPosition = arEyeToShadow * eye;
-  if (shadowPosition.w <= 0.0) return;
-  vec3 shadowUv = shadowPosition.xyz / shadowPosition.w;
-  if (any(lessThanEqual(shadowUv, vec3(0.0))) || any(greaterThanEqual(shadowUv, vec3(1.0)))) return;
-  // Compare depths at the SAME source-shadow texel center. Comparing the
-  // fragment's depth directly with a neighboring texel self-occludes oblique
-  // roofs and roads, even when both depth buffers describe the same surface.
-  // Raw perspective depth is affine across a planar receiver in shadow UV.
+  float safeShadowW = (shadowPosition.w < 0.0 ? -1.0 : 1.0) * max(abs(shadowPosition.w), 0.00000001);
+  vec3 shadowUv = shadowPosition.xyz / safeShadowW;
+
+  // Every invocation reaches BOTH derivatives. No pixel-dependent return or
+  // branch may precede this block, including invalid depth / frustum paths.
   vec3 shadowDx = dFdx(shadowUv);
   vec3 shadowDy = dFdy(shadowUv);
   float determinant = shadowDx.x*shadowDy.y - shadowDx.y*shadowDy.x;
+
+  // Inverse observer eye-Z is affine over a planar surface. Reject its second
+  // difference at silhouettes / creases; also cap the footprint at grazing
+  // angles. All four neighbours must exist, so sky cannot lend a gradient.
+  float inverseZ = 1.0 / max(0.000001, -eyePosition.z);
+  float inverseLeft = 1.0 / max(0.000001, -leftEye.z);
+  float inverseRight = 1.0 / max(0.000001, -rightEye.z);
+  float inverseDown = 1.0 / max(0.000001, -downEye.z);
+  float inverseUp = 1.0 / max(0.000001, -upEye.z);
+  float observerPlanarityError = max(abs(inverseLeft + inverseRight - 2.0*inverseZ),
+    abs(inverseDown + inverseUp - 2.0*inverseZ)) / max(inverseZ*inverseZ, 0.000000000001);
+  float neighbourSpan = max(max(length(leftEye-eyePosition), length(rightEye-eyePosition)),
+    max(length(downEye-eyePosition), length(upEye-eyePosition)));
+  bool observerContinuous = centerValid && leftValid && rightValid && downValid && upValid
+    && observerPlanarityError <= 0.05 && neighbourSpan <= 2.0;
+
   vec2 texelCenter = (floor(shadowUv.xy*arSourceDepthSize) + vec2(0.5)) / arSourceDepthSize;
+  vec2 safeTexelCenter = clamp(texelCenter, vec2(0.5)/arSourceDepthSize, vec2(1.0)-vec2(0.5)/arSourceDepthSize);
+  float sourceDepth = sourceDepthAt(safeTexelCenter);
+  float surfaceDistance = linearSourceDepth(clamp(sourceDepth, 0.0, 1.0));
+  vec2 texel = 1.0 / arSourceDepthSize;
+  float sl = sourceDepthAt(safeTexelCenter - vec2(texel.x, 0.0));
+  float sr = sourceDepthAt(safeTexelCenter + vec2(texel.x, 0.0));
+  float sd = sourceDepthAt(safeTexelCenter - vec2(0.0, texel.y));
+  float su = sourceDepthAt(safeTexelCenter + vec2(0.0, texel.y));
+  // Source raw perspective depth is affine in source UV. Convert curvature to
+  // metres before deciding if the local samples can describe one surface.
+  float rawDepthToMeters = surfaceDistance*surfaceDistance*(arNearFar.y-arNearFar.x)/(arNearFar.x*arNearFar.y);
+  float sourcePlanarityError = max(abs(sl+sr-2.0*sourceDepth), abs(sd+su-2.0*sourceDepth))*rawDepthToMeters;
+  bool sourceContinuous = validDepth(sourceDepth) && validDepth(sl) && validDepth(sr) && validDepth(sd) && validDepth(su)
+    && sourcePlanarityError <= 0.05
+    && all(greaterThan(texelCenter, texel)) && all(lessThan(texelCenter, vec2(1.0)-texel));
+
   float expectedDistance = distanceToSource;
-  if (abs(determinant) > 0.00000000000001) {
-    vec2 depthGradient = vec2(
-      shadowDy.y*shadowDx.z - shadowDx.y*shadowDy.z,
-      shadowDx.x*shadowDy.z - shadowDy.x*shadowDx.z
-    ) / determinant;
+  bool extrapolated = false;
+  if (observerContinuous && sourceContinuous && abs(determinant) > 0.00000000000001) {
+    vec2 depthGradient = vec2(shadowDy.y*shadowDx.z-shadowDx.y*shadowDy.z,
+      shadowDx.x*shadowDy.z-shadowDy.x*shadowDx.z) / determinant;
     float expectedDepth = shadowUv.z + dot(depthGradient, texelCenter-shadowUv.xy);
-    if (expectedDepth > 0.0 && expectedDepth < 1.0) {
-      float planeDistance = linearSourceDepth(expectedDepth);
-      // Do not extrapolate arbitrarily across silhouettes or grazing faces.
-      // This cap limits the texel-center correction; it does NOT relax the
-      // occlusion tolerance or accept a different front/back surface.
-      if (abs(planeDistance-distanceToSource) <= 2.0) expectedDistance = planeDistance;
+    float planeDistance = linearSourceDepth(clamp(expectedDepth, 0.0, 1.0));
+    // The 2 m correction cap is NOT an occlusion tolerance.
+    if (validDepth(expectedDepth) && abs(planeDistance-distanceToSource) <= 2.0) {
+      expectedDistance = planeDistance;
+      extrapolated = true;
     }
   }
-  vec4 packedSourceDepth = texture(arSourceDepth, texelCenter);
-  float sourceDepth = arNativeDepth > 0.5 ? packedSourceDepth.r : czm_unpackDepth(packedSourceDepth);
-  if (sourceDepth <= 0.0 || sourceDepth >= 0.9999999) return;
-  float surfaceDistance = linearSourceDepth(sourceDepth);
-  // Keep a symmetric, bounded metric tolerance. A hidden rear surface and
-  // non-caster ground still fail the same first-surface test.
-  if (abs(expectedDistance - surfaceDistance) > 0.35) return;
-
-  // Forward Brown-Conrady maps ideal model rays into the original video.
-  // The source image is not rectified/rescaled in a separate intermediate pass.
-  vec2 ideal = vec2(source.x, -source.y) / distanceToSource;
+  float depthDifference = expectedDistance - surfaceDistance;
+  bool inSourceFrustum = shadowPosition.w > 0.0 && distanceToSource > arNearFar.x && distanceToSource < arNearFar.y
+    && all(greaterThan(shadowUv, vec3(0.0))) && all(lessThan(shadowUv, vec3(1.0)));
+  vec2 ideal = vec2(source.x, -source.y) / max(distanceToSource, 0.000001);
+  // Finite values even for invalid rays; their masks always reject the result.
+  ideal = clamp(ideal, vec2(-10.0), vec2(10.0));
   float r2 = dot(ideal, ideal);
-  if (r2 > 100.0) return;
   float radial = 1.0 + arLens.x*r2 + arLens.y*r2*r2 + arK3*r2*r2*r2;
-  vec2 distorted = ideal * radial + vec2(
-    2.0*arLens.z*ideal.x*ideal.y + arLens.w*(r2 + 2.0*ideal.x*ideal.x),
-    arLens.z*(r2 + 2.0*ideal.y*ideal.y) + 2.0*arLens.w*ideal.x*ideal.y
-  );
-  vec2 pixel = distorted * arIntrinsics.xy + arIntrinsics.zw;
-  vec2 uv = pixel / arImageSize;
-  if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return;
-  vec4 video = texture(arVideoTexture, vec2(uv.x, 1.0-uv.y));
-  out_FragColor = vec4(mix(original.rgb, video.rgb, clamp(arOpacity*video.a, 0.0, 1.0)), original.a);
+  vec2 distorted = ideal*radial + vec2(
+    2.0*arLens.z*ideal.x*ideal.y + arLens.w*(r2+2.0*ideal.x*ideal.x),
+    arLens.z*(r2+2.0*ideal.y*ideal.y) + 2.0*arLens.w*ideal.x*ideal.y);
+  vec2 uv = (distorted*arIntrinsics.xy+arIntrinsics.zw) / arImageSize;
+  bool inVideo = r2 <= 100.0 && all(greaterThanEqual(uv, vec2(0.0))) && all(lessThanEqual(uv, vec2(1.0)));
+  float reason = 0.0;
+  if (arHasSourceDepth < 0.5) reason = 1.0;
+  else if (!centerValid) reason = 2.0;
+  else if (!inSourceFrustum) reason = 3.0;
+  else if (!validDepth(sourceDepth)) reason = 4.0;
+  else if (abs(depthDifference) > 0.35) reason = 5.0;
+  else if (!inVideo) reason = 6.0;
+
+  out_FragColor = original;
+  if (arDiagnosticMode > 3.5 && arDiagnosticMode < 4.5) {
+    out_FragColor = vec4(rejectionColor(reason), 1.0);
+  } else if (arDiagnosticMode > 4.5) {
+    out_FragColor = vec4(reason == 1.0 || reason == 2.0 || reason == 3.0 || reason == 4.0
+      ? vec3(0.0) : extrapolated ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), 1.0);
+  } else if (arDiagnosticMode > 0.5) {
+    // Both depth views use source optical-axis metres. The observer view is
+    // the visible observer surface transformed into that common camera frame.
+    if (reason == 1.0 || reason == 2.0 || reason == 3.0 || reason == 4.0) {
+      out_FragColor = vec4(rejectionColor(reason), 1.0);
+    } else if (arDiagnosticMode < 1.5) {
+      out_FragColor = vec4(vec3(clamp(surfaceDistance/arNearFar.y, 0.0, 1.0)), 1.0);
+    } else if (arDiagnosticMode < 2.5) {
+      out_FragColor = vec4(vec3(clamp(distanceToSource/arNearFar.y, 0.0, 1.0)), 1.0);
+    } else {
+      vec3 signColor = depthDifference >= 0.0 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);
+      out_FragColor = vec4(mix(vec3(0.0, 1.0, 0.0), signColor, clamp(abs(depthDifference)/2.0, 0.0, 1.0)), 1.0);
+    }
+  } else if (reason < 0.5) {
+    vec4 video = texture(arVideoTexture, vec2(uv.x, 1.0-uv.y));
+    out_FragColor = vec4(mix(original.rgb, video.rgb, clamp(arOpacity*video.a, 0.0, 1.0)), original.a);
+  }
 }
 `;
 
@@ -213,6 +302,8 @@ export class VideoArModelProjector {
   private sourceError = "";
   private k3 = 0;
   private opacity = 1;
+  private diagnosticMode: ModelProjectionDiagnosticMode = "off";
+  private readonly originalPolygonOffset: { enabled: boolean; factor: number; units: number };
 
   constructor(private readonly viewer: Viewer, private readonly getVideoTexture: () => unknown) {
     this.context = (viewer.scene as unknown as { context: RuntimeContext }).context;
@@ -225,6 +316,38 @@ export class VideoArModelProjector {
       fromLightSource: false, isPointLight: false, cascadesEnabled: false,
       normalOffset: false, softShadows: false, size: 2048, maximumDistance: 2000,
     });
+    // Verified against engine 26.2 ShadowMap.js: normalOffset affects receiver
+    // shading only; cast depth still uses polygonOffset (factor 1.1, units 4).
+    // Our dedicated analytical map requires unbiased depth. Rebuild its actual
+    // cast render states through the function present in this locked version.
+    try {
+      const biases = [this.shadow._primitiveBias, this.shadow._terrainBias, this.shadow._pointBias];
+      if (typeof this.shadow.debugCreateRenderStates !== "function"
+        || !biases.every(bias => bias && typeof bias.polygonOffset === "boolean"
+          && Number.isFinite(bias.polygonOffsetFactor) && Number.isFinite(bias.polygonOffsetUnits))) {
+        throw new Error("缺少 ShadowMap 偏置字段或渲染状态重建接口");
+      }
+      const bias = this.shadow._primitiveBias;
+      this.originalPolygonOffset = { enabled: bias.polygonOffset, factor: bias.polygonOffsetFactor, units: bias.polygonOffsetUnits };
+      for (const castBias of biases) {
+        castBias.polygonOffset = false;
+        castBias.polygonOffsetFactor = 0;
+        castBias.polygonOffsetUnits = 0;
+      }
+      this.shadow.debugCreateRenderStates();
+      // Check actual rebuilt states, not only the inputs that were written.
+      // A renamed/no-op private interface must fail before the stage is added.
+      for (const [name, state] of [["primitive", this.shadow._primitiveRenderState], ["terrain", this.shadow._terrainRenderState]] as const) {
+        const offset = state?.polygonOffset;
+        if (!offset || offset.enabled !== false || offset.factor !== 0 || offset.units !== 0) {
+          throw new Error(`${name} 源深度渲染状态仍含偏移或不可读取`);
+        }
+      }
+    } catch (error) {
+      try { this.shadow.destroy(); } catch { /* A changed private interface may also prevent cleanup. */ }
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`三维模型投影已停用：仅支持已核验的 Cesium 1.144.0 / engine 26.2 深度接口，当前接口不兼容（${detail}）`);
+    }
     this.installSourceCastPass();
     this.stage = new PostProcessStage({
       name: "video-ar-model-projector-" + crypto.randomUUID(),
@@ -245,6 +368,7 @@ export class VideoArModelProjector {
           return this.sourceDepthSize;
         },
         arOpacity: () => this.opacity,
+        arDiagnosticMode: () => DIAGNOSTIC_MODES.indexOf(this.diagnosticMode),
         arHasSourceDepth: () => this.enabled && this.frame && this.videoTexture() && this.shadow._shadowMapTexture && this.hasCurrentSourceDepth() && !this.shadow._outOfView ? 1 : 0,
         arNativeDepth: () => this.shadow._usesDepthTexture ? 1 : 0,
       },
@@ -357,7 +481,19 @@ export class VideoArModelProjector {
         distortion: { k1: this.lens.x, k2: this.lens.y, k3: this.k3, p1: this.lens.z, p2: this.lens.w },
         opacity: this.opacity, maxDistance: this.nearFar.y,
       } : null,
+      diagnostic: {
+        mode: this.diagnosticMode, depthRangeMeters: [0, this.nearFar.y], differenceRangeMeters: [-2, 2],
+        depthConvention: "source-depth: first source surface; observer-depth: observer surface transformed into source optical-axis metres; difference: texel-corrected observer minus source",
+        coverageMeaning: "Request counters settled only; not proof of identical LOD, complete geometry, camera accuracy or valid projection coverage.",
+        rejectionLegend: { "green #00ff00": "accepted", "gray #808080": "model/source pass not ready",
+          "navy #000080": "no observer surface", "orange #ff8000": "outside source frustum",
+          "magenta #ff00ff": "no source depth", "red #ff0000": "first-surface depth rejected (>0.35 m)",
+          "cyan #00ffff": "video UV outside" },
+      },
       settings: {
+        polygonOffset: this.destroyed ? null : { ...this.shadow._primitiveRenderState.polygonOffset },
+        originalPolygonOffset: { ...this.originalPolygonOffset },
+        observerContinuityMeters: 0.05, sourceContinuityMeters: 0.05,
         normalOffset: this.destroyed ? null : this.shadow.normalOffset,
         softShadows: this.destroyed ? null : this.shadow.softShadows,
         shadowMapMaximumDistance: this.destroyed ? null : this.shadow.maximumDistance,
@@ -365,6 +501,13 @@ export class VideoArModelProjector {
         depthToleranceMeters: 0.35, texelCenterExtrapolationCapMeters: 2,
       },
     };
+  }
+
+  setDiagnosticMode(mode: ModelProjectionDiagnosticMode): void {
+    if (!DIAGNOSTIC_MODES.includes(mode)) throw new Error("未知三维投影诊断模式");
+    if (this.destroyed) return;
+    this.diagnosticMode = mode;
+    this.viewer.scene.requestRender();
   }
 
   setFrame(frame: ModelProjectionFrame): void {
