@@ -81,10 +81,61 @@ test("different roof heights and nonzero lens calibration remain consistent with
   assert.ok(Math.abs(rms - fitted.rmsePx) < 1e-10);
 });
 
-test("a mismatched landmark is rejected instead of applying a visibly bad calibration", () => {
+test("a mismatched landmark is excluded while its original residual remains auditable", () => {
   const controls = points.map((point) => observed(point));
   controls[5] = { ...controls[5], pixelX: controls[5].pixelX + 100, pixelY: controls[5].pixelY - 80 };
-  assert.throws(() => refineCameraPose({ ...biased, intrinsics, controls }), /fit failed/);
+  const snapshot = structuredClone(controls);
+  const result = refineCameraPose({ ...biased, intrinsics, controls });
+  assertPose(result);
+  assert.deepEqual(result.outlierIndices, [5]);
+  assert.deepEqual(result.inlierIndices, [0, 1, 2, 3, 4, 6, 7]);
+  assert.equal(result.residuals.length, controls.length);
+  assert.ok(result.residuals[5].errorPx > 128);
+  assert.ok(result.rmsePx < 1e-6 && result.allPointsRmsePx > 45);
+  assert.equal(result.robust.method, "deterministic-consensus");
+  assert.deepEqual(controls, snapshot);
+  assert.throws(() => refineCameraPose({ ...biased, intrinsics, controls, robust: false }), /fit failed/);
+  assert.deepEqual(refineCameraPose({ ...biased, intrinsics, controls }), result);
+});
+
+test("clean noisy controls retain the ordinary solution and no points are silently pruned", () => {
+  const controls = points.map((point, index) => {
+    const match = observed(point);
+    return { ...match, pixelX: match.pixelX + Math.sin(index) * 0.4, pixelY: match.pixelY + Math.cos(index) * 0.4 };
+  });
+  const robust = refineCameraPose({ ...biased, intrinsics, controls });
+  const ordinary = refineCameraPose({ ...biased, intrinsics, controls, robust: false });
+  assert.deepEqual(robust, ordinary);
+  assert.deepEqual(robust.outlierIndices, []);
+  assert.equal(robust.robust.method, "none");
+  assert.equal(robust.rmsePx, robust.allPointsRmsePx);
+});
+
+test("two mismatches are recoverable with six independent consistent fit points", () => {
+  const controls = points.map((point) => observed(point));
+  controls[1] = { ...controls[1], pixelX: controls[1].pixelX - 160, pixelY: controls[1].pixelY + 90 };
+  controls[5] = { ...controls[5], pixelX: controls[5].pixelX + 100, pixelY: controls[5].pixelY - 80 };
+  const result = refineCameraPose({ ...biased, intrinsics, controls });
+  assertPose(result);
+  assert.deepEqual(result.outlierIndices, [1, 5]);
+  assert.equal(result.inlierIndices.length, 6);
+});
+
+test("a majority of inconsistent pairs cannot be rescued by a four-point subset", () => {
+  const offsets = [[110, -70], [-160, 100], [170, -120], [-130, -110], [200, 80]];
+  const controls = points.map((point, index) => {
+    const match = observed(point), offset = offsets[index];
+    return offset ? { ...match, pixelX: match.pixelX + offset[0], pixelY: match.pixelY + offset[1] } : match;
+  });
+  assert.throws(() => refineCameraPose({ ...biased, intrinsics, controls }), /no stable consensus/);
+});
+
+test("an apparent consensus with only collinear correct landmarks is rejected", () => {
+  const controls = [0, 1, 2, 3, 4, 5].map(index => observed({ x: 20 + index * 10, y: 35 + index * 5, z: 0 }));
+  const a = observed({ x: 20, y: 85, z: 0 }), b = observed({ x: 80, y: 70, z: 0 });
+  controls.push({ ...a, pixelX: a.pixelX + 180, pixelY: a.pixelY - 140 },
+    { ...b, pixelX: b.pixelX - 140, pixelY: b.pixelY + 110 });
+  assert.throws(() => refineCameraPose({ ...biased, intrinsics, controls, inlierThresholdPx: 2, maxRmsePx: 1, maxErrorPx: 2 }), /fit failed/);
 });
 
 test("insufficient, collinear, nearly-collinear and non-finite control sets are rejected", () => {
@@ -137,4 +188,27 @@ test("a biased near-nadir DJI pose refines without relying on a unique Euler yaw
   assert.ok(Math.abs(fitted.position.y - 20) < 1e-4);
   assert.ok(Math.abs(fitted.position.z - 100) < 1e-4);
   assert.ok(fitted.rmsePx < 1e-6);
+});
+
+
+test("six pairs require five consistent points, while a five-pair set cannot discard one", () => {
+  const controls = points.slice(0, 6).map(point => observed(point));
+  controls[1] = { ...controls[1], pixelX: controls[1].pixelX - 160, pixelY: controls[1].pixelY + 90 };
+  const result = refineCameraPose({ ...biased, intrinsics, controls });
+  assertPose(result);
+  assert.deepEqual(result.outlierIndices, [1]);
+  assert.equal(result.robust.minimumInliers, 5);
+  assert.throws(() => refineCameraPose({ ...biased, intrinsics, controls: controls.slice(0, 5) }), /fit failed/);
+});
+
+test("bounded deterministic sampling recovers a twelve-point set with three mismatches", () => {
+  const controls = [...points, { x: 25, y: 40, z: 5 }, { x: 75, y: 65, z: 10 },
+    { x: 35, y: 85, z: 12 }, { x: 60, y: 35, z: 5 }].map(point => observed(point));
+  for (const index of [2, 9, 10]) controls[index] = { ...controls[index],
+    pixelX: controls[index].pixelX + 80 * (index % 2 ? -1 : 1), pixelY: controls[index].pixelY + 90 };
+  const result = refineCameraPose({ ...biased, intrinsics, controls, maxRmsePx: 0.5, maxErrorPx: 2 });
+  assertPose(result);
+  assert.deepEqual(result.outlierIndices, [2, 9, 10]);
+  assert.equal(result.robust.hypothesesTested, 161);
+  assert.equal(result.robust.minimumInliers, 8);
 });

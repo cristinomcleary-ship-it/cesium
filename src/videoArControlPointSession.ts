@@ -1,4 +1,5 @@
-import { projectControlPoint, type ControlPointCamera, type ControlPointMatch, type PoseRefinementResult } from "./videoArControlPoints.ts";
+import { projectControlPointCpu } from "./videoArCpuReprojection.ts";
+import { type ControlPointCamera, type ControlPointMatch, type PoseRefinementResult } from "./videoArControlPoints.ts";
 import type { CameraAttitude, CameraIntrinsics, CameraVector3, LensDistortion } from "./videoArCamera.ts";
 
 export type RecordedControlPoint = ControlPointMatch & { worldEcef: CameraVector3; role: "fit" | "check" };
@@ -30,7 +31,7 @@ export type ControlPointSession = {
 export function evaluateControlPoint(camera: ControlPointCamera, point: ControlPointMatch): PointEvaluation {
   try {
     if (![point.pixelX, point.pixelY].every(Number.isFinite)) throw new Error("Observed pixels are not finite");
-    const projected = projectControlPoint(camera, point.world);
+    const projected = projectControlPointCpu(camera, point.world);
     const errorX = projected.pixelX - point.pixelX, errorY = projected.pixelY - point.pixelY;
     return { valid: true, predictedPixelX: projected.pixelX, predictedPixelY: projected.pixelY,
       errorX, errorY, errorPx: Math.hypot(errorX, errorY) };
@@ -78,6 +79,7 @@ export function makeControlPointSession(input: {
     solution: input.solution ? structuredClone(input.solution) : null,
     notes: ["Checkpoints are excluded from optimization; if used to tune parameters they are no longer independent.",
       "Statistics are Euclidean original-video pixel errors; P95 uses the nearest-rank method.",
+      "The solution RMS/max describe fit inliers only; summary.fit and point residuals retain every fit point, including rejected outliers.",
       "A single-frame pose fit does not validate the full flight or absolute geodetic accuracy.",
       "After residuals evaluate the solved camera before Cesium rendering; global-offset application may differ and requires separate checks."],
   };

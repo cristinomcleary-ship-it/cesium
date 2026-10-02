@@ -2,6 +2,9 @@ import {
   Cartesian2, Cartesian3, Cesium3DTileFeature, Cesium3DTileset, Matrix4,
   Model, ScreenSpaceEventHandler, ScreenSpaceEventType, Transforms, type Viewer,
 } from "cesium";
+import type { ResolvedCameraFrame } from "./videoArCameraFrame";
+import type { ModelProjectionDiagnosticState } from "./videoArModelProjector";
+import { calibrationReviewHtml } from "./videoArCalibrationReview";
 import { refineCameraPose, type ControlPointMatch } from "./videoArControlPoints";
 import { makeControlPointSession, type ControlPointSession } from "./videoArControlPointSession";
 import type { CameraAttitude, CameraIntrinsics, CameraVector3, LensDistortion } from "./videoArCamera";
@@ -60,6 +63,8 @@ export class VideoArControlPointPicker {
   private readonly saveRecordButton: HTMLButtonElement;
   private readonly exportRecordButton: HTMLButtonElement;
   private lastSession?: ControlPointSession;
+  private lastSessionImage?: string;
+  private readonly exportReviewButton: HTMLButtonElement;
   private handler?: ScreenSpaceEventHandler;
   private frozen?: ControlPointFrame;
   private frozenImage?: HTMLCanvasElement;
@@ -79,8 +84,8 @@ export class VideoArControlPointPicker {
   ) {
     this.root.className = "video-ar-control-picker";
     this.root.innerHTML = `
-      <div class="vacp-title"><strong>视频与模型同名点配准</strong><button type="button" data-action="start">冻结当前帧，开始选点</button><button type="button" data-action="export-record">导出最近记录</button></div>
-      <p class="vacp-status" role="status" aria-live="polite">至少 4 对点，建议 6～10 对分布在画面不同区域的清晰地物。</p>
+      <div class="vacp-title"><strong>视频与模型同名点配准</strong><button type="button" data-action="start">冻结当前帧，开始选点</button><button type="button" data-action="export-record">导出最近记录</button><button type="button" data-action="export-review">导出 CPU 检查图</button></div>
+      <p class="vacp-status" role="status" aria-live="polite">至少 4 个拟合点可求解；正式基线建议 8～12 个拟合点，并另留至少 6 个检查点。</p>
       <div class="vacp-body" hidden>
         <p class="vacp-guide">先在视频选一个清晰点，再在三维场景点击同一个位置。选择路面标线、屋角等固定地物；屋顶点必须对应屋顶。</p>
         <div class="vacp-toolbar"><span data-role="count">已配对 0 个点</span><label>点的用途 <select data-role="point-role"><option value="fit">拟合点</option><option value="check">独立检查点</option></select></label><label>图像缩放 <select data-role="zoom"><option value="1">适应</option><option value="2">2×</option><option value="4">4×</option></select></label></div>
@@ -107,6 +112,7 @@ export class VideoArControlPointPicker {
     this.roleSelector = find('[data-role="point-role"]');
     this.saveRecordButton = find('[data-action="record"]');
     this.exportRecordButton = find('[data-action="export-record"]');
+    this.exportReviewButton = find('[data-action="export-review"]');
     const options = { signal: this.abort.signal };
     this.startButton.addEventListener("click", () => this.start(), options);
     this.cancelButton.addEventListener("click", () => this.cancel(), options);
@@ -114,6 +120,7 @@ export class VideoArControlPointPicker {
     this.solveButton.addEventListener("click", () => { void this.solve(); }, options);
     this.saveRecordButton.addEventListener("click", () => { void this.saveRecord(); }, options);
     this.exportRecordButton.addEventListener("click", () => { this.exportLastSession(); }, options);
+    this.exportReviewButton.addEventListener("click", () => { this.exportCpuReview(); }, options);
     this.canvas.addEventListener("click", (event) => this.pickImage(event), options);
     this.zoom.addEventListener("change", () => { this.canvas.style.width = String(Number(this.zoom.value) * 100) + "%"; }, options);
     this.render();
@@ -317,6 +324,50 @@ export class VideoArControlPointPicker {
     anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 30000);
   }
 
+  exportCpuReview(): void {
+    if (!this.lastSession) { this.message("请先保存或求解同名点记录。"); return; }
+    const session = this.lastSession;
+    let scenePng: string | undefined, note = "当前来源、PTS 或相机已变化，未将当前场景冒充该校准结果。";
+    const current = this.callbacks.getFrame(), solution = session.solution;
+    if (current && solution && current.sourceKey === session.frame.sourceKey && Math.abs(current.frameTime - session.frame.frameTime) < 0.001) {
+      const original = new Cartesian3(session.frame.originEcef.x, session.frame.originEcef.y, session.frame.originEcef.z);
+      const expected = Matrix4.multiplyByPoint(Transforms.eastNorthUpToFixedFrame(original), new Cartesian3(solution.position.x, solution.position.y, solution.position.z), new Cartesian3());
+      const samePose = Cartesian3.distance(expected, current.origin) < 0.02
+        && (["yaw", "pitch", "roll"] as const).every(key => Math.abs(current.attitude[key] - solution.attitude[key]) < 0.0001)
+        && (["fx", "fy", "cx", "cy", "width", "height"] as const).every(key => Math.abs(current.intrinsics[key] - session.frame.intrinsics[key]) < 0.0001)
+        && (["k1", "k2", "k3", "p1", "p2"] as const).every(key => Math.abs((current.distortion?.[key] ?? 0) - (session.frame.distortion?.[key] ?? 0)) < 0.0000001);
+      if (samePose && !this.active) {
+        try {
+          this.viewer.render();
+          const context = this.callbacks.getFrame()?.context;
+          const committed = context?.committedModelCamera as ResolvedCameraFrame | undefined;
+          const rendering = context?.rendering as { selectedSurface?: string; model?: ModelProjectionDiagnosticState & { diagnostic?: { mode: string } } } | undefined;
+          const media = context?.media as { textureTimeSeconds?: number } | undefined;
+          const model = rendering?.model;
+          const applied = model?.camera;
+          const sameVector = (a: CameraVector3, b: CameraVector3, tolerance: number) => Math.hypot(a.x-b.x,a.y-b.y,a.z-b.z) < tolerance;
+          const committedMatches = committed && applied && media?.textureTimeSeconds !== undefined
+            && Math.abs(committed.frameTime - session.frame.frameTime) < 0.001
+            && Math.abs(media.textureTimeSeconds - committed.frameTime) < 0.0001
+            && sameVector(committed.originEcef, current.origin, 0.0001)
+            && sameVector(applied.originEcef, committed.originEcef, 0.0001)
+            && sameVector(applied.directionEcef, committed.directionEcef, 1e-8)
+            && sameVector(applied.upEcef, committed.upEcef, 1e-8)
+            && (["fx", "fy", "cx", "cy", "width", "height"] as const).every(key => Math.abs(applied.intrinsics[key] - current.intrinsics[key]) < 0.0001);
+          if (committedMatches && rendering?.selectedSurface === "model" && model?.enabled && model.depth.shaderSourceDepthAccepted && (!model.diagnostic || model.diagnostic.mode === "off")) {
+            scenePng = this.viewer.scene.canvas.toDataURL("image/png");
+            note = "同来源、同 PTS、纹理与已提交相机一致，且 GPU 已应用对应位姿/K、源深度可用时捕获；此截图本身不证明像素误差达标。";
+          } else note = "相机结果已应用，但未确认同 PTS 纹理、已提交 GPU 相机及有效模型深度，未输出 Cesium 对照图。";
+        } catch { note = "同帧场景截图读取失败；未替代为其他时间截图。"; }
+      }
+    }
+    const html = calibrationReviewHtml(session, this.lastSessionImage, scenePng, note);
+    const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+    const anchor = document.createElement("a"); anchor.href = url; anchor.download = "frame_" + session.frame.frameTime.toFixed(3) + "_CPU检查.html"; anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+    this.message("已导出原帧、全部点、独立 CPU 叠加图与误差；缺少的 Cesium 对照会明确标注。");
+  }
+
   private async saveRecord(): Promise<void> {
     if (!this.active || this.solving || this.pending || !this.frozen || !this.requireCurrentFrame()) return;
     const frozen = this.frozen;
@@ -324,6 +375,7 @@ export class VideoArControlPointPicker {
     try {
       const session = this.makeSession(frozen);
       this.lastSession = session;
+      try { this.lastSessionImage = this.frozenImage?.toDataURL("image/png"); } catch { this.lastSessionImage = undefined; }
       await this.callbacks.onRecord?.(session);
       if (this.destroyed || !this.active || this.frozen !== frozen || !this.requireCurrentFrame()) return;
       this.message(this.callbacks.onRecord
@@ -347,6 +399,7 @@ export class VideoArControlPointPicker {
       if (this.destroyed || !this.active || this.frozen !== frozen || !this.requireCurrentFrame()) return;
       const session = this.makeSession(frozen, result);
       this.lastSession = session;
+      try { this.lastSessionImage = this.frozenImage?.toDataURL("image/png"); } catch { this.lastSessionImage = undefined; }
       const output: ControlPointPickerResult = {
         positionDeltaENU: { ...result.position },
         attitudeDelta: { yaw: result.attitude.yaw - frozen.attitude.yaw,
@@ -363,7 +416,7 @@ export class VideoArControlPointPicker {
       this.finish();
       const check = session.summary.after?.check;
       const checkText = check?.count ? (check.rmsePx === null ? "检查点有无效投影" : "独立检查 RMS " + check.rmsePx.toFixed(2) + " 像素") : "尚无独立检查点";
-      this.message("已应用拟合校准：" + fitPoints.length + " 个拟合点，拟合 RMS " + output.rmsePx.toFixed(2) + " 像素；" + checkText + "，结果尚未验收。");
+      this.message("已应用拟合校准：" + fitPoints.length + " 个拟合点，剔除 " + result.outlierIndices.length + " 个异常点（记录仍保留），内点 RMS " + output.rmsePx.toFixed(2) + " 像素；" + checkText + "，结果尚未验收。");
     } catch (error) {
       if (!this.destroyed) this.message("校准未完成，可重试或保存当前记录：" + (error instanceof Error ? error.message : String(error)), true);
     } finally {
@@ -382,6 +435,7 @@ export class VideoArControlPointPicker {
     this.solveButton.disabled = !this.active || this.solving || this.points.filter(point => point.role === "fit").length < 4 || Boolean(this.pending);
     this.saveRecordButton.disabled = !this.active || this.solving || Boolean(this.pending);
     this.exportRecordButton.disabled = this.solving || !this.lastSession;
+    this.exportReviewButton.disabled = this.solving || !this.lastSession;
     this.roleSelector.disabled = this.solving || Boolean(this.pending);
     this.undoButton.disabled = !this.active || this.solving || (!this.points.length && !this.pending);
     this.cancelButton.disabled = this.solving;

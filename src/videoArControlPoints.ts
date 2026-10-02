@@ -34,6 +34,10 @@ export type PoseRefinementInput = Readonly<{
   maxPositionCorrectionMeters?: number;
   maxAngleCorrectionDegrees?: number;
   maxIterations?: number;
+  /** Disable only for an explicit ordinary least-squares comparison. */
+  robust?: boolean;
+  /** Consensus radius in original reference-image pixels, not display pixels. */
+  inlierThresholdPx?: number;
 }>;
 
 export type ControlPointResidual = Readonly<{
@@ -47,11 +51,23 @@ export type ControlPointResidual = Readonly<{
 export type PoseRefinementResult = Readonly<{
   position: CameraVector3;
   attitude: CameraAttitude;
-  /** RMS Euclidean image distance, in original source-video pixels. */
+  /** RMS/max over retained fit inliers, in original source-video pixels. */
   rmsePx: number;
   maxErrorPx: number;
+  /** All input fit points in their original order, including rejected matches. */
   residuals: readonly ControlPointResidual[];
   iterations: number;
+  /** Zero-based indices into input.controls. Checkpoints must never be supplied. */
+  inlierIndices: readonly number[];
+  outlierIndices: readonly number[];
+  allPointsRmsePx: number;
+  allPointsMaxErrorPx: number;
+  robust: Readonly<{
+    method: "none" | "deterministic-consensus";
+    thresholdPx: number;
+    minimumInliers: number;
+    hypothesesTested: number;
+  }>;
 }>;
 
 const PARAMETER_COUNT = 6;
@@ -165,7 +181,10 @@ function solveLinear(matrix: number[][], right: number[]) {
  * Intrinsics remain fixed. This is a local bounded fit, not global localization:
  * use well-spread, correctly matched points on visible surfaces.
  */
-export function refineCameraPose(input: PoseRefinementInput): PoseRefinementResult {
+type LeastSquaresResult = Pick<PoseRefinementResult,
+  "position" | "attitude" | "rmsePx" | "maxErrorPx" | "residuals" | "iterations">;
+
+function refineLeastSquares(input: PoseRefinementInput, enforceAcceptance = true): LeastSquaresResult {
   validateCameraIntrinsics(input.intrinsics);
   if (!finiteVector(input.initialPosition)) throw new Error("Initial camera position must be finite");
   if (!input.initialAttitude || ![input.initialAttitude.yaw, input.initialAttitude.pitch, input.initialAttitude.roll].every(Number.isFinite)) {
@@ -280,9 +299,128 @@ export function refineCameraPose(input: PoseRefinementInput): PoseRefinementResu
   }
   const rmsePx = Math.sqrt(current.cost / input.controls.length);
   const maxErrorPx = Math.max(...current.residuals.map((residual) => residual.errorPx));
-  if (!Number.isFinite(rmsePx) || rmsePx > maxRmse || maxErrorPx > maxError) {
+  if (!Number.isFinite(rmsePx) || (enforceAcceptance && (rmsePx > maxRmse || maxErrorPx > maxError))) {
     throw new Error(`Control point fit failed: RMS ${rmsePx.toFixed(2)}px, maximum ${maxErrorPx.toFixed(2)}px. Check point matches, scene heights and initial pose.`);
   }
   const fitted = toCamera(parameters);
   return { position: fitted.position, attitude: fitted.attitude, rmsePx, maxErrorPx, residuals: current.residuals, iterations };
+}
+
+function allResiduals(camera: ControlPointCamera, controls: readonly ControlPointMatch[]) {
+  const frame = basis(camera.attitude);
+  return controls.map(control => {
+    const projected = projectWithBasis(camera, frame, control.world);
+    const errorX = projected.pixelX - control.pixelX, errorY = projected.pixelY - control.pixelY;
+    return { predictedPixelX: projected.pixelX, predictedPixelY: projected.pixelY,
+      errorX, errorY, errorPx: Math.hypot(errorX, errorY) };
+  });
+}
+
+/**
+ * Fixed-K, bounded six-DOF fit with deterministic outlier consensus. Only fit
+ * points belong here: independent check points must be held out by the caller.
+ * A clean ordinary fit is returned unchanged. Rejecting matches requires at
+ * least five inliers AND two thirds of all input points; four arbitrary pairs
+ * are never sufficient to rescue an otherwise inconsistent control set.
+ * Consensus identifies geometrically inconsistent pairs, not incorrect scene
+ * datums or a coherently wrong majority. Independent checks remain mandatory.
+ */
+export function refineCameraPose(input: PoseRefinementInput): PoseRefinementResult {
+  const maxRmse = positiveOption(input.maxRmsePx, 8, "Maximum reprojection RMSE");
+  const maxError = positiveOption(input.maxErrorPx, 20, "Maximum control point error");
+  const threshold = positiveOption(input.inlierThresholdPx, Math.min(maxError, 2 * maxRmse), "Inlier threshold");
+  if (threshold > maxError) throw new Error("Inlier threshold must not exceed the maximum control point error");
+  // This first call also performs all input/geometry/visibility validation.
+  const ordinary = refineLeastSquares(input, false);
+  const count = input.controls.length;
+  const indices = input.controls.map((_, index) => index);
+  const minimumInliers = Math.max(5, Math.ceil(count * 2 / 3));
+  let hypothesesTested = 1;
+  const finish = (fit: LeastSquaresResult, residuals: readonly ControlPointResidual[], inliers: readonly number[],
+    method: PoseRefinementResult["robust"]["method"]): PoseRefinementResult => {
+    const retained = new Set(inliers);
+    const cost = inliers.reduce((sum, index) => sum + residuals[index].errorPx ** 2, 0);
+    const rmsePx = Math.sqrt(cost / inliers.length);
+    const maxErrorPx = Math.max(...inliers.map(index => residuals[index].errorPx));
+    if (rmsePx > maxRmse || maxErrorPx > maxError) {
+      throw new Error(`Control point fit failed: inlier RMS ${rmsePx.toFixed(2)}px, maximum ${maxErrorPx.toFixed(2)}px. Check matches and initial pose.`);
+    }
+    return { ...fit, rmsePx, maxErrorPx, residuals,
+      inlierIndices: [...inliers], outlierIndices: indices.filter(index => !retained.has(index)),
+      allPointsRmsePx: Math.sqrt(residuals.reduce((sum, point) => sum + point.errorPx ** 2, 0) / count),
+      allPointsMaxErrorPx: Math.max(...residuals.map(point => point.errorPx)),
+      robust: { method, thresholdPx: threshold, minimumInliers, hypothesesTested } };
+  };
+  if (input.robust === false || count < 6
+    || (ordinary.rmsePx <= maxRmse && ordinary.maxErrorPx <= Math.min(maxError, threshold))) {
+    return finish(ordinary, ordinary.residuals, indices, "none");
+  }
+
+  type Candidate = { fit: LeastSquaresResult; residuals: readonly ControlPointResidual[]; inliers: number[]; cost: number };
+  const candidates: Candidate[] = [];
+  const inspect = (fit: LeastSquaresResult) => {
+    try {
+      const residuals = allResiduals({ ...fit, intrinsics: input.intrinsics, distortion: input.distortion }, input.controls);
+      const inliers = indices.filter(index => residuals[index].errorPx <= threshold);
+      if (inliers.length < minimumInliers) return;
+      requireSpread(inliers.map(index => input.controls[index].world), 0.01, "Inlier scene");
+      requireSpread(inliers.map(index => ({ x: input.controls[index].pixelX, y: input.controls[index].pixelY, z: 0 })), 4, "Inlier image");
+      const cost = inliers.reduce((sum, index) => sum + residuals[index].errorPx ** 2, 0);
+      candidates.push({ fit, residuals, inliers, cost });
+    } catch { /* A behind-camera or degenerate consensus is not a valid rescue. */ }
+  };
+  inspect(ordinary);
+  const samples: number[][] = [];
+  const seen = new Set<string>();
+  const addSample = (sample: number[]) => {
+    sample.sort((left, right) => left - right);
+    const key = sample.join(",");
+    if (!seen.has(key)) { seen.add(key); samples.push(sample); }
+  };
+  // Leave-one-out reliably handles the common single mistaken click without
+  // depending on a random draw. Small sets also enumerate every four-point seed.
+  if (count <= 12) for (const omitted of indices) addSample(indices.filter(index => index !== omitted));
+  if (count <= 10) {
+    for (let a = 0; a < count - 3; a += 1) for (let b = a + 1; b < count - 2; b += 1)
+      for (let c = b + 1; c < count - 1; c += 1) for (let d = c + 1; d < count; d += 1) addSample([a, b, c, d]);
+  } else {
+    // Bounded deterministic sampling keeps large control sets responsive and
+    // replayable. It is a local robust fit, not a guaranteed global PnP search.
+    let seed = 0x51f15e ^ count;
+    const randomIndex = () => {
+      seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+      return (seed >>> 0) % count;
+    };
+    for (let attempt = 0; samples.length < 160 && attempt < 1000; attempt += 1) {
+      const sample = new Set<number>();
+      while (sample.size < 4) sample.add(randomIndex());
+      addSample([...sample]);
+    }
+  }
+  for (const sample of samples) {
+    hypothesesTested += 1;
+    try { inspect(refineLeastSquares({ ...input, controls: sample.map(index => input.controls[index]) }, false)); }
+    catch { /* Invalid samples do not invalidate the remaining consensus trials. */ }
+  }
+  candidates.sort((left, right) => right.inliers.length - left.inliers.length || left.cost - right.cost);
+  const refined = new Set<string>();
+  for (const candidate of candidates) {
+    let inliers = candidate.inliers;
+    const key = inliers.join(",");
+    if (refined.has(key)) continue;
+    refined.add(key);
+    try {
+      for (let pass = 0; pass < 5; pass += 1) {
+        // Every solve keeps the original telemetry bounds. The prior consensus
+        // is only a selection mask, never a new origin that can ratchet bounds.
+        const fit = refineLeastSquares({ ...input, controls: inliers.map(index => input.controls[index]) }, false);
+        const residuals = allResiduals({ ...fit, intrinsics: input.intrinsics, distortion: input.distortion }, input.controls);
+        const next = indices.filter(index => residuals[index].errorPx <= threshold);
+        if (next.length < minimumInliers) break;
+        if (next.join(",") === inliers.join(",")) return finish(fit, residuals, next, "deterministic-consensus");
+        inliers = next;
+      }
+    } catch { /* Try another consensus if strict final acceptance fails. */ }
+  }
+  throw new Error(`Control point fit failed: no stable consensus of at least ${minimumInliers}/${count} fit points within ${threshold.toFixed(2)}px. Review mismatches; independent checkpoints cannot be used to rescue this fit.`);
 }

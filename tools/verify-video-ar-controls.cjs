@@ -43,7 +43,7 @@ state.controls=[[-20,25],[0,25],[20,25],[-20,65],[0,65],[20,65]].map(([x,y])=>{c
 for(const p of state.controls){ctx.fillStyle="#153143";ctx.beginPath();ctx.arc(p.pixelX,p.pixelY,5,0,Math.PI*2);ctx.fill();}
 window.fixture={state,editor,viewer,model};window.ready=true;
 </script></body></html>`;
-async function begin(){await fs.mkdir(runRoot,{recursive:true});await fs.writeFile(path.join(runRoot,"fixture.html"),fixture);server=spawn(process.execPath,[path.join(root,"node_modules/vite/bin/vite.js"),"--host","127.0.0.1","--port",String(port),"--strictPort"],{cwd:root,env:{...process.env,CESIUM_DATA_DIR:path.join(runRoot,"project-data")},windowsHide:true,stdio:["ignore","pipe","pipe"]});server.stdout.on("data",x=>log+=x);server.stderr.on("data",x=>log+=x);for(let i=0;i<100;i++){try{if((await fetch(base+"/__library/records")).ok)return;}catch{}await sleep(100);}throw Error("Server startup failed:"+log);}
+async function begin(){await fs.mkdir(runRoot,{recursive:true});await fs.writeFile(path.join(runRoot,"fixture.html"),fixture);const configPath=path.join(runRoot,"vite-evidence.config.mjs");await fs.writeFile(configPath,`import config from ${JSON.stringify(path.join(root,"vite.config.ts").replaceAll("\\","/"))};export default {...config,server:{...config.server,hmr:false,watch:null}};`);server=spawn(process.execPath,[path.join(root,"node_modules/vite/bin/vite.js"),"--config",configPath,"--host","127.0.0.1","--port",String(port),"--strictPort"],{cwd:root,env:{...process.env,CESIUM_DATA_DIR:path.join(runRoot,"project-data")},windowsHide:true,stdio:["ignore","pipe","pipe"]});server.stdout.on("data",x=>log+=x);server.stderr.on("data",x=>log+=x);for(let i=0;i<100;i++){try{if((await fetch(base+"/__library/records")).ok)return;}catch{}await sleep(100);}throw Error("Server startup failed:"+log);}
 async function clickVideo(pixelX=320,pixelY=180){const b=await page.locator(".vacp-image-scroll canvas").boundingBox();await page.mouse.click(b.x+pixelX/640*b.width,b.y+pixelY/360*b.height);}
 async function clickMap(){const b=await page.locator("#map canvas").first().boundingBox();await page.mouse.click(b.x+b.width/2,b.y+b.height/2);await sleep(80);}
 async function start(){await page.locator('[data-action="start"]').click();await page.waitForFunction(()=>!document.querySelector(".vacp-body").hidden);}
@@ -80,6 +80,16 @@ async function start(){await page.locator('[data-action="start"]').click();await
  const heldOut=await page.evaluate(()=>fixture.state.applied.at(-1).session);
  assert.ok(heldOut.summary.after.fit.rmsePx<1);assert.ok(heldOut.summary.after.check.rmsePx>18);assert.equal(heldOut.summary.after.fit.count,6);assert.equal(heldOut.summary.after.check.count,1);
  assert.equal(await page.locator('[data-action="export-record"]').isVisible(),true);checks.push("3 fit plus 1 check cannot solve; 6 fit plus a deliberately wrong holdout keep accurate fit and report bad independent residuals; record-only does not apply");
+ const reviewDownloadWait=page.waitForEvent("download");await page.locator('[data-action="export-review"]').click();const reviewDownload=await reviewDownloadWait;
+ const reviewPath=path.join(runRoot,"cpu-review.html");await reviewDownload.saveAs(reviewPath);const reviewHtml=await fs.readFile(reviewPath,"utf8");
+ const reviewPage=await browser.newPage({viewport:{width:1400,height:1000}});await reviewPage.setContent(reviewHtml);
+ assert.equal(await reviewPage.locator('svg').count(),2);assert.equal(await reviewPage.locator('svg image').count(),2);
+ const cpuRecord=await reviewPage.locator('a[download]').evaluate(a=>JSON.parse(decodeURIComponent(a.getAttribute('href').split(',').slice(1).join(','))));
+ assert.equal(cpuRecord.independentCpu.schema,"video-ar-independent-cpu-reprojection/v1");assert.equal(cpuRecord.independentCpu.points.length,7);
+ assert.equal(cpuRecord.independentCpu.summary.after.original.checks.count,1);assert.ok(cpuRecord.independentCpu.summary.after.original.checks.rmsePx>18);
+ assert.equal(cpuRecord.independentCpu.acceptance,"not-validated");assert.ok(cpuRecord.independentCpu.summary.after.original.fitAll.rmsePx<1);
+ await reviewPage.screenshot({path:path.join(runRoot,"cpu-review.png"),fullPage:true});await reviewPage.close();
+ checks.push("CPU review exports the actual frozen image, before/after overlays, every fit/check point, independent matrix residuals and explicit missing Cesium screenshot");
  const fill=async()=>{for(const point of controls){await clickVideo(point.pixelX,point.pixelY);await page.evaluate(p=>fixture.state.inject=p,point.world);await clickMap();}};
  await start();await fill();await page.evaluate(()=>fixture.state.recordMode="fail");await page.locator('[data-action="solve"]').click();
  await page.waitForFunction(()=>document.querySelector('.vacp-status').textContent.includes('simulated disk failure'));
