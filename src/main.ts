@@ -93,6 +93,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <button class="tab" data-tab="monitoring" data-label="基坑监测" data-menu-icon="▥">基坑监测</button>
         <button class="tab" data-tab="report" data-label="3维汇报" data-menu-icon="▣">3维汇报</button>
       </nav>
+      <a href="/ar-v2.html" class="text-button" title="独立视觉定位与融合">AR V2</a>
       <div class="workspace-mode"><span class="workspace-pulse"></span><span>数字孪生工作台</span></div>
     </header>
     <aside class="sidebar">

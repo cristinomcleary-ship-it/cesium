@@ -1,0 +1,30 @@
+import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
+const require = createRequire(import.meta.url);
+const modulePath = process.env.AR_V2_PLAYWRIGHT_MODULE || path.join(process.env.USERPROFILE, '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const { chromium } = require(modulePath);
+const browser = await chromium.launch({ executablePath: process.env.AR_V2_BROWSER || 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', headless: true });
+const output = 'output/ar-v2/environment'; fs.mkdirSync(output, { recursive: true });
+try {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const status = await (await fetch('http://127.0.0.1:5199/api/status')).json();
+  if (!status.products['scene/scene_manifest.json']) throw new Error('No fixed scene to test');
+  await page.goto('http://127.0.0.1:5173/ar-v2.html');
+  await page.waitForFunction(() => document.getElementById('pose')?.textContent.includes('固定场景已载入'), { timeout: 120000 });
+  await page.waitForFunction(() => document.getElementById('frames')?.options.length > 0);
+  await page.locator('#load').click();
+  await page.waitForTimeout(1000);
+  const poseLabel = await page.locator('#pose').textContent();
+  const error = await page.locator('#error').textContent();
+  await page.locator('#base').click();
+  if (!(await page.locator('#pose').textContent()).includes('原纹理')) throw new Error('Original model button failed');
+  await page.screenshot({ path: `${output}/viewer-smoke.png` });
+  const frames = await page.locator('#frames option').count();
+  const result = { status: errors.length || error ? 'FAILED' : 'PASSED', errors, error, frames, poseLabel, scene_version: status.products['scene/scene_manifest.json'].geometry_version };
+  fs.writeFileSync(`${output}/viewer-smoke.json`, JSON.stringify(result, null, 2));
+  console.log(JSON.stringify(result));
+  if (result.status !== 'PASSED') process.exitCode = 1;
+} finally { await browser.close(); }

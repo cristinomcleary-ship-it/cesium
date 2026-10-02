@@ -553,12 +553,13 @@ const projectLibraryPlugin = {
 };
 
 export default defineConfig({
+  build: { rollupOptions: { input: { main: resolve(process.cwd(), "index.html"), arV2: resolve(process.cwd(), "ar-v2.html") } } },
   define: {
     CESIUM_BASE_URL: JSON.stringify("/cesiumStatic"),
   },
   server: {
     watch: {
-      ignored: ["**/video_ar_backend/data/**", "**/video_ar_backend/.venv/**", "**/project-data/**", "**/.local-backups/**", "**/tmp/**"],
+      ignored: ["**/ar_v2/.venv/**", "**/output/**", "**/video_ar_backend/data/**", "**/video_ar_backend/.venv/**", "**/project-data/**", "**/.local-backups/**", "**/tmp/**"],
     },
   },
   plugins: [

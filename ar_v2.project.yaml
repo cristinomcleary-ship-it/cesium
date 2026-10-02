@@ -1,0 +1,42 @@
+schema_version: ar-v2-project/v1
+inputs:
+  # Null resolves the current active record, never a historical hard-coded ID.
+  project_data: project-data
+  video: null
+  trajectory: null
+  tileset: null
+output_dir: output/ar-v2
+scene:
+  origin_wgs84: null
+  roi_center_enu: [0, 0, 0]
+  roi_radius_m: 350
+  max_geometric_error: 0.5
+media:
+  times: [0, 10.01, 30, 60, 90, 114]
+  width: 1920
+camera:
+  K_raw: [2560, 0, 1920, 0, 2560, 1080, 0, 0, 1]
+  D_raw: [0, 0, 0, 0, 0]
+  status: estimated
+  source: historical DJI 35mm-equivalent estimate; no independent lens calibration
+references:
+  width: 960
+  time: 10.01
+  # Search hypotheses only. No candidate is promoted to a visually localized pose.
+  height_offsets_m: [-30, -15, 0, 15, 30]
+  yaw_offsets_deg: [-20, -10, 0, 10, 20]
+  pitch_offsets_deg: [-10, 0, 10]
+  east_offsets_m: [0]
+  north_offsets_m: [0]
+localization:
+  matcher: aliked-lightglue
+  device: cuda
+  max_keypoints: 2048
+  min_inliers: 30
+  min_grid_cells: 6
+  ransac_px1080: 3
+  iterations: 5000
+runtime:
+  api_port: 5199
+  render_port: 5198
+  browser: C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe

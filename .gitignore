@@ -40,3 +40,5 @@ acad.err
 
 # Persistent user uploads; back up separately from application source
 /project-data/
+
+/ar_v2/.venv/
