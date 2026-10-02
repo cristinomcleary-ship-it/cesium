@@ -64,6 +64,7 @@ export class VideoArControlPointPicker {
   private readonly exportRecordButton: HTMLButtonElement;
   private lastSession?: ControlPointSession;
   private lastSessionImage?: string;
+  private lastSessionCapturedHere = false;
   private readonly exportReviewButton: HTMLButtonElement;
   private handler?: ScreenSpaceEventHandler;
   private frozen?: ControlPointFrame;
@@ -312,6 +313,19 @@ export class VideoArControlPointPicker {
     });
   }
 
+  /** Restore exportable evidence only; a saved load generation cannot authenticate current images. */
+  restoreLastSession(session?: ControlPointSession): void {
+    if (this.destroyed) return;
+    this.cancel();
+    this.lastSession = session ? structuredClone(session) : undefined;
+    this.lastSessionImage = undefined;
+    this.lastSessionCapturedHere = false;
+    this.message(session
+      ? "已恢复最近选点记录，可导出原始点及 CPU 坐标检查图；未保存原帧图像，请参阅先前导出的检查图。"
+      : "至少 4 个拟合点可求解；正式基线建议 8～12 个拟合点，并另留至少 6 个检查点。");
+    this.render();
+  }
+
   getLastSession(): ControlPointSession | undefined {
     return this.lastSession ? structuredClone(this.lastSession) : undefined;
   }
@@ -328,7 +342,8 @@ export class VideoArControlPointPicker {
     if (!this.lastSession) { this.message("请先保存或求解同名点记录。"); return; }
     const session = this.lastSession;
     let scenePng: string | undefined, note = "当前来源、PTS 或相机已变化，未将当前场景冒充该校准结果。";
-    const current = this.callbacks.getFrame(), solution = session.solution;
+    const current = this.lastSessionCapturedHere ? this.callbacks.getFrame() : undefined, solution = session.solution;
+    if (!this.lastSessionCapturedHere) note = "恢复记录未保存原帧图像；旧加载编号不能确认当前画面身份，未附当前 Cesium 截图。";
     if (current && solution && current.sourceKey === session.frame.sourceKey && Math.abs(current.frameTime - session.frame.frameTime) < 0.001) {
       const original = new Cartesian3(session.frame.originEcef.x, session.frame.originEcef.y, session.frame.originEcef.z);
       const expected = Matrix4.multiplyByPoint(Transforms.eastNorthUpToFixedFrame(original), new Cartesian3(solution.position.x, solution.position.y, solution.position.z), new Cartesian3());
@@ -365,7 +380,9 @@ export class VideoArControlPointPicker {
     const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
     const anchor = document.createElement("a"); anchor.href = url; anchor.download = "frame_" + session.frame.frameTime.toFixed(3) + "_CPU检查.html"; anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 30000);
-    this.message("已导出原帧、全部点、独立 CPU 叠加图与误差；缺少的 Cesium 对照会明确标注。");
+    this.message(this.lastSessionImage
+      ? "已导出原帧、全部点、独立 CPU 叠加图与误差；缺少的 Cesium 对照会明确标注。"
+      : "已导出全部点、独立 CPU 坐标检查图与误差；原帧图像缺失已明确标注。");
   }
 
   private async saveRecord(): Promise<void> {
@@ -375,6 +392,7 @@ export class VideoArControlPointPicker {
     try {
       const session = this.makeSession(frozen);
       this.lastSession = session;
+      this.lastSessionCapturedHere = true;
       try { this.lastSessionImage = this.frozenImage?.toDataURL("image/png"); } catch { this.lastSessionImage = undefined; }
       await this.callbacks.onRecord?.(session);
       if (this.destroyed || !this.active || this.frozen !== frozen || !this.requireCurrentFrame()) return;
@@ -399,6 +417,7 @@ export class VideoArControlPointPicker {
       if (this.destroyed || !this.active || this.frozen !== frozen || !this.requireCurrentFrame()) return;
       const session = this.makeSession(frozen, result);
       this.lastSession = session;
+      this.lastSessionCapturedHere = true;
       try { this.lastSessionImage = this.frozenImage?.toDataURL("image/png"); } catch { this.lastSessionImage = undefined; }
       const output: ControlPointPickerResult = {
         positionDeltaENU: { ...result.position },

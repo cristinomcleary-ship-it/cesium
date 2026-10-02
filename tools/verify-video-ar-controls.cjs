@@ -90,6 +90,28 @@ async function start(){await page.locator('[data-action="start"]').click();await
  assert.equal(cpuRecord.independentCpu.acceptance,"not-validated");assert.ok(cpuRecord.independentCpu.summary.after.original.fitAll.rmsePx<1);
  await reviewPage.screenshot({path:path.join(runRoot,"cpu-review.png"),fullPage:true});await reviewPage.close();
  checks.push("CPU review exports the actual frozen image, before/after overlays, every fit/check point, independent matrix residuals and explicit missing Cesium screenshot");
+ // A restored record is exportable but cannot authenticate images through a reused load-generation number.
+ await page.evaluate(()=>fixture.editor.restoreLastSession());
+ assert.equal(await page.evaluate(()=>fixture.editor.getLastSession()),undefined);
+ assert.equal(await page.locator('[data-action="export-record"]').isDisabled(),true);
+ assert.equal(await page.locator('[data-action="export-review"]').isDisabled(),true);
+ checks.push("Clearing source evidence removes the last record and disables both exports");
+ await page.evaluate(session=>{
+   const input=structuredClone(session);fixture.editor.restoreLastSession(input);input.points[0].pixelX+=100;
+   const callbacks=fixture.editor.callbacks;
+   fixture.state.originalGetFrame=callbacks.getFrame;fixture.state.restoredFrameReads=0;
+   callbacks.getFrame=()=>{fixture.state.restoredFrameReads++;return fixture.state.originalGetFrame();};
+ },heldOut);
+ assert.deepEqual(await page.evaluate(()=>fixture.editor.getLastSession()),heldOut);
+ assert.equal(await page.locator('[data-action="export-record"]').isEnabled(),true);
+ const restoredDownloadWait=page.waitForEvent("download");await page.locator('[data-action="export-review"]').click();
+ const restoredPath=path.join(runRoot,"restored-cpu-review.html");await (await restoredDownloadWait).saveAs(restoredPath);
+ const restoredHtml=await fs.readFile(restoredPath,"utf8");assert.ok(restoredHtml.includes("原帧图像缺失"));
+ assert.equal(/<image\s|<img\s/i.test(restoredHtml),false);
+ assert.equal(await page.evaluate(()=>fixture.state.restoredFrameReads),0,"Restored sourceKey must never authenticate a current-frame capture");
+ await page.evaluate(()=>{fixture.editor.callbacks.getFrame=fixture.state.originalGetFrame;});
+ assert.equal(await page.evaluate(()=>fixture.state.applied.length),applyCount+1);
+ checks.push("Restoring clones original points, enables CPU export without applying, clears the old image, and never reads a current frame for a reused sourceKey");
  const fill=async()=>{for(const point of controls){await clickVideo(point.pixelX,point.pixelY);await page.evaluate(p=>fixture.state.inject=p,point.world);await clickMap();}};
  await start();await fill();await page.evaluate(()=>fixture.state.recordMode="fail");await page.locator('[data-action="solve"]').click();
  await page.waitForFunction(()=>document.querySelector('.vacp-status').textContent.includes('simulated disk failure'));

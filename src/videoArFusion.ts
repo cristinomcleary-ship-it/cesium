@@ -1002,7 +1002,7 @@ export class VideoArFusion {
     this.activeTextureFrame = undefined;
     this.committedModelTextureFrame = undefined;
     this.currentBitmapFrame = undefined;
-    this.controlPointPicker?.cancel();
+    this.controlPointPicker?.restoreLastSession();
     this.calibrationFrame = undefined;
     this.calibrationReferenceHeight = undefined;
     this.modelProjectionFrame = undefined;
@@ -1119,6 +1119,7 @@ export class VideoArFusion {
       await this.loadSelectedSource();
       if (!this.points.length) throw new Error("回放未能通过轨迹与媒体校验，原资料已保留");
       this.calibrationSessions = Array.isArray(settings.calibrationSessions) ? structuredClone(settings.calibrationSessions) : [];
+      this.controlPointPicker?.restoreLastSession(this.calibrationSessions.at(-1));
       this.pause();
     } finally { this.restoringReplay = false; }
   }
@@ -1330,7 +1331,7 @@ export class VideoArFusion {
     this.activeTextureFrame = undefined;
     this.committedModelTextureFrame = undefined;
     this.currentBitmapFrame = undefined;
-    this.controlPointPicker?.cancel();
+    this.controlPointPicker?.restoreLastSession();
     this.calibrationFrame = undefined;
     this.modelProjectionFrame = undefined;
     this.modelProjectionAllowed = false;
