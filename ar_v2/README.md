@@ -59,3 +59,13 @@ pnpm build
 doctor 实际启动 GPU 深度探针和渲染回归，结果与设备名写入 `environment/`。这些合成检查用于发现代码错误，实际视频的独立检查精度需要真实留出点另行验证。
 
 依据：[OpenCV PnP](https://docs.opencv.org/4.x/d5/d1f/calib3d_solvePnP.html)、[LightGlue 官方实现](https://github.com/cvg/LightGlue)、[3D Tiles 1.0](https://docs.ogc.org/cs/18-053r2/18-053r2.html)、[Three.js RenderTarget](https://threejs.org/docs/pages/RenderTarget.html)。
+
+## 独立检查点与结果解释
+
+任务书归档于 `docs/video-ar-v2-task-spec.md`；阶段实测与未完成内容以 `AR_V2_STATUS.md` 为准。目前 `track` 默认处理前20秒，可通过 `tracking.start_seconds`、`tracking.end_seconds` 和 `tracking.frame_stride` 配置窗口，尚未完成整段视频处理和连续回放。
+
+主定位使用多参考视角几何候选竞争；`metrics.matches` 是所有唯一有效视频观测，`selected_matches` 是几何筛选后传给PnP的数量。整体内点比例以完整观测为分母，精修也不缩小此分母。默认额外保守门槛 `localization.min_inlier_ratio=0.20` 在配置中明确列出，不代表任务书规定或已证明适合全部片段。
+
+独立点文件由 `validation.checkpoints_path` 指定。每条需要 `scene_xyz[3]`（本版本ENU米）与 `video_xy[2]`（本相机档案像素），以及七项身份：`source_video_hash`、`original_frame_id`、`original_pts`、`time_base`、`geometry_version`、`camera_profile_id`、`calibration_version`，另有 `time_seconds`。身份从对应 `pose.json` 复制；共同字段可放在顶层 `identity`，帧字段放在每个 `checkpoints` 条目。至少6个真实留出点，不把用于拟合或候选筛选的点当作独立点，不复用其他视频/几何/相机版本的同一时刻标注。
+
+没有检查点时，`validate` 输出 `NOT_EVALUATED`；合格关键帧不足时，`refine` 输出 `NOT_OBSERVABLE`。这些命令正常结束不表示定位或标定通过。`accepted=true` 还必须满足留出点RMS≤3px、P95≤6px、最大≤10px（1080p口径）以及全部正深度。

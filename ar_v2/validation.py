@@ -113,15 +113,98 @@ def validate_pose(xyz, pixels, K, transform, inliers, width, height,
             "residuals": residuals, "projected_xy": projected, "depths": depth}
 
 
-def load_checkpoints(config, time_seconds):
+def load_checkpoints(config, time_seconds, identity=None):
+    """Load withheld annotations only when their complete source/frame identity matches.
+
+    Documents may declare common identity fields at the top level (or in an
+    identity object) and frame fields on each point. A plain list instead needs
+    complete identity on each point. Conflicting declarations are rejected.
+    """
+    from fractions import Fraction
     path = config.get("validation", {}).get("checkpoints_path")
     if not path:
         return None
+    required = ("source_video_hash", "original_frame_id", "original_pts", "time_base",
+                "geometry_version", "camera_profile_id", "calibration_version")
+
+    def normalized(key, value):
+        if key == "original_pts":
+            if not isinstance(value, (int, np.integer)) or isinstance(value, (bool, np.bool_)):
+                raise ValueError("Checkpoint identity original_pts must be an integer.")
+            return int(value)
+        if key == "original_frame_id":
+            if isinstance(value, (bool, np.bool_)) or not isinstance(value, (str, int, np.integer)) or value == "":
+                raise ValueError("Checkpoint identity original_frame_id is missing or invalid.")
+            return int(value) if isinstance(value, np.integer) else value
+        if key == "time_base":
+            try:
+                if isinstance(value, str):
+                    base = Fraction(value)
+                elif isinstance(value, (list, tuple)) and len(value) == 2 and all(
+                        isinstance(v, (int, np.integer)) and not isinstance(v, (bool, np.bool_)) for v in value):
+                    base = Fraction(int(value[0]), int(value[1]))
+                else:
+                    raise ValueError("Unsupported time_base format")
+                if base <= 0:
+                    raise ValueError("Nonpositive time_base")
+                return (base.numerator, base.denominator)
+            except (ValueError, TypeError, ZeroDivisionError) as exc:
+                raise ValueError("Checkpoint identity time_base must be a positive rational.") from exc
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Checkpoint identity {key} is missing or invalid.")
+        return value
+
+    if not isinstance(identity, dict):
+        raise ValueError("Checkpoint validation requires complete expected pose/frame identity.")
+    missing_expected = [key for key in required if key not in identity or identity[key] is None]
+    if missing_expected:
+        raise ValueError("Expected checkpoint identity is missing: " + ", ".join(missing_expected))
+    expected = {key: normalized(key, identity[key]) for key in required}
     document = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     points = document.get("checkpoints", []) if isinstance(document, dict) else document
-    # Timestamps are compulsory; an annotation from another frame cannot be reused.
-    return [p for p in points if "time_seconds" in p
-            and abs(float(p["time_seconds"]) - time_seconds) < 0.001]
+    if not isinstance(points, list):
+        raise ValueError("Checkpoint document must be a list or contain a checkpoints list.")
+
+    def declarations(record):
+        if not isinstance(record, dict):
+            raise ValueError("Each checkpoint and identity declaration must be an object.")
+        nested = record.get("identity", {})
+        if not isinstance(nested, dict):
+            raise ValueError("Checkpoint identity must be an object.")
+        values = {}
+        for source in (nested, record):
+            for key in required:
+                if key not in source:
+                    continue
+                value = normalized(key, source[key])
+                if key in values and values[key] != value:
+                    raise ValueError(f"Conflicting checkpoint identity declarations for {key}.")
+                values[key] = value
+        return values
+
+    common = declarations(document) if isinstance(document, dict) else {}
+    selected = []
+    for point in points:
+        if not isinstance(point, dict):
+            raise ValueError("Each checkpoint must be an object.")
+        stamp = point.get("time_seconds", document.get("time_seconds") if isinstance(document, dict) else None)
+        if stamp is None or abs(float(stamp) - float(time_seconds)) >= 0.001:
+            continue
+        if not np.isfinite(float(stamp)):
+            raise ValueError("Checkpoint time_seconds must be finite.")
+        actual = dict(common)
+        for key, value in declarations(point).items():
+            if key in actual and actual[key] != value:
+                raise ValueError(f"Conflicting common and per-point checkpoint identity for {key}.")
+            actual[key] = value
+        missing = [key for key in required if key not in actual]
+        if missing:
+            raise ValueError("Checkpoint identity is missing: " + ", ".join(missing))
+        for key in required:
+            if actual[key] != expected[key]:
+                raise ValueError(f"Checkpoint identity mismatch: {key}.")
+        selected.append(point)
+    return selected
 
 
 def validate(config, pose_path=None):
@@ -131,7 +214,7 @@ def validate(config, pose_path=None):
     reports = []
     for path in candidates:
         pose = json.loads(path.read_text(encoding="utf-8"))
-        selected = load_checkpoints(config, pose["time_seconds"])
+        selected = load_checkpoints(config, pose["time_seconds"], pose)
         transform = pose.get("T_camera_from_scene")
         assessment = evaluate_checkpoints(
             selected, np.asarray(pose["K"]).reshape(3, 3),
@@ -150,3 +233,30 @@ def validate(config, pose_path=None):
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     return report
+
+
+def preserve_observation_denominator(assessment, original_metrics, settings=None):
+    """Retain the full input observation set when refinement fits only inliers."""
+    settings = settings or {}
+    metrics = assessment["metrics"]
+    denominator = original_metrics.get("matches")
+    selected = metrics.get("selected_matches", metrics.get("matches"))
+    inliers = metrics.get("inliers", 0)
+    for name, count in (("original matches", denominator), ("selected matches", selected), ("inliers", inliers)):
+        if not isinstance(count, (int, np.integer)) or isinstance(count, (bool, np.bool_)) or count < 0:
+            raise ValueError(f"Refinement {name} must be a nonnegative integer.")
+    if denominator < selected or denominator < inliers:
+        raise ValueError("Refinement cannot shrink the original complete observation denominator.")
+    solver_ratio = metrics.get("solver_inlier_ratio", metrics.get("inlier_ratio", 0.0))
+    ratio = inliers / max(1, denominator)
+    metrics.update({"matches": int(denominator), "selected_matches": int(selected),
+                    "solver_inlier_ratio": float(solver_ratio), "inlier_ratio": float(ratio),
+                    "inlier_ratio_denominator": original_metrics.get(
+                        "inlier_ratio_denominator", "original_pose_complete_observation_set")})
+    if ratio < settings.get("min_inlier_ratio", .2):
+        if "low_inlier_ratio" not in assessment["reasons"]:
+            assessment["reasons"].append("low_inlier_ratio")
+        if assessment["status"] == "LOCALIZED":
+            assessment["status"] = "DEGRADED"
+    assessment["accepted"] = bool(assessment.get("accepted", False) and assessment["status"] == "LOCALIZED")
+    return assessment

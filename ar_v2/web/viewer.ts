@@ -69,6 +69,11 @@ async function refresh() {
       const item = document.createElement('div'); item.className = 'job';
       const label = document.createElement('div'); label.textContent = `${job.command} · ${job.status} · ${job.phase || ''}`; item.append(label);
       if (job.progress) { const progress = document.createElement('progress'); progress.max = job.progress.total || 1; progress.value = job.progress.completed || 0; item.append(progress); }
+      if (job.result_summary) {
+        const summary = job.result_summary, outcome = summary.acceptance_status || summary.status;
+        const labels: Record<string, string> = { LOCALIZED: '已获得视觉位姿', DEGRADED: '定位退化，保留原纹理', LOST: '定位失败，保留原纹理', NOT_OBSERVABLE: '有效定位帧不足，尚未优化', NOT_EVALUATED: '缺少独立检查点，尚未验收', PASS: '独立检查通过', FAIL: '独立检查未通过' };
+        if (outcome && labels[outcome]) { const detail = document.createElement('div'); detail.textContent = `结果：${labels[outcome]}`; item.append(detail); }
+      }
       if (job.error) { const detail = document.createElement('div'); detail.textContent = job.error; item.append(detail); }
       if (['RUNNING', 'QUEUED'].includes(job.status)) { const cancel = document.createElement('button'); cancel.textContent = '取消任务'; cancel.onclick = () => post('/api/cancel', { job_id: job.job_id }).then(refresh).catch(error); item.append(cancel); }
       $('jobs').append(item);

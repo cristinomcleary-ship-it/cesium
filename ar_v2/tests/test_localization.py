@@ -160,7 +160,7 @@ class PipelineIntegrationTests(unittest.TestCase):
             for key in ("pose", "overlay", "correspondences", "raw_matches"):
                 self.assertTrue(Path(result["artifacts"][key]).is_file())
             with np.load(result["artifacts"]["correspondences"], allow_pickle=False) as data:
-                self.assertEqual(len(data["scene_xyz"]), result["metrics"]["matches"])
+                self.assertEqual(len(data["scene_xyz"]), result["metrics"]["selected_matches"])
                 self.assertEqual(int(data["inlier_mask"].sum()), result["metrics"]["inliers"])
 
     def test_lk_forward_backward_preserves_metric_anchor_indices(self):
@@ -262,7 +262,7 @@ class RefinementIntegrationTests(unittest.TestCase):
                 assessment = solve_correspondences(fixture.xyz, pixels, fixture.K, 1920, 1080)
                 np.savez(directory / "correspondences.npz", scene_xyz=fixture.xyz, video_xy=pixels,
                          inlier_mask=np.ones(len(pixels), dtype=bool))
-                pose = {"status": "LOCALIZED", "accepted": False, "time_seconds": float(i),
+                pose = {"schema_version": "ar-v2.pose.v1", "status": "LOCALIZED", "accepted": False, "time_seconds": float(i),
                         "original_frame_id": i*30, "original_pts": i*30000, "width": 1920, "height": 1080,
                         "K": fixture.K.reshape(-1).tolist(), "distortion": [0]*5,
                         "T_camera_from_scene": assessment["T_camera_from_scene"],

@@ -430,6 +430,8 @@ def _overlay(image, pixels, assessment, scene, K, distortion):
 
 
 def _save_pose(directory, image, xyz, pixels, assessment, pose, scene, K, distortion, extras=None):
+    from .contracts import validate_pose_record
+    validate_pose_record(pose)
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     inliers = np.asarray(assessment.get("inlier_indices", []), dtype=int)
@@ -520,14 +522,20 @@ def localize(config: dict[str, Any], time_seconds: float) -> dict[str, Any]:
     all_xyz = np.asarray(raw_xyz, dtype=float).reshape(-1, 3)
     all_scores = np.asarray(raw_scores, dtype=float)
     valid_indices = np.flatnonzero(raw_valid)
-    selected, conflicts = deduplicate_correspondences(all_pixels[valid_indices],
+    _, legacy_conflicts = deduplicate_correspondences(all_pixels[valid_indices],
                                                      all_xyz[valid_indices], all_scores[valid_indices], settings)
-    chosen = valid_indices[selected]
-    xyz, pixels = all_xyz[chosen], all_pixels[chosen]
     matched_seconds = time.perf_counter() - started
     actual_time = float(frame.get("time_seconds", time_seconds))
-    assessment = solve_correspondences(xyz, pixels, K, width, height, settings, distortion,
-                                       load_checkpoints(config, actual_time))
+    from .consensus import solve_reference_hypotheses, select_consensus
+    raw = {"video_xy": all_pixels, "scene_xyz": all_xyz, "score": all_scores,
+           "reference_id": np.asarray(raw_ids, dtype=str), "valid_3d": np.asarray(raw_valid, dtype=bool)}
+    _progress(config, "geometric-hypotheses", 0, len(references))
+    hypotheses = solve_reference_hypotheses(raw, K, width, height, settings, distortion,
+        progress_callback=lambda done, total: _progress(config, "geometric-hypotheses", done, total))
+    consensus = select_consensus(raw, hypotheses, K, width, height, settings, distortion,
+                                 load_checkpoints(config, actual_time, _identity(frame, profile, references)))
+    chosen, assessment = consensus["selected_raw_indices"], consensus["assessment"]
+    xyz, pixels = all_xyz[chosen], all_pixels[chosen]
     pose = {"schema_version": "ar-v2.pose.v1", "status": assessment["status"],
             "accepted": assessment["accepted"], "reasons": assessment["reasons"],
             "time_seconds": actual_time, "requested_time_seconds": float(time_seconds),
@@ -535,7 +543,8 @@ def localize(config: dict[str, Any], time_seconds: float) -> dict[str, Any]:
             "distortion": distortion.reshape(-1).tolist(),
             "T_camera_from_scene": assessment["T_camera_from_scene"],
             "metrics": assessment["metrics"], "provenance": matcher.provenance,
-            "reference_stats": reference_stats, "anchor_conflicts_rejected": len(conflicts),
+            "reference_stats": reference_stats, "legacy_anchor_conflicts": len(legacy_conflicts),
+            "selection_method": "visual-hypothesis-consensus/v1", "consensus_support": consensus["diagnostics"]["selected_support"],
             "coordinate_convention": "scene ENU metres; camera optical right/down/forward; row-major T_camera_from_scene",
             "timing": {"extract_and_initialize_seconds": extraction_seconds,
                        "match_and_lift_seconds": matched_seconds - extraction_seconds,
@@ -550,9 +559,12 @@ def localize(config: dict[str, Any], time_seconds: float) -> dict[str, Any]:
                         scene_xyz=all_xyz, score=all_scores, reference_id=np.asarray(raw_ids, dtype=str),
                         valid_3d=np.asarray(raw_valid, dtype=bool),
                         rejection_reason=np.asarray(raw_reasons, dtype=str), selected_raw_indices=chosen,
-                        conflicting_raw_indices=valid_indices[conflicts])
+                        legacy_conflicting_raw_indices=valid_indices[legacy_conflicts], conflicting_raw_indices=np.empty(0, dtype=int))
     result = _save_pose(directory, image, xyz, pixels, assessment, pose, scene, K, distortion,
                        {"reference_id": np.asarray(raw_ids, dtype=str)[chosen], "scores": all_scores[chosen]})
+    _json_write(directory / "consensus.json", consensus["diagnostics"])
+    _json_write(directory / "reference_hypotheses.json", hypotheses)
+    result["artifacts"]["consensus"] = str(directory / "consensus.json")
     result["artifacts"]["raw_matches"] = str(directory / "raw_matches.npz")
     _json_write(directory / "pose.json", result)
     return result
@@ -575,6 +587,7 @@ def refine(config, window_seconds=20.0):
     successful calibration. There are no temporal smoothness pseudo-observations.
     """
     from scipy.optimize import least_squares
+    from .validation import preserve_observation_denominator
     settings = config.get("refinement", {})
     if settings.get("optimize_intrinsics", False) or settings.get("optimize_distortion", False):
         raise NotImplementedError("Shared raw K/distortion refinement requires original raw observations and re-rectification; "
@@ -621,7 +634,8 @@ def refine(config, window_seconds=20.0):
         updated[:3, :3], updated[:3, 3] = cv2.Rodrigues(solved.x[:3])[0], solved.x[3:]
         assessment = validate_pose(xyz, pixels, K, updated, np.arange(len(xyz)),
                                    pose["width"], pose["height"], config.get("localization", {}),
-                                   load_checkpoints(config, pose["time_seconds"]), distortion)
+                                   load_checkpoints(config, pose["time_seconds"], pose), distortion)
+        assessment = preserve_observation_denominator(assessment, pose["metrics"], config.get("localization", {}))
         before = np.linalg.norm(residual(initial).reshape(-1, 2), axis=1)
         after = np.linalg.norm(residual(solved.x).reshape(-1, 2), axis=1)
         apply = bool(solved.success and assessment["status"] == "LOCALIZED"
@@ -639,7 +653,10 @@ def refine(config, window_seconds=20.0):
         if not apply:
             assessment = validate_pose(xyz, pixels, K, T, np.arange(len(xyz)),
                                        pose["width"], pose["height"], config.get("localization", {}),
-                                       load_checkpoints(config, pose["time_seconds"]), distortion)
+                                       load_checkpoints(config, pose["time_seconds"], pose), distortion)
+        assessment = preserve_observation_denominator(assessment, pose["metrics"], config.get("localization", {}))
+        output_pose.update({"status": assessment["status"], "accepted": assessment["accepted"],
+                            "metrics": assessment["metrics"], "reasons": assessment["reasons"]})
         assessment["T_camera_from_scene"] = output_pose["T_camera_from_scene"]
         assessment["inlier_indices"] = np.arange(len(xyz))
         image, frame, profile = _load_frame(config, pose["time_seconds"])
@@ -730,7 +747,7 @@ def track(config, start_seconds=0.0, end_seconds=None):
             anchors, current_pixels = anchors[valid], current_pixels[valid]
             assessment = solve_correspondences(anchors, current_pixels, K, width, height,
                                                config.get("localization", {}), distortion,
-                                               load_checkpoints(config, actual_time))
+                                               load_checkpoints(config, actual_time, _identity(frame, profile, references)))
             # Reject implausible metric jumps; a prior is a gate, never a replacement pose.
             if assessment["status"] == "LOCALIZED" and previous_pose is not None:
                 current_T = np.asarray(assessment["T_camera_from_scene"]).reshape(4, 4)

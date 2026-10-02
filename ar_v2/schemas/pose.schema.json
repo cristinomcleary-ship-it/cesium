@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ar-v2.pose.v1",
+  "title": "An image-bound metric visual pose; acceptance is separate from localization status",
+  "type": "object",
+  "required": ["schema_version", "status", "accepted", "source_video_hash", "original_frame_id", "original_pts", "time_base", "time_seconds", "camera_profile_id", "calibration_version", "geometry_version", "width", "height", "K", "T_camera_from_scene", "metrics"],
+  "properties": {
+    "schema_version": {"const": "ar-v2.pose.v1"},
+    "status": {"enum": ["LOCALIZED", "TRACKED", "DEGRADED", "LOST"]},
+    "accepted": {"type": "boolean"},
+    "source_video_hash": {"type": "string", "minLength": 1},
+    "original_frame_id": {"type": ["integer", "string"]},
+    "original_pts": {"type": "integer"},
+    "time_base": {"type": "string", "pattern": "^[1-9][0-9]*/[1-9][0-9]*$"},
+    "time_seconds": {"type": "number"},
+    "camera_profile_id": {"type": "string", "minLength": 1},
+    "calibration_version": {"type": "string", "minLength": 1},
+    "geometry_version": {"type": "string", "minLength": 1},
+    "appearance_version": {"type": ["string", "null"]},
+    "width": {"type": "integer", "minimum": 1},
+    "height": {"type": "integer", "minimum": 1},
+    "K": {"type": "array", "items": {"type": "number"}, "minItems": 9, "maxItems": 9},
+    "T_camera_from_scene": {"oneOf": [{"type": "null"}, {"type": "array", "items": {"type": "number"}, "minItems": 16, "maxItems": 16}]},
+    "metrics": {"type": "object", "required": ["independent_checkpoints"], "properties": {"independent_checkpoints": {"type": ["object", "null"]}}}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"enum": ["LOCALIZED", "TRACKED"]}}}, "then": {"properties": {"T_camera_from_scene": {"type": "array"}}}},
+    {"if": {"properties": {"accepted": {"const": true}}}, "then": {"properties": {"metrics": {"properties": {"independent_checkpoints": {"type": "object"}}}}}}
+  ]
+}

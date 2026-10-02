@@ -10,7 +10,7 @@ scene:
   origin_wgs84: null
   roi_center_enu: [0, 0, 0]
   roi_radius_m: 350
-  max_geometric_error: 0.5
+  max_geometric_error: 0.125
 media:
   times: [0, 10.01, 30, 60, 90, 114]
   width: 1920
@@ -20,7 +20,7 @@ camera:
   status: estimated
   source: historical DJI 35mm-equivalent estimate; no independent lens calibration
 references:
-  width: 960
+  width: 1280
   time: 10.01
   # Search hypotheses only. No candidate is promoted to a visually localized pose.
   height_offsets_m: [-30, -15, 0, 15, 30]
@@ -32,6 +32,8 @@ localization:
   matcher: aliked-lightglue
   device: cuda
   max_keypoints: 2048
+  # Conservative implementation gate; the V2 task document does not prescribe this ratio.
+  min_inlier_ratio: 0.20
   min_inliers: 30
   min_grid_cells: 6
   ransac_px1080: 3
