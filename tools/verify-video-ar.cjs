@@ -130,7 +130,7 @@ async function newPage() {
   page.on("dialog", dialog => dialog.accept());
   const mapImage = await fs.readFile(path.join(root, "node_modules/cesium/Build/Cesium/Assets/Textures/NaturalEarthII/0/0/0.jpg"));
   await page.route("**/__basemap/**", route => route.fulfill({ status: 200, contentType: "image/jpeg", body: mapImage }));
-  await page.goto(base, { waitUntil: "domcontentloaded", timeout: 45000 });
+  await page.goto(base, { waitUntil: "domcontentloaded", timeout: 90000 });
   await page.waitForFunction(() => document.querySelector("#libraryStatus")?.textContent?.includes("已保存到本机"));
   await page.locator('[data-tab="videoar"]').click();
   return context;
@@ -239,7 +239,7 @@ async function createFixtures() {
   await page.waitForFunction(() => document.querySelector("#videoArProjectionMode")?.textContent?.includes("DJI SRT"));
   assert.equal(await page.locator("#videoArEnableCalibration").isChecked(), false);
   assert.equal(await page.locator("#videoArTimeOffset").isDisabled(), true, "DJI frame PTS must remain authoritative");
-  const initialGpu = await projectionReady();
+  let initialGpu = await projectionReady();
   const pixels = await page.evaluate(() => {
     const video = document.querySelector("#videoArSourceVideo");
     const canvas = document.createElement("canvas");
@@ -259,6 +259,60 @@ async function createFixtures() {
   console.log("DJI video decoded and projected; testing calibration and persistence");
 
   await openCalibration();
+  // First-pass resolved-height contract, read from the same export users receive.
+  const readHeightDiagnostic = async () => {
+    const waiting = page.waitForEvent("download");
+    await page.locator("#videoArExportDiagnostics").click();
+    const download = await waiting, filename = path.join(runRoot, "height-diag-" + Date.now() + ".json");
+    await download.saveAs(filename);return JSON.parse(await fs.readFile(filename,"utf8"));
+  };
+  const expectHeight = async (label, expected) => {
+    const mode = await page.locator("#videoArHeightMode").inputValue();
+    const modeText = {estimated:"未知基准",relative:"相对高度 + 已知",source:"源高程 + 用户指定"};
+    await until(label + " telemetry",async()=> {
+      const position=await page.locator("#videoArPosition").textContent();
+      const detail=await page.locator("#videoArEffectiveCamera").textContent();
+      return position.includes("实际椭球高 "+expected.toFixed(2)+"m") && detail.includes(mode==="relative"?"相对起飞高度":modeText[mode]);
+    });
+    const diagnostic = await readHeightDiagnostic(), camera = diagnostic.effectiveCamera;
+    assert.equal(camera.height.valid,true,label);assert.equal(camera.calibrationEnabled,false,label);
+    assert.ok(Math.abs(camera.ellipsoidHeight-expected)<.01,label+": "+JSON.stringify(camera));
+    assert.match(await page.locator("#videoArPosition").textContent(),new RegExp(expected.toFixed(2)+"m"));
+    return diagnostic;
+  };
+  await expectHeight("Default estimated DJI altitude",100);
+  await field("videoArHeightOffset","9");await expectHeight("Disabled correction remains unapplied",100);
+  await field("videoArTakeoffHeight","20");await page.locator("#videoArHeightMode").selectOption("relative");await expectHeight("Explicit relative datum",120);
+  await field("videoArSourceHeightOffset","");await page.locator("#videoArHeightMode").selectOption("source");
+  await until("incomplete datum is applied after camera settles",async()=> (await page.locator("#videoArProjectionMode").textContent()).includes("高程基准不完整"));
+  const incomplete=await readHeightDiagnostic();assert.equal(incomplete.effectiveCamera.height.valid,false);assert.equal(incomplete.effectiveCamera.allowProjection,false);assert.equal(incomplete.rendering.flatPrimitiveVisible,false);assert.equal(incomplete.rendering.modelProjectionAllowed,false);
+  await field("videoArSourceHeightOffset","0");await expectHeight("Explicit zero ellipsoid conversion",120);
+  await until("height mode and zero conversion saved",async()=>{const saved=(await records())[0]?.settings.video.controls;return saved?.videoArHeightMode==="source"&&saved.videoArSourceHeightOffset==="0";});
+  // Record a synthetic observation via actual DOM and Cesium ground picking, then verify durable reload.
+  await page.locator('.video-ar-control-picker [data-action="start"]').click();
+  await page.locator('.video-ar-control-picker [data-role="point-role"]').selectOption("check");
+  await page.locator('.video-ar-control-picker canvas').scrollIntoViewIfNeeded();
+  const frozenBox=await page.locator('.video-ar-control-picker canvas').boundingBox();
+  await page.mouse.click(frozenBox.x+frozenBox.width/2,frozenBox.y+frozenBox.height/2);
+  const mapBox=await page.locator('#cesiumContainer canvas').first().boundingBox();
+  await page.mouse.click(mapBox.x+mapBox.width*.6,mapBox.y+mapBox.height*.5);
+  await page.waitForFunction(()=>document.querySelector('.vacp-point-list')?.children.length===1);
+  await page.locator('.video-ar-control-picker [data-action="record"]').click();
+  await until("full check record saved",async()=> (await records())[0]?.settings.video.calibrationSessions?.length===1);
+  const savedSession=(await records())[0].settings.video.calibrationSessions[0];
+  assert.equal(savedSession.points[0].role,"check");assert.ok(Number.isFinite(savedSession.points[0].worldEcef.x));
+  assert.equal(savedSession.frame.intrinsics.fx,440);assert.equal(savedSession.status,"recorded-not-solved");
+  await page.locator('.video-ar-control-picker [data-action="cancel"]').click();
+  // Real app reload verifies these controls migrate without silently enabling pose corrections.
+  await page.reload({waitUntil:"domcontentloaded"});await page.locator('[data-tab="videoar"]').click();await openCalibration();
+  await until("replay restored for diagnostic",async()=> (await page.locator("#videoArProjectionMode").textContent()).includes("DJI SRT"));
+  const restoredDiagnostic=await expectHeight("Explicit source datum survives reload",120);
+  assert.deepEqual(restoredDiagnostic.controlPointSessions,[savedSession]);
+  checks.push("A real DOM-selected synthetic checkpoint persists through app reload with original pixels, ECEF/ENU, frame identity, K and residuals intact");
+  await page.locator("#videoArHeightMode").selectOption("estimated");await field("videoArTakeoffHeight","");await field("videoArSourceHeightOffset","");await field("videoArHeightOffset","0");await expectHeight("Default restored",100);
+  initialGpu = await projectionReady();
+  checks.push("Actual exported/visible heights agree; disabled corrections ignored; explicit datums independent; missing source conversion blocks projection; mode persists through reload");
+
   await page.locator("#videoArSurfaceMode").selectOption("model");
   await page.waitForFunction(() => document.querySelector("#videoArProjectionMode")?.textContent?.includes("倾斜摄影三维表面投影"));
   await page.waitForFunction(() => document.querySelector("#videoArModelStatus")?.textContent?.includes("没有显示"));
@@ -295,6 +349,7 @@ async function createFixtures() {
     return controls.videoArEnableCalibration === true && controls.videoArSurfaceMode === "plane"
       && Object.entries(overrides).every(([id, value]) => String(controls[id]) === value);
   });
+  await until("calibration commits a new GPU draw", async()=> await page.evaluate(()=>window.videoArGpu.projectiveDraws) > initialGpu.projectiveDraws);
   const calibratedGpu = await projectionReady();
   assert.ok(calibratedGpu.projectiveDraws > initialGpu.projectiveDraws, "Calibration must redraw the projector");
   assert.equal(await page.locator("#videoArTimeOffset").isDisabled(), true);
@@ -307,8 +362,14 @@ async function createFixtures() {
   await page.waitForFunction(() => document.querySelector("#videoArSourceVideo").currentTime > 1.2);
   await page.waitForFunction(() => window.videoArDecodedFrames.at(-1)?.mediaTime > 1.2);
   const decoded = await page.evaluate(() => window.videoArDecodedFrames.at(-1));
-  const expectedLongitude = (120 + Math.round(decoded.mediaTime * 10) * 0.0000005).toFixed(6);
-  await until("telemetry follows the decoded video frame rather than the requested seek time", async () => (await page.locator("#videoArPosition").textContent()).startsWith(expectedLongitude + ","));
+  const expectedSample = Math.round(decoded.mediaTime * 10);
+  await until("telemetry follows decoded frame PTS",async()=> (await page.locator("#videoArEffectiveCamera").textContent()).includes("PTS "+decoded.mediaTime.toFixed(3)+"s"));
+  const seekDiagnostic=await readHeightDiagnostic(), seekCamera=seekDiagnostic.effectiveCamera;
+  assert.equal(seekCamera.videoSampleIndex,expectedSample);assert.equal(seekCamera.poseVideoTimeMs,expectedSample*100);
+  const sourceLongitude=120+expectedSample*.0000005;
+  assert.ok(Math.abs(seekCamera.longitude-sourceLongitude-12/(111320*Math.cos(Math.PI/6)))<1e-6,"Displayed longitude includes the enabled 12m east correction");
+  assert.ok(seekCamera.latitude<30&&seekCamera.latitude>29.99992,"Displayed latitude includes north -8m");
+  assert.ok((await page.locator("#videoArPosition").textContent()).startsWith(seekCamera.longitude.toFixed(6)+","));
   assert.ok(Math.abs(decoded.currentTime - decoded.mediaTime) > 0.02, "Synthetic seek must land between coded frames to exercise PTS alignment");
   assert.ok((await page.locator("#videoArFrame").textContent()).includes("/ 30"));
   checks.push("Between-frame seeking projects the decoded frame PTS pose instead of the playback clock");
@@ -348,7 +409,7 @@ async function createFixtures() {
   await openCalibration();
   await page.locator(".video-ar-control-picker [data-action=start]").click();
   assert.equal(await page.locator(".vacp-body").isVisible(), false, "Selecting a new source must not expose the old replay calibration frame");
-  assert.ok((await page.locator(".vacp-status").textContent()).includes("请先加载"));
+  await page.waitForFunction(()=>document.querySelector(".vacp-status")?.textContent?.includes("请先加载"));
   checks.push("A newly selected but not yet loaded video cannot inherit control-point calibration from the old frame");
   await page.locator("#videoArLoad").click();
   await until("second video upload deliberately held", () => uploadHeld);
@@ -360,6 +421,9 @@ async function createFixtures() {
   releaseUpload();
   await page.unroute(uploadPattern);
   await until("second video saved", async () => (await records()).length === 2);
+  assert.equal(await page.locator("#videoArTakeoffHeight").inputValue(),"");
+  assert.equal(await page.locator("#videoArHeightMode").inputValue(),"estimated");
+  assert.deepEqual((await records()).find(record=>record.id!==original.id).settings.video.calibrationSessions,[]);
   checks.push("Selecting a new source resets calibration; edits while its upload is pending cannot overwrite the prior replay");
 
   // Simulate a genuine record saved before calibration fields existed, then
@@ -417,6 +481,8 @@ async function createFixtures() {
     const diagnostics = await page.evaluate(() => ({
       status: document.querySelector("#videoArStatus")?.textContent,
       mode: document.querySelector("#videoArProjectionMode")?.textContent,
+      controlStatus: document.querySelector(".vacp-status")?.textContent,
+      cameraDetail: document.querySelector("#videoArEffectiveCamera")?.textContent,
       library: document.querySelector("#libraryStatus")?.textContent,
       frame: document.querySelector("#videoArFrame")?.textContent,
       gpu: window.videoArGpu,

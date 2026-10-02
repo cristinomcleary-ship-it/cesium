@@ -589,6 +589,13 @@ function toast(message: string, error = false) {
 }
 
 const videoArFusion = new VideoArFusion(viewer, toast, setStatus);
+videoArFusion.onGetProjectionModels = () => imports.filter(item => item.kind === "3D Tiles").map(item => {
+  const tileset = item.resource as Cesium3DTileset;
+  return { id: item.id, name: item.name, visible: item.visible, runtimeVisible: tileset.show,
+    modelMatrix: Matrix4.toArray(tileset.modelMatrix), maximumScreenSpaceError: tileset.maximumScreenSpaceError,
+    savedRecord: projectLibrary?.projectionModelRecord(item.id) ?? null,
+    versionEvidence: "local record revision and current transform; model content hash not verified" };
+});
 videoArFusion.onShowProjectionModels = () => {
   const models = imports.filter(item => item.kind === "3D Tiles");
   for (const item of models) if (!item.visible) setImportVisibility(item, true, { silent: true, deferRender: true });
@@ -616,7 +623,7 @@ projectLibrary = new SceneLibrary({
   setBasemap, getBasemap: () => activeBasemapKey, notify: toast,
   restoreVideo: (files, settings) => videoArFusion.restoreReplay(files, settings), clearVideo: () => videoArFusion.clear(), layersChanged: renderLayers,
 });
-videoArFusion.onReplaySettingsChanged = controls => projectLibrary?.updateVideoControls(controls);
+videoArFusion.onReplaySettingsChanged = (controls, sessions, requireSaved) => projectLibrary?.updateVideoControls(controls, sessions, requireSaved);
 videoArFusion.onReplayLoaded = async snapshot => {
   await projectLibrary!.ready;
   const files = Object.fromEntries(Object.entries(snapshot.files).map(([slot, file]) => [slot, { name: file.name, blob: file }]));

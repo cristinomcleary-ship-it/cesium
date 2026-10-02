@@ -11,6 +11,7 @@ const runRoot = path.join(root, "tmp", "video-ar-controls-" + Date.now());
 const port = 5190, base = "http://127.0.0.1:" + port;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const checks = [], errors = [];
+const pendingRequests = new Set();
 let server, browser, page, log = "";
 const fixture = `<!doctype html><html><head><meta charset="utf-8"><style>
 html,body{margin:0;background:#152330;color:#ecf5fb;font:14px sans-serif}#host{position:absolute;left:0;top:0;width:470px;padding:10px;box-sizing:border-box;z-index:2}#map{position:absolute;left:490px;right:0;top:0;bottom:0}button{font:inherit}
@@ -31,8 +32,8 @@ const model=await C.Model.fromGltfAsync({url:URL.createObjectURL(new Blob([JSON.
 viewer.scene.primitives.add(model);viewer.camera.lookAt(world({x:0,y:45,z:-80}),new C.HeadingPitchRange(0,-Math.PI/2,160));viewer.camera.lookAtTransform(C.Matrix4.IDENTITY);
 const image=document.createElement("canvas");image.width=640;image.height=360;const ctx=image.getContext("2d");ctx.fillStyle="#dde4e8";ctx.fillRect(0,0,640,360);for(let x=0;x<640;x+=40){ctx.strokeStyle="#bccbd1";ctx.strokeRect(x,0,40,360);}for(let y=0;y<360;y+=40)ctx.strokeRect(0,y,640,40);
 const frame={image,width:640,height:360,origin,attitude:{yaw:13,pitch:-58,roll:1},intrinsics:{width:640,height:360,fx:500,fy:500,cx:320,cy:180},frameTime:1.5,sourceKey:"source-a"};
-const state={frame,starts:0,ends:0,applied:[],hidden:false,realPick:null,fallbackCalls:0,inject:null,depthFail:false};
-const editor=new VideoArControlPointPicker(viewer,document.querySelector("#host"),{getFrame:()=>frame,onStart:()=>{state.starts++;state.hidden=true;},onEnd:()=>{state.ends++;state.hidden=false;},onApply:r=>state.applied.push(r)});
+const state={frame,starts:0,ends:0,applied:[],records:[],recordMode:"normal",recordRelease:null,hidden:false,realPick:null,fallbackCalls:0,inject:null,depthFail:false};
+const editor=new VideoArControlPointPicker(viewer,document.querySelector("#host"),{getFrame:()=>frame,onStart:()=>{state.starts++;state.hidden=true;},onEnd:()=>{state.ends++;state.hidden=false;},onApply:r=>state.applied.push(r),onRecord:async r=>{state.records.push(r);if(state.recordMode==="fail")throw Error("simulated disk failure");if(state.recordMode==="pending")await new Promise(resolve=>state.recordRelease=resolve);}});
 const nativePick=viewer.scene.pick.bind(viewer.scene),nativePosition=viewer.scene.pickPosition.bind(viewer.scene),nativeGlobe=viewer.scene.globe.pick.bind(viewer.scene.globe);
 state.enableInjected=()=>{viewer.scene.pick=()=>({primitive:model});viewer.scene.pickPosition=()=>state.depthFail?undefined:world(state.inject);viewer.scene.globe.pick=(...args)=>{if(/pickScene|videoArControlPointPicker/.test(new Error().stack||""))state.fallbackCalls++;return nativeGlobe(...args);};};
 state.restoreNative=()=>{viewer.scene.pick=nativePick;viewer.scene.pickPosition=nativePosition;viewer.scene.globe.pick=nativeGlobe;};
@@ -49,9 +50,9 @@ async function start(){await page.locator('[data-action="start"]').click();await
 (async()=>{try{
  await begin();
  const executable=process.env.BROWSER_EXECUTABLE||["C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe","C:/Program Files/Google/Chrome/Application/chrome.exe"].find(existsSync);
- browser=await chromium.launch({headless:true,executablePath:executable,args:["--disable-gpu-sandbox","--enable-unsafe-swiftshader"]});
- page=await browser.newPage({viewport:{width:1400,height:950}});page.setDefaultTimeout(12000);page.on("pageerror",e=>errors.push(e.message));
- await page.goto(base+"/tmp/"+path.basename(runRoot)+"/fixture.html",{waitUntil:"domcontentloaded",timeout:30000});await page.waitForFunction(()=>window.ready,{},{timeout:30000});await page.waitForFunction(()=>fixture.model.ready);await page.evaluate(()=>fixture.state.aimRoof());await sleep(1200);
+ browser=await chromium.launch({headless:true,executablePath:executable,args:["--disable-gpu-sandbox","--use-angle=swiftshader","--enable-unsafe-swiftshader"]});
+ page=await browser.newPage({viewport:{width:1400,height:950}});page.setDefaultTimeout(12000);page.on("pageerror",e=>errors.push(e.message));page.on("request",r=>pendingRequests.add(r.url()));page.on("requestfinished",r=>pendingRequests.delete(r.url()));page.on("requestfailed",r=>pendingRequests.delete(r.url()));
+ await page.goto(base+"/tmp/"+path.basename(runRoot)+"/fixture.html",{waitUntil:"domcontentloaded",timeout:90000});await page.waitForFunction(()=>window.ready,{},{timeout:30000});await page.waitForFunction(()=>fixture.model.ready);await page.evaluate(()=>fixture.state.aimRoof());await sleep(1200);
  await start();assert.equal(await page.evaluate(()=>fixture.state.hidden),true);await clickVideo();await clickMap();
  const real=await page.evaluate(()=>fixture.state.readRealPick());assert.ok(real.hasModel,"Real Cesium pick must hit the synthetic model: "+JSON.stringify(real));assert.ok(Math.abs(real.local.z+80)<.5,"Real roof depth must be near roof height: "+JSON.stringify(real));
  assert.match(await page.locator('[data-role="count"]').textContent(),/1/);checks.push("Actual Cesium model roof pickPosition matched a real rendered roof; no injected pick in this check");
@@ -64,7 +65,33 @@ async function start(){await page.locator('[data-action="start"]').click();await
  await start();await clickVideo();await page.evaluate(()=>fixture.state.depthFail=true);const before=await page.evaluate(()=>fixture.state.fallbackCalls);await clickMap();assert.match(await page.locator(".vacp-status").textContent(),/深度/);assert.equal(await page.evaluate(()=>fixture.state.fallbackCalls),before);assert.match(await page.locator('[data-role="count"]').textContent(),/0/);await page.locator('[data-action="cancel"]').click();await page.evaluate(()=>fixture.state.depthFail=false);checks.push("Injected model depth failure cannot fall back to ground");
  await start();await page.evaluate(()=>fixture.state.frame.sourceKey="source-b");await clickVideo();assert.equal(await page.locator(".vacp-body").isVisible(),false);assert.match(await page.locator(".vacp-status").textContent(),/已改变/);checks.push("Source switch with unchanged PTS cancels frozen pairing");
  await start();await page.evaluate(()=>fixture.state.frame.frameTime+=.1);await clickVideo();assert.equal(await page.locator(".vacp-body").isVisible(),false);checks.push("PTS change rejects stale frozen frame");
+ // Holdout points are measurable without being used as optimization constraints.
+ await start();
+ for(const point of controls.slice(0,3)){await clickVideo(point.pixelX,point.pixelY);await page.evaluate(p=>fixture.state.inject=p,point.world);await clickMap();}
+ await page.locator('[data-role="point-role"]').selectOption("check");
+ await clickVideo(controls[0].pixelX+20,controls[0].pixelY);await page.evaluate(p=>fixture.state.inject=p,controls[0].world);await clickMap();
+ assert.equal(await page.locator('[data-action="solve"]').isDisabled(),true,"3 fit + 1 check cannot satisfy minimum fit count");
+ await page.locator('[data-role="point-role"]').selectOption("fit");
+ for(const point of controls.slice(3)){await clickVideo(point.pixelX,point.pixelY);await page.evaluate(p=>fixture.state.inject=p,point.world);await clickMap();}
+ const applyCount=await page.evaluate(()=>fixture.state.applied.length);
+ await page.locator('[data-action="record"]').click();await page.waitForFunction(()=>fixture.state.records.at(-1)?.status==="recorded-not-solved");
+ assert.equal(await page.evaluate(()=>fixture.state.applied.length),applyCount);assert.equal(await page.evaluate(()=>fixture.editor.getLastSession().points.length),7);
+ await page.locator('[data-action="solve"]').click();await page.waitForFunction(n=>fixture.state.applied.length===n+1,applyCount);
+ const heldOut=await page.evaluate(()=>fixture.state.applied.at(-1).session);
+ assert.ok(heldOut.summary.after.fit.rmsePx<1);assert.ok(heldOut.summary.after.check.rmsePx>18);assert.equal(heldOut.summary.after.fit.count,6);assert.equal(heldOut.summary.after.check.count,1);
+ assert.equal(await page.locator('[data-action="export-record"]').isVisible(),true);checks.push("3 fit plus 1 check cannot solve; 6 fit plus a deliberately wrong holdout keep accurate fit and report bad independent residuals; record-only does not apply");
+ const fill=async()=>{for(const point of controls){await clickVideo(point.pixelX,point.pixelY);await page.evaluate(p=>fixture.state.inject=p,point.world);await clickMap();}};
+ await start();await fill();await page.evaluate(()=>fixture.state.recordMode="fail");await page.locator('[data-action="solve"]').click();
+ await page.waitForFunction(()=>document.querySelector('.vacp-status').textContent.includes('simulated disk failure'));
+ assert.equal(await page.evaluate(()=>fixture.state.applied.length),applyCount+1);assert.equal(await page.evaluate(()=>fixture.editor.getLastSession().points.length),6);
+ const downloadWait=page.waitForEvent("download");await page.locator('[data-action="export-record"]').click();const download=await downloadWait;
+ await download.saveAs(path.join(runRoot,"failed-save-record.json"));const failedRecord=JSON.parse(await fs.readFile(path.join(runRoot,"failed-save-record.json"),"utf8"));assert.equal(failedRecord.points.length,6);
+ await page.locator('[data-action="cancel"]').click();checks.push("Persistence rejection never applies calibration and the complete record remains downloadable");
+ await page.evaluate(()=>{fixture.state.recordMode="pending";fixture.state.recordRelease=null;});await start();await fill();await page.locator('[data-action="solve"]').click();
+ await page.waitForFunction(()=>typeof fixture.state.recordRelease==="function");await page.evaluate(()=>{fixture.state.frame.frameTime+=.1;fixture.state.recordRelease();});
+ await page.waitForFunction(()=>document.querySelector('.vacp-body').hidden);assert.equal(await page.evaluate(()=>fixture.state.applied.length),applyCount+1);
+ checks.push("Changing PTS while durable recording is pending prevents a stale calibration from applying");
  const lifecycle=await page.evaluate(()=>({starts:fixture.state.starts,ends:fixture.state.ends,hidden:fixture.state.hidden}));assert.equal(lifecycle.starts,lifecycle.ends);assert.equal(lifecycle.hidden,false);assert.deepEqual(errors,[]);
  await page.screenshot({path:path.join(runRoot,"controls.png"),fullPage:true});
  const result={status:"PASS",checks,realRoofPick:real,solved,lifecycle,pageErrors:errors,runRoot};await fs.writeFile(path.join(runRoot,"result.json"),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));
-}catch(error){await fs.writeFile(path.join(runRoot,"result.json"),JSON.stringify({status:"FAIL",message:error.stack,checks,pageErrors:errors,runRoot},null,2)).catch(()=>{});if(page)await page.screenshot({path:path.join(runRoot,"failure.png"),fullPage:true}).catch(()=>{});console.error(error.stack);process.exitCode=1;}finally{await browser?.close();server?.kill();await fs.writeFile(path.join(runRoot,"server.log"),log).catch(()=>{});}})();
+}catch(error){await fs.writeFile(path.join(runRoot,"result.json"),JSON.stringify({status:"FAIL",message:error.stack,checks,pageErrors:errors,pendingRequests:[...pendingRequests],runRoot},null,2)).catch(()=>{});if(page)await page.screenshot({path:path.join(runRoot,"failure.png"),fullPage:true}).catch(()=>{});console.error(error.stack);process.exitCode=1;}finally{await browser?.close();server?.kill();await fs.writeFile(path.join(runRoot,"server.log"),log).catch(()=>{});}})();

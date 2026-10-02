@@ -3,6 +3,7 @@ import {
   Model, ScreenSpaceEventHandler, ScreenSpaceEventType, Transforms, type Viewer,
 } from "cesium";
 import { refineCameraPose, type ControlPointMatch } from "./videoArControlPoints";
+import { makeControlPointSession, type ControlPointSession } from "./videoArControlPointSession";
 import type { CameraAttitude, CameraIntrinsics, CameraVector3, LensDistortion } from "./videoArCamera";
 import "./videoArControlPointPicker.css";
 
@@ -17,9 +18,10 @@ export type ControlPointFrame = Readonly<{
   frameTime: number;
   /** A load generation or media URL, to distinguish sources at identical PTS. */
   sourceKey?: string | number;
+  context?: Record<string, unknown>;
 }>;
 
-export type PickedControlPoint = ControlPointMatch & Readonly<{ worldEcef: CameraVector3 }>;
+export type PickedControlPoint = ControlPointMatch & Readonly<{ worldEcef: CameraVector3; role: "fit" | "check" }>;
 
 export type ControlPointPickerResult = Readonly<{
   positionDeltaENU: CameraVector3;
@@ -28,6 +30,7 @@ export type ControlPointPickerResult = Readonly<{
   maxErrorPx: number;
   points: readonly PickedControlPoint[];
   frameTime: number;
+  session: ControlPointSession;
 }>;
 
 export type ControlPointPickerCallbacks = Readonly<{
@@ -36,9 +39,10 @@ export type ControlPointPickerCallbacks = Readonly<{
   onStart: () => void;
   onEnd: () => void;
   onApply: (result: ControlPointPickerResult) => void | Promise<void>;
+  onRecord?: (session: ControlPointSession) => void | Promise<void>;
 }>;
 
-/** A local, non-persistent two-view control-point editor owned by its host. */
+/** Frozen-frame editor; the host persists full sessions through onRecord. */
 export class VideoArControlPointPicker {
   private readonly root = document.createElement("section");
   private readonly abort = new AbortController();
@@ -52,6 +56,10 @@ export class VideoArControlPointPicker {
   private readonly list: HTMLElement;
   private readonly count: HTMLElement;
   private readonly zoom: HTMLSelectElement;
+  private readonly roleSelector: HTMLSelectElement;
+  private readonly saveRecordButton: HTMLButtonElement;
+  private readonly exportRecordButton: HTMLButtonElement;
+  private lastSession?: ControlPointSession;
   private handler?: ScreenSpaceEventHandler;
   private frozen?: ControlPointFrame;
   private frozenImage?: HTMLCanvasElement;
@@ -59,6 +67,8 @@ export class VideoArControlPointPicker {
   private points: PickedControlPoint[] = [];
   private pending?: { pixelX: number; pixelY: number };
   private active = false;
+  private preparing = false;
+  private preparationGeneration = 0;
   private solving = false;
   private destroyed = false;
 
@@ -69,14 +79,14 @@ export class VideoArControlPointPicker {
   ) {
     this.root.className = "video-ar-control-picker";
     this.root.innerHTML = `
-      <div class="vacp-title"><strong>视频与模型同名点配准</strong><button type="button" data-action="start">冻结当前帧，开始选点</button></div>
+      <div class="vacp-title"><strong>视频与模型同名点配准</strong><button type="button" data-action="start">冻结当前帧，开始选点</button><button type="button" data-action="export-record">导出最近记录</button></div>
       <p class="vacp-status" role="status" aria-live="polite">至少 4 对点，建议 6～10 对分布在画面不同区域的清晰地物。</p>
       <div class="vacp-body" hidden>
         <p class="vacp-guide">先在视频选一个清晰点，再在三维场景点击同一个位置。选择路面标线、屋角等固定地物；屋顶点必须对应屋顶。</p>
-        <div class="vacp-toolbar"><span data-role="count">已配对 0 个点</span><label>图像缩放 <select data-role="zoom"><option value="1">适应</option><option value="2">2×</option><option value="4">4×</option></select></label></div>
+        <div class="vacp-toolbar"><span data-role="count">已配对 0 个点</span><label>点的用途 <select data-role="point-role"><option value="fit">拟合点</option><option value="check">独立检查点</option></select></label><label>图像缩放 <select data-role="zoom"><option value="1">适应</option><option value="2">2×</option><option value="4">4×</option></select></label></div>
         <div class="vacp-image-scroll"><canvas aria-label="冻结的视频画面，点击选择同名点"></canvas></div>
         <ol class="vacp-point-list" aria-label="已配对控制点"></ol>
-        <div class="vacp-actions"><button type="button" data-action="undo">撤销上一点</button><button type="button" data-action="solve">求解并应用校准</button><button type="button" data-action="cancel">取消选点</button></div>
+        <div class="vacp-actions"><button type="button" data-action="undo">撤销上一点</button><button type="button" data-action="record">保存当前记录</button><button type="button" data-action="solve">求解并应用校准</button><button type="button" data-action="cancel">取消选点</button></div>
       </div>`;
     host.append(this.root);
     const find = <T extends Element>(selector: string) => {
@@ -94,22 +104,36 @@ export class VideoArControlPointPicker {
     this.list = find(".vacp-point-list");
     this.count = find('[data-role="count"]');
     this.zoom = find('[data-role="zoom"]');
+    this.roleSelector = find('[data-role="point-role"]');
+    this.saveRecordButton = find('[data-action="record"]');
+    this.exportRecordButton = find('[data-action="export-record"]');
     const options = { signal: this.abort.signal };
     this.startButton.addEventListener("click", () => this.start(), options);
     this.cancelButton.addEventListener("click", () => this.cancel(), options);
     this.undoButton.addEventListener("click", () => this.undo(), options);
     this.solveButton.addEventListener("click", () => { void this.solve(); }, options);
+    this.saveRecordButton.addEventListener("click", () => { void this.saveRecord(); }, options);
+    this.exportRecordButton.addEventListener("click", () => { this.exportLastSession(); }, options);
     this.canvas.addEventListener("click", (event) => this.pickImage(event), options);
     this.zoom.addEventListener("change", () => { this.canvas.style.width = String(Number(this.zoom.value) * 100) + "%"; }, options);
     this.render();
   }
 
   /** Begin a new frozen-frame session; existing pairings are discarded. */
-  start() {
-    if (this.destroyed || this.active || this.solving) return;
+  async start() {
+    if (this.destroyed || this.active || this.solving || this.preparing) return;
+    const generation = ++this.preparationGeneration;
+    this.preparing = true; this.render();
     let started = false;
     try {
-      const frame = this.callbacks.getFrame();
+      let frame = this.callbacks.getFrame();
+      // pause() and the final decoded-video callback need not occur in the same browser task.
+      // Wait briefly for a matching pose; never substitute currentTime or a stale camera.
+      for (let attempt = 0; !frame && attempt < 25; attempt++) {
+        await new Promise(resolve => window.setTimeout(resolve, 20));
+        if (this.destroyed || generation !== this.preparationGeneration) return;
+        frame = this.callbacks.getFrame();
+      }
       if (!frame) throw new Error("请先加载并暂停 DJI 视频，在需要校准的一帧开始选点。");
       if (!Number.isFinite(frame.frameTime) || !Number.isInteger(frame.width) || !Number.isInteger(frame.height)
         || frame.width <= 0 || frame.height <= 0 || frame.intrinsics.width !== frame.width || frame.intrinsics.height !== frame.height) {
@@ -126,11 +150,13 @@ export class VideoArControlPointPicker {
       this.frozen = {
         ...frame, origin: Cartesian3.clone(frame.origin),
         attitude: { ...frame.attitude }, intrinsics: { ...frame.intrinsics }, distortion: { ...frame.distortion },
+        context: frame.context ? structuredClone(frame.context) : undefined,
       };
       this.worldToLocal = Matrix4.inverseTransformation(Transforms.eastNorthUpToFixedFrame(this.frozen.origin), new Matrix4());
       this.points = [];
       this.pending = undefined;
       this.zoom.value = "1";
+      this.roleSelector.value = "fit";
       this.canvas.style.width = "100%";
       this.canvas.width = snapshot.width;
       this.canvas.height = snapshot.height;
@@ -145,7 +171,13 @@ export class VideoArControlPointPicker {
       if (started) this.finish();
       else { this.frozen = undefined; this.frozenImage = undefined; this.worldToLocal = undefined; }
       this.message(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      if (!this.destroyed && generation === this.preparationGeneration) { this.preparing = false; this.render(); }
     }
+  }
+
+  cancelActiveSelection() {
+    if (this.active) this.cancel();
   }
 
   cancel() {
@@ -164,6 +196,8 @@ export class VideoArControlPointPicker {
   }
 
   private finish() {
+    this.preparationGeneration += 1;
+    this.preparing = false;
     const wasActive = this.active;
     this.active = false;
     this.solving = false;
@@ -243,6 +277,7 @@ export class VideoArControlPointPicker {
         ...this.pending,
         world: { x: local.x, y: local.y, z: local.z },
         worldEcef: { x: world.x, y: world.y, z: world.z },
+        role: this.roleSelector.value === "check" ? "check" : "fit",
       });
       this.pending = undefined;
       this.message("第 " + this.points.length + " 对点已匹配（" + surfaceLabel + "）。"
@@ -261,49 +296,78 @@ export class VideoArControlPointPicker {
     this.render();
   }
 
-  private async solve() {
-    if (!this.active || this.solving || this.pending || this.points.length < 4 || !this.requireCurrentFrame() || !this.frozen) return;
-    this.solving = true;
-    this.render();
+  private makeSession(frame: ControlPointFrame, solution?: ReturnType<typeof refineCameraPose>): ControlPointSession {
+    return makeControlPointSession({
+      frame: { originEcef: { x: frame.origin.x, y: frame.origin.y, z: frame.origin.z },
+        frameTime: frame.frameTime, sourceKey: frame.sourceKey, context: frame.context,
+        intrinsics: frame.intrinsics, distortion: frame.distortion, attitude: frame.attitude },
+      points: this.points.map(point => ({ ...point, world: { ...point.world }, worldEcef: { ...point.worldEcef } })), solution,
+    });
+  }
+
+  getLastSession(): ControlPointSession | undefined {
+    return this.lastSession ? structuredClone(this.lastSession) : undefined;
+  }
+
+  exportLastSession(): void {
+    if (!this.lastSession) { this.message("请先保存当前记录，或进行一次拟合求解。"); return; }
+    const blob = new Blob([JSON.stringify(this.lastSession, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob), anchor = document.createElement("a");
+    anchor.href = url; anchor.download = "video-ar-control-points-" + this.lastSession.id + ".json";
+    anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+  }
+
+  private async saveRecord(): Promise<void> {
+    if (!this.active || this.solving || this.pending || !this.frozen || !this.requireCurrentFrame()) return;
+    const frozen = this.frozen;
+    this.solving = true; this.render();
     try {
-      const frozen = this.frozen;
-      const result = refineCameraPose({
-        initialPosition: { x: 0, y: 0, z: 0 },
-        initialAttitude: frozen.attitude,
-        intrinsics: frozen.intrinsics,
-        distortion: frozen.distortion,
-        controls: this.points,
-      });
-      if (!this.requireCurrentFrame()) return;
+      const session = this.makeSession(frozen);
+      this.lastSession = session;
+      await this.callbacks.onRecord?.(session);
+      if (this.destroyed || !this.active || this.frozen !== frozen || !this.requireCurrentFrame()) return;
+      this.message(this.callbacks.onRecord
+        ? "当前帧控制点记录已保存；未执行拟合，结果尚未验收。"
+        : "当前帧控制点记录已保留，可导出；未执行拟合，结果尚未验收。");
+    } catch (error) {
+      if (!this.destroyed) this.message("记录保存失败，可重试或导出最近记录：" + (error instanceof Error ? error.message : String(error)), true);
+    } finally {
+      if (!this.destroyed) { this.solving = false; this.render(); }
+    }
+  }
+
+  private async solve(): Promise<void> {
+    const fitPoints = this.points.filter(point => point.role === "fit");
+    if (!this.active || this.solving || this.pending || fitPoints.length < 4 || !this.frozen || !this.requireCurrentFrame()) return;
+    const frozen = this.frozen;
+    this.solving = true; this.render();
+    try {
+      const result = refineCameraPose({ initialPosition: { x: 0, y: 0, z: 0 }, initialAttitude: frozen.attitude,
+        intrinsics: frozen.intrinsics, distortion: frozen.distortion, controls: fitPoints });
+      if (this.destroyed || !this.active || this.frozen !== frozen || !this.requireCurrentFrame()) return;
+      const session = this.makeSession(frozen, result);
+      this.lastSession = session;
       const output: ControlPointPickerResult = {
         positionDeltaENU: { ...result.position },
-        attitudeDelta: {
-          yaw: result.attitude.yaw - frozen.attitude.yaw,
-          pitch: result.attitude.pitch - frozen.attitude.pitch,
-          roll: result.attitude.roll - frozen.attitude.roll,
-        },
-        rmsePx: result.rmsePx,
-        maxErrorPx: result.maxErrorPx,
-        points: this.points.map((point) => ({ ...point, world: { ...point.world }, worldEcef: { ...point.worldEcef } })),
-        frameTime: frozen.frameTime,
+        attitudeDelta: { yaw: result.attitude.yaw - frozen.attitude.yaw,
+          pitch: result.attitude.pitch - frozen.attitude.pitch, roll: result.attitude.roll - frozen.attitude.roll },
+        rmsePx: result.rmsePx, maxErrorPx: result.maxErrorPx,
+        points: this.points.map(point => ({ ...point, world: { ...point.world }, worldEcef: { ...point.worldEcef } })),
+        frameTime: frozen.frameTime, session,
       };
+      // Record the evidence before applying the solution; persistence errors leave it exportable.
+      await this.callbacks.onRecord?.(session);
+      if (this.destroyed || !this.active || this.frozen !== frozen || !this.requireCurrentFrame()) return;
       await this.callbacks.onApply(output);
-      if (this.destroyed) return;
+      if (this.destroyed || (this.active && this.frozen !== frozen)) return;
       this.finish();
-      this.message("校准已应用：" + output.points.length + " 对点，重投影 RMS " + output.rmsePx.toFixed(2)
-        + " 像素，最大误差 " + output.maxErrorPx.toFixed(2) + " 像素。");
+      const check = session.summary.after?.check;
+      const checkText = check?.count ? (check.rmsePx === null ? "检查点有无效投影" : "独立检查 RMS " + check.rmsePx.toFixed(2) + " 像素") : "尚无独立检查点";
+      this.message("已应用拟合校准：" + fitPoints.length + " 个拟合点，拟合 RMS " + output.rmsePx.toFixed(2) + " 像素；" + checkText + "，结果尚未验收。");
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      const message = /collinear|clustered|coincident/.test(detail)
-        ? "控制点过于集中或接近一条直线，请在画面四周补充点。"
-        : /behind|visibility/.test(detail)
-          ? "控制点与当前相机方向不符，请检查模型同名点及初始相机位置。"
-          : /fit failed/.test(detail)
-            ? "控制点未达到可用精度。请撤销错误匹配，核对屋顶与地面高度后重试。 " + detail
-            : "校准未应用：" + detail;
-      this.message(message, true);
-      this.solving = false;
-      this.render();
+      if (!this.destroyed) this.message("校准未完成，可重试或保存当前记录：" + (error instanceof Error ? error.message : String(error)), true);
+    } finally {
+      if (!this.destroyed) { this.solving = false; this.render(); }
     }
   }
 
@@ -314,17 +378,20 @@ export class VideoArControlPointPicker {
 
   private render() {
     this.body.hidden = !this.active;
-    this.startButton.disabled = this.active || this.solving || this.destroyed;
-    this.solveButton.disabled = !this.active || this.solving || this.points.length < 4 || Boolean(this.pending);
+    this.startButton.disabled = this.active || this.solving || this.preparing || this.destroyed;
+    this.solveButton.disabled = !this.active || this.solving || this.points.filter(point => point.role === "fit").length < 4 || Boolean(this.pending);
+    this.saveRecordButton.disabled = !this.active || this.solving || Boolean(this.pending);
+    this.exportRecordButton.disabled = this.solving || !this.lastSession;
+    this.roleSelector.disabled = this.solving || Boolean(this.pending);
     this.undoButton.disabled = !this.active || this.solving || (!this.points.length && !this.pending);
     this.cancelButton.disabled = this.solving;
     this.zoom.disabled = this.solving;
-    this.count.textContent = "已配对 " + this.points.length + " 个点" + (this.pending ? " · 等待地图对应点" : "");
+    this.count.textContent = "拟合 " + this.points.filter(point => point.role === "fit").length + " 点 · 独立检查 " + this.points.filter(point => point.role === "check").length + " 点" + (this.pending ? " · 等待地图对应点" : "");
     this.list.replaceChildren();
     for (let index = 0; index < this.points.length; index += 1) {
       const point = this.points[index];
       const item = document.createElement("li");
-      item.textContent = (index + 1) + "：视频 (" + point.pixelX.toFixed(0) + ", " + point.pixelY.toFixed(0)
+      item.textContent = (index + 1) + (point.role === "check" ? " [独立检查]：视频 (" : " [拟合]：视频 (") + point.pixelX.toFixed(0) + ", " + point.pixelY.toFixed(0)
         + ") → 场景 E " + point.world.x.toFixed(1) + " / N " + point.world.y.toFixed(1) + " / U " + point.world.z.toFixed(1) + " m";
       this.list.append(item);
     }

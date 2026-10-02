@@ -52,16 +52,27 @@ function pixels(){
   const u=Math.floor(k.cx+k.fx*C.Cartesian3.dot(difference,sourceRight)/depth),v=Math.floor(k.cy-k.fy*C.Cartesian3.dot(difference,activeFrame.up)/depth);
   expected[name]=[...sourceContext.getImageData(u,v,1,1).data].slice(0,3);
  }
- return{rgb,expected,status:projector.status,ready:projector.ready,stages:viewer.scene.postProcessStages.length};
+ return{rgb,expected,status:projector.status,ready:projector.ready,stages:viewer.scene.postProcessStages.length,diagnostics:projector.getDiagnosticState()};
 }
 window.fixture={viewer,projector,source,texture,frame,pixels,viewpoint,
+ diagnosticInvariants:()=>{
+  const initial=projector.getDiagnosticState(), detached=projector.getDiagnosticState();
+  detached.camera.originEcef.x+=1000;detached.camera.intrinsics.fx=1;detached.camera.distortion.k1=1;
+  const unchanged=JSON.stringify(initial)===JSON.stringify(projector.getDiagnosticState());
+  const fake={id:"diagnostics-test-only",updateHeight(){return()=>{};},show:false,shadows:C.ShadowMode.DISABLED,isCesium3DTileset:true,_requestedTiles:[{},{}],_statistics:{numberOfPendingRequests:3,numberOfTilesProcessing:4},update(){},destroy(){},isDestroyed(){return false;}};
+  viewer.scene.primitives.add(fake);
+  const hidden=projector.getDiagnosticState();fake.show=true;
+  const visible=projector.getDiagnosticState();delete fake._statistics;
+  const unknownStatistics=projector.getDiagnosticState();viewer.scene.primitives.remove(fake);
+  return{unchanged,initial,hidden,visible,unknownStatistics,after:projector.getDiagnosticState()};
+ },
  adjust:kind=>{
   if(kind==="roll")activeFrame={...frame,up:C.Cartesian3.normalize(C.Cartesian3.add(C.Cartesian3.multiplyByScalar(frame.up,Math.cos(.4),new C.Cartesian3()),C.Cartesian3.multiplyByScalar(right,Math.sin(.4),new C.Cartesian3()),new C.Cartesian3()),new C.Cartesian3())};
   else if(kind==="intrinsics")activeFrame={...frame,intrinsics:{...frame.intrinsics,fx:410,fy:340,cx:270,cy:260}};
   else activeFrame=frame;
   projector.setFrame(activeFrame);
  },enable:value=>projector.setEnabled(value),empty:()=>boxes.forEach(box=>viewer.scene.primitives.remove(box)),destroy:()=>projector.destroy(),
- noDepth:()=>{Object.defineProperty(viewer.scene.context,"depthTexture",{configurable:true,get:()=>false});let p;try{p=new VideoArModelProjector(viewer,()=>texture);p.setFrame(frame);p.setEnabled(true);return{ready:p.ready,status:p.status};}finally{p?.destroy();delete viewer.scene.context.depthTexture;}},
+ noDepth:()=>{Object.defineProperty(viewer.scene.context,"depthTexture",{configurable:true,get:()=>false});let p;try{p=new VideoArModelProjector(viewer,()=>texture);p.setFrame(frame);p.setEnabled(true);return{ready:p.ready,status:p.status,diagnostics:p.getDiagnosticState()};}finally{p?.destroy();delete viewer.scene.context.depthTexture;}},
  nonblack:()=>{const c=image(),d=c.getImageData(0,0,readCanvas.width,readCanvas.height).data;let colored=0;for(let i=0;i<d.length;i+=4)if(Math.max(d[i],d[i+1],d[i+2])-Math.min(d[i],d[i+1],d[i+2])>30)colored++;return colored;}
 };window.fixtureReady=true;
 `;
@@ -93,11 +104,33 @@ const delta=(a,b)=>Math.max(...a.map((v,i)=>Math.abs(v-b[i]))),chroma=a=>Math.ma
   }
  });
  page=await context.newPage();page.on("pageerror",error=>errors.push(error.message));page.on("console",message=>{if(message.type()==="error"&&/WebGL|shader|rendering has stopped|compile|link program/i.test(message.text()))errors.push(message.text());});
- await page.goto(base+"/"+path.relative(root,path.join(runRoot,"fixture.html")).split(path.sep).join("/"),{waitUntil:"domcontentloaded"});
+ await page.goto(base+"/"+path.relative(root,path.join(runRoot,"fixture.html")).split(path.sep).join("/"),{waitUntil:"domcontentloaded",timeout:90000});
  await page.waitForFunction(()=>window.fixtureReady,{},{timeout:30000});
  results.baseline=await snapshot("01-disabled");
+ results.diagnosticInvariants=await page.evaluate(()=>window.fixture.diagnosticInvariants());
+ const diagnostics=results.diagnosticInvariants;
+ assert.equal(diagnostics.unchanged,true,"Changing a returned diagnostic must not mutate the camera or uniforms");
+ assert.deepEqual(diagnostics.after,diagnostics.initial,"Reading diagnostics must not change runtime state");
+ assert.equal(diagnostics.hidden.visibleTilesetCount,diagnostics.initial.visibleTilesetCount,"Hidden tilesets must remain excluded");
+ assert.equal(diagnostics.visible.visibleTilesetCount,diagnostics.initial.visibleTilesetCount+1);
+ assert.deepEqual(diagnostics.visible.depth.visibleTilesetRequests,{requested:2,pending:3,processing:4});
+ assert.deepEqual(diagnostics.unknownStatistics.depth.visibleTilesetRequests,{requested:2,pending:null,processing:null},"Unavailable internal request counts must be null, not assumed zero");
+ assert.equal(results.baseline.diagnostics.enabled,false);assert.equal(results.baseline.diagnostics.stageEnabled,false);
+ assert.equal(results.baseline.diagnostics.depth.shaderSourceDepthAccepted,false);
+ checks.push("Detached diagnostics preserve runtime state, exclude hidden models and label unknown loading counters");
  await page.evaluate(()=>window.fixture.enable(true));
  results.enabled=await snapshot("02-model-projection");
+ const enabledDiagnostics=results.enabled.diagnostics;
+ assert.equal(enabledDiagnostics.enabled,true);assert.equal(enabledDiagnostics.ready,true);
+ assert.equal(enabledDiagnostics.stageEnabled,true);assert.equal(enabledDiagnostics.depth.currentFrameDepth,true);
+ assert.equal(enabledDiagnostics.depth.shaderSourceDepthAccepted,true);assert.equal(enabledDiagnostics.depth.textureAvailable,true);
+ assert.equal(enabledDiagnostics.depth.sourceFrameNumber,enabledDiagnostics.depth.currentSceneFrameNumber);
+ assert.equal(enabledDiagnostics.depth.textureWidth,2048);assert.equal(enabledDiagnostics.depth.textureHeight,2048);
+ assert.equal(enabledDiagnostics.settings.normalOffset,false);assert.equal(enabledDiagnostics.settings.softShadows,false);
+ assert.equal(enabledDiagnostics.settings.depthToleranceMeters,.35);assert.equal(enabledDiagnostics.settings.texelCenterExtrapolationCapMeters,2);
+ assert.deepEqual(enabledDiagnostics.camera.intrinsics,{width:512,height:512,fx:300,fy:300,cx:256,cy:256});
+ assert.equal(enabledDiagnostics.camera.maxDistance,250);
+ checks.push("Enabled diagnostics report the actual camera uniforms, current source depth frame and separate depth tolerances");
  assert.ok(chroma(results.enabled.rgb.roof)>40,"Roof must receive colored source texture: "+JSON.stringify(results.enabled));
  assert.ok(chroma(results.enabled.rgb.front)>40,"Facade must receive colored source texture");
  assert.ok(chroma(results.enabled.rgb.exposedWall)>40,"Unoccluded rear wall must receive source texture");
@@ -111,6 +144,8 @@ const delta=(a,b)=>Math.max(...a.map((v,i)=>Math.abs(v-b[i]))),chroma=a=>Math.ma
  for(const kind of ["roll","intrinsics"]){
   await page.evaluate(k=>{window.fixture.viewpoint(1);window.fixture.adjust(k);},kind);
   results[kind]=await snapshot("03-"+kind+"-only");
+  if(kind==="intrinsics")assert.deepEqual(results[kind].diagnostics.camera.intrinsics,{width:512,height:512,fx:410,fy:340,cx:270,cy:260});
+  if(kind==="roll")assert.notDeepEqual(results[kind].diagnostics.camera.upEcef,enabledDiagnostics.camera.upEcef);
   for(const name of ["roof","front"])assert.ok(delta(results[kind].rgb[name],results[kind].expected[name])<=8,"Changing only "+kind+" must refresh image/depth camera coherently: "+name+" "+JSON.stringify(results[kind]));
  }
  checks.push("Roll-only and intrinsics-only updates preserve coherent source image and visibility depth");
@@ -120,9 +155,10 @@ const delta=(a,b)=>Math.max(...a.map((v,i)=>Math.abs(v-b[i]))),chroma=a=>Math.ma
  checks.push("Disabling removes video without stale projected colors");
  await page.evaluate(()=>{window.fixture.enable(true);window.fixture.empty();});await settle();results.emptyColoredPixels=await page.evaluate(()=>window.fixture.nonblack());
  assert.equal(results.emptyColoredPixels,0,"Empty scene must not fall back to a colored plane");checks.push("No model geometry produces no projection plane or colored background");
- await page.evaluate(()=>window.fixture.destroy());await settle();results.destroyed=await page.evaluate(()=>({stages:window.fixture.viewer.scene.postProcessStages.length,colored:window.fixture.nonblack()}));
+ await page.evaluate(()=>window.fixture.destroy());await settle();results.destroyed=await page.evaluate(()=>({stages:window.fixture.viewer.scene.postProcessStages.length,colored:window.fixture.nonblack(),diagnostics:window.fixture.projector.getDiagnosticState()}));
  assert.equal(results.destroyed.stages,0,"Destroy must release the post-process stage");assert.equal(results.destroyed.colored,0,"Destroy must leave no image");checks.push("Destroy releases the stage without residual video");
- results.noDepth=await page.evaluate(()=>window.fixture.noDepth());assert.equal(results.noDepth.ready,false,"Missing depth support must not become ready");checks.push("Missing depth support reports unavailable without plane fallback");
+ assert.equal(results.destroyed.diagnostics.destroyed,true);assert.equal(results.destroyed.diagnostics.ready,false);assert.equal(results.destroyed.diagnostics.depth.textureAvailable,false);
+ results.noDepth=await page.evaluate(()=>window.fixture.noDepth());assert.equal(results.noDepth.ready,false,"Missing depth support must not become ready");assert.equal(results.noDepth.diagnostics.depth.supported,false);assert.equal(results.noDepth.diagnostics.enabled,false);checks.push("Missing depth support reports unavailable without plane fallback");
  results.gpu=await page.evaluate(()=>window.modelGpu);assert.ok(results.gpu.linked>0&&results.gpu.draws>0,"Projection shader must link and draw: "+JSON.stringify(results.gpu));assert.deepEqual(results.gpu.failures,[]);assert.deepEqual(errors,[]);
  checks.push("Actual WebGL shaders compile, link and draw without render errors");
  const report={result:"PASS",checks,results,errors,artifacts:runRoot};await fs.writeFile(path.join(runRoot,"result.json"),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));

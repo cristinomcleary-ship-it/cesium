@@ -15,9 +15,64 @@ export type ModelProjectionFrame = Readonly<{
   opacity?: number;
 }>;
 
+/** A detached runtime snapshot. Null means unavailable, never an assumed zero. */
+export type ModelProjectionDiagnosticState = Readonly<{
+  enabled: boolean;
+  ready: boolean;
+  status: string;
+  destroyed: boolean;
+  frameConfigured: boolean;
+  visibleTilesetCount: number;
+  stageEnabled: boolean;
+  depth: Readonly<{
+    supported: boolean;
+    coverageReady: boolean;
+    currentFrameDepth: boolean;
+    shaderSourceDepthAccepted: boolean;
+    textureAvailable: boolean;
+    videoTextureAvailable: boolean;
+    stageReady: boolean;
+    outOfView: boolean | null;
+    nativeDepthTexture: boolean | null;
+    textureWidth: number | null;
+    textureHeight: number | null;
+    configuredSize: number | null;
+    near: number;
+    far: number;
+    sourceFrameNumber: number | null;
+    currentSceneFrameNumber: number;
+    sourceTilesetCount: number;
+    sourceCommandCount: number;
+    castCommandCount: number;
+    visibleTilesetRequests: Readonly<{
+      requested: number | null;
+      pending: number | null;
+      processing: number | null;
+    }>;
+    sourceError: string | null;
+  }>;
+  camera: Readonly<{
+    originEcef: Readonly<{ x: number; y: number; z: number }>;
+    directionEcef: Readonly<{ x: number; y: number; z: number }>;
+    upEcef: Readonly<{ x: number; y: number; z: number }>;
+    intrinsics: CameraIntrinsics;
+    distortion: LensDistortion;
+    opacity: number;
+    maxDistance: number;
+  }> | null;
+  settings: Readonly<{
+    normalOffset: boolean | null;
+    softShadows: boolean | null;
+    shadowMapMaximumDistance: number | null;
+    depthToleranceMeters: number;
+    texelCenterExtrapolationCapMeters: number;
+  }>;
+}>;
+
 type GpuTexture = { isDestroyed?: () => boolean; width?: number; height?: number };
 type ShadowInternals = ShadowMap & {
   fromLightSource: boolean;
+  normalOffset: boolean;
   _shadowMapTexture?: GpuTexture;
   _shadowMapMatrix: Matrix4;
   _usesDepthTexture: boolean;
@@ -252,6 +307,64 @@ export class VideoArModelProjector {
     if (!this.sourceCoverageReady) return "正在加载视频相机视野内的三维模型；等待遮挡数据完整";
     if (!this.ready) return "正在准备模型深度";
     return "三维模型表面投影 · 屋顶/立面保形 · 源相机遮挡检测";
+  }
+
+  /** Inspect the last rendered source pass without enabling targets or requesting a render. */
+  getDiagnosticState(): ModelProjectionDiagnosticState {
+    const sceneFrame = (this.viewer.scene as unknown as { frameState: { frameNumber: number } }).frameState.frameNumber;
+    const videoTextureAvailable = !this.destroyed && Boolean(this.videoTexture());
+    const depthTexture = this.destroyed ? undefined : this.shadow._shadowMapTexture;
+    const textureAvailable = Boolean(depthTexture && !depthTexture.isDestroyed?.());
+    const currentFrameDepth = !this.destroyed && this.hasCurrentSourceDepth();
+    let requested: number | null = 0, pending: number | null = 0, processing: number | null = 0;
+    this.visit(this.viewer.scene.primitives, target => {
+      if (!target.isCesium3DTileset) return;
+      requested = requested !== null && target._requestedTiles !== undefined ? requested + target._requestedTiles.length : null;
+      pending = pending !== null && Number.isFinite(target._statistics?.numberOfPendingRequests)
+        ? pending + target._statistics!.numberOfPendingRequests : null;
+      processing = processing !== null && Number.isFinite(target._statistics?.numberOfTilesProcessing)
+        ? processing + target._statistics!.numberOfTilesProcessing : null;
+    });
+    const vector = (value: Cartesian3) => ({ x: value.x, y: value.y, z: value.z });
+    return {
+      enabled: this.enabled, ready: this.ready, status: this.status, destroyed: this.destroyed,
+      frameConfigured: Boolean(this.frame), visibleTilesetCount: this.visibleTilesetCount,
+      stageEnabled: !this.destroyed && this.stage.enabled,
+      depth: {
+        supported: this.context.depthTexture, coverageReady: this.sourceCoverageReady,
+        currentFrameDepth,
+        shaderSourceDepthAccepted: this.enabled && Boolean(this.frame) && videoTextureAvailable
+          && textureAvailable && currentFrameDepth && !this.shadow._outOfView,
+        textureAvailable, videoTextureAvailable, stageReady: !this.destroyed && this.stage.ready,
+        outOfView: this.destroyed ? null : this.shadow._outOfView,
+        nativeDepthTexture: this.destroyed ? null : this.shadow._usesDepthTexture,
+        textureWidth: textureAvailable ? depthTexture?.width ?? null : null,
+        textureHeight: textureAvailable ? depthTexture?.height ?? null : null,
+        configuredSize: this.destroyed ? null : this.shadow.size,
+        near: this.nearFar.x, far: this.nearFar.y,
+        sourceFrameNumber: this.lastSourceFrame < 0 ? null : this.lastSourceFrame,
+        currentSceneFrameNumber: sceneFrame,
+        sourceTilesetCount: this.sourceTileCount, sourceCommandCount: this.sourceCommands.length,
+        castCommandCount: this.sourceCastCount,
+        visibleTilesetRequests: { requested, pending, processing }, sourceError: this.sourceError || null,
+      },
+      // Read the applied uniforms and orthonormal camera basis, not caller-owned frame objects.
+      camera: this.frame ? {
+        originEcef: vector(this.sourceCamera.position), directionEcef: vector(this.sourceCamera.direction),
+        upEcef: vector(this.sourceCamera.up),
+        intrinsics: { width: this.imageSize.x, height: this.imageSize.y, fx: this.intrinsics.x,
+          fy: this.intrinsics.y, cx: this.intrinsics.z, cy: this.intrinsics.w },
+        distortion: { k1: this.lens.x, k2: this.lens.y, k3: this.k3, p1: this.lens.z, p2: this.lens.w },
+        opacity: this.opacity, maxDistance: this.nearFar.y,
+      } : null,
+      settings: {
+        normalOffset: this.destroyed ? null : this.shadow.normalOffset,
+        softShadows: this.destroyed ? null : this.shadow.softShadows,
+        shadowMapMaximumDistance: this.destroyed ? null : this.shadow.maximumDistance,
+        // The second value caps planar texel-center extrapolation; it is not a depth tolerance.
+        depthToleranceMeters: 0.35, texelCenterExtrapolationCapMeters: 2,
+      },
+    };
   }
 
   setFrame(frame: ModelProjectionFrame): void {

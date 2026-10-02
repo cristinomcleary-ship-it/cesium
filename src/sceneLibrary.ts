@@ -251,10 +251,24 @@ export class SceneLibrary {
       this.failures.set(id, this.message(error));
     } finally { this.restoring.delete(id); this.render(); this.hooks.layersChanged(); if (!this.starting) this.saveView(); }
   }
-  updateVideoControls(controls: Record<string, string | boolean>) {
+  projectionModelRecord(id: string) {
+    const record = this.records.get(id);
+    return record ? { id: record.id, updatedAt: record.updatedAt, files: structuredClone(record.files), savedSettings: structuredClone(record.settings) } : null;
+  }
+
+  async updateVideoControls(controls: Record<string, string | boolean>, calibrationSessions?: SavedReplaySettings["calibrationSessions"], requireSaved = false) {
     const record = this.records.get(this.activeVideoId);
-    if (!record || record.kind !== "Drone Video") return;
-    this.queueUpdate(record.id, { settings: { video: { ...record.settings.video, controls } } });
+    if (!record || record.kind !== "Drone Video") {
+      if (requireSaved) throw new Error("视频尚未保存到资料库，请先完成加载保存再记录校准");
+      return;
+    }
+    // Carry controls and complete history in the same update: rapid edits cannot drop a newly recorded session.
+    this.queueUpdate(record.id, { settings: { video: { ...record.settings.video, controls,
+      ...(calibrationSessions === undefined ? {} : { calibrationSessions }) } } });
+    if (requireSaved) {
+      await this.flush();
+      if (this.failures.has(record.id)) throw new Error(this.failures.get(record.id));
+    }
   }
 
   markVideo(id: string) { this.activeVideoId = id; this.render(); this.saveView(); }
