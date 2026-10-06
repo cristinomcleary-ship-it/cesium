@@ -18,8 +18,9 @@ import {
   Transforms,
 } from "cesium";
 import proj4 from "proj4";
+import { cadLineWidth } from "./cadDisplayStyle.ts";
 import type { CadImportEntity, CadImportPackage, CadPoint } from "./cadImport";
-import { createGaussKrugerToWgs84Converter } from "./coordinateUtils";
+import { createGaussKrugerToWgs84Converter } from "./coordinateUtils.ts";
 import type { CadCoordinateOptions, CadDisplayMode } from "./types";
 
 type PositionConverter = (point: CadPoint) => Cartesian3;
@@ -28,10 +29,6 @@ const CAD_COLOR = Color.fromCssColorString("#32d6ff");
 
 function entityColor(entity: CadImportEntity): Color {
   return entity.color ? Color.fromCssColorString(entity.color) ?? CAD_COLOR : CAD_COLOR;
-}
-
-function entityWidth(entity: CadImportEntity): number {
-  return Math.max(1, Math.min(10, (entity.lineweightMm ?? 0.25) * 5));
 }
 
 function isFinitePosition(position: Cartesian3 | undefined): position is Cartesian3 {
@@ -92,7 +89,7 @@ function createConverter(options: CadCoordinateOptions): PositionConverter {
 function addEntity(dataSource: CustomDataSource, entity: CadImportEntity, convert: PositionConverter, index: number, displayMode: CadDisplayMode) {
   const points = entity.vertices;
   const color = entityColor(entity);
-  const width = entityWidth(entity);
+  const width = cadLineWidth(entity);
   const name = `${entity.layer || "未分层"} · ${entity.sourceType}`;
   const id = `${entity.type}-${index}`;
 
@@ -165,23 +162,8 @@ function addEntity(dataSource: CustomDataSource, entity: CadImportEntity, conver
     return;
   }
 
-  if (points[0]) {
-    const position = safelyConvert(points[0], convert);
-    if (!position) return;
-    dataSource.entities.add({
-      id,
-      name,
-      position,
-      point: {
-        pixelSize: Math.max(5, width + 4),
-        color,
-        outlineColor: Color.WHITE,
-        outlineWidth: 1,
-        heightReference: displayMode === "absolute" ? HeightReference.NONE : HeightReference.CLAMP_TO_GROUND,
-        disableDepthTestDistance: displayMode === "absolute" ? 0 : Number.POSITIVE_INFINITY,
-      },
-    });
-  }
+  // POINT remains in the source package without a display object. Likewise,
+  // unknown entities or invalid line/face geometry must not become dots.
 }
 
 export async function loadCadImport(
@@ -215,7 +197,9 @@ export async function loadCadImport(
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   }
   onProgress?.(value.entities.length, value.entities.length);
-  if (!dataSource.entities.values.length) throw new Error("CAD 已解析，但没有生成可显示对象");
+  if (!dataSource.entities.values.length && !value.entities.every((entity) => entity.type === "POINT")) {
+    throw new Error("CAD 已解析，但没有生成可显示对象");
+  }
   return dataSource;
 }
 

@@ -1,0 +1,93 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>html,body,#view{width:100%;height:100%;margin:0;overflow:hidden}</style></head>
+<body><div id="view"></div><script type="module">
+import * as C from 'cesium';
+import 'cesium/Build/Cesium/Widgets/widgets.css';
+import {loadCadPrimitiveCollection} from '../../src/cadPrimitiveLoader.ts';
+import {loadCadImport} from '../../src/dxfLoader.ts';
+
+const viewer=new C.Viewer('view',{baseLayer:false,baseLayerPicker:false,geocoder:false,homeButton:false,
+  sceneModePicker:false,navigationHelpButton:false,animation:false,timeline:false,fullscreenButton:false,
+  infoBox:false,selectionIndicator:false,useBrowserRecommendedResolution:false,
+  contextOptions:{webgl:{preserveDrawingBuffer:true}}});
+viewer.scene.globe.depthTestAgainstTerrain=true;
+viewer.scene.globe.baseColor=C.Color.fromCssColorString('#445044');
+viewer.scene.skyAtmosphere.show=false;viewer.scene.skyBox.show=false;viewer.scene.sun.show=false;viewer.scene.moon.show=false;
+const longitude=120.88868112275073,latitude=30.83931288248957;
+const coordinates={mode:'crs',sourceCrs:'EPSG:4326',heightOffset:0};
+const enu=C.Transforms.eastNorthUpToFixedFrame(C.Cartesian3.fromDegrees(longitude,latitude,0));
+// Survey coordinates map to ellipsoid heights, unlike an ENU tangent plane.
+const cartographic=(x,y)=>C.Cartographic.fromCartesian(C.Matrix4.multiplyByPoint(enu,new C.Cartesian3(x,y,0),new C.Cartesian3()));
+const world=(x,y,z=0)=>{const p=cartographic(x,y);return C.Cartesian3.fromRadians(p.longitude,p.latitude,z);};
+const drawing=(entities)=>({format:'cesium-cad-import',version:2,source:{name:'CAD display fixture',format:'DWG',generatedAt:'2026-10-06'},
+  statistics:{sourceEntities:entities.length,displayEntities:entities.length,skippedEntities:0,unknownEntities:0,layers:['test']},entities:entities.map(e=>({...e,vertices:e.vertices.map(v=>{const p=cartographic(v.x,v.y);return {x:C.Math.toDegrees(p.longitude),y:C.Math.toDegrees(p.latitude),z:v.z??0};})})),warnings:[]});
+const circle=(z=0)=>({type:'POLYLINE',sourceType:'CIRCLE',layer:'test',closed:true,color:'#FFFFFF',lineweightMm:0.05,
+  vertices:Array.from({length:72},(_,i)=>({x:10*Math.cos(i*Math.PI/36),y:10*Math.sin(i*Math.PI/36),z}))});
+let result;
+window.cadTest={viewer,C,async frames(n=8){for(let i=0;i<n;i++)await new Promise(r=>requestAnimationFrame(r));},
+  async load({baseline=false,z=0,mode='absolute',obstacle=false,full=false}={}){
+    viewer.scene.primitives.removeAll();viewer.dataSources.removeAll(true);
+    const entities=[circle(z)];
+    if(full)entities.push({type:'POINT',sourceType:'POINT',layer:'test',vertices:[{x:-15,y:0,z:0}]},
+      {type:'TEXT',sourceType:'TEXT',layer:'test',text:'13-2',vertices:[{x:15,y:0,z:0}]},
+      {type:'3DFACE',sourceType:'3DFACE',layer:'test',color:'#00FF00',vertices:[{x:15,y:5,z:1},{x:20,y:5,z:1},{x:15,y:10,z:1}]});
+    const source=drawing(entities);
+    result=await loadCadPrimitiveCollection(source,coordinates,{scene:viewer.scene,displayMode:mode});
+    if(baseline)for(let i=0;i<result.collection.length;i++){
+      const p=result.collection.get(i);
+      if(p.appearance instanceof C.PolylineColorAppearance)p.appearance=new C.PolylineColorAppearance({translucent:false});
+    }
+    viewer.scene.primitives.add(result.collection);
+    if(obstacle)viewer.scene.primitives.add(new C.Primitive({asynchronous:false,
+      geometryInstances:new C.GeometryInstance({geometry:C.BoxGeometry.fromDimensions({dimensions:new C.Cartesian3(6,30,0.2),vertexFormat:C.PerInstanceColorAppearance.VERTEX_FORMAT}),
+        modelMatrix:C.Matrix4.multiply(enu,C.Matrix4.fromTranslation(new C.Cartesian3(0,0,0.2)),new C.Matrix4()),
+        id:'occluder',attributes:{color:C.ColorGeometryInstanceAttribute.fromColor(C.Color.fromCssColorString('#222244'))}}),
+      appearance:new C.PerInstanceColorAppearance({translucent:false,closed:true})}));
+    this.z=z;this.obstacle=obstacle;
+    return {features:result.featureCount,lines:result.cadPolylineFeatures.length,ids:result.cadPolylineFeatures.map(f=>f.entity.id),
+      labels:Array.from({length:result.collection.length},(_,i)=>result.collection.get(i)).filter(p=>p instanceof C.LabelCollection).flatMap(p=>Array.from({length:p.length},(_,i)=>p.get(i).text))};
+  },
+  async entityContract(){
+    const source=drawing([circle(),{type:'POINT',sourceType:'POINT',layer:'test',vertices:[{x:20,y:0}]}]);
+    const ds=await loadCadImport(source,coordinates,'model');
+    return {entities:ds.entities.values.length,points:ds.entities.values.filter(e=>e.point).length,width:ds.entities.values[0].polyline.width.getValue()};
+  },
+  ready(){return !!result&&Array.from({length:result.collection.length},(_,i)=>result.collection.get(i)).every(p=>p.ready!==false);},
+  async camera(range=80,mode='3d'){
+    const scene=viewer.scene;
+    if(mode==='2d'&&scene.mode!==C.SceneMode.SCENE2D)scene.morphTo2D(0);
+    if(mode==='cv'&&scene.mode!==C.SceneMode.COLUMBUS_VIEW)scene.morphToColumbusView(0);
+    if(mode==='3d'&&scene.mode!==C.SceneMode.SCENE3D)scene.morphTo3D(0);
+    viewer.camera.setView({destination:C.Cartesian3.fromDegrees(longitude,latitude,range),orientation:{heading:0,pitch:-Math.PI/2,roll:0}});
+    await this.frames();
+  },
+  metrics(){
+    viewer.render();
+    const canvas=viewer.canvas,copy=document.createElement('canvas');copy.width=canvas.width;copy.height=canvas.height;
+    const ctx=copy.getContext('2d');ctx.drawImage(canvas,0,0);const pixels=ctx.getImageData(0,0,copy.width,copy.height).data;
+    const sx=canvas.width/canvas.clientWidth,sy=canvas.height/canvas.clientHeight;
+    let total=0,visible=0,blocked=0,leaked=0;
+    for(let i=0;i<360;i++){
+      const a=i*Math.PI/180,x=10*Math.cos(a),y=10*Math.sin(a);
+      const p=C.SceneTransforms.worldToWindowCoordinates(viewer.scene,world(x,y,this.z));if(!p)continue;
+      const px=Math.round(p.x*sx),py=Math.round(p.y*sy);
+      if(px<4||py<4||px>=copy.width-4||py>=copy.height-4)continue;
+      let white=false;
+      const radius=Math.ceil(1.5*sx);
+      for(let dx=-radius;dx<=radius;dx++)for(let dy=-radius;dy<=radius;dy++){
+        const o=((py+dy)*copy.width+px+dx)*4;
+        if(pixels[o]>160&&pixels[o+1]>160&&pixels[o+2]>160)white=true;
+      }
+      if(this.obstacle&&Math.abs(x)<2){blocked++;if(white)leaked++;}
+      else if(!this.obstacle||Math.abs(x)>5){total++;if(white)visible++;}
+    }
+    return {total,visible,coverage:visible/total,blocked,leaked};
+  },
+  pick(){
+    const p=C.SceneTransforms.worldToWindowCoordinates(viewer.scene,world(10,0,this.z));
+    const picked=viewer.scene.pick(p),position=viewer.scene.pickPosition(p);
+    return {id:picked?.id?.id,height:position?C.Cartographic.fromCartesian(position).height:null};
+  },
+  hide(show){result.collection.show=show;},
+};
+</script></body></html>

@@ -2212,7 +2212,7 @@ $("#cadMode").addEventListener("change", () => {
 $("#cadDisplayMode").addEventListener("change", () => {
   const mode = value("#cadDisplayMode") as CadDisplayMode;
   $("#cadDisplayHint").textContent = mode === "terrain"
-    ? "忽略 CAD 原始 Z 值，将线、面、文字和点贴到地球或地形表面。"
+    ? "忽略 CAD 原始 Z 值，将线、面和文字贴到地球或地形表面。"
     : mode === "model"
       ? "投影到已加载的倾斜摄影或三维模型表面；请先加载模型，再加载 CAD。"
       : "保持 CAD 原始 Z 坐标和设置的高程。";

@@ -27,8 +27,9 @@ import {
   Transforms,
 } from "cesium";
 import proj4 from "proj4";
+import { cadLineWidth, createCadPolylineAppearance } from "./cadDisplayStyle.ts";
 import type { CadImportEntity, CadImportPackage, CadPoint } from "./cadImport";
-import { createGaussKrugerToWgs84Converter } from "./coordinateUtils";
+import { createGaussKrugerToWgs84Converter } from "./coordinateUtils.ts";
 import type { CadCoordinateOptions, CadDisplayMode } from "./types";
 
 type PositionConverter = (point: CadPoint) => Cartesian3;
@@ -65,7 +66,7 @@ export type CadPrimitiveLoadOptions = {
   primitiveBatchSize?: number;
   onProgress?: (completed: number, total: number) => void;
   signal?: AbortSignal;
-  /** Required by Cesium when labels or points clamp to terrain / 3D Tiles. */
+  /** Required by Cesium when labels clamp to terrain / 3D Tiles. */
   scene?: Scene;
   /** Lets the caller attach the empty collection early so batches can compile and release CPU geometry while loading continues. */
   beforePopulate?: (collection: PrimitiveCollection) => void | Promise<void>;
@@ -84,10 +85,6 @@ const FACE_ALPHA = 0.18;
 
 function entityColor(entity: CadImportEntity): Color {
   return entity.color ? Color.fromCssColorString(entity.color) ?? DEFAULT_COLOR : DEFAULT_COLOR;
-}
-
-function entityWidth(entity: CadImportEntity): number {
-  return Math.max(1, Math.min(10, (entity.lineweightMm ?? 0.25) * 5));
 }
 
 function isFinitePosition(position: Cartesian3 | undefined): position is Cartesian3 {
@@ -213,7 +210,7 @@ export async function loadCadPrimitiveCollection(
 
   const displayMode = options.displayMode ?? "absolute";
   if (displayMode !== "absolute" && !options.scene) {
-    throw new Error("贴地或依附模型加载 CAD 时需要传入 viewer.scene，以便文字和点正确贴附");
+    throw new Error("贴地或依附模型加载 CAD 时需要传入 viewer.scene，以便文字正确贴附");
   }
   const sourceBatchSize = Math.max(100, Math.floor(options.batchSize ?? 500));
   const primitiveBatchSize = Math.max(50, Math.floor(options.primitiveBatchSize ?? 600));
@@ -262,7 +259,7 @@ export async function loadCadPrimitiveCollection(
     if (displayMode === "absolute") {
       collection.add(new Primitive({
         geometryInstances: lineInstances,
-        appearance: new PolylineColorAppearance({ translucent: false }),
+        appearance: createCadPolylineAppearance(),
         asynchronous: true,
         releaseGeometryInstances: true,
         vertexCacheOptimize: true,
@@ -355,7 +352,7 @@ export async function loadCadPrimitiveCollection(
     const entity = value.entities[index];
     const id = featureIdentity(entity, index);
     const color = entityColor(entity);
-    const width = entityWidth(entity);
+    const width = cadLineWidth(entity);
     const converted = convertPoints(entity.vertices, convert);
 
     if (entity.type === "POLYLINE") {
@@ -400,26 +397,10 @@ export async function loadCadPrimitiveCollection(
         include(position);
         featureCount += 1;
       }
-    } else {
-      const position = converted[0];
-      if (!position) skippedCount += 1;
-      else {
-        labelCollection().add({
-          id,
-          position,
-          text: "●",
-          font: `${Math.max(8, Math.round(width + 5))}px sans-serif`,
-          fillColor: color,
-          outlineColor: Color.WHITE,
-          outlineWidth: 1,
-          style: LabelStyle.FILL_AND_OUTLINE,
-          distanceDisplayCondition: new DistanceDisplayCondition(0, 100_000),
-          heightReference,
-          disableDepthTestDistance: displayMode === "absolute" ? 0 : Number.POSITIVE_INFINITY,
-        });
-        include(position);
-        featureCount += 1;
-      }
+    } else if (entity.type !== "POINT") {
+      // POINT is retained in the import package but intentionally has no
+      // display object. Unknown entities must never become fallback dots.
+      skippedCount += 1;
     }
 
     const completed = index + 1;
@@ -435,7 +416,7 @@ export async function loadCadPrimitiveCollection(
   abortIfRequested(options.signal);
   options.onProgress?.(value.entities.length, value.entities.length);
 
-  if (!featureCount) {
+  if (!featureCount && !value.entities.every((entity) => entity.type === "POINT")) {
     if (!handedToCaller) collection.destroy();
     throw new Error("CAD 已解析，但没有生成可显示对象");
   }
