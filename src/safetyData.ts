@@ -14,7 +14,7 @@ const DAY = 86_400_000;
 const MISSING = [
   "营业线实测中心线、限界与正式施工区段红线尚未接入；页面包络只用于展示。",
   "正式构件唯一编号、模型 feature ID 与 CAD 编号的映射尚未接入；盖梁、墩柱、承台为逻辑节点。",
-  "真实设备状态、告警、巡检任务、整改验收接口尚未接入；现有事件和任务明确标为演示。",
+  "正式设备在线状态、告警与巡检任务接口尚未接入；生产页面不自动填充示例记录。",
   "CAD 与无人机高程基准及坐标转换精度控制点尚未核验；模型清晰度与视频配准另行验证。",
   "点位现场照片、构件专属视频与图纸索引尚未接入；无人机视频仅关联项目，取景范围未经核验。",
 ];
@@ -143,7 +143,7 @@ export function adaptSafetyCadSources(sources: SafetyCadSource[]): SafetyCadAdap
     coordinateNotes.push(describeCoordinates(record.settings.coordinates));
     const mediaId = `drawing:${record.id}`;
     const url = safeLibraryUrl(record.files.source?.url) || safeLibraryUrl(record.files.data?.url);
-    if (url) media.push({ id: mediaId, name: record.name, kind: "drawing", url, provenance: "real", relation: "project",
+    if (url) media.push({ id: mediaId, name: record.name, kind: "drawing", url, previewUrl: safeLibraryUrl(record.files.data?.url), provenance: "real", relation: "project",
       note: "真实项目 CAD 原图；文字锚点可追溯原实体索引，尚无经复核的构件专属图纸索引。", sourceRecordId: record.id });
     const mediaIds = url ? [mediaId] : [];
     const sectionGroups = new Map<number, SafetyNode[]>();
@@ -277,7 +277,7 @@ export class LocalSafetyDataAdapter implements SafetyDataAdapter {
       listing = raw as LibraryListing;
     } catch (error) {
       if (signal?.aborted) throw signal.reason;
-      return createSafetyDemoDataset(Date.now(), `本地资料库暂不可读（${error instanceof Error ? error.message : "连接失败"}），原平台功能不受影响；使用可替换演示适配器。`);
+      throw new Error(`工程资料暂不可用，请重新加载。${error instanceof Error ? error.message : "连接失败"}`);
     }
     const records = listing.records.filter((record) => record && record.files && record.settings && typeof record.id === "string");
     const sources: SafetyCadSource[] = [];
@@ -304,6 +304,8 @@ export class LocalSafetyDataAdapter implements SafetyDataAdapter {
       if (trajectoryUrl) try {
         const trajectory = adaptSafetyTrajectory(await read(trajectoryUrl)); notes.push(...trajectory.notes);
         if (trajectory.track.length) {
+          const activeMedia = video.id === listing.view?.activeVideoId ? media.find(item => item.id === mediaId && item.provenance === "real") : undefined;
+          if (activeMedia) activeMedia.recordedAt = trajectory.track[0].time - trajectory.track[0].mediaSeconds * 1000;
           extent = [trajectory.track[0].time, trajectory.track[trajectory.track.length - 1].time];
           devices.push({ id: `drone:${video.id}`, nodeId: PROJECT_ID, name: "无人机 · 实际航迹回放", kind: "drone", provenance: "real", status: "replay",
             track: trajectory.track, mediaId: videoUrl ? mediaId : undefined, coordinateNote: trajectory.coordinateNote });
@@ -311,12 +313,18 @@ export class LocalSafetyDataAdapter implements SafetyDataAdapter {
       } catch (error) { if (signal?.aborted) throw signal.reason; notes.push(`无人机轨迹读取失败：${error instanceof Error ? error.message : "未知错误"}。`); }
       notes.push(`无人机资料使用记录 ${video.id}${video.id === listing.view?.activeVideoId ? "（当前活跃视频）" : "（可见资料回退）"}，未重复加载其它同源视频。`);
     }
+    for (const record of records.filter(record => record.kind === "Drone Video" && record.id !== video?.id)) {
+      const url = safeLibraryUrl(record.files.video?.url);
+      if (url) media.push({ id: `video:${record.id}`, name: record.files.video.name, kind: "video", url, provenance: "real", relation: "project", sourceRecordId: record.id, note: "项目已保存原片，尚未选择播放" });
+    }
     if (extent[0] === extent[1]) extent = [extent[0], extent[1] + 1000];
+    // Production never seeds demo sections, alerts or user definitions when data is missing.
     if (!cad.nodes.length) {
-      const fallback = createSafetyDemoDataset(extent[1], "未读取到可用于构件导航的真实 CAD 编号锚点，导航使用明确标记的演示数据。");
-      fallback.sourceNotes.push(...notes); fallback.media = media; fallback.devices = devices;
-      if (devices.length) { fallback.timeExtent = extent; Object.assign(fallback, demoEvents(fallback.nodes, extent)); }
-      fallback.nodes[0].mediaIds = media.map((entry) => entry.id); return fallback;
+      const position = devices[0]?.track[0];
+      const project: SafetyNode = { id: PROJECT_ID, kind: "project", name: "邻近营业线施工巡检", position: position ? { ...position, height: 0 } : { longitude: 0, latitude: 0, height: 0 }, sceneAvailable: !!position,
+        provenance: "real", description: "当前项目", mediaIds: media.map(entry => entry.id), radius: 300 };
+      return { version: 1, projectId: PROJECT_ID, name: project.name, nodes: [project], alerts: [], tasks: [], devices, media, timeExtent: extent,
+        coordinateNote: "源坐标信息尚待核验", sourceNotes: notes, missingData: [...MISSING] };
     }
     const sections = cad.nodes.filter((node) => node.kind === "section"); const positions = sections.map((node) => node.position);
     const firstSourceName = sources.find((source) => source.record.id === sections[0]?.sourceRecordId)?.record.name || "当前项目";
@@ -325,7 +333,7 @@ export class LocalSafetyDataAdapter implements SafetyDataAdapter {
       provenance: "derived", description: "由当前已加载 CAD 编号与无人机资料组成的工程样板。区域分组和展示包络来自 CAD 文字；真实营业线位置、正式业务接口待接入。",
       radius: radius(positions, 300), boundary: safetyEnvelope(sections.flatMap((node) => node.boundary || [node.position]), 25), mediaIds: media.map((entry) => entry.id) };
     const nodes = [project, ...cad.nodes];
-    return { version: 1, projectId: PROJECT_ID, name: project.name, nodes, ...demoEvents(nodes, extent), devices, media, timeExtent: extent,
+    return { version: 1, projectId: PROJECT_ID, name: project.name, nodes, alerts: [], tasks: [], devices, media, timeExtent: extent,
       coordinateNote: cad.coordinateNotes.join(" "), sourceNotes: [...notes, ...devices.map((device) => device.coordinateNote),
         "发光包络的展示厚度与动画高度独立于工程坐标，原始 CAD、3D Tiles 和视频投影参数未改动。"], missingData: [...MISSING] };
   }

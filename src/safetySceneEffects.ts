@@ -8,6 +8,7 @@ import {
   type Viewer, type MaterialProperty, type JulianDate,
 } from "cesium";
 import { interpolateDevicePosition } from "./safetyStore";
+import { safetyHeatWeights, spatialNodeLayerVisible, type SafetySpatialLayerVisibility } from "./safetySceneVisibility";
 import tokens from "./safetyDesignTokens.json";
 import { SafetyScenePresentation, type SafetyPresentationOptions } from "./safetyScenePresentation";
 export type SafetySceneEffectsOptions = SafetyPresentationOptions;
@@ -102,6 +103,8 @@ export class SafetySceneEffects {
   private readonly presentation: SafetyScenePresentation;
   private pickingEnabled = true;
   private earthMode = false;
+  private authoring = false;
+  private spatialLayers: Required<SafetySpatialLayerVisibility> = { constructionAreas: true, railwayAreas: true, riskPoints: true };
   private readonly labelCandidates: string[] = [];
   private readonly labelMeasure = document.createElement("canvas").getContext("2d");
   private readonly reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -188,7 +191,7 @@ export class SafetySceneEffects {
     this.source.entities.suspendEvents();
     try {
       for (const node of dataset.nodes) {
-        if (!validPosition(node.position)) continue;
+        if (!validPosition(node.position) || node.sceneAvailable === false) continue;
         try { this.addNode(node); } catch (error) { console.warn(`安全大屏点位 ${node.id} 无法显示`, error); }
       }
       for (const device of dataset.devices) {
@@ -208,7 +211,8 @@ export class SafetySceneEffects {
     const id = `safety-node:${node.id}`;
     const marker = this.source.entities.add({
       id, name: node.name, show: false, position: cartesian(node.position),
-      point: { pixelSize: node.kind === "pier" ? 9 : 6, color: CYAN, outlineColor: Color.fromCssColorString(tokens.colors.panel), outlineWidth: 2, heightReference: HeightReference.CLAMP_TO_GROUND },
+      ...(node.eventId ? { billboard: { image: "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28"><path d="M14 2L27 25H1Z" fill="#FF687D" stroke="#E5F7FF" stroke-width="2"/><text x="14" y="21" text-anchor="middle" font-size="20" fill="#030B18">!</text></svg>'), width: 22, height: 22 } } : {}),
+      point: { show: !node.eventId && !node.spatialObjectId, pixelSize: node.kind === "pier" ? 9 : 6, color: CYAN, outlineColor: Color.fromCssColorString(tokens.colors.panel), outlineWidth: 2, heightReference: HeightReference.CLAMP_TO_GROUND },
       label: {
         text: node.name, font: `${tokens.typographyPx.sceneLabel}px sans-serif`, fillColor: Color.fromCssColorString(tokens.colors.text),
         outlineColor: Color.fromCssColorString(tokens.colors.background), outlineWidth: 3, style: LabelStyle.FILL_AND_OUTLINE,
@@ -220,7 +224,7 @@ export class SafetySceneEffects {
     this.pickTargets.set(id, { nodeId: node.id, fly: true });
     const visual: NodeVisual = { node, marker };
     const points = node.boundary?.filter(validPosition);
-    if (points && points.length >= 3) {
+    if (points && points.length >= 3 && !node.spatialObjectId) {
       const positions = points.map((p) => cartesian(p));
       visual.boundary = this.source.entities.add({
         id: `safety-boundary:${node.id}`, name: `${node.name} · CAD 推导展示范围`, show: false,
@@ -280,6 +284,7 @@ export class SafetySceneEffects {
     this.view = view;
     // A playback cursor update only moves devices. It must not recreate point styles or chart-related textures.
     if (previous && previous.selectedId === state.selectedId && previous.selectedAlertId === state.selectedAlertId
+      && previous.page === state.page && previous.eventStatus === state.eventStatus && previous.eventQuery === state.eventQuery
       && previous.mode === state.mode && previous.severity === state.severity && previous.includeDemo === state.includeDemo
       && previous.heatOpacity === state.heatOpacity && previous.animationPaused === state.animationPaused
       && previous.engineeringAnnotations === state.engineeringAnnotations && previous.timeRange[0] === state.timeRange[0] && previous.timeRange[1] === state.timeRange[1]
@@ -288,6 +293,7 @@ export class SafetySceneEffects {
       return;
     }
     this.presentation.update(this.dataset, state, view, this.active && !this.earthMode);
+    this.presentation.setAuthoring(this.authoring);
     if (this.selectedNodeId !== view.selected.id) {
       if (this.selectedFeature?.nodeId !== view.selected.id) this.restoreFeature();
       this.selectedNodeId = view.selected.id;
@@ -296,13 +302,13 @@ export class SafetySceneEffects {
       this.selectedRingPositions.setValue(circlePositions(view.selected, radius));
     }
     const alertNodeIds = new Set(view.alerts.map((alert) => alert.nodeId));
-    const candidates = view.nodes.filter((node) => !node.navigationDisabledReason && (node.kind !== "component" || node.parentId === view.selected.id || node.id === view.selected.id || alertNodeIds.has(node.id)));
+    const candidates = view.nodes.filter((node) => spatialNodeLayerVisible(node, this.spatialLayers) && node.sceneAvailable !== false && !node.navigationDisabledReason && (node.kind !== "component" || node.parentId === view.selected.id || node.id === view.selected.id || !!node.spatialObjectId || !!node.eventId || alertNodeIds.has(node.id)));
     const ordered = [...candidates].sort((a, b) => Number(b.id === view.selected.id) * 2 + Number(alertNodeIds.has(b.id)) - Number(a.id === view.selected.id) * 2 - Number(alertNodeIds.has(a.id)));
     const overview = view.selected.kind === "project" || view.selected.kind === "section";
-    const overviewNodes = ordered.filter((node) => node.kind === "section" || node.kind === "pier");
+    const overviewNodes = ordered.filter((node) => node.kind === "section" || node.kind === "pier" || !!node.spatialObjectId || !!node.eventId);
     const overviewIds = new Set<string>();
     if (overview) {
-      for (const node of overviewNodes.filter((node) => node.kind === "section" || alertNodeIds.has(node.id))) {
+      for (const node of overviewNodes.filter((node) => !!node.spatialObjectId || !!node.eventId || node.kind === "section" || alertNodeIds.has(node.id))) {
         if (overviewIds.size < MAX_LABELS - 1) overviewIds.add(node.id);
       }
       const piers = overviewNodes.filter((node) => node.kind === "pier");
@@ -327,11 +333,10 @@ export class SafetySceneEffects {
       const alert = alertByNode.get(node.id);
       marker.point!.color = new ConstantProperty(node.id === view.selected.id ? GOLD : alert ? SEVERITY[alert.severity] : CYAN);
       marker.point!.pixelSize = new ConstantProperty(node.id === view.selected.id ? 12 : alert ? 10 : 7);
-      marker.point!.disableDepthTestDistance = new ConstantProperty(node.id === view.selected.id ? Number.POSITIVE_INFINITY : 0);
-      marker.label!.disableDepthTestDistance = new ConstantProperty(node.id === view.selected.id ? Number.POSITIVE_INFINITY : 0);
+      marker.point!.disableDepthTestDistance = new ConstantProperty(0);
+      marker.label!.disableDepthTestDistance = new ConstantProperty(0);
       this.pickTargets.set(marker.id, { nodeId: node.id, alertId: alert?.id, fly: true });
-      if (boundary) boundary.show = state.mode !== "presentation" && state.layers.boundary && visibleIds.has(node.id)
-        && (node.id === view.selected.id || node.parentId === view.selected.id);
+      if (boundary) boundary.show = !!node.spatialObjectId && state.layers.boundary && visibleIds.has(node.id);
       if (plate) plate.show = false;
     }
     this.visibleDeviceIds.clear();
@@ -478,15 +483,7 @@ export class SafetySceneEffects {
     const context = this.heatCanvas.getContext("2d");
     if (!context || !this.dataset) return;
     context.clearRect(0, 0, 384, 384);
-    const nodeMap = new Map(this.dataset.nodes.map((node) => [node.id, node]));
-    const weights = new Map<string, { position: SafetyPosition; count: number }>();
-    for (const alert of view.alerts) {
-      const node = nodeMap.get(alert.nodeId);
-      if (!node || !validPosition(node.position)) continue;
-      const entry = weights.get(node.id) ?? { position: node.position, count: 0 };
-      entry.count += 1;
-      weights.set(node.id, entry);
-    }
+    const weights = safetyHeatWeights(this.dataset, view);
     this.heatHasValues = weights.size > 0;
     if (!this.heatHasValues) { this.heat.show = false; return; }
     const positions = [...weights.values()].map((entry) => entry.position);
@@ -530,17 +527,26 @@ export class SafetySceneEffects {
   setActive(active: boolean): void {
     if (this.disposed) return;
     this.active = active;
-    this.source.show = active;
+    this.source.show = active && !this.authoring;
     this.earthMode = false;
     if (active && this.dataset && this.state && this.view) this.presentation.update(this.dataset, this.state, this.view, true);
     if (!active) { this.presentation.restore(); this.viewer.camera.cancelFlight(); this.restoreFeature(); }
     this.viewer.scene.requestRender();
   }
 
+  setSpatialLayers(patch: SafetySpatialLayerVisibility): void {
+    this.spatialLayers = { ...this.spatialLayers, ...patch };
+    if (this.state && this.view) {
+      const state = this.state, view = this.view;
+      this.state = undefined; // A layer toggle must bypass the playback-only update shortcut.
+      this.update(state, view);
+    }
+  }
+
   private applyVisibility(): void {
     if (!this.state || !this.view) return;
     const { state } = this;
-    this.selectedRing.show = state.layers.markers && this.view.selected.kind !== "project" && this.view.selected.kind !== "section";
+    this.selectedRing.show = !this.authoring && spatialNodeLayerVisible(this.view.selected, this.spatialLayers) && !this.view.selected.navigationDisabledReason && this.view.selected.sceneAvailable !== false && state.layers.markers && this.view.selected.kind !== "project" && this.view.selected.kind !== "section";
     this.presentation.setFocus(this.selectedPosition, this.selectedRing.show);
     this.heat.show = state.layers.heat && this.heatHasValues;
   }
@@ -576,14 +582,15 @@ export class SafetySceneEffects {
     const show = this.source.show;
     this.source.show = false;
     return () => {
-      if (!this.disposed) this.source.show = show && this.active && !this.earthMode;
+      if (!this.disposed) this.source.show = show && this.active && !this.earthMode && !this.authoring;
       this.viewer.scene.requestRender();
     };
   }
 
   focus(node: SafetyNode, duration = tokens.motion.cameraFocusSeconds): void {
+    if (node.sceneAvailable === false || node.navigationDisabledReason) return;
     if (this.disposed || !validPosition(node.position) || node.navigationDisabledReason) return;
-    this.earthMode = false; this.source.show = this.active;
+    this.earthMode = false; this.source.show = this.active && !this.authoring;
     if (this.dataset && this.state && this.view) this.presentation.update(this.dataset, this.state, this.view, this.active);
     const frame = this.presentation.frame();
     const sphere = node.boundary?.length
@@ -619,9 +626,15 @@ export class SafetySceneEffects {
     });
   }
 
+  setAuthoring(active: boolean): void {
+    this.authoring = active; this.presentation.setAuthoring(active);
+    this.source.show = this.active && !this.earthMode && !active;
+    this.viewer.scene.requestRender();
+  }
+
   earth(): void {
     if (this.disposed) return;
-    this.earthMode = true; this.presentation.restore(); this.source.show = false;
+    this.earthMode = true; this.restoreFeature(); this.presentation.restore(); this.source.show = false;
     const node = this.dataset?.nodes.find((candidate) => candidate.id === this.dataset?.projectId);
     this.viewer.camera.cancelFlight();
     this.viewer.camera.flyTo({ destination: Cartesian3.fromDegrees(node?.position.longitude ?? 120, node?.position.latitude ?? 30, 22_000_000), orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 }, duration: this.reducedMotion.matches ? 0 : tokens.motion.cameraFocusSeconds });

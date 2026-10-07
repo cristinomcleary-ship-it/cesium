@@ -1,4 +1,6 @@
-# 人工施工区域、铁路范围与风险点：数据契约
+# V2 人工空间对象数据契约（历史记录）
+
+> V3 当前契约见 [safety-spatial-v3-data.md](safety-spatial-v3-data.md)。下文保留 V2 实施记录；其中风险点自动派生告警、铁路中心线新建与删除语义已被 V3 替代。V3 读取旧对象并保留真实来源，不自动产生事件。
 
 本模块为现有平台增加人工空间对象，使用同一个 Cesium Viewer 和原有资料库。入口为 `src/safetySpatialTypes.ts`、`src/safetySpatialValidation.ts`、`src/safetySpatialRepository.ts`、`src/safetySpatialData.ts` 与 `server/safetySpatialStore.ts`。既有 CAD、模型、视频、投影参数和 `records.json` / `view.json` 不写入本模块的保存操作。
 

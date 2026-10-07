@@ -1,0 +1,111 @@
+{
+  "version": "2026-10-07-v3",
+  "purpose": "design-reference-not-project-data",
+  "mainNavigation": [
+    "项目总览",
+    "现场巡检",
+    "风险处置",
+    "构件资料"
+  ],
+  "workflow": {
+    "configurationTool": "区域配置",
+    "creationStages": [
+      "选择类型",
+      "在模型上绘制或点选",
+      "命名保存"
+    ],
+    "requiredFields": [
+      "name"
+    ],
+    "optionalRiskGradeDefault": "待评估",
+    "maximumPrimaryActionsPerContext": 1
+  },
+  "layout": {
+    "referenceViewport": [
+      1920,
+      1080
+    ],
+    "validationViewports": [
+      [
+        1920,
+        1080
+      ],
+      [
+        2048,
+        1010
+      ],
+      [
+        1366,
+        768
+      ]
+    ],
+    "outerMarginPx": 24,
+    "headerTopPx": 16,
+    "headerHeightPx": 80,
+    "sideWidthPx": 320,
+    "panelGapPx": 16,
+    "configurationWidthPx": 420,
+    "bodyPx": 16,
+    "minimumImportantSecondaryPx": 14,
+    "buttonHitHeightPx": 44
+  },
+  "colors": {
+    "background": "#030B18",
+    "panel": "#071A2D",
+    "cyan": "#43D9FF",
+    "blue": "#357CFF",
+    "text": "#E5F7FF",
+    "muted": "#91B0C5",
+    "attention": "#FFB957",
+    "alert": "#FF687D",
+    "normal": "#50D6BA"
+  },
+  "scene": {
+    "cameraPitchReferenceDegrees": [
+      -50,
+      -35
+    ],
+    "apparentBaseThicknessPx": [
+      40,
+      65
+    ],
+    "overviewMaxLabels": 8,
+    "focusMaxLabels": 5,
+    "maxDynamicHighlights": 3,
+    "primaryFocusCount": 1,
+    "defaultCadAnnotations": false,
+    "userDefinedGeometryOnly": true,
+    "silentTerrainFallback": false
+  },
+  "motion": {
+    "pulseSeconds": 2.4,
+    "pulsePhaseSeconds": 0.8,
+    "flowSeconds": 4,
+    "radarSeconds": 12,
+    "radarSectorDegrees": 50,
+    "baseArcSeconds": 28,
+    "alertBreathingSeconds": 1.8,
+    "cameraFocusSeconds": 1.6,
+    "themeTransitionSeconds": 0.6,
+    "buttonTransitionMilliseconds": 160,
+    "chartTransitionMilliseconds": [
+      300,
+      500
+    ],
+    "respectReducedMotion": true
+  },
+  "dataMapping": {
+    "referenceObjectTypes": {
+      "area": "construction-area",
+      "rail": "railway-area",
+      "risk": "risk-point"
+    },
+    "riskLevelLabels": {
+      "unassessed": "待评估",
+      "low": "一般",
+      "medium": "较高",
+      "high": "重大"
+    },
+    "referenceCoordinates": "screen-only; never submit as production geometry"
+  }
+}

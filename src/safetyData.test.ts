@@ -109,7 +109,7 @@ test("trajectory cursor does not extrapolate or bridge long missing intervals", 
 
 test("store applies identical severity and time filters to alerts, task lists, scene nodes and metrics", () => {
   const dataset = createSafetyDemoDataset(T); const store = new SafetyStore(dataset);
-  store.patch({ severity: "high" });
+  store.patch({ includeDemo: true, severity: "high" });
   assert.ok(store.view.alerts.length > 0); assert.ok(store.view.alerts.every((alert) => alert.severity === "high"));
   assert.equal(store.view.metrics.alerts, store.view.alerts.length); assert.equal(store.view.metrics.high, store.view.alerts.length);
   assert.ok(store.view.alerts.every((alert) => store.view.nodes.some((node) => node.id === alert.nodeId)));
@@ -120,7 +120,7 @@ test("store applies identical severity and time filters to alerts, task lists, s
 });
 
 test("store navigation preserves ancestry and clears filtered selections without duplicate subscriptions", () => {
-  const dataset = createSafetyDemoDataset(T); const store = new SafetyStore(dataset); let calls = 0;
+  const dataset = createSafetyDemoDataset(T); const store = new SafetyStore(dataset); store.patch({ includeDemo: true }); let calls = 0;
   const unsubscribe = store.subscribe(() => calls++); assert.equal(calls, 1);
   const alert = store.view.alerts[0]; store.select({ nodeId: alert.nodeId, alertId: alert.id });
   assert.equal(store.state.selectedAlertId, alert.id); assert.equal(store.view.breadcrumbs.at(-1)?.id, alert.nodeId);
@@ -151,16 +151,16 @@ test("adapter reads the active video only, produces real CAD linkage, and never 
   const dataset = await new LocalSafetyDataAdapter(fetcher).load();
   assert.equal(dataset.devices.length, 1); assert.equal(dataset.devices[0].id, "drone:active");
   assert.ok(!requested.some((url) => url.includes("inactive"))); assert.deepEqual(dataset.timeExtent, [T, T + 1000]);
-  assert.equal(dataset.railway, undefined); assert.ok(dataset.alerts.every((alert) => alert.provenance === "demo"));
+  assert.equal(dataset.media.find(m => m.id === "video:active")?.recordedAt, T);
+  assert.equal(dataset.media.find(m => m.id === "video:inactive")?.recordedAt, undefined);
+  assert.equal(dataset.railway, undefined); assert.deepEqual(dataset.alerts, []); assert.deepEqual(dataset.tasks, []); assert.ok(dataset.media.some(m => m.id === "video:inactive"));
   assert.ok(dataset.media.some((media) => media.kind === "video" && media.relation === "project" && /取景/.test(media.note)));
   assert.ok(dataset.nodes.some((node) => node.provenance === "real" && node.sourceEntityIndex === 0));
 });
 
-test("adapter isolates connection failure with labelled demo data and respects abort", async () => {
+test("adapter reports unavailable data without seeding production demo objects and respects abort", async () => {
   const fetcher: typeof fetch = async () => { throw new Error("unavailable"); };
-  const fallback = await new LocalSafetyDataAdapter(fetcher).load();
-  assert.ok(fallback.nodes.every((node) => node.provenance === "demo")); assert.equal(fallback.devices.length, 0);
-  assert.match(fallback.sourceNotes.join(" "), /unavailable/);
+  await assert.rejects(new LocalSafetyDataAdapter(fetcher).load(), /工程资料暂不可用/);
   const controller = new AbortController(); controller.abort(new Error("cancelled"));
   await assert.rejects(new LocalSafetyDataAdapter(fetcher).load(controller.signal), /cancelled/);
 });

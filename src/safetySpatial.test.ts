@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createSafetyDemoDataset } from "./safetyData.ts";
-import { mergeSpatialDataset, spatialReplayTimeAt, SPATIAL_REPLAY_TOLERANCE_MS } from "./safetySpatialData.ts";
+import { mergeSpatialDataset, spatialReplayTimeAt } from "./safetySpatialData.ts";
 import { SafetySpatialError, SafetySpatialRepository } from "./safetySpatialRepository.ts";
-import { spatialFixture, spatialSnapshot } from "./safetySpatial.testFixtures.ts";
+import { spatialFixture, spatialV3Fixture, spatialSnapshot } from "./safetySpatial.testFixtures.ts";
 import { emptySpatialSnapshot, validateSpatialMutation, validateSpatialObject, validateSpatialSnapshot } from "./safetySpatialValidation.ts";
 
 test("spatial validation preserves clicked geometry, source heights and explicit confirmation", () => {
@@ -58,7 +58,7 @@ test("snapshot validation rejects duplicate IDs and unsupported versions without
   assert.throws(() => validateSpatialMutation({ operation: "delete", id: one.id, mutationId: "ok", expectedRevision: -1 }), /版本号/);
 });
 
-test("merge adds user hierarchy and risks without changing original engineering data or fabricating media", () => {
+test("merge adds user hierarchy without mutating engineering data or producing synthetic events", () => {
   const base = createSafetyDemoDataset(Date.parse("2026-08-19T08:20:16Z"));
   base.railway = { positions: [{ longitude: 120, latitude: 30, height: 5 }, { longitude: 120.01, latitude: 30.01, height: 6 }], provenance: "real", note: "original" };
   const area = spatialFixture(), rail = spatialFixture("railway", "rail"), risk = spatialFixture("risk-point", "risk");
@@ -68,10 +68,9 @@ test("merge adds user hierarchy and risks without changing original engineering 
   const point = merged.nodes.find((node) => node.id === "spatial:risk")!;
   assert.equal(point.parentId, "spatial:area-one"); assert.equal(point.provenance, "user"); assert.equal(point.componentType, undefined);
   assert.deepEqual(point.position, risk.geometry.type === "Point" ? risk.geometry.position : undefined);
-  assert.deepEqual(point.mediaIds, []);
-  const alert = merged.alerts.find((entry) => entry.id === "spatial-alert:risk")!;
-  assert.equal(alert.provenance, "user"); assert.equal(alert.timestamp, risk.risk?.observedAt); assert.equal(alert.mediaSeconds, undefined);
-  assert.equal(merged.timeExtent[1], risk.risk!.observedAt); assert.match(point.description, /高程基准未知/);
+  assert.deepEqual(point.mediaIds, []); assert.equal(point.riskLevel, "high");
+  assert.deepEqual(merged.alerts, base.alerts); assert.deepEqual(merged.timeExtent, base.timeExtent);
+  assert.match(point.description, /高程基准未知/); assert.match(point.description, /不自动生成业务事件/);
 });
 
 test("merge preserves missing-link warnings and refuses hidden/foreign objects instead of guessing matches", () => {
@@ -86,16 +85,12 @@ test("merge preserves missing-link warnings and refuses hidden/foreign objects i
   assert.deepEqual(merged.nodes.find((node) => node.id === "spatial:risk")?.mediaIds, []);
 });
 
-test("replay merge only enables explicit valid media time, leaving unverified associations disclosed", () => {
+test("legacy replay-risk properties never become a new event or automatic video seek", () => {
   const base = createSafetyDemoDataset(); const risk = spatialFixture("risk-point", "risk");
-  base.media = [{ id: "video:one", kind: "video", name: "recorded.mp4", url: "/__library/files/one/video/recorded.mp4", provenance: "real", relation: "project", note: "project only" }];
-  base.devices = [{ id: "device", name: "drone", nodeId: base.projectId, kind: "drone", provenance: "real", status: "replay", coordinateNote: "unknown datum",
-    mediaId: "video:one", track: [{ longitude: 120, latitude: 30, height: 80, time: 100000, mediaSeconds: 0 }, { longitude: 120.1, latitude: 30, height: 80, time: 110000, mediaSeconds: 10 }] }];
   risk.risk = { ...risk.risk!, observationSource: "replay-review", videoId: "video:one", mediaSeconds: 4, observedAt: 104000 }; risk.linkedMediaIds = ["video:one"];
-  assert.equal(mergeSpatialDataset(base, spatialSnapshot(risk)).alerts.at(-1)?.mediaSeconds, 4);
-  risk.risk.mediaSeconds = 12;
-  const invalid = mergeSpatialDataset(base, spatialSnapshot(risk));
-  assert.equal(invalid.alerts.at(-1)?.mediaSeconds, undefined); assert.match(invalid.sourceNotes.join(" "), /无法核对/);
+  const before = JSON.stringify(risk), merged = mergeSpatialDataset(base, spatialSnapshot(risk));
+  assert.equal(JSON.stringify(risk), before); assert.deepEqual(merged.alerts, base.alerts); assert.deepEqual(merged.timeExtent, base.timeExtent);
+  assert.match(merged.nodes.at(-1)!.description, /V2 历史风险属性已保留/);
 });
 
 test("repository binds native fetch receiver and reports revision conflicts with the latest snapshot", async () => {
@@ -132,21 +127,12 @@ function replayRiskContext() {
   return { base, risk };
 }
 
-test("replay event and media clocks must agree within the explicit frame-scale allowance", () => {
-  const { base, risk } = replayRiskContext();
-  for (const offset of [-SPATIAL_REPLAY_TOLERANCE_MS, 0, SPATIAL_REPLAY_TOLERANCE_MS]) {
-    risk.risk!.observedAt = 104000 + offset;
-    const merged = mergeSpatialDataset(base, spatialSnapshot(risk));
-    assert.equal(merged.alerts.at(-1)?.mediaSeconds, 4); assert.equal(merged.alerts.at(-1)?.timestamp, risk.risk!.observedAt);
-    assert.match(merged.alerts.at(-1)!.description, /尚未核验.*取景/);
-  }
-  for (const offset of [-SPATIAL_REPLAY_TOLERANCE_MS - 1, SPATIAL_REPLAY_TOLERANCE_MS + 1, 5000]) {
-    risk.risk!.observedAt = 104000 + offset;
-    const merged = mergeSpatialDataset(base, spatialSnapshot(risk));
-    assert.equal(merged.alerts.at(-1)?.mediaSeconds, undefined); assert.equal(merged.alerts.at(-1)?.timestamp, risk.risk!.observedAt);
-    assert.match(merged.alerts.at(-1)!.description, /事件时标无法核对/);
-    assert.match(merged.nodes.at(-1)!.description, /不自动跳转/);
-  }
+test("V3 risk is an unassessed optional-description definition, independent of events and their time range", () => {
+  const risk = spatialV3Fixture("risk-point", "v3-risk"); delete risk.level;
+  const valid = validateSpatialObject(risk); assert.equal(valid.level, "unassessed"); assert.equal(valid.description, undefined); assert.equal(valid.risk, undefined);
+  const base = createSafetyDemoDataset(); base.alerts = [];
+  const merged = mergeSpatialDataset(base, spatialSnapshot(valid));
+  assert.equal(merged.alerts.length, 0); assert.equal(merged.nodes.at(-1)?.riskLevel, "unassessed"); assert.deepEqual(merged.timeExtent, base.timeExtent);
 });
 
 test("source clock mapping refuses ambiguous, reversed, missing and extrapolated times", () => {
@@ -156,7 +142,7 @@ test("source clock mapping refuses ambiguous, reversed, missing and extrapolated
   assert.equal(spatialReplayTimeAt(track, NaN), undefined); assert.equal(spatialReplayTimeAt([], 4), undefined);
   track[1].segment = 1;
   assert.equal(spatialReplayTimeAt(track, 4), undefined); assert.equal(spatialReplayTimeAt(track, 10), 110000);
-  assert.equal(mergeSpatialDataset(base, spatialSnapshot(risk)).alerts.at(-1)?.mediaSeconds, undefined);
+  assert.deepEqual(mergeSpatialDataset(base, spatialSnapshot(risk)).alerts, base.alerts);
   delete track[1].segment;
   track[1].time = track[0].time;
   assert.equal(spatialReplayTimeAt(track, 4), undefined);
@@ -166,15 +152,12 @@ test("source clock mapping refuses ambiguous, reversed, missing and extrapolated
   assert.equal(spatialReplayTimeAt(track, 4), undefined);
 });
 
-test("field-entry linked video remains project reference rather than incident footage", () => {
+test("definition media is reference material, never incident footage or a synthetic event", () => {
   const { base } = replayRiskContext(); const risk = spatialFixture("risk-point", "field-reference");
   risk.linkedMediaIds = ["video:clock"];
   const merged = mergeSpatialDataset(base, spatialSnapshot(risk));
-  assert.deepEqual(merged.alerts.at(-1)?.mediaIds, ["video:clock"]); assert.equal(merged.alerts.at(-1)?.mediaSeconds, undefined);
-  assert.equal(merged.alerts.at(-1)?.timestamp, risk.risk!.observedAt);
-  for (const description of [merged.alerts.at(-1)!.description, merged.nodes.at(-1)!.description]) {
-    assert.match(description, /项目参考资料/); assert.match(description, /未核验.*事发画面/); assert.match(description, /不自动跳转/);
-  }
+  assert.deepEqual(merged.nodes.at(-1)?.mediaIds, ["video:clock"]); assert.deepEqual(merged.alerts, base.alerts);
+  assert.match(merged.nodes.at(-1)!.description, /参考资料/); assert.match(merged.nodes.at(-1)!.description, /未核验.*事发画面/);
 });
 
 test("valid explicit engineering, construction-area and railway links show names with stable IDs", () => {
@@ -183,11 +166,38 @@ test("valid explicit engineering, construction-area and railway links show names
   area.name = "试验施工区"; railway.name = "人工营业线参考区"; risk.areaId = area.id; risk.railwayId = railway.id;
   risk.linkedNodeIds = [engineeringNode.id];
   const merged = mergeSpatialDataset(base, spatialSnapshot(area, railway, risk));
-  for (const description of [merged.nodes.at(-1)!.description, merged.alerts.at(-1)!.description]) {
+  for (const description of [merged.nodes.at(-1)!.description]) {
     assert.ok(description.includes(`${engineeringNode.name}（${engineeringNode.id}）`));
     assert.ok(description.includes("关联施工区域：试验施工区（spatial:area-one）"));
     assert.ok(description.includes("关联铁路范围：人工营业线参考区（spatial:named-railway）"));
   }
   const removed = mergeSpatialDataset(base, spatialSnapshot());
   assert.deepEqual(removed.timeExtent, base.timeExtent); assert.equal(removed.nodes.some((node) => node.spatialObjectId), false);
+});
+
+
+test("V3 railway is polygon-only and every vertex requires matching ECEF and model-surface provenance", () => {
+  const railway = spatialV3Fixture("railway"); assert.equal(validateSpatialObject(railway).geometry.type, "Polygon");
+  railway.geometry = spatialFixture("railway").geometry;
+  assert.throws(() => validateSpatialObject(railway), /闭合多边形/);
+  const point = spatialV3Fixture("risk-point"); point.source.vertices[0].anchor!.position.x += 1;
+  assert.throws(() => validateSpatialObject(point), /世界坐标.*不一致/);
+  const missing = spatialV3Fixture("risk-point"); delete missing.source.vertices[0].anchor;
+  assert.throws(() => validateSpatialObject(missing), /倾斜摄影表面/);
+  const falseSource = spatialV3Fixture("risk-point"); falseSource.source.vertices[0].pickKind = "terrain";
+  assert.throws(() => validateSpatialObject(falseSource), /倾斜摄影表面/);
+});
+
+test("V3 retains all valid V2 corridor/status sources and skips soft-deleted definitions without converting them", () => {
+  for (const status of ["open", "rectifying", "closed"] as const) {
+    const corridor = spatialFixture("railway", "legacy-corridor"), risk = spatialFixture("risk-point", "legacy-risk"); risk.risk!.status = status;
+    const input = spatialSnapshot(corridor, risk), result = validateSpatialSnapshot(input);
+    assert.deepEqual(result, input); assert.equal(result.objects[0].creationSource, undefined);
+    assert.equal(result.objects[1].risk!.status, status);
+  }
+  const deleted = spatialV3Fixture("risk-point", "deleted"); deleted.deletedAt = deleted.updatedAt;
+  const base = createSafetyDemoDataset(); base.alerts.push({ ...base.alerts[0], id: "spatial-alert:legacy", spatialObjectId: "legacy" });
+  const merged = mergeSpatialDataset(base, spatialSnapshot(deleted));
+  assert.equal(merged.nodes.some(node => node.spatialObjectId === "deleted"), false);
+  assert.equal(merged.alerts.some(alert => alert.id.startsWith("spatial-alert:")), false);
 });

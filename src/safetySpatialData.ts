@@ -1,4 +1,4 @@
-import type { SafetyAlert, SafetyDataset, SafetyNode, SafetyPosition, SafetyTrackPoint } from "./safetyTypes.ts";
+import type { SafetyDataset, SafetyNode, SafetyPosition, SafetyTrackPoint } from "./safetyTypes.ts";
 import type { SpatialObject, SpatialSnapshot } from "./safetySpatialTypes.ts";
 import { spatialPositions, validateSpatialSnapshot } from "./safetySpatialValidation.ts";
 
@@ -42,14 +42,13 @@ function radius(object: SpatialObject, position: SafetyPosition): number {
 /** Merge into the original adapter dataset; never write user geometry into CAD, model or railway sources. */
 export function mergeSpatialDataset(base: SafetyDataset, snapshot: SpatialSnapshot): SafetyDataset {
   const validated = validateSpatialSnapshot(snapshot);
-  const objects = validated.objects.filter((object) => object.projectId === base.projectId && object.visible);
+  const objects = validated.objects.filter((object) => object.projectId === base.projectId && object.visible && !object.deletedAt);
   const byObject = new Map(objects.map((object) => [object.id, object]));
   const notes: string[] = [];
   const nodes = base.nodes.filter((node) => !node.spatialObjectId);
-  const alerts = base.alerts.filter((alert) => !alert.spatialObjectId);
+  const alerts = base.alerts.filter((alert) => !alert.spatialObjectId && !alert.id.startsWith("spatial-alert:"));
   const nodeNames = new Map([...nodes.map((node) => [node.id, node.name] as const), ...objects.map((object) => [`spatial:${object.id}`, object.name] as const)]);
   const mediaById = new Map(base.media.map((media) => [media.id, media]));
-  let start = base.timeExtent[0], end = base.timeExtent[1];
   for (const object of objects) {
     const warning: string[] = [];
     const linkedMedia = object.linkedMediaIds.filter((id) => mediaById.has(id));
@@ -66,20 +65,10 @@ export function mergeSpatialDataset(base: SafetyDataset, snapshot: SpatialSnapsh
     if (linkedNodes.length) associations.push(`关联工程对象：${linkedNodes.map((id) => `${nodeNames.get(id)}（${id}）`).join("、")}。`);
     if (area?.kind === "construction-area") associations.push(`关联施工区域：${area.name}（spatial:${area.id}）。`);
     if (railway?.kind === "railway") associations.push(`关联铁路范围：${railway.name}（spatial:${railway.id}）。`);
-    let mediaSeconds: number | undefined;
-    if (object.risk?.observationSource === "replay-review") {
-      const risk = object.risk;
-      const media = risk.videoId ? mediaById.get(risk.videoId) : undefined;
-      const device = base.devices.find((candidate) => candidate.mediaId === risk.videoId);
-      const mappedTime = device && risk.mediaSeconds !== undefined ? spatialReplayTimeAt(device.track, risk.mediaSeconds) : undefined;
-      if (media?.kind === "video" && linkedMedia.includes(media.id) && mappedTime !== undefined
-        && Math.abs(mappedTime - risk.observedAt) <= SPATIAL_REPLAY_TOLERANCE_MS) {
-        mediaSeconds = risk.mediaSeconds;
-        associations.push(`关联回放：${media.name}（${media.id}），视频 ${mediaSeconds} s；时标对应通过校验，尚未核验该画面的对象取景或视频配准精度。`);
-      } else warning.push("关联回放视频、视频时刻或事件时标无法核对，仅保留用户记录，不自动跳转历史画面。");
-    } else if (object.risk?.observationSource === "field-entry" && linkedMedia.some((id) => mediaById.get(id)?.kind === "video")) {
-      associations.push("已关联视频仅为项目参考资料，未核验为本次风险的事发画面；现场记录不借用历史视频时标，不自动跳转。");
+    if (object.kind === "risk-point" && linkedMedia.some((id) => mediaById.get(id)?.kind === "video")) {
+      associations.push("已关联视频为位置台账参考资料；未核验为某次事件的事发画面，不自动生成事件或跳转历史时刻。");
     }
+    if (object.risk) associations.push("V2 历史风险属性已保留；原等级、处置字段及观察时间仅作来源记录，不自动生成业务事件。");
     const point = anchor(object);
     const description = object.kind === "construction-area" ? "人工绘制并确认的施工展示范围；不代表已审批的施工红线。"
       : object.kind === "railway" ? `人工界定的铁路参考范围${object.geometry.type === "Corridor" ? `，中心线两侧合计总宽度 ${object.geometry.widthMeters} m` : ""}；不代表正式营业线实测边界或法定限界。`
@@ -89,21 +78,14 @@ export function mergeSpatialDataset(base: SafetyDataset, snapshot: SpatialSnapsh
     const node: SafetyNode = { id: `spatial:${object.id}`, parentId: object.kind === "risk-point" && area?.kind === "construction-area" ? `spatial:${area.id}` : base.projectId,
       kind: object.kind === "risk-point" ? "component" : "section", name: object.name, position: point, radius: radius(object, point),
       provenance: "user", spatialKind: object.kind, spatialObjectId: object.id, mediaIds: linkedMedia,
-      description: `${description} 坐标来源：${sources.join("、")}；场景 EPSG:4979，源高程基准未知。${relationDescription}`,
+      ...(object.kind === "risk-point" ? { riskLevel: object.level ?? object.risk?.severity ?? "unassessed" } : {}),
+      description: `${object.description || object.risk?.description || ""} ${description} 坐标来源：${sources.join("、")}；场景 EPSG:4979，源高程基准未知。${relationDescription}`,
       ...(object.geometry.type === "Polygon" ? { boundary: object.geometry.positions.map((position) => ({ ...position })) } : {}) };
     nodes.push(node);
-    if (object.kind === "risk-point" && object.risk) {
-      const risk = object.risk;
-      const alert: SafetyAlert = { id: `spatial-alert:${object.id}`, nodeId: node.id, spatialObjectId: object.id, title: object.name,
-        severity: risk.severity, timestamp: risk.observedAt, status: risk.status, provenance: "user",
-        description: `${risk.description}\n人工记录来源：${risk.observationSource === "replay-review" ? "视频回放复核" : "现场人工录入"}。用户确认范围为几何和描述，非正式验收。${relationDescription}`,
-        mediaIds: linkedMedia, rectifications: [], ...(mediaSeconds === undefined ? {} : { mediaSeconds }) };
-      alerts.push(alert); start = Math.min(start, risk.observedAt); end = Math.max(end, risk.observedAt);
-    }
     if (warning.length) notes.push(`[人工标绘] ${object.name}：${warning.join(" ")}`);
   }
   const foreignCount = validated.objects.filter((object) => object.projectId !== base.projectId).length;
   if (foreignCount) notes.push(`[人工标绘] ${foreignCount} 个对象属于其它项目，未混入当前工程。`);
   if (validated.objects.length) notes.unshift(`[人工标绘] 已读取第 ${validated.revision} 版；当前项目显示 ${objects.length} 个用户确认对象。原始 CAD、模型和正式铁路源数据未改写。`);
-  return { ...base, nodes, alerts, timeExtent: [start, end], sourceNotes: [...base.sourceNotes.filter((note) => !note.startsWith("[人工标绘]")), ...notes] };
+  return { ...base, nodes, alerts, timeExtent: [...base.timeExtent], sourceNotes: [...base.sourceNotes.filter((note) => !note.startsWith("[人工标绘]")), ...notes] };
 }

@@ -1,3 +1,5 @@
+import { spatialPositionToEcef } from "./safetySpatialValidation.ts";
+import type { ModelRegistryEntry } from "./safetySpatialTypes.ts";
 import type { SpatialKind, SpatialObject, SpatialSnapshot } from "./safetySpatialTypes.ts";
 
 export function spatialFixture(kind: SpatialKind = "construction-area", id = "area-one"): SpatialObject {
@@ -19,4 +21,21 @@ export function spatialFixture(kind: SpatialKind = "construction-area", id = "ar
 }
 export function spatialSnapshot(...objects: SpatialObject[]): SpatialSnapshot {
   return { version: 1, revision: 1, updatedAt: "2026-10-07T08:00:00.000Z", objects };
+}
+
+
+export function modelRegistryFixture(): ModelRegistryEntry {
+  return { assetId: "verified-model", assetVersion: "test-asset-v1", coordinateTransformVersion: "test-transform-v1", projectId: "safety:project", name: "Verified photogrammetry", kind: "photogrammetry",
+    url: "/__library/files/verified-model/tiles/root.json", matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], coordinateOffsets: { longitude: 0, latitude: 0, height: 0 }, capabilitySource: "test-registry" };
+}
+export function spatialV3Fixture(kind: SpatialObject["kind"] = "construction-area", id = "area-one"): SpatialObject {
+  const object = spatialFixture(kind, id), model = modelRegistryFixture();
+  if (kind === "railway") object.geometry = spatialFixture("construction-area").geometry;
+  object.creationSource = "user_drawn_model_surface";
+  if (kind === "risk-point") { delete object.risk; object.level = "unassessed"; }
+  const points = object.geometry.type === "Point" ? [object.geometry.position] : object.geometry.positions;
+  object.source.vertices = points.map(point => ({ pickKind: "model-depth", sourceHeight: point.height, sourceRecordId: model.assetId,
+    anchor: { position: { space: "ecef-meters", ...spatialPositionToEcef(point) }, model: { assetId: model.assetId, assetVersion: model.assetVersion, coordinateTransformVersion: model.coordinateTransformVersion },
+      provenance: "verified-project-photogrammetry-surface", pickedAt: object.createdAt } }));
+  return object;
 }

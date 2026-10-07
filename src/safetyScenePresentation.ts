@@ -31,14 +31,18 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
   float ca = cos(u_stageAngle), sa = sin(u_stageAngle);
   vec2 p = vec2(local.x * ca + local.y * sa, -local.x * sa + local.y * ca);
   vec2 q = abs(p) - u_halfExtent;
-  if (max(q.x, q.y) > 0.0) discard;
+  if (u_clipEnabled > 0.5 && max(q.x, q.y) > 0.0) discard;
   // Preserve photographed detail. This asset has unlit textured meshes, not semantic BIM surfaces.
   float luminance = dot(material.diffuse, vec3(0.2126, 0.7152, 0.0722));
   float tone = pow(clamp(luminance, 0.0, 1.0), 0.65);
   vec3 n = normalize(cross(dFdx(fsInput.attributes.positionEC), dFdy(fsInput.attributes.positionEC)));
   float roof = abs(dot(n, normalize((czm_view * vec4(u_upWC, 0.0)).xyz)));
   vec3 blue = mix(czm_srgbToLinear(u_dark.rgb), czm_srgbToLinear(u_light.rgb), tone);
-  material.diffuse = blue * (0.74 + 0.26 * roof);
+  // Display weights in local coordinates do not identify buildings or alter engineering geometry.
+  float shoulder = smoothstep(u_halfExtent.y * 0.22, u_halfExtent.y * 0.94, abs(p.y));
+  float elevated = smoothstep(u_baseHeight + 28.0, u_baseHeight + 95.0, local.z);
+  float emphasis = 1.0 - 0.34 * shoulder - 0.20 * elevated * shoulder;
+  material.diffuse = blue * (0.76 + 0.24 * roof) * emphasis;
   material.alpha = 1.0;
 }
 `;
@@ -64,6 +68,9 @@ export class SafetyScenePresentation {
   private view?: SafetyView;
   private stage?: Stage;
   private active = false;
+  private authoring = false;
+  private readonly cadGeometry = new Map<{ show: boolean; isDestroyed?: (() => boolean) | boolean }, boolean>();
+  private readonly cadEntityShows = new Map<Entity, boolean>();
   private styled = false;
   private disposed = false;
   private globeShow = true;
@@ -87,8 +94,8 @@ export class SafetyScenePresentation {
     if (!active) { this.restore(); return; }
     this.syncAnnotations();
     if (state.mode !== "presentation") { this.restoreScene(); return; }
-    const scope = [...view.breadcrumbs].reverse().find((node) => node.kind === "section") ?? dataset.nodes.find((node) => node.id === dataset.projectId)!;
-    const key = `${scope.id}:${dataset.nodes.length}`;
+    const scope = [...view.breadcrumbs].reverse().find((node) => node.kind === "section" && !node.spatialObjectId) ?? dataset.nodes.find((node) => node.id === dataset.projectId)!;
+    const key = `${scope.id}:${JSON.stringify(scope.boundary ?? scope.position)}`;
     if (this.stage?.key !== key) {
       this.stage = this.makeStage(scope, key);
       this.heightSamples = 0;
@@ -108,7 +115,7 @@ export class SafetyScenePresentation {
       scene.backgroundColor = Color.fromCssColorString(tokens.colors.background)!;
       this.styled = true;
     }
-    this.primitives.show = true;
+    this.primitives.show = !this.authoring;
     this.syncTiles();
     this.updateUniforms();
   }
@@ -196,6 +203,8 @@ export class SafetyScenePresentation {
           u_fixedToStage: { type: UniformType.MAT4, value: new Matrix4() },
           u_stageAngle: { type: UniformType.FLOAT, value: this.stage.angle },
           u_halfExtent: { type: UniformType.VEC2, value: new Cartesian2(this.stage.halfLength, this.stage.halfWidth) },
+          u_clipEnabled: { type: UniformType.FLOAT, value: this.authoring ? 0 : 1 },
+          u_baseHeight: { type: UniformType.FLOAT, value: this.stage.topHeight },
           u_upWC: { type: UniformType.VEC3, value: new Cartesian3(0, 1, 0) },
           u_dark: { type: UniformType.VEC4, value: Color.fromCssColorString(tokens.colors.sceneDark)! },
           u_light: { type: UniformType.VEC4, value: Color.lerp(Color.fromCssColorString(tokens.colors.sceneDark)!, Color.fromCssColorString(tokens.colors.cyan)!, 0.43, new Color()) },
@@ -222,6 +231,7 @@ export class SafetyScenePresentation {
     Matrix4.multiplyByPointAsVector(this.stage.enu, Cartesian3.UNIT_Z, this.upWC);
     Cartesian3.normalize(this.upWC, this.upWC);
     for (const entry of this.tiles.values()) if (!entry.shader.isDestroyed() && !entry.tileset.isDestroyed() && entry.tileset.customShader === entry.shader) {
+      entry.shader.setUniform("u_clipEnabled", this.authoring ? 0 : 1); entry.shader.setUniform("u_baseHeight", this.stage.topHeight);
       entry.shader.setUniform("u_fixedToStage", this.fixedToStage); entry.shader.setUniform("u_upWC", this.upWC);
     }
   }
@@ -324,6 +334,12 @@ export class SafetyScenePresentation {
       appearance: new PolylineMaterialAppearance({ material: this.arcMaterial }), asynchronous: false, allowPicking: false }));
   }
 
+  setAuthoring(active: boolean): void {
+    this.authoring = active;
+    this.primitives.show = this.styled && !active;
+    this.updateUniforms(); this.viewer.scene.requestRender();
+  }
+
   private syncAnnotations(): void {
     const current = new Set<object>();
     for (const record of this.options.getImports?.() ?? []) {
@@ -331,7 +347,14 @@ export class SafetyScenePresentation {
       const collection = record.resource as PrimitiveCollection & { entities?: { values: Entity[] } };
       if (collection instanceof PrimitiveCollection && !collection.isDestroyed()) for (let i = 0; i < collection.length; i++) {
         const child = collection.get(i);
-        if (!(child instanceof LabelCollection) || child.isDestroyed()) continue;
+        if (!(child instanceof LabelCollection)) {
+          if (child && typeof child.show === "boolean" && !(typeof child.isDestroyed === "function" ? child.isDestroyed() : child.isDestroyed === true)) {
+            current.add(child); if (!this.cadGeometry.has(child)) this.cadGeometry.set(child, child.show);
+            child.show = false;
+          }
+          continue;
+        }
+        if (child.isDestroyed()) continue;
         current.add(child);
         let saved = this.labels.get(child);
         if (!saved) {
@@ -345,6 +368,11 @@ export class SafetyScenePresentation {
             && id?.entityIndex === this.view?.selected.sourceEntityIndex;
         }
       }
+      for (const entity of collection.entities?.values ?? []) {
+        current.add(entity); if (!this.cadEntityShows.has(entity)) this.cadEntityShows.set(entity, entity.show);
+        const selected = !!this.state?.engineeringAnnotations && record.id === this.view?.selected.sourceRecordId && Number(entity.id.match(/-(\d+)$/)?.[1]) === this.view?.selected.sourceEntityIndex;
+        entity.show = !!this.cadEntityShows.get(entity) && selected;
+      }
       for (const entity of collection.entities?.values ?? []) if (entity.label) {
         current.add(entity);
         if (!this.entityLabels.has(entity)) this.entityLabels.set(entity, entity.label.show);
@@ -352,6 +380,8 @@ export class SafetyScenePresentation {
         entity.label.show = new ConstantProperty(!!this.state?.engineeringAnnotations && record.id === this.view?.selected.sourceRecordId && index === this.view?.selected.sourceEntityIndex);
       }
     }
+    for (const [primitive, show] of this.cadGeometry) if (!current.has(primitive)) { if (!(typeof primitive.isDestroyed === "function" ? primitive.isDestroyed() : primitive.isDestroyed === true)) primitive.show = show; this.cadGeometry.delete(primitive); }
+    for (const [entity, show] of this.cadEntityShows) if (!current.has(entity)) { entity.show = show; this.cadEntityShows.delete(entity); }
     for (const [labels, state] of this.labels) if (!current.has(labels)) { this.restoreLabels(state); this.labels.delete(labels); }
     for (const [entity, show] of this.entityLabels) if (!current.has(entity)) { if (entity.label) entity.label.show = show; this.entityLabels.delete(entity); }
   }
@@ -428,6 +458,10 @@ export class SafetyScenePresentation {
     this.labels.clear();
     for (const [entity, show] of this.entityLabels) if (entity.label) entity.label.show = show;
     this.entityLabels.clear();
+    for (const [primitive, show] of this.cadGeometry) if (!(typeof primitive.isDestroyed === "function" ? primitive.isDestroyed() : primitive.isDestroyed === true)) primitive.show = show;
+    this.cadGeometry.clear();
+    for (const [entity, show] of this.cadEntityShows) entity.show = show;
+    this.cadEntityShows.clear();
   }
 
   tick(elapsed: number, decorativeTime = 0, animated = false, reducedMotion = false): void {
@@ -439,7 +473,7 @@ export class SafetyScenePresentation {
     if (!this.styled) return;
     this.updateUniforms();
     if (animated) this.motionStarted = true;
-    const ornamentsVisible = this.motionStarted && !!this.state?.layers.effects && !reducedMotion && !document.hidden;
+    const ornamentsVisible = !this.authoring && this.motionStarted && !!this.state?.layers.effects && !reducedMotion && !document.hidden;
     if (this.focusPrimitive) this.focusPrimitive.show = ornamentsVisible && this.focusEnabled;
     if (this.arcPrimitive) this.arcPrimitive.show = ornamentsVisible;
     if (this.focusMaterial && this.focusPosition) {
@@ -449,7 +483,7 @@ export class SafetyScenePresentation {
       this.focusMaterial.uniforms.elapsed = decorativeTime;
     }
     if (this.arcMaterial) this.arcMaterial.uniforms.elapsed = decorativeTime;
-    if (this.stage && this.isSurfaceReady() && this.heightSamples < 4 && elapsed - this.lastHeightSample > 1.5
+    if (!this.authoring && this.stage && this.isSurfaceReady() && this.heightSamples < 4 && elapsed - this.lastHeightSample > 1.5
       && this.viewer.scene.mode === SceneMode.SCENE3D && this.viewer.scene.pickPositionSupported) {
       this.lastHeightSample = elapsed; this.heightSamples++;
       const samples: number[] = [];
@@ -478,7 +512,7 @@ export class SafetyScenePresentation {
   }
 
   debugStats(): Record<string, unknown> {
-    return { active: this.active, styled: this.styled, shaderCount: this.tiles.size, ownedClipCount: 0, clippingMethod: "owned-fragment-shader-discard",
+    return { authoring: this.authoring, cadGeometryHidden: this.cadGeometry.size, active: this.active, styled: this.styled, shaderCount: this.tiles.size, ownedClipCount: 0, clippingMethod: "owned-fragment-shader-discard",
       basePrimitives: this.primitives.length, focusGeometryBuilds: this.focusGeometryBuilds, dynamicGeometryPerFrame: false,
       focusPulseVisible: !!this.focusPrimitive?.show && this.styled, baseArcVisible: !!this.arcPrimitive?.show && this.styled, cadLabelCollections: this.labels.size, cadEntityLabels: this.entityLabels.size, messages: [...this.messages],
       stage: this.stage ? { key: this.stage.key, lengthMeters: this.stage.halfLength * 2, widthMeters: this.stage.halfWidth * 2, topHeight: this.stage.topHeight, bottomHeight: this.stage.bottomHeight,

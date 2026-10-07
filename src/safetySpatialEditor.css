@@ -1,18 +1,60 @@
-.safety-spatial-editor { position:absolute; z-index:50; top:106px; left:24px; bottom:100px; width:340px; overflow:auto; padding:18px; box-sizing:border-box; color:#e5f7ff; background:#071a2df5; border:1px solid #43d9ff88; box-shadow:0 12px 40px #0009; pointer-events:auto; font:16px/1.5 "Microsoft YaHei",sans-serif; scrollbar-width:thin; }
-.safety-spatial-editor[hidden],.safety-spatial-editor [hidden] { display:none!important; }
-.safety-spatial-editor header { display:flex; align-items:center; justify-content:space-between; }
-.safety-spatial-editor h2 { font-size:20px; margin:0 0 12px; }.safety-spatial-editor small {font-size:14px;color:#91b0c5;}
-.safety-spatial-editor button { min-height:34px; color:#d9f5ff; border:1px solid #347b99; background:#103450; padding:5px 9px; cursor:pointer; font:inherit; font-size:14px; border-radius:3px; }
-.safety-spatial-editor button:hover {border-color:#43d9ff;background:#154566;}.safety-spatial-editor[aria-busy=true] button{pointer-events:none;opacity:.5;}
-.spatial-create,.spatial-draw-actions {display:flex;flex-wrap:wrap;gap:7px;margin:12px 0;}.spatial-create button{flex:1;white-space:nowrap;}
-.safety-spatial-editor label {display:flex; flex-direction:column;gap:5px;margin:12px 0;color:#a8c8dc; font-size:14px;}
-.safety-spatial-editor input,.safety-spatial-editor select,.safety-spatial-editor textarea{box-sizing:border-box;transition:none;}
-.safety-spatial-editor input:not([type=checkbox]),.safety-spatial-editor select,.safety-spatial-editor textarea{width:100%;min-width:0;min-height:35px;margin:0;padding:7px;color:#e5f7ff;background:#041323;border:1px solid #28617e;border-radius:3px;font:16px/1.5 "Microsoft YaHei",sans-serif;}
-.safety-spatial-editor .spatial-check{display:flex;flex-direction:row;align-items:flex-start;line-height:21px;}
-/* Native checkbox focus must not inherit the global text-input padding or geometry transition. */
-.safety-spatial-editor .spatial-check input{flex:0 0 17px;width:17px;min-width:17px;height:17px;min-height:17px;padding:0;margin:3px 0 0;border:0;line-height:17px;box-shadow:none;accent-color:#43d9ff;transition:none;}
-.safety-spatial-editor .spatial-check input:focus-visible{outline:2px solid #43d9ff;outline-offset:3px;}
-.spatial-save{width:100%;border-color:#43d9ff!important;}.spatial-status{font-size:14px;color:#8de9ff;overflow-wrap:anywhere;}.spatial-note{font-size:14px;color:#91b0c5;line-height:1.6;}
-.spatial-list-heading{display:flex;align-items:center;justify-content:space-between;border-top:1px solid #24526e;padding-top:15px;margin-top:18px;}
-.spatial-object{border-bottom:1px solid #24526e;padding:12px 0;}.spatial-object-name{display:block;width:100%;text-align:left;font-size:16px!important;}.spatial-object small{display:block;margin:5px 0;}.spatial-object>div{display:flex;gap:8px;}
-@media(max-width:1400px){.safety-spatial-editor{left:16px;top:96px;bottom:110px;}}
+.safety-spatial-editor { position:absolute; z-index:50; top:128px; left:24px; width:420px; max-height:calc(100% - 248px); overflow:auto; box-sizing:border-box; color:#e5f7ff; background:#071c2ef5; border:1px solid #346780; border-radius:9px; box-shadow:0 20px 56px #0006; pointer-events:auto; font:16px/1.5 "Microsoft YaHei","PingFang SC",system-ui,sans-serif; scrollbar-width:thin; scrollbar-color:#315b72 #061a2a; }
+.safety-spatial-editor *, .spatial-discard * { box-sizing:border-box; }
+.safety-spatial-editor[hidden], .safety-spatial-editor [hidden], .spatial-handles[hidden], .spatial-handles [hidden], .spatial-scene-hint[hidden], .spatial-draft-preview[hidden], .spatial-discard[hidden] { display:none!important; }
+.spatial-header { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:15px 22px; border-bottom:1px solid #1d3b50; }
+.spatial-header h2 { font-size:21px; line-height:1.45; margin:0; font-weight:650; }
+.spatial-body { padding:20px 22px; }
+.safety-spatial-editor h3 { margin:0; font-size:19px; font-weight:600; }
+.safety-spatial-editor small { font-size:14px; color:#91b0c5; }
+.safety-spatial-editor button, .spatial-discard button { min-height:44px; padding:0 14px; border-radius:5px; color:inherit; font:inherit; font-size:15px; cursor:pointer; transition:background 160ms,color 160ms,border-color 160ms; }
+.safety-spatial-editor button:disabled { opacity:.45; cursor:not-allowed; }
+.safety-spatial-editor button:focus-visible, .safety-spatial-editor input:focus-visible, .safety-spatial-editor select:focus-visible, .safety-spatial-editor textarea:focus-visible, .spatial-discard button:focus-visible { outline:2px solid #43d9ff; outline-offset:3px; }
+.safety-spatial-editor .spatial-primary, .spatial-discard .spatial-primary { background:#1880a7; color:#f3fbff; border:1px solid #44b2d5; }
+.safety-spatial-editor .spatial-primary:hover:not(:disabled), .spatial-discard .spatial-primary:hover { background:#2298c1; }
+.safety-spatial-editor .spatial-secondary, .spatial-discard .spatial-secondary { border:1px solid #365d73; background:#0a2538; color:#c3d9e6; }
+.safety-spatial-editor .spatial-secondary:hover:not(:disabled), .spatial-discard .spatial-secondary:hover { background:#153c52; }
+.safety-spatial-editor .spatial-text, .safety-spatial-editor .spatial-icon-button { border:0; background:none; color:#9adceb; }
+.safety-spatial-editor .spatial-text { padding:0 6px; font-size:14px; }
+.safety-spatial-editor .spatial-text:hover, .safety-spatial-editor .spatial-icon-button:hover { background:#16405655; }
+.safety-spatial-editor .spatial-icon-button { min-width:44px; padding:0 9px; font-size:23px; color:#9dbbce; }
+.safety-spatial-editor .is-danger { color:#ff8392; }
+.spatial-icon { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; stroke-linejoin:round; flex:0 0 auto; }
+.spatial-steps { display:flex; justify-content:space-between; align-items:center; gap:5px; color:#638ba4; font-size:14px; margin-bottom:23px; }
+.spatial-steps span { display:flex; gap:5px; align-items:center; white-space:nowrap; }
+.spatial-steps i { display:grid; place-items:center; width:22px; height:22px; border:1px solid #38576b; border-radius:50%; font-size:12px; font-style:normal; }
+.spatial-steps b { font-weight:400; color:#35546a; }.spatial-steps .active { color:#c5f2ff; }.spatial-steps .active i { border-color:#54ceee; background:#16516a; }.spatial-steps .done { color:#62c4d9; }
+.spatial-types { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+.spatial-types button { display:flex; align-items:center; flex-direction:column; justify-content:center; gap:10px; height:82px; border:1px solid #2c4e65; background:#0a2336; padding:8px 4px; color:#a2c1d6; }
+.spatial-types button:hover { background:#134159; border-color:#3b91ad; color:#a0edff; }
+.spatial-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }.spatial-row small { white-space:nowrap; }
+.spatial-badge { display:inline-flex; align-items:center; gap:6px; padding:4px 8px; border:1px solid #307991; border-radius:4px; color:#93ecff; background:#15475688; font-size:14px; }
+.spatial-badge .spatial-icon { width:17px; height:17px; }.spatial-badge.is-saved { color:#8be3cc; background:#19483970; border-color:#3a7b68; }
+.spatial-draw-hint { margin-top:20px; padding:16px; background:#0b293d; border:1px solid #2a5268; border-radius:6px; }
+.spatial-draw-hint strong { font-size:16px; font-weight:500; }.spatial-draw-hint p { margin:8px 0 0; color:#99b8cc; font-size:14px; line-height:1.7; }
+.spatial-draw-count { display:flex; align-items:center; justify-content:space-between; margin:20px 0 12px; color:#acd0df; font-size:14px; }.spatial-draw-count b { color:#8feaff; font-size:18px; font-weight:500; margin:0 4px; }
+.spatial-button-row { display:flex; gap:10px; align-items:center; }.spatial-button-row > button { flex:1; }.spatial-cancel { margin-top:12px; }.spatial-save-row { margin-top:24px; }
+.spatial-note { color:#91b0c5; font-size:14px; line-height:1.8; margin:17px 0 0; }
+.spatial-field { display:flex; flex-direction:column; gap:9px; color:#c3dcea; font-size:14px; margin:18px 0 0; }
+.spatial-field > span { display:flex; align-items:center; justify-content:space-between; }.spatial-field small { margin-left:8px; }
+.safety-spatial-editor input, .safety-spatial-editor select, .safety-spatial-editor textarea { width:100%; min-width:0; min-height:44px; border:1px solid #365b71; border-radius:5px; background:#041623; color:#e3f3fc; padding:10px 12px; font:16px/1.5 "Microsoft YaHei",system-ui,sans-serif; margin:0; transition:none; }
+.safety-spatial-editor textarea { min-height:95px; resize:vertical; }.safety-spatial-editor input[aria-invalid=true] { border-color:#ff687d; }
+.spatial-levels { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; }.spatial-levels button { border:1px solid #30546b; background:none; color:#9bb9ce; font-size:14px; padding:0 4px; }.spatial-levels button.active { background:#234458; border-color:#7da5bd; color:#f1f9ff; }
+.spatial-more { margin-top:16px; border-top:1px solid #234357; padding-top:3px; }.spatial-more summary { cursor:pointer; color:#96b4c7; list-style:none; font-size:14px; min-height:44px; display:flex; align-items:center; justify-content:space-between; }.spatial-more summary::after { content:"⌄"; font-size:19px; }.spatial-more[open] summary::after { content:"⌃"; }
+.spatial-list-heading { display:flex; justify-content:space-between; align-items:center; border-top:1px solid #23455b; margin-top:20px; padding-top:12px; color:#a4c3d5; font-size:14px; }.spatial-list-heading b { font-weight:500; color:#91b0c5; margin-left:5px; }
+.spatial-list-more { position:relative; }.spatial-list-more summary { cursor:pointer; min-width:44px; min-height:44px; display:grid; place-items:center; font-size:22px; list-style:none; }.spatial-list-more > div { position:absolute; right:0; top:42px; z-index:3; width:142px; background:#0f2a3d; border:1px solid #375d74; border-radius:5px; padding:4px; box-shadow:0 6px 18px #0006; }.spatial-list-more button { width:100%; }
+.spatial-object { display:flex; gap:10px; align-items:center; min-height:66px; border-bottom:1px solid #15384c; }.spatial-object > .spatial-icon { width:20px; color:#64cfe7; }.safety-spatial-editor .spatial-object-name { flex:1; min-width:0; padding:10px 0; text-align:left; background:none; border:0; }.spatial-object-name strong { display:block; overflow-wrap:anywhere; font-size:16px; font-weight:500; }.spatial-object-name small { display:block; font-size:14px; margin-top:2px; }.spatial-object .spatial-icon-button { flex:0 0 44px; }
+.spatial-empty { padding:26px 8px; margin:0; text-align:center; font-size:14px; color:#91b0c5; line-height:1.9; }
+.safety-spatial-editor .spatial-detail-title { font-size:23px; line-height:1.5; margin:18px 0 8px; overflow-wrap:anywhere; }.spatial-details { display:grid; grid-template-columns:86px 1fr; gap:15px 12px; font-size:14px; line-height:1.6; margin:22px 0; }.spatial-details dt { color:#86a8be; }.spatial-details dd { margin:0; color:#d2e5ef; overflow-wrap:anywhere; }
+.spatial-menu { border:1px solid #375d74; border-radius:5px; background:#0f2a3d; padding:3px 10px; }
+.spatial-message { margin:0 22px 20px; padding:12px; border:1px solid #397461; background:#0d342c7a; border-radius:5px; color:#a7e9d6; font-size:14px; line-height:1.65; overflow-wrap:anywhere; }.spatial-message.is-error { border-color:#88663c; background:#3b2a1b9e; color:#f2c68c; }
+.safety-spatial-editor[aria-busy=true] .spatial-body, .safety-spatial-editor[aria-busy=true] .spatial-header { pointer-events:none; opacity:.75; }
+.spatial-handles, .spatial-draft-preview { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:visible; z-index:42; }
+.spatial-handles button { position:absolute; left:0; top:0; padding:0; min-height:0; font:14px/1 system-ui; margin:0; border-radius:50%; touch-action:none; pointer-events:auto; }
+.spatial-vertex { width:17px; height:17px; border:2px solid #a0f1ff; background:#071a2d; cursor:grab; box-shadow:0 0 0 4px #43d9ff18; }.spatial-vertex:active { cursor:grabbing; }.spatial-vertex.is-selected { background:#b5f4ff; border-color:#effcff; }.spatial-midpoint { width:16px; height:16px; background:#285a70; border:1px solid #82d5e8; color:#d9faff; cursor:copy; }.spatial-midpoint:hover { background:#4a9cb9; }
+.spatial-draft-preview { z-index:41; }.spatial-draft-preview line { stroke:#69e3ff; stroke-width:2; stroke-dasharray:6 5; opacity:.8; }
+.spatial-scene-hint { position:absolute; z-index:44; top:145px; left:calc(50% + 140px); transform:translateX(-50%); max-width:calc(100% - 520px); padding:11px 18px; color:#d1f3ff; border:1px solid #3c7b92; border-radius:6px; background:#05243bd9; font:15px/1.5 "Microsoft YaHei",system-ui,sans-serif; pointer-events:none; }
+.spatial-discard { position:absolute; inset:0; z-index:80; display:grid; place-items:center; padding:24px; background:#010812b8; pointer-events:auto; color:#e5f7ff; font:16px/1.5 "Microsoft YaHei",system-ui,sans-serif; }.spatial-discard section { width:min(430px,100%); border:1px solid #416f87; border-radius:10px; background:#0b2336; padding:29px; box-shadow:0 26px 80px #0008; text-align:center; }.spatial-discard h2 { margin:0 0 12px; font-size:22px; font-weight:550; }.spatial-discard p { margin:0 0 27px; font-size:15px; color:#a6c6d8; }
+@media(max-width:1500px) { .safety-spatial-editor { width:360px; left:16px; top:116px; max-height:calc(100% - 226px); }.spatial-body { padding:16px 18px; }.spatial-header { padding:12px 18px; }.spatial-steps { font-size:13px; gap:3px; }.spatial-steps i { width:19px; height:19px; }.spatial-types button { font-size:14px; height:72px; }.spatial-scene-hint { top:130px; left:calc(50% + 125px); max-width:calc(100% - 450px); }.spatial-draw-hint { padding:12px; margin-top:15px; } }
+@media(max-height:830px) { .safety-spatial-editor { top:110px; max-height:calc(100% - 215px); }.spatial-body { padding-top:15px; padding-bottom:15px; }.spatial-steps { margin-bottom:16px; }.spatial-field { margin-top:14px; }.spatial-draw-hint { margin-top:14px; }.spatial-save-row { margin-top:17px; }.spatial-scene-hint { top:119px; } }
+@media(max-width:800px) { .safety-spatial-editor { width:min(350px,calc(100% - 32px)); }.spatial-scene-hint { display:none; } }
+@media(prefers-reduced-motion:reduce) { .safety-spatial-editor button, .spatial-discard button { transition:none; } }

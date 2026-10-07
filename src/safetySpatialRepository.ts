@@ -1,5 +1,5 @@
-import { SPATIAL_API_PATH, type SpatialMutation, type SpatialObject, type SpatialSnapshot } from "./safetySpatialTypes.ts";
-import { validateSpatialMutation, validateSpatialSnapshot } from "./safetySpatialValidation.ts";
+import { SPATIAL_API_PATH, SPATIAL_MODELS_API_PATH, type ModelRegistryEntry, type SpatialMutation, type SpatialObject, type SpatialSnapshot } from "./safetySpatialTypes.ts";
+import { validateModelRegistry, validateSpatialMutation, validateSpatialSnapshot } from "./safetySpatialValidation.ts";
 
 export class SafetySpatialError extends Error {
   readonly code: string;
@@ -22,6 +22,16 @@ export class SafetySpatialRepository {
   }
   async delete(id: string, expectedRevision: number): Promise<SpatialSnapshot> {
     return this.mutate({ operation: "delete", id, expectedRevision, mutationId: crypto.randomUUID() });
+  }
+  async restore(id: string, expectedRevision: number): Promise<SpatialSnapshot> {
+    return this.mutate({ operation: "restore", id, expectedRevision, mutationId: crypto.randomUUID() });
+  }
+  async loadModels(): Promise<ModelRegistryEntry[]> {
+    try {
+      const response = await this.fetcher(SPATIAL_MODELS_API_PATH, { cache: "no-store", headers: { "X-Cesium-Library": "1" } });
+      if (!response.ok) throw new Error("项目模型注册暂不可用");
+      return validateModelRegistry(await response.json());
+    } catch (error) { throw new SafetySpatialError(error instanceof Error ? error.message : "模型注册无法读取", { code: "MODEL_REGISTRY_UNAVAILABLE" }); }
   }
   private async mutate(input: SpatialMutation): Promise<SpatialSnapshot> {
     let mutation: SpatialMutation;

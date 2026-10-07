@@ -33,20 +33,22 @@ export function deriveSafetyView(dataset: SafetyDataset, state: SafetyState): Sa
   const provenance = (item: { provenance: string }): boolean => state.includeDemo || item.provenance !== "demo";
   const inTime = (timestamp: number): boolean => timestamp >= state.timeRange[0] && timestamp <= state.timeRange[1];
   const eligibleAlerts = dataset.alerts.filter((alert) => provenance(alert) && inTime(alert.timestamp)
-    && (state.severity === "all" || alert.severity === state.severity));
-  const eligibleRiskIds = new Set(eligibleAlerts.map((alert) => alert.nodeId));
-  const matchesRisk = (node: SafetyNode): boolean => node.spatialKind !== "risk-point" || eligibleRiskIds.has(node.id);
-  // A filtered risk must not survive through breadcrumbs or the selected-object scene ring.
-  const selected = ancestors(requested).reverse().find((node) => provenance(node) && matchesRisk(node))
+    && (state.severity === "all" || alert.severity === state.severity)
+    && (!state.eventStatus || state.eventStatus === "all" || alert.status === state.eventStatus)
+    && (!state.eventQuery?.trim() || `${alert.title} ${alert.description}`.toLocaleLowerCase().includes(state.eventQuery.trim().toLocaleLowerCase())));
+  // Manual definitions are durable reference objects. Event time/status filters do not create, erase or move them.
+  const eligibleEventIds = new Set(eligibleAlerts.map(alert => alert.eventId).filter(Boolean));
+  const matchesEvent = (node: SafetyNode): boolean => !node.eventId || eligibleEventIds.has(node.eventId);
+  const selected = ancestors(requested).reverse().find(node => provenance(node) && matchesEvent(node))
     || byId.get(dataset.projectId) || dataset.nodes[0];
   const inScope = (node: SafetyNode): boolean => ancestors(node).some((parent) => parent.id === selected.id);
-  let nodes = dataset.nodes.filter((node) => inScope(node) && provenance(node) && matchesRisk(node));
+  let nodes = dataset.nodes.filter((node) => inScope(node) && provenance(node) && matchesEvent(node));
   const scopeIds = new Set(nodes.map((node) => node.id));
   const alerts = eligibleAlerts.filter((alert) => scopeIds.has(alert.nodeId));
   const affected = new Set<string>();
   if (state.severity !== "all") {
     for (const alert of alerts) { const node = byId.get(alert.nodeId); if (node) ancestors(node).forEach((parent) => affected.add(parent.id)); }
-    nodes = nodes.filter((node) => node.spatialKind === "construction-area" || node.spatialKind === "railway"
+    nodes = nodes.filter((node) => !!node.spatialKind
       || affected.has(node.id) || ancestors(node).some((parent) => alerts.some((alert) => alert.nodeId === parent.id)));
   }
   const filteredIds = new Set(nodes.map((node) => node.id));
@@ -82,7 +84,7 @@ export class SafetyStore {
   constructor(dataset: SafetyDataset) {
     this._dataset = dataset;
     this._state = { selectedId: dataset.projectId, mode: "presentation", severity: "all", timeRange: [...dataset.timeExtent],
-      time: dataset.timeExtent[0], playing: false, includeDemo: true, heatOpacity: .55, cruise: false, animationPaused: true, engineeringAnnotations: false,
+      time: dataset.timeExtent[0], playing: false, includeDemo: false, page: "overview", eventStatus: "all", eventQuery: "", heatOpacity: .55, cruise: false, animationPaused: true, engineeringAnnotations: false,
       layers: { boundary: true, markers: true, track: true, heat: false, effects: true, links: true } };
     this._view = deriveSafetyView(dataset, this._state);
   }
@@ -117,15 +119,15 @@ export class SafetyStore {
   }
 
   select(selection: SafetySelection): void {
-    if (!this._dataset.nodes.some((node) => node.id === selection.nodeId && !node.navigationDisabledReason)) return;
+    if (!this._dataset.nodes.some((node) => node.id === selection.nodeId && (!node.navigationDisabledReason || selection.fly === false))) return;
     const alert = selection.alertId ? this._dataset.alerts.find((entry) => entry.id === selection.alertId && entry.nodeId === selection.nodeId) : undefined;
     this.patch({ selectedId: selection.nodeId, selectedAlertId: alert?.id });
   }
 
-  setDataset(dataset: SafetyDataset): void {
+  setDataset(dataset: SafetyDataset, preserveSelection = false): void {
     if (this.disposed) return;
     this._dataset = dataset;
-    this.patch({ timeRange: [...dataset.timeExtent], time: dataset.timeExtent[0], playing: false, selectedAlertId: undefined,
+    this.patch({ timeRange: preserveSelection ? [...this._state.timeRange] : [...dataset.timeExtent], time: preserveSelection ? this._state.time : dataset.timeExtent[0], playing: false, selectedAlertId: preserveSelection ? this._state.selectedAlertId : undefined,
       selectedId: dataset.nodes.some((node) => node.id === this._state.selectedId) ? this._state.selectedId : dataset.projectId });
   }
   dispose(): void { this.disposed = true; this.listeners.clear(); }

@@ -1,3 +1,4 @@
+import { safetyEventPlugin } from "./server/safetyEventStore";
 import { safetySpatialPlugin } from "./server/safetySpatialStore";
 import { defineConfig } from "vite";
 import { createProjectLibrary } from "./server/projectLibrary";
@@ -565,6 +566,7 @@ export default defineConfig({
   },
   plugins: [
     safetySpatialPlugin(),
+    safetyEventPlugin(),
     projectLibraryPlugin,
     basemapAndDiagnosticsPlugin,
     localImageryPlugin,

@@ -50,42 +50,37 @@ function spatialDataset(): SafetyDataset {
   return data;
 }
 
-test("time range removes manual risks from scene, children and metrics while keeping engineering context", () => {
+test("manual definitions persist when event time and severity filters exclude related events", () => {
   const store = new SafetyStore(spatialDataset());
-  store.patch({ timeRange: [1000, 1500], severity: "all", includeDemo: false });
-  assert.equal(store.view.alerts.length, 0); assert.equal(store.view.metrics.alerts, 0); assert.equal(store.view.metrics.high, 0);
-  assert.equal(store.view.nodes.some(node => node.id === "risk"), false);
-  assert.equal(store.view.metrics.points, 1); // The real CAD anchor remains an engineering point.
-  assert.ok(store.view.nodes.some(node => node.id === "anchor"));
+  store.select({ nodeId: "risk", alertId: "alert" });
+  store.patch({ timeRange: [1000, 1500], severity: "low", includeDemo: false });
+  assert.equal(store.view.alerts.length, 0);
+  assert.equal(store.state.selectedId, "risk"); assert.equal(store.state.selectedAlertId, undefined);
+  assert.ok(store.view.nodes.some(node => node.id === "risk"));
+  store.select({ nodeId: "project" });
   assert.ok(store.view.nodes.some(node => node.id === "area"));
   assert.ok(store.view.nodes.some(node => node.id === "railway"));
-  store.select({ nodeId: "area" });
-  assert.equal(store.view.children.some(node => node.id === "risk"), false);
-  store.patch({ timeRange: [2000, 2000] });
-  assert.equal(store.view.alerts.length, 1); assert.equal(store.view.metrics.alerts, 1);
   assert.ok(store.view.nodes.some(node => node.id === "risk"));
-  assert.ok(store.view.children.some(node => node.id === "risk"));
 });
 
-test("selected risk outside the time window falls back to its area without a forced breadcrumb or selection marker", () => {
-  const store = new SafetyStore(spatialDataset());
-  store.select({ nodeId: "risk", alertId: "alert" }); assert.equal(store.state.selectedId, "risk");
-  store.patch({ timeRange: [2100, 3000] });
-  assert.equal(store.state.selectedId, "area"); assert.equal(store.view.selected.id, "area"); assert.equal(store.state.selectedAlertId, undefined);
-  const sceneIds = [...store.view.nodes, ...store.view.breadcrumbs].map(node => node.id);
-  assert.equal(sceneIds.includes("risk"), false); assert.deepEqual(store.view.breadcrumbs.map(node => node.id), ["project", "area"]);
+
+test("saving a dataset retains the shared time filter and selection while pausing playback", () => {
+  const store = new SafetyStore(dataset());
   store.select({ nodeId: "risk", alertId: "alert" });
-  assert.equal(store.state.selectedId, "area"); assert.equal(store.view.alerts.length, 0);
-  store.patch({ timeRange: [1000, 3000] }); store.select({ nodeId: "risk", alertId: "alert" });
+  store.patch({ timeRange: [1800, 2400], time: 2100, severity: "high", playing: true });
+  store.setDataset(structuredClone(store.dataset), true);
+  assert.deepEqual(store.state.timeRange, [1800, 2400]); assert.equal(store.state.time, 2100);
   assert.equal(store.state.selectedId, "risk"); assert.equal(store.state.selectedAlertId, "alert");
+  assert.equal(store.state.severity, "high"); assert.equal(store.state.playing, false);
+  assert.deepEqual(store.view.alerts.map(a => a.id), ["alert"]);
 });
 
-test("severity filters cannot force a selected manual risk to remain drawn and preserve area and railway context", () => {
-  const store = new SafetyStore(spatialDataset());
-  store.select({ nodeId: "risk", alertId: "alert" }); store.patch({ severity: "low" });
-  assert.equal(store.state.selectedId, "area"); assert.equal(store.view.selected.id, "area"); assert.equal(store.view.alerts.length, 0);
-  assert.equal([...store.view.nodes, ...store.view.breadcrumbs].some(node => node.id === "risk"), false);
-  store.select({ nodeId: "project" });
-  assert.ok(store.view.nodes.some(node => node.id === "area")); assert.ok(store.view.nodes.some(node => node.id === "railway"));
-  store.patch({ severity: "all" }); assert.equal(store.view.metrics.alerts, 1);
+test("a preserved time filter clamps to a changed dataset extent without expanding the filter", () => {
+  const store = new SafetyStore(dataset()); store.patch({ timeRange: [1800, 2400], time: 2100 });
+  const smaller = dataset(); smaller.timeExtent = [2000, 2300]; store.setDataset(smaller, true);
+  assert.deepEqual(store.state.timeRange, [2000, 2300]); assert.equal(store.state.time, 2100);
+  const later = dataset(); later.timeExtent = [4000, 5000]; store.setDataset(later, true);
+  assert.deepEqual(store.state.timeRange, [4000, 4000]); assert.equal(store.state.time, 4000);
+  store.setDataset(dataset());
+  assert.deepEqual(store.state.timeRange, [1000, 3000]); assert.equal(store.state.time, 1000);
 });

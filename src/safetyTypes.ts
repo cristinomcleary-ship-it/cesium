@@ -1,10 +1,11 @@
 export type SafetyProvenance = "real" | "derived" | "demo" | "user";
+export type SafetyPage = "overview" | "inspection" | "events" | "components";
 export type SafetyMode = "presentation" | "inspection";
 export type SafetySeverity = "high" | "medium" | "low";
 export type SafetyPosition = { longitude: number; latitude: number; height: number };
 export type SafetyNode = {
   id: string; parentId?: string; kind: "project" | "section" | "pier" | "component";
-  name: string; position: SafetyPosition; provenance: SafetyProvenance; description: string;
+  name: string; position: SafetyPosition; sceneAvailable?: boolean; eventId?: string; riskLevel?: "unassessed" | SafetySeverity; provenance: SafetyProvenance; description: string;
   componentType?: "cap" | "column" | "footing" | "pile";
   boundary?: SafetyPosition[]; radius?: number; mediaIds: string[];
   sourceRecordId?: string; sourceEntityIndex?: number; modelFeatureId?: string;
@@ -12,11 +13,12 @@ export type SafetyNode = {
 };
 export type SafetyMedia = {
   id: string; name: string; kind: "video" | "photo" | "drawing" | "document";
-  url: string; provenance: SafetyProvenance; relation: "project" | "object"; note: string;
-  sourceRecordId?: string;
+  url: string; previewUrl?: string; previewEntityIndices?: number[]; provenance: SafetyProvenance; relation: "project" | "object"; note: string;
+  sourceRecordId?: string; recordedAt?: number; durationSeconds?: number;
 };
 export type SafetyAlert = {
   id: string; nodeId: string; title: string; severity: SafetySeverity; timestamp: number;
+  eventId?: string; positionAvailable?: boolean; sourceLabel?: string;
   status: "open" | "rectifying" | "closed"; description: string; provenance: SafetyProvenance;
   mediaIds: string[]; mediaSeconds?: number; spatialObjectId?: string; rectifications: Array<{ timestamp: number; text: string }>;
 };
@@ -38,7 +40,7 @@ export type SafetyDataset = {
 };
 export type SafetyLayers = { boundary: boolean; markers: boolean; track: boolean; heat: boolean; effects: boolean; links: boolean };
 export type SafetyState = {
-  selectedId: string; selectedAlertId?: string; mode: SafetyMode; severity: "all" | SafetySeverity;
+  selectedId: string; selectedAlertId?: string; page?: SafetyPage; eventStatus?: "all" | "open" | "rectifying" | "closed"; eventQuery?: string; mode: SafetyMode; severity: "all" | SafetySeverity;
   timeRange: [number, number]; time: number; playing: boolean; includeDemo: boolean;
   heatOpacity: number; cruise: boolean; animationPaused: boolean; engineeringAnnotations: boolean; layers: SafetyLayers;
 };

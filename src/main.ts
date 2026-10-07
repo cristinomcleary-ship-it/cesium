@@ -2679,6 +2679,10 @@ async function openSafetyWorkspace(): Promise<void> {
         setVideoPanelActive: active => videoArFusion.setPanelActive(active),
         getPlaybackSource: () => ({ ...videoArFusion.getSharedPlaybackSource(), recordId: projectLibrary!.activeVideoRecordId }),
         syncVideoPlayback: () => videoArFusion.synchronizeSharedPlayback(),
+        loadVideoSource: async recordId => {
+          await projectLibrary!.restore(recordId);
+          if (projectLibrary!.activeVideoRecordId !== recordId) throw new Error("视频来源未能加载，请重试");
+        },
         prepareOpen: () => {
           digitalTwinOverview.close();
           electronicSandTable?.stopTour();
