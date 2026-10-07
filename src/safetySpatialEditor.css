@@ -1,0 +1,18 @@
+.safety-spatial-editor { position:absolute; z-index:50; top:106px; left:24px; bottom:100px; width:340px; overflow:auto; padding:18px; box-sizing:border-box; color:#e5f7ff; background:#071a2df5; border:1px solid #43d9ff88; box-shadow:0 12px 40px #0009; pointer-events:auto; font:16px/1.5 "Microsoft YaHei",sans-serif; scrollbar-width:thin; }
+.safety-spatial-editor[hidden],.safety-spatial-editor [hidden] { display:none!important; }
+.safety-spatial-editor header { display:flex; align-items:center; justify-content:space-between; }
+.safety-spatial-editor h2 { font-size:20px; margin:0 0 12px; }.safety-spatial-editor small {font-size:14px;color:#91b0c5;}
+.safety-spatial-editor button { min-height:34px; color:#d9f5ff; border:1px solid #347b99; background:#103450; padding:5px 9px; cursor:pointer; font:inherit; font-size:14px; border-radius:3px; }
+.safety-spatial-editor button:hover {border-color:#43d9ff;background:#154566;}.safety-spatial-editor[aria-busy=true] button{pointer-events:none;opacity:.5;}
+.spatial-create,.spatial-draw-actions {display:flex;flex-wrap:wrap;gap:7px;margin:12px 0;}.spatial-create button{flex:1;white-space:nowrap;}
+.safety-spatial-editor label {display:flex; flex-direction:column;gap:5px;margin:12px 0;color:#a8c8dc; font-size:14px;}
+.safety-spatial-editor input,.safety-spatial-editor select,.safety-spatial-editor textarea{box-sizing:border-box;transition:none;}
+.safety-spatial-editor input:not([type=checkbox]),.safety-spatial-editor select,.safety-spatial-editor textarea{width:100%;min-width:0;min-height:35px;margin:0;padding:7px;color:#e5f7ff;background:#041323;border:1px solid #28617e;border-radius:3px;font:16px/1.5 "Microsoft YaHei",sans-serif;}
+.safety-spatial-editor .spatial-check{display:flex;flex-direction:row;align-items:flex-start;line-height:21px;}
+/* Native checkbox focus must not inherit the global text-input padding or geometry transition. */
+.safety-spatial-editor .spatial-check input{flex:0 0 17px;width:17px;min-width:17px;height:17px;min-height:17px;padding:0;margin:3px 0 0;border:0;line-height:17px;box-shadow:none;accent-color:#43d9ff;transition:none;}
+.safety-spatial-editor .spatial-check input:focus-visible{outline:2px solid #43d9ff;outline-offset:3px;}
+.spatial-save{width:100%;border-color:#43d9ff!important;}.spatial-status{font-size:14px;color:#8de9ff;overflow-wrap:anywhere;}.spatial-note{font-size:14px;color:#91b0c5;line-height:1.6;}
+.spatial-list-heading{display:flex;align-items:center;justify-content:space-between;border-top:1px solid #24526e;padding-top:15px;margin-top:18px;}
+.spatial-object{border-bottom:1px solid #24526e;padding:12px 0;}.spatial-object-name{display:block;width:100%;text-align:left;font-size:16px!important;}.spatial-object small{display:block;margin:5px 0;}.spatial-object>div{display:flex;gap:8px;}
+@media(max-width:1400px){.safety-spatial-editor{left:16px;top:96px;bottom:110px;}}

@@ -1,3 +1,4 @@
+import { safetySpatialPlugin } from "./server/safetySpatialStore";
 import { defineConfig } from "vite";
 import { createProjectLibrary } from "./server/projectLibrary";
 import { viteStaticCopy } from "vite-plugin-static-copy";
@@ -563,6 +564,7 @@ export default defineConfig({
     },
   },
   plugins: [
+    safetySpatialPlugin(),
     projectLibraryPlugin,
     basemapAndDiagnosticsPlugin,
     localImageryPlugin,

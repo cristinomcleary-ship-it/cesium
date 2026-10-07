@@ -1,4 +1,4 @@
-export type SafetyProvenance = "real" | "derived" | "demo";
+export type SafetyProvenance = "real" | "derived" | "demo" | "user";
 export type SafetyMode = "presentation" | "inspection";
 export type SafetySeverity = "high" | "medium" | "low";
 export type SafetyPosition = { longitude: number; latitude: number; height: number };
@@ -8,6 +8,7 @@ export type SafetyNode = {
   componentType?: "cap" | "column" | "footing" | "pile";
   boundary?: SafetyPosition[]; radius?: number; mediaIds: string[];
   sourceRecordId?: string; sourceEntityIndex?: number; modelFeatureId?: string;
+  spatialKind?: "construction-area" | "railway" | "risk-point"; spatialObjectId?: string; navigationDisabledReason?: string;
 };
 export type SafetyMedia = {
   id: string; name: string; kind: "video" | "photo" | "drawing" | "document";
@@ -17,7 +18,7 @@ export type SafetyMedia = {
 export type SafetyAlert = {
   id: string; nodeId: string; title: string; severity: SafetySeverity; timestamp: number;
   status: "open" | "rectifying" | "closed"; description: string; provenance: SafetyProvenance;
-  mediaIds: string[]; rectifications: Array<{ timestamp: number; text: string }>;
+  mediaIds: string[]; mediaSeconds?: number; spatialObjectId?: string; rectifications: Array<{ timestamp: number; text: string }>;
 };
 export type SafetyTask = {
   id: string; nodeId: string; name: string; timestamp: number;
@@ -39,7 +40,7 @@ export type SafetyLayers = { boundary: boolean; markers: boolean; track: boolean
 export type SafetyState = {
   selectedId: string; selectedAlertId?: string; mode: SafetyMode; severity: "all" | SafetySeverity;
   timeRange: [number, number]; time: number; playing: boolean; includeDemo: boolean;
-  heatOpacity: number; cruise: boolean; layers: SafetyLayers;
+  heatOpacity: number; cruise: boolean; animationPaused: boolean; engineeringAnnotations: boolean; layers: SafetyLayers;
 };
 export type SafetyView = {
   selected: SafetyNode; breadcrumbs: SafetyNode[]; children: SafetyNode[]; nodes: SafetyNode[];

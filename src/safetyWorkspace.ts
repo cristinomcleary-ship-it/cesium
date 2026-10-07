@@ -1,9 +1,12 @@
-import { Color, type ImageryLayer, type Viewer } from "cesium";
+import { type Viewer } from "cesium";
+import { SafetySpatialEditor } from "./safetySpatialEditor";
+import { mergeSpatialDataset, spatialReplayTimeAt } from "./safetySpatialData";
+import type { SpatialSnapshot } from "./safetySpatialTypes";
 import { LocalSafetyDataAdapter } from "./safetyData";
 import { SafetyDashboard } from "./safetyDashboard";
 import { SafetySceneEffects } from "./safetySceneEffects";
 import { SafetyStore, deriveSafetyView } from "./safetyStore";
-import type { SafetyDataAdapter, SafetyDevice, SafetyMedia, SafetyMode, SafetySelection, SafetyState } from "./safetyTypes";
+import type { SafetyDataAdapter, SafetyDataset, SafetyDevice, SafetyMedia, SafetySelection, SafetyState } from "./safetyTypes";
 import type { ImportRecord } from "./types";
 import "./safetyWorkspace.css";
 
@@ -24,6 +27,9 @@ export type SafetyWorkspaceOptions = {
 export class SafetyWorkspace {
   readonly dashboard: SafetyDashboard;
   readonly effects: SafetySceneEffects;
+  readonly spatial: SafetySpatialEditor;
+  private baseDataset?: SafetyDataset;
+  private reloading = false;
   private store?: SafetyStore;
   private readonly adapter: SafetyDataAdapter;
   private readonly events = new AbortController();
@@ -40,14 +46,9 @@ export class SafetyWorkspace {
   private observedStoreTime = NaN;
   private lastCruise = 0;
   private cruiseIndex = 0;
-  private lastMode?: SafetyMode;
   private video?: HTMLVideoElement;
   private videoOrigin?: { parent: Node; next: ChildNode | null; hidden: boolean; controls: boolean };
   private readonly tags = new Map<object, PropertyDescriptor | undefined>();
-  private readonly imageryStyles = new Map<ImageryLayer, { brightness: number; saturation: number }>();
-  private readonly originalGlobeColor: Color;
-  private readonly originalBackground: Color;
-  private readonly originalSky: boolean;
   private selectedMedia?: string;
   private boundSourceKey = "";
   private readonly validReplayTracks = new WeakMap<SafetyDevice, boolean>();
@@ -56,17 +57,30 @@ export class SafetyWorkspace {
 
   constructor(private readonly options: SafetyWorkspaceOptions) {
     this.adapter = options.adapter ?? new LocalSafetyDataAdapter();
-    this.originalGlobeColor = options.viewer.scene.globe.baseColor.clone();
-    this.originalBackground = options.viewer.scene.backgroundColor.clone();
-    this.originalSky = options.viewer.scene.skyBox?.show ?? false;
     this.dashboard = new SafetyDashboard(options.host, {
       onSelect: selection => this.select(selection), onPatch: patch => this.patch(patch),
       onExit: () => this.close(), onEarth: () => { this.store?.patch({ cruise: false }); this.effects.earth(); },
       onMedia: media => this.openMedia(media), onRefresh: () => void this.reload(),
       onLayerToggle: (id, visible) => { options.setLayerVisible(id, visible); this.layersChanged(); },
       onVideoSettings: () => { this.close(); options.openVideoSettings(); },
+      onAuthoring: () => this.spatial.show(),
     });
-    this.effects = new SafetySceneEffects(options.viewer, selection => this.select(selection));
+    this.effects = new SafetySceneEffects(options.viewer, selection => this.select(selection), { getImports: options.getImports,
+      getStageRect: () => { const r = options.host.querySelector(".safety-scene-hud")?.getBoundingClientRect(); const c = options.viewer.canvas.getBoundingClientRect(); return r ? { left: r.left - c.left, top: r.top - c.top + 76, width: r.width, height: Math.max(180, r.height - 174) } : { left: 368, top: 180, width: Math.max(300, c.width - 736), height: Math.max(240, c.height - 380) }; }
+    });
+    this.spatial = new SafetySpatialEditor({ viewer: options.viewer, host: options.host,
+      onSnapshot: snapshot => this.applySpatialSnapshot(snapshot),
+      suspendOverlays: () => this.effects.suspendOverlaysForPicking(),
+      onSelect: id => { const nodeId = `spatial:${id}`; const alert = this.store?.dataset.alerts.find(a => a.nodeId === nodeId); this.select({ nodeId, alertId: alert?.id }); },
+      onDrawing: drawing => { this.effects.setPickingEnabled(!drawing); if (drawing) this.store?.patch({ cruise: false, mode: "inspection" }); },
+      getContext: () => {
+        if (!this.store) return;
+        const seconds = this.hasBoundVideo() ? this.video?.currentTime : undefined;
+        const time = seconds === undefined ? undefined : spatialReplayTimeAt(this.replayDevice()?.track || [], seconds);
+        return { dataset: this.store.dataset, state: { ...this.store.state, time: time ?? this.store.state.time },
+          ...(time === undefined ? {} : { mediaId: this.selectedMedia, mediaSeconds: seconds }) };
+      },
+    });
     this.dashboard.setVisible(false);
     this.mediaDialog.className = "safety-media-dialog";
     document.body.append(this.mediaDialog);
@@ -98,6 +112,7 @@ export class SafetyWorkspace {
     this.options.viewer.resize();
     this.options.setVideoPanelActive(false);
     this.mountVideo();
+    this.spatial.setActive(true);
     this.startedAt = this.lastTick = performance.now(); this.lastCruise = 0;
     this.removeClock = this.options.viewer.clock.onTick.addEventListener(() => this.tick());
     await this.options.ready();
@@ -120,7 +135,7 @@ export class SafetyWorkspace {
     this.removeClock?.(); this.removeClock = undefined;
     this.effects.setActive(false);
     this.dashboard.setVisible(false);
-    this.restoreSceneStyle();
+    this.spatial.setActive(false);
     this.unmountVideo();
     this.restoreTags();
     this.mediaDialog.close();
@@ -134,10 +149,16 @@ export class SafetyWorkspace {
   async reload(): Promise<void> {
     if (this.disposed) return;
     this.loading?.abort();
+    this.reloading = true;
     const controller = this.loading = new AbortController();
     this.dashboard.setLoading("正在读取工程资料与巡检数据…");
     try {
-      const dataset = await this.adapter.load(controller.signal);
+      const baseDataset = await this.adapter.load(controller.signal);
+      if (controller.signal.aborted || this.disposed) return;
+      this.baseDataset = baseDataset;
+      let spatial = this.spatial.getSnapshot();
+      try { spatial = await this.spatial.load(); } catch (error) { this.baseDataset = { ...this.baseDataset, missingData: [...this.baseDataset.missingData, `空间对象读取失败：${error instanceof Error ? error.message : "未知错误"}`] }; }
+      const dataset = mergeSpatialDataset(this.baseDataset, spatial);
       if (controller.signal.aborted || this.disposed) return;
       this.pause();
       this.effects.setDataset(dataset);
@@ -158,28 +179,35 @@ export class SafetyWorkspace {
       if (this.active) this.effects.focus(this.store.view.selected);
     } catch (error) {
       if (!controller.signal.aborted) this.dashboard.setError(error instanceof Error ? error.message : "巡检数据读取失败");
-    }
+    } finally { if (this.loading === controller) this.reloading = false; }
   }
 
   private renderState(): void {
     if (!this.store || this.disposed) return;
     this.dashboard.update(this.store.dataset, this.store.state, this.store.view);
     this.effects.update(this.store.state, this.store.view);
-    if (this.active && this.lastMode !== this.store.state.mode) this.applySceneStyle(this.store.state.mode);
+    this.spatial.update(this.store.view);
+    this.updateVideoStatus();
   }
 
   private select(selection: SafetySelection): void {
-    if (!this.store) return;
-    this.store.patch({ cruise: false });
+    if (!this.active || !this.store || this.store.dataset.nodes.find(n => n.id === selection.nodeId)?.navigationDisabledReason) return;
+    this.pause();
+    this.store.patch({ cruise: false, engineeringAnnotations: false });
     this.store.select(selection);
     if (selection.fly !== false) this.effects.focus(this.store.view.selected);
     const alert = this.store.view.alerts.find(a => a.id === selection.alertId);
-    if (alert) { this.pause(); this.store.patch({ time: alert.timestamp }); this.seekVideo(alert.timestamp); }
+    if (alert) {
+      this.pause(); this.store.patch({ time: alert.timestamp });
+      const video = this.store.view.media.find(m => m.kind === "video" && alert.mediaIds.includes(m.id));
+      if (video && alert.mediaSeconds !== undefined) { this.selectedMedia = video.id; this.seekVideo(alert.timestamp); }
+    }
     this.updateVideoStatus();
   }
 
   private patch(patch: Partial<SafetyState>): void {
     if (!this.store) return;
+    if (patch.mode === "presentation" && this.spatial.isDrawing) patch = { ...patch, mode: "inspection" };
     const seeks = patch.time !== undefined || patch.timeRange !== undefined;
     if (seeks) this.pause();
     this.store.patch(seeks ? { ...patch, playing: false } : patch);
@@ -212,7 +240,7 @@ export class SafetyWorkspace {
     const source = this.options.getPlaybackSource(), device = this.replayDevice();
     if (device && !this.validReplayTracks.has(device)) this.validReplayTracks.set(device, device.track.every((p, i, points) =>
       Number.isFinite(p.time) && Number.isFinite(p.mediaSeconds) && (i === 0 || (p.time > points[i - 1].time && p.mediaSeconds > points[i - 1].mediaSeconds))));
-    return !!(this.boundSourceKey && this.boundSourceKey === this.playbackSourceKey() && media?.provenance === "real"
+    return !!(this.store?.view.media.some(m => m.id === this.selectedMedia) && this.boundSourceKey && this.boundSourceKey === this.playbackSourceKey() && media?.provenance === "real"
       && media.sourceRecordId === source.recordId && media.name === source.name && device && this.validReplayTracks.get(device)
       && this.video?.currentSrc && this.video.readyState >= 1);
   }
@@ -222,8 +250,9 @@ export class SafetyWorkspace {
     const track = this.replayDevice()?.track;
     if (!track?.length) return;
     const to = from === "time" ? "mediaSeconds" : "time";
-    if (value <= track[0][from]) return track[0][to];
-    if (value >= track.at(-1)![from]) return track.at(-1)![to];
+    if (value < track[0][from] || value > track.at(-1)![from]) return;
+    if (value === track[0][from]) return track[0][to];
+    if (value === track.at(-1)![from]) return track.at(-1)![to];
     let low = 1; let high = track.length - 1;
     while (low < high) { const middle = (low + high) >>> 1; if (track[middle][from] < value) low = middle + 1; else high = middle; }
     const a = track[low - 1], b = track[low];
@@ -242,7 +271,7 @@ export class SafetyWorkspace {
     this.lastTick = now;
     if (this.observedStoreTime !== this.store.state.time) this.replayTime = this.store.state.time;
     let time = this.replayTime;
-    if (this.hasBoundVideo()) time = this.mapReplayTime(this.video!.currentTime, "mediaSeconds") ?? time;
+    if (this.hasBoundVideo() && !this.video!.paused) time = this.mapReplayTime(this.video!.currentTime, "mediaSeconds") ?? time;
     else if (this.store.state.playing) time += delta;
     if (time >= this.store.state.timeRange[1]) { this.pause(); time = this.store.state.timeRange[1]; this.seekVideo(time); }
     if (time < this.store.state.timeRange[0]) { time = this.store.state.timeRange[0]; this.seekVideo(time); }
@@ -252,7 +281,7 @@ export class SafetyWorkspace {
     }
     this.observedStoreTime = this.store.state.time;
     this.effects.tick(elapsed, time);
-    if (this.store.state.cruise && elapsed - this.lastCruise >= 9) {
+    if (!document.hidden && this.store.state.cruise && !this.store.state.animationPaused && elapsed - this.lastCruise >= 9) {
       const overview = deriveSafetyView(this.store.dataset, { ...this.store.state, selectedId: this.store.dataset.projectId });
       const stops = overview.nodes.filter(n => n.kind === "section" || n.kind === "pier").slice(0, 24);
       const stop = stops[this.cruiseIndex++ % stops.length];
@@ -322,31 +351,16 @@ export class SafetyWorkspace {
     }
   }
 
-  private applySceneStyle(mode: SafetyMode): void {
-    this.restoreSceneStyle(); this.lastMode = mode;
-    if (mode !== "presentation") return;
-    const scene = this.options.viewer.scene;
-    scene.globe.baseColor = Color.fromCssColorString("#071d36")!;
-    scene.backgroundColor = Color.fromCssColorString("#020c1c")!;
-    if (scene.skyBox) scene.skyBox.show = false;
-    for (let i = 0; i < this.options.viewer.imageryLayers.length; i++) {
-      const layer = this.options.viewer.imageryLayers.get(i);
-      this.imageryStyles.set(layer, { brightness: layer.brightness, saturation: layer.saturation });
-      layer.brightness *= .78; layer.saturation *= .72;
-    }
-  }
-
-  private restoreSceneStyle(): void {
-    const scene = this.options.viewer.scene;
-    scene.globe.baseColor = this.originalGlobeColor.clone(); scene.backgroundColor = this.originalBackground.clone();
-    if (scene.skyBox) scene.skyBox.show = this.originalSky;
-    for (const [layer, style] of this.imageryStyles) if (!layer.isDestroyed()) { layer.brightness = style.brightness; layer.saturation = style.saturation; }
-    this.imageryStyles.clear(); this.lastMode = undefined;
+  private applySpatialSnapshot(snapshot: SpatialSnapshot): void {
+    if (!this.baseDataset || !this.store || this.reloading || this.disposed) return;
+    this.pause();
+    const dataset = mergeSpatialDataset(this.baseDataset, snapshot);
+    this.effects.setDataset(dataset); this.store.setDataset(dataset); this.renderState();
   }
 
   debugStats(): Record<string, unknown> {
     return { active: this.active, clockListeners: Number(!!this.removeClock), viewerCount: document.querySelectorAll("#cesiumContainer canvas").length,
-      videoElements: document.querySelectorAll("video").length, effects: this.effects.debugStats(), ui: this.dashboard.debugStats(),
+      videoElements: document.querySelectorAll("video").length, spatial: this.spatial.debugStats(), effects: this.effects.debugStats(), ui: this.dashboard.debugStats(),
       data: this.store ? { nodes: this.store.dataset.nodes.length, alerts: this.store.view.alerts.map(a => a.id), nodeIds: this.store.view.nodes.map(n => n.id),
         selectedId: this.store.state.selectedId, state: this.store.state, metrics: this.store.view.metrics, sources: this.store.dataset.sourceNotes, missing: this.store.dataset.missingData } : null };
   }
@@ -361,7 +375,7 @@ export class SafetyWorkspace {
   dispose(): void {
     if (this.disposed) return;
     this.close(); this.disposed = true; this.loading?.abort(); this.events.abort(); this.unsubscribe?.();
-    this.store?.dispose(); this.effects.dispose(); this.dashboard.dispose(); this.mediaDialog.remove();
+    this.store?.dispose(); this.spatial.dispose(); this.effects.dispose(); this.dashboard.dispose(); this.mediaDialog.remove();
     this.restoreTags();
   }
 }

@@ -23,24 +23,31 @@ export function interpolateDevicePosition(device: SafetyDevice, time: number): S
 
 export function deriveSafetyView(dataset: SafetyDataset, state: SafetyState): SafetyView {
   const byId = new Map(dataset.nodes.map((node) => [node.id, node]));
-  const selected = byId.get(state.selectedId) || byId.get(dataset.projectId) || dataset.nodes[0];
-  if (!selected) throw new Error("巡检数据缺少项目节点");
+  const requested = byId.get(state.selectedId) || byId.get(dataset.projectId) || dataset.nodes[0];
+  if (!requested) throw new Error("巡检数据缺少项目节点");
   const ancestors = (node: SafetyNode): SafetyNode[] => {
     const result: SafetyNode[] = []; const seen = new Set<string>(); let current: SafetyNode | undefined = node;
     while (current && !seen.has(current.id)) { seen.add(current.id); result.unshift(current); current = current.parentId ? byId.get(current.parentId) : undefined; }
     return result;
   };
-  const inScope = (node: SafetyNode): boolean => ancestors(node).some((parent) => parent.id === selected.id);
   const provenance = (item: { provenance: string }): boolean => state.includeDemo || item.provenance !== "demo";
   const inTime = (timestamp: number): boolean => timestamp >= state.timeRange[0] && timestamp <= state.timeRange[1];
-  let nodes = dataset.nodes.filter((node) => inScope(node) && provenance(node));
-  const scopeIds = new Set(nodes.map((node) => node.id));
-  const alerts = dataset.alerts.filter((alert) => scopeIds.has(alert.nodeId) && provenance(alert) && inTime(alert.timestamp)
+  const eligibleAlerts = dataset.alerts.filter((alert) => provenance(alert) && inTime(alert.timestamp)
     && (state.severity === "all" || alert.severity === state.severity));
+  const eligibleRiskIds = new Set(eligibleAlerts.map((alert) => alert.nodeId));
+  const matchesRisk = (node: SafetyNode): boolean => node.spatialKind !== "risk-point" || eligibleRiskIds.has(node.id);
+  // A filtered risk must not survive through breadcrumbs or the selected-object scene ring.
+  const selected = ancestors(requested).reverse().find((node) => provenance(node) && matchesRisk(node))
+    || byId.get(dataset.projectId) || dataset.nodes[0];
+  const inScope = (node: SafetyNode): boolean => ancestors(node).some((parent) => parent.id === selected.id);
+  let nodes = dataset.nodes.filter((node) => inScope(node) && provenance(node) && matchesRisk(node));
+  const scopeIds = new Set(nodes.map((node) => node.id));
+  const alerts = eligibleAlerts.filter((alert) => scopeIds.has(alert.nodeId));
   const affected = new Set<string>();
   if (state.severity !== "all") {
     for (const alert of alerts) { const node = byId.get(alert.nodeId); if (node) ancestors(node).forEach((parent) => affected.add(parent.id)); }
-    nodes = nodes.filter((node) => affected.has(node.id) || ancestors(node).some((parent) => alerts.some((alert) => alert.nodeId === parent.id)));
+    nodes = nodes.filter((node) => node.spatialKind === "construction-area" || node.spatialKind === "railway"
+      || affected.has(node.id) || ancestors(node).some((parent) => alerts.some((alert) => alert.nodeId === parent.id)));
   }
   const filteredIds = new Set(nodes.map((node) => node.id));
   const tasks = dataset.tasks.filter((task) => filteredIds.has(task.nodeId) && provenance(task) && inTime(task.timestamp));
@@ -54,11 +61,11 @@ export function deriveSafetyView(dataset: SafetyDataset, state: SafetyState): Sa
         && point.time <= state.timeRange[1] && next.time >= state.timeRange[0];
     })));
   const selectedAlert = alerts.find((alert) => alert.id === state.selectedAlertId);
-  const mediaIds = new Set([...breadcrumbs.flatMap((node) => node.mediaIds), ...selected.mediaIds, ...(selectedAlert?.mediaIds || []),
-    ...devices.flatMap((device) => device.mediaId ? [device.mediaId] : [])]);
+  const mediaIds = new Set([...selected.mediaIds, ...(selectedAlert?.mediaIds || []),
+    ...(selected.kind === "project" ? devices.flatMap((device) => device.mediaId ? [device.mediaId] : []) : [])]);
   return { selected, breadcrumbs, children: nodes.filter((node) => node.parentId === selected.id), nodes, alerts, tasks, devices,
     media: dataset.media.filter((media) => mediaIds.has(media.id) && provenance(media)),
-    metrics: { points: nodes.filter((node) => node.kind === "component" && node.componentType === "pile").length,
+    metrics: { points: nodes.filter((node) => node.kind === "component" && (node.componentType === "pile" || node.spatialKind === "risk-point")).length,
       alerts: alerts.length, high: alerts.filter((alert) => alert.severity === "high").length,
       completed: tasks.filter((task) => task.status === "complete").length, tasks: tasks.length,
       demoAlerts: alerts.filter((alert) => alert.provenance === "demo").length } };
@@ -75,7 +82,7 @@ export class SafetyStore {
   constructor(dataset: SafetyDataset) {
     this._dataset = dataset;
     this._state = { selectedId: dataset.projectId, mode: "presentation", severity: "all", timeRange: [...dataset.timeExtent],
-      time: dataset.timeExtent[0], playing: false, includeDemo: true, heatOpacity: .55, cruise: false,
+      time: dataset.timeExtent[0], playing: false, includeDemo: true, heatOpacity: .55, cruise: false, animationPaused: true, engineeringAnnotations: false,
       layers: { boundary: true, markers: true, track: true, heat: false, effects: true, links: true } };
     this._view = deriveSafetyView(dataset, this._state);
   }
@@ -100,7 +107,9 @@ export class SafetyStore {
     next.time = clamp(Number.isFinite(next.time) ? next.time : minimum, next.timeRange[0], next.timeRange[1]);
     next.heatOpacity = clamp(Number.isFinite(next.heatOpacity) ? next.heatOpacity : .55, 0, 1);
     if (!this._dataset.nodes.some((node) => node.id === next.selectedId && (next.includeDemo || node.provenance !== "demo"))) next.selectedId = this._dataset.projectId;
-    this._state = next; this._view = deriveSafetyView(this._dataset, next);
+    this._view = deriveSafetyView(this._dataset, next);
+    next.selectedId = this._view.selected.id;
+    this._state = next;
     if (next.selectedAlertId && !this._view.alerts.some((alert) => alert.id === next.selectedAlertId)) {
       this._state = { ...next, selectedAlertId: undefined }; this._view = deriveSafetyView(this._dataset, this._state);
     }
@@ -108,8 +117,8 @@ export class SafetyStore {
   }
 
   select(selection: SafetySelection): void {
-    if (!this._dataset.nodes.some((node) => node.id === selection.nodeId)) return;
-    const alert = selection.alertId ? this._view.alerts.find((entry) => entry.id === selection.alertId && entry.nodeId === selection.nodeId) : undefined;
+    if (!this._dataset.nodes.some((node) => node.id === selection.nodeId && !node.navigationDisabledReason)) return;
+    const alert = selection.alertId ? this._dataset.alerts.find((entry) => entry.id === selection.alertId && entry.nodeId === selection.nodeId) : undefined;
     this.patch({ selectedId: selection.nodeId, selectedAlertId: alert?.id });
   }
 

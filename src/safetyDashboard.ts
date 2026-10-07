@@ -3,6 +3,7 @@ import { LineChart, PieChart } from "echarts/charts";
 import { GridComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import type { SafetyAlert, SafetyDataset, SafetyMedia, SafetyNode, SafetyProvenance, SafetySelection, SafetyState, SafetyView } from "./safetyTypes";
+import { applySafetyVisualTokens, safetyVisualTokens } from "./safetyVisualConfig";
 import "./safetyDashboard.css";
 
 echarts.use([LineChart, PieChart, GridComponent, TooltipComponent, CanvasRenderer]);
@@ -15,11 +16,12 @@ export type SafetyDashboardOptions = {
   onEarth(): void;
   onMedia(media: SafetyMedia): void;
   onVideoSettings?(): void;
+  onAuthoring?(): void;
   onRefresh(): void;
   onLayerToggle(id: string, visible: boolean): void;
 };
 
-const provenanceNames: Record<SafetyProvenance, string> = { real: "真实数据", derived: "源数据推导", demo: "演示数据" };
+const provenanceNames: Record<SafetyProvenance, string> = { real: "真实数据", derived: "源数据推导", demo: "演示数据", user: "用户标绘" };
 const severityNames = { high: "高风险", medium: "中风险", low: "低风险" };
 const statusNames = { open: "待处置", rectifying: "整改中", closed: "已闭环" };
 const kindNames = { project: "项目", section: "施工区段", pier: "桥墩", component: "构件" };
@@ -73,48 +75,30 @@ export class SafetyDashboard {
     this.options = options;
     this.root = document.createElement("div");
     this.root.className = "safety-dashboard";
+    applySafetyVisualTokens(this.root);
+    const layout = safetyVisualTokens.layout;
+    for (const [name, value] of Object.entries({ margin: layout.left.x, "panel-width": layout.left.width, "header-top": layout.header.y, "header-height": layout.header.height, "panel-top": layout.left.y, "stage-top": layout.stage.y, "stage-gap": layout.stage.x - layout.left.x - layout.left.width, "footer-height": layout.footer.height, "footer-bottom": safetyVisualTokens.referenceViewport.height - layout.footer.y - layout.footer.height, "panel-bottom": safetyVisualTokens.referenceViewport.height - layout.left.bottom })) this.root.style.setProperty(`--safety-${name}`, `${value}px`);
     this.root.dataset.mode = "presentation";
     this.root.setAttribute("aria-label", "邻近营业线施工安全巡检大屏");
     this.root.innerHTML = `
       <header class="safety-header">
-        <div class="safety-brand"><span class="safety-brand-icon" aria-hidden="true"><svg viewBox="0 0 36 36"><path d="M18 2 33 10.5v15L18 34 3 25.5v-15Z M3 10.5l15 9 15-9 M18 19.5V34 M10 15v8l8 5 8-5v-8"/></svg></span><div><div class="safety-brand-kicker">RAILWAY CONSTRUCTION · DIGITAL TWIN</div><h1>邻近营业线施工安全巡检</h1></div></div>
-        <nav class="safety-topnav" aria-label="巡检工作导航">
-          <button type="button" class="is-active" data-action="tab" data-tab="overview">项目总览</button>
-          <button type="button" data-action="tab" data-tab="tasks">巡检任务</button>
-          <button type="button" data-action="tab" data-tab="risks">风险态势</button>
-        </nav>
-        <div class="safety-header-actions"><span class="safety-status"><i></i><span data-ref="connection">正在读取项目</span></span><button class="safety-workbench-button" type="button" data-action="exit" title="返回原有模型、视频、CAD 与 AR 工作台">原有工作台 <span aria-hidden="true">↗</span></button></div>
+        <nav class="safety-topnav" aria-label="巡检工作导航"><button type="button" class="is-active" data-action="tab" data-tab="overview">项目总览</button><button type="button" data-action="tab" data-tab="tasks">巡检任务</button><button type="button" data-action="tab" data-tab="risks">风险态势</button></nav>
+        <div class="safety-brand"><h1>邻近营业线施工安全巡检</h1><span>RAILWAY CONSTRUCTION · DIGITAL TWIN</span></div>
+        <div class="safety-header-actions"><button type="button" data-action="authoring">区域与风险标绘</button><button class="safety-workbench-button" type="button" data-action="exit">原有工作台 ↗</button></div>
       </header>
+      <div class="safety-sidebar-toggles"><button type="button" data-action="sidebar-toggle" data-side="left" aria-expanded="false">☰ 项目与任务</button><button type="button" data-action="sidebar-toggle" data-side="right" aria-expanded="false">现场与风险 ☰</button></div>
       <aside class="safety-panel safety-left" aria-label="项目与施工点位">
-        <div class="safety-panel-heading"><span class="safety-eyebrow">PROJECT OVERVIEW</span><h2 data-ref="projectName">工程数字孪生</h2><div class="safety-project-subline"><span data-ref="projectSource"></span><button type="button" data-action="refresh" class="safety-icon-button" title="重新读取本机项目数据" aria-label="刷新项目数据">↻</button></div></div>
-        <div class="safety-panel-scroll">
-          <section class="safety-section safety-metrics-section"><div data-ref="metrics" class="safety-metrics"></div><p class="safety-footnote">当前对象与筛选范围 · 已接入数据</p></section>
-          <section class="safety-section" data-ref="hierarchySection"><div class="safety-section-title"><h3>施工区段与构件</h3><span data-ref="hierarchyCount" class="safety-tiny-count"></span></div><div data-ref="hierarchy" class="safety-node-list"></div></section>
-          <section class="safety-section" data-ref="tasksSection"><div class="safety-section-title"><h3>巡检任务</h3><span data-ref="taskCount" class="safety-tiny-count"></span></div><div data-ref="tasks" class="safety-task-list"></div></section>
-          <section class="safety-section safety-trend-section"><div class="safety-section-title"><h3>隐患事件趋势</h3><span class="safety-section-unit">单位：条</span></div><div data-ref="trend" class="safety-chart safety-trend-chart" role="img" aria-label="当前筛选范围内隐患事件趋势，点击折线数据点筛选时间"></div><p class="safety-footnote">点击图表时段，同步筛选场景与列表</p></section>
-          <details class="safety-data-notes"><summary>数据来源与工程基准 <span aria-hidden="true">＋</span></summary><div data-ref="sourceNotes"></div></details>
-        </div>
+        <section class="safety-card safety-overview-card"><div class="safety-card-heading"><h2>项目运行概况</h2><button type="button" data-action="refresh" class="safety-icon-button" title="重新读取工程资料" aria-label="刷新项目数据">↻</button></div><div class="safety-card-body safety-panel-scroll"><h3 data-ref="projectName" class="safety-project-name">工程数字孪生</h3><div class="safety-project-subline"><span data-ref="projectSource"></span><span class="safety-status"><i></i><span data-ref="connection">正在载入</span></span></div><div data-ref="metrics" class="safety-metrics"></div><details class="safety-data-notes"><summary>数据来源与工程基准 <span>＋</span></summary><div data-ref="sourceNotes"></div></details></div></section>
+        <section class="safety-card safety-hierarchy-card" data-ref="hierarchySection"><div class="safety-card-heading"><h2>施工区段与构件</h2></div><div class="safety-card-body safety-panel-scroll"><div class="safety-section-caption"><span data-ref="hierarchyCount"></span><span>按源数据定位</span></div><div data-ref="hierarchy" class="safety-node-list"></div></div></section>
+        <section class="safety-card safety-tasks-card" data-ref="tasksSection"><div class="safety-card-heading"><h2>巡检任务与趋势</h2><span data-ref="taskCount"></span></div><div class="safety-card-body safety-panel-scroll"><details class="safety-task-disclosure" data-ref="taskDisclosure"><summary>巡检任务列表 <span>展开查看 ⌄</span></summary><div data-ref="tasks" class="safety-task-list"></div></details><details class="safety-trend-disclosure" data-ref="trendDisclosure" open><summary>隐患事件趋势 <span>单位：条</span></summary><div data-ref="trend" class="safety-chart safety-trend-chart" role="img" aria-label="当前隐患事件趋势，点击时段筛选"></div></details></div></section>
       </aside>
-      <div class="safety-scene-hud">
-        <div class="safety-scene-toolbar"><div data-ref="breadcrumbs" class="safety-breadcrumbs" aria-label="项目层级导航"></div><div class="safety-scene-actions"><button type="button" data-action="earth" title="切换至地球视角">◎ 地球</button><button type="button" data-action="locate" title="重新定位当前对象">⌖ 定位</button></div></div>
-        <div class="safety-scene-caption"><span class="safety-live-dot"></span><span data-ref="sceneCaption">三维工程现场</span><span data-ref="coordinateSummary" class="safety-coordinate-summary">真实坐标场景</span></div>
-        <div class="safety-scene-bottom"><div class="safety-selected-card"><span class="safety-eyebrow">SELECTED OBJECT</span><strong data-ref="selectedName">项目总览</strong><div data-ref="selectedMeta" class="safety-selected-meta"></div></div><div data-ref="heatLegend" class="safety-heat-legend" hidden><span>隐患事件密度 <b>条 / 核范围</b></span><div></div><small>低<span>高</span></small></div></div>
-        <div class="safety-notice" data-ref="notice" role="status" hidden></div>
-      </div>
-      <aside class="safety-panel safety-right" aria-label="巡检视频与风险处置">
-        <div class="safety-panel-heading safety-right-heading"><span class="safety-eyebrow">INSPECTION & RESPONSE</span><h2>现场巡检联动</h2></div>
-        <div class="safety-panel-scroll">
-          <section class="safety-section safety-video-section"><div class="safety-section-title"><h3>关联视频</h3><button type="button" class="safety-video-badge" data-action="video-settings">视频 AR 设置 ↗</button></div><div data-ref="videoHost" class="safety-video-host"></div><p class="safety-video-status" data-ref="videoStatus"></p><div data-ref="videoChoices" class="safety-video-choices"></div></section>
-          <section class="safety-section"><div class="safety-section-title"><h3>设备与航迹</h3><span class="safety-section-unit" data-ref="deviceCount"></span></div><div data-ref="devices" class="safety-device-list"></div></section>
-          <section class="safety-section safety-risk-section" data-ref="riskSection"><div class="safety-section-title"><h3>隐患事件</h3><span data-ref="alertCount" class="safety-tiny-count"></span></div><div class="safety-risk-tools"><label class="safety-filter-label">风险等级<select data-action="severity" aria-label="风险等级筛选"><option value="all">全部风险</option><option value="high">高风险</option><option value="medium">中风险</option><option value="low">低风险</option></select></label><label class="safety-check-label"><input type="checkbox" data-action="include-demo">含演示</label></div><div class="safety-risk-summary"><div data-ref="distribution" class="safety-chart safety-distribution-chart" role="img" aria-label="当前筛选范围内隐患风险分布，点击扇区筛选等级"></div><div data-ref="riskSummary" class="safety-risk-summary-text"></div></div><div data-ref="alerts" class="safety-alert-list"></div></section>
-          <section class="safety-section safety-detail-section"><div class="safety-section-title"><h3>对象详情与处置</h3><span data-ref="detailSource"></span></div><div data-ref="detail" class="safety-detail"></div><div data-ref="media" class="safety-media"></div></section>
-        </div>
+      <div class="safety-scene-hud"><div class="safety-scene-toolbar"><div data-ref="breadcrumbs" class="safety-breadcrumbs" aria-label="项目层级导航"></div><div class="safety-scene-actions"><button type="button" data-action="earth">◎ 地球</button><button type="button" data-action="locate">⌖ 定位</button></div></div><div class="safety-scene-caption"><span class="safety-live-dot"></span><span data-ref="sceneCaption">三维工程现场</span><span data-ref="coordinateSummary" class="safety-coordinate-summary">真实坐标场景</span></div><div class="safety-scene-bottom"><div class="safety-selected-card"><span class="safety-eyebrow">当前选中对象</span><strong data-ref="selectedName">项目总览</strong><div data-ref="selectedMeta" class="safety-selected-meta"></div></div><div data-ref="heatLegend" class="safety-heat-legend" hidden><span>隐患事件密度</span><b>位置邻域 · 事件条数</b><div></div><small>低<span>高</span></small></div></div><div class="safety-notice" data-ref="notice" role="status" hidden></div></div>
+      <aside class="safety-panel safety-right" aria-label="现场视频与风险处置">
+        <section class="safety-card safety-video-card"><div class="safety-card-heading"><h2>现场画面联动</h2><button type="button" class="safety-video-badge" data-action="video-settings">视频设置 ↗</button></div><div class="safety-card-body safety-panel-scroll"><div data-ref="videoHost" class="safety-video-host"><div class="safety-video-empty"><span aria-hidden="true">▷</span><strong>暂无对象关联视频</strong><p>选择已绑定媒体的对象查看</p></div></div><p class="safety-video-status" data-ref="videoStatus"></p><div data-ref="videoChoices" class="safety-video-choices"></div></div></section>
+        <section class="safety-card safety-risk-card" data-ref="riskSection"><div class="safety-card-heading"><h2 data-ref="riskHeading">风险与选中详情</h2><span data-ref="alertCount"></span></div><div class="safety-card-body safety-panel-scroll"><details class="safety-risk-disclosure" data-ref="riskDisclosure" open><summary>告警列表与筛选 <span>⌄</span></summary><div class="safety-risk-tools"><label class="safety-filter-label"><select data-action="severity" aria-label="风险等级筛选"><option value="all">全部风险</option><option value="high">高风险</option><option value="medium">中风险</option><option value="low">低风险</option></select></label><label class="safety-check-label"><input type="checkbox" data-action="include-demo">含演示</label></div><div class="safety-risk-summary"><div data-ref="distribution" class="safety-chart safety-distribution-chart" role="img" aria-label="隐患风险分布，点击扇区筛选"></div><div data-ref="riskSummary" class="safety-risk-summary-text"></div></div><div data-ref="alerts" class="safety-alert-list"></div></details><div class="safety-selected-detail"><div data-ref="detailSource" class="safety-detail-source"></div><div data-ref="detail" class="safety-detail"></div><div data-ref="media" class="safety-media"></div></div></div></section>
+        <section class="safety-card safety-devices-card"><div class="safety-card-heading"><h2>设备与飞行状态</h2></div><div class="safety-card-body safety-panel-scroll"><div class="safety-section-caption"><span data-ref="deviceCount"></span><span>依实录数据回放</span></div><div data-ref="devices" class="safety-device-list"></div></div></section>
       </aside>
-      <footer class="safety-bottom">
-        <div class="safety-mode-switch" role="group" aria-label="显示模式"><button type="button" data-action="mode" data-mode="presentation" class="is-active">汇报展示</button><button type="button" data-action="mode" data-mode="inspection">现场巡检</button></div>
-        <div class="safety-playback"><button type="button" class="safety-play-button" data-action="play" aria-label="开始历史回放" title="按共享时间轴回放">▶</button><div class="safety-playback-body"><div class="safety-time-labels"><span><b data-ref="playbackTime">--:--:--</b><small>历史回放</small></span><span data-ref="timeRangeLabel"></span></div><input class="safety-timeline" type="range" data-action="time" min="0" max="1" value="0" step="1" aria-label="历史回放时刻"></div></div>
-        <div class="safety-bottom-actions"><button type="button" data-action="cruise" aria-pressed="false">◈ 自动巡游</button><details class="safety-popover safety-time-popover"><summary>时间范围 <span>⌃</span></summary><div class="safety-popover-body"><h3>筛选时间范围</h3><label>开始<input type="range" data-action="range-start" aria-label="筛选开始时间"><output data-ref="rangeStart"></output></label><label>结束<input type="range" data-action="range-end" aria-label="筛选结束时间"><output data-ref="rangeEnd"></output></label><button type="button" data-action="range-reset">恢复全部时间</button><p class="safety-footnote">场景、统计、任务及告警共用此时间范围。</p></div></details><details class="safety-popover safety-layer-popover"><summary>图层 <span>⌃</span></summary><div class="safety-popover-body"><h3>巡检场景图层</h3><div data-ref="effectLayers" class="safety-layer-list"></div><label class="safety-opacity">热力透明度 <input type="range" min="0.1" max="1" step="0.05" value="0.65" data-action="opacity" aria-label="热力透明度"></label><h3>已加载工程资料</h3><div data-ref="libraryLayers" class="safety-layer-list"></div></div></details></div>
-      </footer>`;
+      <footer class="safety-bottom"><div class="safety-mode-switch" role="group" aria-label="显示模式"><button type="button" data-action="mode" data-mode="presentation" class="is-active">汇报展示</button><button type="button" data-action="mode" data-mode="inspection">现场巡检</button></div><div class="safety-playback"><button type="button" class="safety-play-button" data-action="play" aria-label="开始历史回放" title="历史回放播放，与装饰动画独立">▶</button><div class="safety-playback-body"><div class="safety-time-labels"><span><b data-ref="playbackTime">--:--:--</b><small>历史回放</small></span><span data-ref="timeRangeLabel"></span></div><input class="safety-timeline" type="range" data-action="time" min="0" max="1" value="0" step="1" aria-label="历史回放时刻"></div></div><div class="safety-bottom-actions"><button type="button" data-action="motion-toggle" aria-pressed="false">暂停装饰</button><button type="button" data-action="cruise" aria-pressed="false">自动巡游</button><details class="safety-popover safety-time-popover"><summary>时间范围 ⌃</summary><div class="safety-popover-body"><h3>筛选时间范围</h3><label>开始<input type="range" data-action="range-start" aria-label="筛选开始时间"><output data-ref="rangeStart"></output></label><label>结束<input type="range" data-action="range-end" aria-label="筛选结束时间"><output data-ref="rangeEnd"></output></label><button type="button" data-action="range-reset">恢复全部时间</button><p class="safety-footnote">场景、统计、任务及告警共用此范围。</p></div></details><details class="safety-popover safety-layer-popover"><summary>图层与标注 ⌃</summary><div class="safety-popover-body"><h3>当前对象工程标注</h3><label class="safety-layer"><input type="checkbox" data-action="engineering-annotations"><span>显示选中对象标注</span></label><p class="safety-footnote">仅当前所选对象；切换对象后恢复简洁显示。</p><h3>巡检场景图层</h3><div data-ref="effectLayers" class="safety-layer-list"></div><label class="safety-opacity">热力透明度<input type="range" min="0.1" max="1" step="0.05" value="0.65" data-action="opacity" aria-label="热力透明度"></label><h3>已加载工程资料</h3><div data-ref="libraryLayers" class="safety-layer-list"></div></div></details></div></footer>`;
     host.append(this.root);
     this.videoHost = this.ref<HTMLDivElement>("videoHost");
     this.ref("videoStatus").textContent = this.videoStatus;
@@ -161,24 +145,27 @@ export class SafetyDashboard {
     this.state = state;
     this.view = view;
     this.updatePlayback();
-    const key = JSON.stringify([state.selectedId, state.selectedAlertId, state.mode, state.severity, state.timeRange, state.includeDemo, state.layers]);
+    const key = JSON.stringify([state.selectedId, state.selectedAlertId, state.mode, state.severity, state.timeRange, state.includeDemo, state.layers, state.engineeringAnnotations]);
     if (key === this.lastRenderKey && dataset === this.lastDataset) return;
     this.lastRenderKey = key;
     this.lastDataset = dataset;
     if (!this.visible) return;
     this.renderCount++;
     this.root.dataset.mode = state.mode;
+    this.root.dataset.selection = state.selectedAlertId ? "alert" : view.selected.kind === "project" ? "overview" : "object";
+    this.ref("riskHeading").textContent = state.selectedAlertId ? "告警详情与处置" : view.selected.kind === "project" ? "风险与选中详情" : "所选对象与资料";
+    this.ref<HTMLDetailsElement>("riskDisclosure").open = view.selected.kind === "project" && !state.selectedAlertId;
     this.ref("projectName").textContent = dataset.name;
     this.ref("projectName").title = dataset.name;
     this.ref("projectSource").innerHTML = badge(dataset.nodes.find((node) => node.id === dataset.projectId)?.provenance ?? "derived");
-    this.ref("connection").textContent = "本机项目已载入";
+    this.ref("connection").textContent = "项目已载入";
     if (!this.root.classList.contains("has-error")) this.ref("notice").hidden = true;
     this.ref("breadcrumbs").innerHTML = view.breadcrumbs.map((node, index) => `${index ? '<span class="safety-breadcrumb-divider">/</span>' : ""}<button type="button" data-action="select" data-node="${escapeHtml(node.id)}" ${index === view.breadcrumbs.length - 1 ? 'aria-current="location"' : ""}>${escapeHtml(node.name)}</button>`).join("");
     this.ref("sceneCaption").textContent = `${kindNames[view.selected.kind]}视角 · ${state.mode === "presentation" ? "汇报展示" : "现场巡检"}`;
     this.ref("coordinateSummary").textContent = "工程模型保持真实坐标 / 标高";
     this.ref("coordinateSummary").title = dataset.coordinateNote;
     this.ref("selectedName").textContent = view.selected.name;
-    this.ref("selectedMeta").innerHTML = `${badge(view.selected.provenance)}<span>${escapeHtml(view.selected.id)}</span>`;
+    this.ref("selectedMeta").innerHTML = `${badge(view.selected.provenance)}<span title="${escapeHtml(view.selected.id)}">${view.selected.sourceEntityIndex !== undefined ? "CAD 来源定位点" : kindNames[view.selected.kind]}</span>`;
     this.ref("heatLegend").hidden = !state.layers.heat;
     this.renderMetrics(view);
     this.renderHierarchy(view);
@@ -203,13 +190,15 @@ export class SafetyDashboard {
   }
 
   private nodeItem(node: SafetyNode, selected = false): string {
-    const kind = node.componentType ? componentNames[node.componentType] : kindNames[node.kind];
-    return `<button type="button" class="safety-node ${selected ? "is-selected" : ""}" data-action="select" data-node="${escapeHtml(node.id)}"><span class="safety-node-symbol" aria-hidden="true">${node.kind === "section" ? "⌁" : node.kind === "pier" ? "Ⅱ" : node.kind === "component" ? "◇" : "◎"}</span><span class="safety-node-copy"><strong>${escapeHtml(node.name)}</strong><small title="${escapeHtml(node.id)}">${selected ? "当前对象" : `${kind} · ${node.kind === "component" ? "点击查看" : "点击进入"}`}</small></span><span class="safety-node-end">${badge(node.provenance)}<span aria-hidden="true">›</span></span></button>`;
+    const kind = node.spatialKind === "construction-area" ? "标绘施工区" : node.spatialKind === "railway" ? "标绘营业线" : node.spatialKind === "risk-point" ? "标绘风险点" : node.componentType ? componentNames[node.componentType] : kindNames[node.kind];
+    const unavailable = node.navigationDisabledReason || (node.kind === "component" && ["cap", "column", "footing"].includes(node.componentType ?? "") && !node.modelFeatureId ? "尚未接入独立构件模型与编号映射" : undefined);
+    const reason = unavailable ? `${kind} · ${unavailable}` : selected ? "当前对象" : `${kind} · ${node.kind === "component" ? "查看来源点位" : "点击进入"}`;
+    return `<button type="button" class="safety-node ${selected ? "is-selected" : ""}" data-action="select" data-node="${escapeHtml(node.id)}" title="${escapeHtml(unavailable || node.id)}" ${unavailable ? 'disabled aria-disabled="true"' : ""}><span class="safety-node-symbol" aria-hidden="true">${node.kind === "section" ? "⌁" : node.kind === "pier" ? "Ⅱ" : "◇"}</span><span class="safety-node-copy"><strong>${escapeHtml(node.name)}</strong><small>${escapeHtml(reason)}</small></span><span class="safety-node-end">${badge(node.provenance)}<span aria-hidden="true">${unavailable ? "—" : "›"}</span></span></button>`;
   }
 
   private renderHierarchy(view: SafetyView): void {
     const children = view.children;
-    this.ref("hierarchyCount").textContent = `${children.length} 个下级对象`;
+    this.ref("hierarchyCount").textContent = `${children.length} 个对象`;
     const current = view.selected.kind !== "project" ? this.nodeItem(view.selected, true) : "";
     this.ref("hierarchy").innerHTML = current + (children.length ? children.map((node) => this.nodeItem(node)).join("") : empty("已到达当前对象的末级，可通过上方路径返回"));
   }
@@ -237,7 +226,7 @@ export class SafetyDashboard {
     const position = view.selected.position;
     const coordinates = `${position.longitude.toFixed(6)}°E / ${position.latitude.toFixed(6)}°N`;
     this.ref("detail").innerHTML = alert ? this.alertDetail(alert) : `<h4>${escapeHtml(view.selected.name)}</h4><p>${escapeHtml(view.selected.description)}</p><dl><dt>唯一编号</dt><dd>${escapeHtml(view.selected.id)}</dd><dt>对象类型</dt><dd>${view.selected.componentType ? componentNames[view.selected.componentType] : kindNames[view.selected.kind]}</dd><dt>场景经纬度</dt><dd>${coordinates}</dd><dt>场景高程</dt><dd>${position.height.toFixed(2)} m</dd></dl><p class="safety-footnote">高程基准见数据来源说明；展示范围与工程尺寸分开处理。</p>`;
-    const media = view.media;
+    const media = view.media.filter((item) => item.kind !== "video" || item.relation === "object" || view.selected.kind === "project");
     this.ref("videoChoices").innerHTML = media.filter((item) => item.kind === "video").map((item) => `<button type="button" data-action="media" data-media="${escapeHtml(item.id)}" title="${escapeHtml(item.note)}"><span aria-hidden="true">▷</span><span>${escapeHtml(item.name)}</span>${badge(item.provenance)}</button>`).join("");
     this.ref("media").innerHTML = media.length ? `<div class="safety-section-title safety-media-title"><h3>关联资料</h3><span>${media.length} 项</span></div>${media.map((item) => this.mediaItem(item)).join("")}` : '<p class="safety-footnote">当前对象尚无关联照片、视频或构件资料。</p>';
   }
@@ -256,7 +245,7 @@ export class SafetyDashboard {
   }
 
   private renderNotes(dataset: SafetyDataset): void {
-    this.ref("sourceNotes").innerHTML = `<p>${escapeHtml(dataset.coordinateNote)}</p><div class="safety-source-key">${badge("real")}${badge("derived")}${badge("demo")}</div><ul>${dataset.sourceNotes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>${dataset.missingData.length ? `<h4>待接入 / 尚未验证</h4><ul>${dataset.missingData.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>` : ""}<p>模型清晰度、视频配准精度需单独验证；本次界面展示不构成精度验证结果。</p>`;
+    this.ref("sourceNotes").innerHTML = `<p>${escapeHtml(dataset.coordinateNote)}</p><div class="safety-source-key">${badge("real")}${badge("derived")}${badge("user")}${badge("demo")}</div><ul>${dataset.sourceNotes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>${dataset.missingData.length ? `<h4>待接入 / 尚未验证</h4><ul>${dataset.missingData.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>` : ""}<p>模型清晰度、视频配准精度需单独验证；本次界面展示不构成精度验证结果。</p>`;
   }
 
   private renderLayers(state: SafetyState): void {
@@ -266,6 +255,7 @@ export class SafetyDashboard {
   private renderFilters(state: SafetyState, dataset: SafetyDataset): void {
     this.root.querySelector<HTMLSelectElement>('[data-action="severity"]')!.value = state.severity;
     this.root.querySelector<HTMLInputElement>('[data-action="include-demo"]')!.checked = state.includeDemo;
+    this.root.querySelector<HTMLInputElement>('[data-action="engineering-annotations"]')!.checked = state.engineeringAnnotations;
     this.root.querySelectorAll<HTMLButtonElement>('[data-action="mode"]').forEach((button) => {
       button.classList.toggle("is-active", button.dataset.mode === state.mode);
       button.setAttribute("aria-pressed", String(button.dataset.mode === state.mode));
@@ -297,7 +287,11 @@ export class SafetyDashboard {
     const cruise = this.root.querySelector<HTMLButtonElement>('[data-action="cruise"]')!;
     cruise.classList.toggle("is-active", state.cruise);
     cruise.setAttribute("aria-pressed", String(state.cruise));
-    cruise.textContent = state.cruise ? "◈ 停止巡游" : "◈ 自动巡游";
+    cruise.textContent = state.cruise ? "停止巡游" : "自动巡游";
+    const motion = this.root.querySelector<HTMLButtonElement>('[data-action="motion-toggle"]')!;
+    motion.textContent = state.animationPaused ? "继续装饰" : "暂停装饰";
+    motion.setAttribute("aria-pressed", String(state.animationPaused));
+    motion.title = "只暂停光圈、扫描与装饰流光，不改变历史回放及选中对象";
     this.root.querySelector<HTMLInputElement>('[data-action="opacity"]')!.value = String(state.heatOpacity);
   }
 
@@ -310,25 +304,27 @@ export class SafetyDashboard {
     });
     this.trend.setOption({
       animation: false, backgroundColor: "transparent", textStyle: { fontFamily: '"Segoe UI", "Microsoft YaHei", sans-serif' },
-      grid: { top: 18, right: 10, bottom: 27, left: 26 },
-      tooltip: { trigger: "axis", confine: true, backgroundColor: "#07192e", borderColor: "#265675", textStyle: { color: "#d6ecfa", fontSize: 11 }, valueFormatter: (value: unknown) => `${value} 条` },
-      xAxis: { type: "category", boundaryGap: false, data: bins.map((bin) => clockText(bin.range[0]).slice(0, 5)), axisLine: { lineStyle: { color: "#21415b" } }, axisTick: { show: false }, axisLabel: { color: "#7295ad", fontSize: 9, interval: 2 } },
-      yAxis: { type: "value", minInterval: 1, splitNumber: 3, axisLabel: { color: "#7295ad", fontSize: 9 }, splitLine: { lineStyle: { color: "rgba(94,153,181,.10)", type: "dashed" } } },
-      series: [{ name: "隐患事件", type: "line", smooth: false, symbol: "circle", symbolSize: 7, data: bins, lineStyle: { color: "#43cce7", width: 2 }, itemStyle: { color: "#68e4f5", borderWidth: 2, borderColor: "#12374d" }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: "rgba(44,202,228,.28)" }, { offset: 1, color: "rgba(44,202,228,.01)" }]) } }],
+      grid: { top: 12, right: 16, bottom: 26, left: 28 },
+      tooltip: { trigger: "axis", confine: true, backgroundColor: safetyVisualTokens.colors.panel, borderColor: "#265675", textStyle: { color: safetyVisualTokens.colors.text, fontSize: safetyVisualTokens.typographyPx.secondaryMinimum }, valueFormatter: (value: unknown) => `${value} 条` },
+      xAxis: { type: "category", boundaryGap: false, data: bins.map((bin) => clockText(bin.range[0]).slice(0, 5)), axisLine: { lineStyle: { color: "#21415b" } }, axisTick: { show: false }, axisLabel: { color: safetyVisualTokens.colors.mutedText, fontSize: safetyVisualTokens.typographyPx.secondaryMinimum, interval: 3 } },
+      yAxis: { type: "value", minInterval: 1, splitNumber: 3, axisLabel: { color: safetyVisualTokens.colors.mutedText, fontSize: safetyVisualTokens.typographyPx.secondaryMinimum }, splitLine: { lineStyle: { color: "rgba(94,153,181,.10)", type: "dashed" } } },
+      series: [{ name: "隐患事件", type: "line", smooth: false, symbol: "circle", symbolSize: 7, data: bins, lineStyle: { color: safetyVisualTokens.colors.cyan, width: 2 }, itemStyle: { color: safetyVisualTokens.colors.cyan, borderWidth: 2, borderColor: "#12374d" }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: "rgba(44,202,228,.28)" }, { offset: 1, color: "rgba(44,202,228,.01)" }]) } }],
     }, { notMerge: true, lazyUpdate: false });
     const data = [
-      { name: "高风险", value: view.metrics.high, itemStyle: { color: "#f7b76b" } },
-      { name: "中风险", value: view.alerts.filter((alert) => alert.severity === "medium").length, itemStyle: { color: "#52cfe7" } },
-      { name: "低风险", value: view.alerts.filter((alert) => alert.severity === "low").length, itemStyle: { color: "#538dc3" } },
+      { name: "高风险", value: view.metrics.high, itemStyle: { color: safetyVisualTokens.colors.attention } },
+      { name: "中风险", value: view.alerts.filter((alert) => alert.severity === "medium").length, itemStyle: { color: safetyVisualTokens.colors.cyan } },
+      { name: "低风险", value: view.alerts.filter((alert) => alert.severity === "low").length, itemStyle: { color: safetyVisualTokens.colors.blue } },
     ];
     this.distribution.setOption({
-      animation: false, backgroundColor: "transparent", tooltip: { trigger: "item", confine: true, formatter: "{b}：{c} 条", backgroundColor: "#07192e", borderColor: "#265675", textStyle: { color: "#d6ecfa", fontSize: 11 } },
+      animation: false, backgroundColor: "transparent", tooltip: { trigger: "item", confine: true, formatter: "{b}：{c} 条", backgroundColor: safetyVisualTokens.colors.panel, borderColor: "#265675", textStyle: { color: safetyVisualTokens.colors.text, fontSize: safetyVisualTokens.typographyPx.secondaryMinimum } },
       series: [{ name: "隐患事件", type: "pie", radius: ["66%", "86%"], center: ["50%", "50%"], avoidLabelOverlap: true, stillShowZeroSum: false, label: { show: false }, labelLine: { show: false }, itemStyle: { borderColor: "#071b2e", borderWidth: 3 }, emphasis: { scale: true, scaleSize: 3 }, emptyCircleStyle: { color: "#153348" }, data }],
     }, { notMerge: true, lazyUpdate: false });
   }
 
   private renderTab(): void {
     this.root.dataset.tab = this.activeTab;
+    this.ref<HTMLDetailsElement>("taskDisclosure").open = this.activeTab === "tasks";
+    this.ref<HTMLDetailsElement>("trendDisclosure").open = this.activeTab !== "tasks";
     this.root.querySelectorAll<HTMLButtonElement>('[data-action="tab"]').forEach((button) => {
       const active = button.dataset.tab === this.activeTab;
       button.classList.toggle("is-active", active);
@@ -339,12 +335,21 @@ export class SafetyDashboard {
   private handleClick(event: MouseEvent): void {
     const target = (event.target as Element | null)?.closest<HTMLElement>("[data-action]");
     if (!target || !this.root.contains(target)) return;
+    if (target instanceof HTMLButtonElement && target.disabled) return;
     const action = target.dataset.action;
     const state = this.state;
     if (action === "exit") this.options.onExit();
     else if (action === "refresh") this.options.onRefresh();
     else if (action === "earth") this.options.onEarth();
     else if (action === "video-settings") this.options.onVideoSettings?.();
+    else if (action === "authoring") this.options.onAuthoring?.();
+    else if (action === "motion-toggle" && state) this.options.onPatch({ animationPaused: !state.animationPaused });
+    else if (action === "sidebar-toggle") {
+      const side = target.dataset.side === "left" ? "left" : "right";
+      const expanded = this.root.classList.toggle(`is-${side}-expanded`);
+      target.setAttribute("aria-expanded", String(expanded));
+      this.trend.resize(); this.distribution.resize();
+    }
     else if (action === "select" && target.dataset.node) this.options.onSelect({ nodeId: target.dataset.node });
     else if (action === "alert" && target.dataset.node) this.options.onSelect({ nodeId: target.dataset.node, alertId: target.dataset.alert });
     else if (action === "locate" && state) this.options.onSelect({ nodeId: state.selectedId, alertId: state.selectedAlertId, fly: true });
@@ -366,6 +371,9 @@ export class SafetyDashboard {
       const tab = target.dataset.tab;
       if (tab === "overview" || tab === "tasks" || tab === "risks") {
         this.activeTab = tab;
+        const side = tab === "risks" ? "right" : "left";
+        this.root.classList.add(`is-${side}-expanded`);
+        this.root.querySelector(`[data-action="sidebar-toggle"][data-side="${side}"]`)?.setAttribute("aria-expanded", "true");
         this.renderTab();
         if (tab === "overview" && this.dataset) this.options.onSelect({ nodeId: this.dataset.projectId });
         const section = tab === "tasks" ? this.ref("tasksSection") : tab === "risks" ? this.ref("riskSection") : this.ref("hierarchySection");
@@ -381,6 +389,7 @@ export class SafetyDashboard {
     const action = input.dataset.action;
     if (action === "severity" && ["all", "high", "medium", "low"].includes(input.value)) this.options.onPatch({ severity: input.value as SafetyState["severity"] });
     else if (action === "include-demo") this.options.onPatch({ includeDemo: (input as HTMLInputElement).checked });
+    else if (action === "engineering-annotations") this.options.onPatch({ engineeringAnnotations: (input as HTMLInputElement).checked });
     else if (action === "effect-layer" && input.dataset.layer && input.dataset.layer in state.layers) {
       this.options.onPatch({ layers: { ...state.layers, [input.dataset.layer]: (input as HTMLInputElement).checked } });
     } else if (action === "library-layer" && input.dataset.layer) this.options.onLayerToggle(input.dataset.layer, (input as HTMLInputElement).checked);
@@ -435,6 +444,7 @@ export class SafetyDashboard {
     if (this.disposed || text === this.videoStatus) return;
     this.videoStatus = text;
     this.ref("videoStatus").textContent = text;
+    this.ref("videoStatus").title = text;
   }
 
   setLayers(layers: SafetyDashboardLayer[]): void {

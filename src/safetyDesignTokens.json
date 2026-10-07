@@ -1,0 +1,35 @@
+{
+  "version": "2026-10-07",
+  "purpose": "visual-reference-not-project-data",
+  "referenceViewport": {"width": 1920, "height": 1080},
+  "layout": {
+    "header": {"x": 24, "y": 16, "width": 1872, "height": 72},
+    "left": {"x": 24, "y": 120, "width": 320, "bottom": 964},
+    "stage": {"x": 368, "y": 104, "width": 1184, "height": 860},
+    "right": {"x": 1576, "y": 120, "width": 320, "bottom": 964},
+    "footer": {"x": 24, "y": 992, "width": 1872, "height": 64},
+    "panelGap": 16,
+    "stageOccupancyRange": [0.7, 0.85]
+  },
+  "colors": {
+    "background": "#030B18", "panel": "#071A2D", "sceneDark": "#0D2B4B",
+    "cyan": "#43D9FF", "blue": "#357CFF", "text": "#E5F7FF",
+    "mutedText": "#91B0C5", "attention": "#FFB957", "alert": "#FF566D"
+  },
+  "typographyPx": {"title": 32, "sectionTitle": 20, "body": 16, "secondaryMinimum": 14, "metric": 40, "sceneLabel": 18},
+  "scene": {"cameraPitchReferenceDegrees": [-50, -35], "displayBaseApparentThicknessPx": [40, 65], "overviewMaxLabels": 8, "focusMaxLabels": 5, "maxDynamicHighlights": 3, "primaryFocusCount": 1, "defaultCadAnnotations": false},
+  "motion": {
+    "pulse": {"periodSeconds": 2.4, "phaseOffsetSeconds": 0.8, "radiusReferencePx": [18, 66], "opacity": [0.55, 0]},
+    "radar": {"periodSeconds": 12, "sectorDegrees": 50, "decorativeOnly": true},
+    "flow": {"periodSeconds": 4, "headReferencePx": 3, "trailFraction": 0.14, "separateFromTelemetry": true},
+    "baseArc": {"periodSeconds": 28, "rotateWorldCoordinates": false},
+    "alertBreathingSeconds": 1.8,
+    "cameraFocusSeconds": 1.6,
+    "themeTransitionSeconds": 0.6,
+    "buttonTransitionMilliseconds": 160,
+    "chartTransitionMilliseconds": [300, 500],
+    "pauseSupported": true,
+    "respectReducedMotion": true
+  },
+  "validation": {"viewportSizes": [[1920, 1080], [2048, 958]], "targetFpsForMeasuredTypicalOperations": 30, "measureOnTargetHardware": true, "mockDataMustBeLabeled": true}
+}

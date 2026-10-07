@@ -159,7 +159,7 @@ export function adaptSafetyCadSources(sources: SafetyCadSource[]): SafetyCadAdap
         description: `真实 CAD 文字“${entry.text}”插入点，实体索引 ${entry.index}。桩基分类由编号推定，不能当作已复核的桩心或工程高程；尚未绑定模型构件。`,
         mediaIds, sourceRecordId: record.id, sourceEntityIndex: entry.index, radius: 15 });
       for (const [componentType, name] of [["cap", "盖梁"], ["column", "墩柱"], ["footing", "承台"]] as const) nodes.push({
-        id: `${pierId}:${componentType}`, parentId: pierId, kind: "component", componentType, name: `${number} 号墩 · ${name}`,
+        id: `${pierId}:${componentType}`, parentId: pierId, kind: "component", componentType, name: `${number} 号墩 · ${name}`, navigationDisabledReason: "尚未接入具有构件编号的 BIM 模型",
         position: { ...pier.position }, provenance: "derived", description: `${name}逻辑导航节点，暂用父级文字包络中心。模型唯一编号及构件定位尚未接入，不代表已定位的工程实体。`,
         mediaIds, sourceRecordId: record.id, radius: 25 });
     }
