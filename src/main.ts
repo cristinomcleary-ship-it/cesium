@@ -1,4 +1,5 @@
 import { SceneLibrary } from "./sceneLibrary";
+import type { SafetyWorkspace } from "./safetyWorkspace";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import {
   BoundingSphere,
@@ -93,6 +94,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <button class="tab" data-tab="monitoring" data-label="基坑监测" data-menu-icon="▥">基坑监测</button>
         <button class="tab" data-tab="report" data-label="3维汇报" data-menu-icon="▣">3维汇报</button>
       </nav>
+      <button id="openSafetyWorkspace" class="text-button safety-entry-button" type="button">安全巡检大屏</button>
       <a href="/ar-v2.html" class="text-button" title="独立视觉定位与融合">AR V2</a>
       <div class="workspace-mode"><span class="workspace-pulse"></span><span>数字孪生工作台</span></div>
     </header>
@@ -271,6 +273,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
     <section class="viewport">
       <div id="cesiumContainer"></div>
       <div id="digitalTwinOverviewHost"></div>
+    <div id="safetyWorkspaceHost"></div>
       ${electronicSandTableStageHtml}
       <div class="topbar">
         <span id="coords">经度 -- · 纬度 -- · 高程 --</span>
@@ -565,6 +568,8 @@ viewer.scene.fog.enabled = true;
 viewer.camera.setView({ destination: Cartesian3.fromDegrees(105, 35, 18_000_000) });
 
 const imports: ImportRecord[] = [];
+let safetyWorkspace: SafetyWorkspace | undefined;
+let safetyWorkspaceLoading: Promise<SafetyWorkspace> | undefined;
 let projectLibrary: SceneLibrary | undefined;
 const tilesetSourceIds = new Map<string, string>();
 let selectedCad: File | null = null;
@@ -763,6 +768,7 @@ function locateImport(item: ImportRecord) {
 
 function renderLayers() {
   projectLibrary?.render();
+  safetyWorkspace?.layersChanged();
   if (digitalTwinSyncReady) scheduleDigitalTwinSync();
   scheduleElectronicSandTableRefresh();
   const root = $("#layers");
@@ -2660,7 +2666,52 @@ pointer.setInputAction((movement: { endPosition: Cartesian2 }) => {
   $("#coords").textContent = `经度 ${CesiumMath.toDegrees(position.longitude).toFixed(6)} · 纬度 ${CesiumMath.toDegrees(position.latitude).toFixed(6)} · 高程 ${position.height.toFixed(1)}m`;
 }, ScreenSpaceEventType.MOUSE_MOVE);
 
-void projectLibrary.start().then(() => { renderLayers(); viewer.scene.requestRender(); });
+async function openSafetyWorkspace(): Promise<void> {
+  try {
+    safetyWorkspaceLoading ??= import("./safetyWorkspace").then(({ SafetyWorkspace }) => {
+      safetyWorkspace = new SafetyWorkspace({
+        viewer, host: $("#safetyWorkspaceHost"), ready: () => projectLibrary!.ready,
+        getImports: () => imports,
+        setLayerVisible: (id, visible) => {
+          const item = imports.find(record => record.id === id);
+          if (item) setImportVisibility(item, visible, { silent: true });
+        },
+        setVideoPanelActive: active => videoArFusion.setPanelActive(active),
+        getPlaybackSource: () => ({ ...videoArFusion.getSharedPlaybackSource(), recordId: projectLibrary!.activeVideoRecordId }),
+        syncVideoPlayback: () => videoArFusion.synchronizeSharedPlayback(),
+        prepareOpen: () => {
+          digitalTwinOverview.close();
+          electronicSandTable?.stopTour();
+          sandTablePresentation?.deactivate();
+          sandTableFacilities?.deactivate();
+          viewer.camera.cancelFlight();
+          const resumes: Array<() => void> = [];
+          const restore = () => {
+            for (const resume of resumes.splice(0).reverse()) {
+              try { resume(); } catch (error) { console.warn("[Safety dashboard] Interaction restore failed", error); }
+            }
+          };
+          try {
+            resumes.push(modelEditor.suspendInteractions(), subsurfaceTools.suspendInteractions(), foundationPitMonitoring.suspendInteractions());
+            const resumeMarkup = markupTools?.suspendInteractions();
+            if (resumeMarkup) resumes.push(resumeMarkup);
+          } catch (error) { restore(); throw error; }
+          return restore;
+        },
+        restoreWorkbench: () => document.querySelector<HTMLButtonElement>(".tab.active")?.click(),
+        openVideoSettings: () => document.querySelector<HTMLButtonElement>('.tab[data-tab="videoar"]')?.click(),
+      });
+      if (import.meta.env.DEV) Object.assign(window, { __safetyWorkspace: safetyWorkspace });
+      return safetyWorkspace;
+    }).catch(error => { safetyWorkspaceLoading = undefined; throw error; });
+    await (await safetyWorkspaceLoading).open();
+  } catch (error) { toast(`安全巡检大屏打开失败：${error instanceof Error ? error.message : String(error)}`, true); }
+}
+$("#openSafetyWorkspace").addEventListener("click", () => void openSafetyWorkspace());
+void projectLibrary.start().then(() => {
+  renderLayers(); viewer.scene.requestRender();
+  if (new URLSearchParams(window.location.search).get("screen") === "safety") void openSafetyWorkspace();
+});
 $("#basemap").addEventListener("change", () => projectLibrary?.saveView());
 
 $("#videoArClear").textContent = "关闭回放";

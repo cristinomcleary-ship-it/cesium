@@ -1298,6 +1298,21 @@ export class VideoArFusion {
     this.bindUi();
   }
 
+  /** Read-only identity for a second UI sharing this exact media element. */
+  getSharedPlaybackSource() {
+    return { generation: this.loadGeneration, name: this.videoFile?.name ?? "", url: this.videoObjectUrl ?? "" };
+  }
+
+  /** Adopt native video controls without seeking or changing the existing AR time mapping. */
+  synchronizeSharedPlayback() {
+    if (!this.videoObjectUrl || !Number.isFinite(this.video.duration) || this.video.duration <= 0) return;
+    const milliseconds = this.independentVideoExactTimeline
+      ? this.video.currentTime * 1000 - this.independentVideoFirstTimeMs
+      : this.video.currentTime / this.video.duration * this.durationMs;
+    this.playbackMs = Math.min(this.durationMs, Math.max(0, milliseconds));
+    this.updateControls();
+  }
+
   setPanelActive(active: boolean) {
     this.panelActive = active;
     this.dataSource.show = active;

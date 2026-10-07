@@ -49,6 +49,7 @@ export class SceneLibrary {
     window.addEventListener("pagehide", () => { void this.flush(true); });
     hooks.viewer.camera.moveEnd.addEventListener(() => this.saveView());
   }
+  get activeVideoRecordId(): string { return this.activeVideoId; }
   get busy() { return this.starting || this.pending > 0 || this.restoring.size > 0; }
   start() {
     this.ready = this.initialize();
