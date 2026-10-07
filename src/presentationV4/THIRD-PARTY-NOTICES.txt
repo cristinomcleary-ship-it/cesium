@@ -1,0 +1,13 @@
+Third-party and asset notices
+
+CesiumJS 1.120.0 (demo-only pinned runtime)
+Source: https://registry.npmjs.org/cesium/-/cesium-1.120.0.tgz
+Official project: https://cesium.com/platform/cesiumjs/
+Bundled build: demo/vendor/Cesium-1.120/
+Keep demo/vendor/Cesium-1.120/LICENSE.md and ThirdParty.json with redistribution.
+The demo keeps Cesium's credit display. Do not hide attribution with CSS.
+
+Task-authored runtime modules, SVG icons and fixture generator are included as editable implementation material.
+The engineering-sample.glb is original synthetic geometry generated for this package; it is not a survey, CAD deliverable, actual railway definition, or usable engineering measurement.
+The concept scene PNGs under prototype/assets are AI-generated design references carried from the earlier design package. They must not replace the production live 3D Viewer.
+User screenshots and the video-style frame under reference remain reference material supplied for this design task, not production imagery licenses.

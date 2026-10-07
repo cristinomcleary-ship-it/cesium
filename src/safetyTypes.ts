@@ -42,7 +42,7 @@ export type SafetyLayers = { boundary: boolean; markers: boolean; track: boolean
 export type SafetyState = {
   selectedId: string; selectedAlertId?: string; page?: SafetyPage; eventStatus?: "all" | "open" | "rectifying" | "closed"; eventQuery?: string; mode: SafetyMode; severity: "all" | SafetySeverity;
   timeRange: [number, number]; time: number; playing: boolean; includeDemo: boolean;
-  heatOpacity: number; cruise: boolean; animationPaused: boolean; engineeringAnnotations: boolean; layers: SafetyLayers;
+  heatOpacity: number; cruise: boolean; animationPaused: boolean; reducedMotion?: boolean; engineeringAnnotations: boolean; layers: SafetyLayers;
 };
 export type SafetyView = {
   selected: SafetyNode; breadcrumbs: SafetyNode[]; children: SafetyNode[]; nodes: SafetyNode[];

@@ -13,6 +13,7 @@ import {
   HeadingPitchRoll,
   HeadingPitchRange,
   Ion,
+  CartographicGeocoderService,
   IonResource,
   type ImageryLayer,
   type ImageryProvider,
@@ -319,7 +320,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 const viewer = new Viewer("cesiumContainer", {
   baseLayer: false,
   baseLayerPicker: false,
-  geocoder: true,
+  // Local projects need no Ion service. Coordinate search remains available without a token.
+  geocoder: token ? true : [new CartographicGeocoderService()],
   homeButton: false,
   sceneModePicker: true,
   navigationHelpButton: false,

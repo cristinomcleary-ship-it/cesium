@@ -12,9 +12,10 @@ export type SafetyDashboardPage = "overview" | "inspection" | "events" | "compon
 export type SafetyDashboardLayer = { id: string; name: string; kind: string; visible: boolean };
 export type SafetyDashboardMediaSource = SafetyMedia & { mode: "live" | "replay"; recordedAt?: number; durationSeconds?: number };
 export type SafetyDashboardMediaState = { selectedId?: string; mode?: "live" | "replay"; canPlay?: boolean; playing?: boolean; rate?: number; updatedAt?: number; hasTrack?: boolean; currentTimeSeconds?: number; durationSeconds?: number; error?: string };
+export type SafetyPresentationStatus = { mode?: "showcase" | "reality"; ok: boolean; state?: string; message?: string; authoring?: boolean };
 export type SafetyDashboardOptions = {
   onSelect(selection: SafetySelection): void; onPatch(patch: Partial<SafetyState>): void;
-  onExit(): void; onEarth(): void; onMedia(media: SafetyMedia, selection?: SafetySelection): void | Promise<void>;
+  onHome?(): void; onExit(): void; onEarth(): void; onMedia(media: SafetyMedia, selection?: SafetySelection): void | Promise<void>;
   onVideoSettings?(): void; onAuthoring?(): void; onRefresh(): void; onLayerToggle(id: string, visible: boolean): void;
   onPageChange?(page: SafetyDashboardPage): boolean | void; onInspectionModeChange?(mode: "live" | "replay"): void;
   onHandleEvent?(id: string, text: string): Promise<void>;
@@ -61,7 +62,8 @@ export class SafetyDashboard {
  private layers: SafetyDashboardLayer[] = []; private eventStatus: "all" | SafetyAlert["status"] = "open"; private eventSearch = ""; private riskTab = "events";
  private handleId?: string; private readonly drafts = new Map<string,string>(); private readonly errors = new Map<string,string>(); private readonly pending = new Set<string>(); private readonly saved = new Set<string>();
  private pierId?: string; private category?: keyof typeof components; private pierSearch = "";
- private preferences: { mode?: SafetyState["mode"]; reduced?: boolean; largeText?: boolean } = {}; private preferencesApplied = false;
+ private preferences: { reduced?: boolean; largeText?: boolean } = {}; private preferencesApplied = false;
+ private presentationStatus?: SafetyPresentationStatus;
  constructor(host: HTMLElement, private readonly options: SafetyDashboardOptions) {
   this.root.className = "safety-dashboard safety-dashboard-v3"; applySafetyVisualTokens(this.root);
   for (const [key,value] of Object.entries(platformTokens.colors)) this.root.style.setProperty(`--v3-${key}`,value);
@@ -73,7 +75,7 @@ export class SafetyDashboard {
   ${pages("inspection",card("巡检记录","drone",'<div class="v3-segmented">'+btn("inspection-mode","实时画面",'data-inspection-mode="live"')+btn("inspection-mode","历史回放",'data-inspection-mode="replay"')+'</div><div data-ref="mediaSources"></div><p class="v3-muted">视频与已关联轨迹共用回放时间，未关联轨迹的画面可独立查看。</p>',"v3-full-card"))}
   ${pages("events",card("风险处置","shield",'<div class="v3-segmented">'+btn("risk-tab","告警事件",'data-risk-tab="events"')+btn("risk-tab","人工风险点",'data-risk-tab="points"')+'</div><div data-ref="eventFilters" class="v3-status-filters"></div><details data-ref="eventSearchBox" class="v3-search"><summary>搜索与筛选</summary><label>事件名称<input data-action="event-search" type="search" placeholder="搜索事件"></label><label>事件等级<select data-action="severity"><option value="all">全部等级</option><option value="high">重大</option><option value="medium">较高</option><option value="low">一般</option></select></label></details><div data-ref="alerts"></div><p data-ref="eventNote" class="v3-muted"></p>',"v3-full-card"))}
   ${pages("components",card("构件资料","bridge",'<label class="v3-field">选择墩位<input type="search" data-action="pier-search" placeholder="查找墩位"></label><div data-ref="piers" class="v3-piers"></div><h3 class="v3-field-title">选择构件类别</h3><div data-ref="categories" class="v3-components"></div><p class="v3-muted">选择构件类别，查看已有参数与施工图。</p>',"v3-full-card"))}</aside>
-  <div class="safety-scene-hud"><div data-ref="breadcrumbs" class="v3-breadcrumbs"></div><div class="v3-scene-actions">${btn("locate",icon("pin"),'aria-label="定位当前对象"')}${btn("earth","◎",'aria-label="地球视角"')}</div><div class="v3-empty-callout" data-ref="emptyCallout" hidden>${icon("polygon")}<h2>从你的施工范围开始</h2><p>先在模型上定义施工区域、铁路范围和风险点。</p>${btn("authoring","＋ 开始配置","","v3-primary")}</div><div class="v3-notice" data-ref="notice" role="status" hidden></div><div class="v3-legend" data-ref="legend"><span>━ 施工区域</span><span>┄ 铁路范围</span><span>● 人工风险点</span></div></div>
+  <div class="safety-scene-hud"><div data-ref="breadcrumbs" class="v3-breadcrumbs"></div><div class="v3-scene-actions">${btn("locate",icon("pin"),'aria-label="定位当前对象"')}${btn("earth","◎",'aria-label="地球视角"')}</div><div class="v3-scene-status" data-ref="presentationStatus" role="status" hidden></div><div class="v3-notice" data-ref="notice" role="status" hidden></div><div class="v3-legend" data-ref="legend"><span>━ 施工区域</span><span>┄ 铁路范围</span><span>● 人工风险点</span></div></div>
   <aside class="v3-sidebar v3-right" aria-label="现场与详情"><section class="v3-card v3-video-card" data-ref="videoCard"><header><h2>${icon("camera")}<span data-ref="videoHeading">现场画面</span></h2>${btn("video-settings","选择视频 ›","","v3-text-button")}</header><div class="v3-card-body"><div data-ref="videoHost" class="v3-video-host"><div class="v3-video-empty">${icon("camera")}<strong>暂无可用画面</strong><p>选择已有视频，或继续查看模型</p></div></div><div class="v3-video-caption"><strong data-ref="mediaName">暂未关联视频</strong><span data-ref="mediaUpdated"></span></div><p data-ref="videoStatus" class="v3-muted"></p><div data-ref="videoActions" class="v3-video-actions"></div>${pages("overview",btn("tab","进入现场巡检 ›",'data-tab="inspection"',"v3-text-button"))}</div></section>
   ${pages("overview",card("待处理事件","shield",'<div data-ref="summaryAlerts"></div>',"",btn("tab","查看 ›",'data-tab="events"',"v3-text-button"))+card("选中对象","pin",'<div data-ref="summaryObject"></div>'))}
   ${pages("events components",card('<span data-ref="detailHeading">事件详情</span>',"file",'<div data-ref="detail"></div><div data-ref="media"></div><section data-ref="handleForm" class="v3-handle-form" hidden><div class="v3-workflow"><span>✓ 发现</span><b>2 处理</b><span>3 完成</span></div><label class="v3-field">处理说明 <small>必填</small><textarea data-action="handle-text" maxlength="4000" rows="6" placeholder="简要说明现场采取的处理措施"></textarea></label><p data-ref="handleStatus" class="v3-form-status" role="status"></p><div class="v3-button-row">'+btn("handle-cancel","返回详情","","v3-secondary")+btn("handle-save","保存处理结果","","v3-primary")+'</div></section><div data-ref="detailActions" class="v3-button-row"></div>',"v3-full-card"))}</aside>
@@ -85,7 +87,7 @@ export class SafetyDashboard {
   this.trend.on("click",p=>{const range=(p.data as {range?:[number,number]})?.range;if(range)options.onPatch({timeRange:range,time:range[0],playing:false});});
   this.observer=new ResizeObserver(()=>this.resizeCharts());this.observer.observe(this.ref("trend"));this.observer.observe(this.ref("distribution"));
   this.root.addEventListener("click",e=>this.click(e),{signal:this.events.signal});this.root.addEventListener("change",e=>this.change(e),{signal:this.events.signal});this.root.addEventListener("input",e=>this.input(e),{signal:this.events.signal});
-  try{const p=JSON.parse(localStorage.getItem(prefKey)||"{}");this.preferences={mode:["presentation","inspection"].includes(p.mode)?p.mode:undefined,reduced:typeof p.reduced==="boolean"?p.reduced:undefined,largeText:p.largeText===true};}catch{/* Preferences are optional. */}
+  try{const p=JSON.parse(localStorage.getItem(prefKey)||"{}");this.preferences={reduced:typeof p.reduced==="boolean"?p.reduced:undefined,largeText:p.largeText===true};}catch{/* Preferences are optional. */}
   this.root.classList.toggle("v3-large-text",!!this.preferences.largeText);this.renderPage();
  }
  private ref<T extends HTMLElement=HTMLElement>(name:string):T{return this.root.querySelector<T>(`[data-ref="${name}"]`)!;}
@@ -94,15 +96,15 @@ export class SafetyDashboard {
   if(this.disposed)return;const previous=this.state;this.dataset=dataset;this.state=state;this.view=view;this.updates++;
   if(state.page && (!previous || previous.page!==state.page))this.page=state.page;
   this.eventStatus=state.eventStatus||"all";this.eventSearch=state.eventQuery||"";
-  if(!this.preferencesApplied){this.preferencesApplied=true;queueMicrotask(()=>{if(!this.disposed)this.options.onPatch({...(this.preferences.mode?{mode:this.preferences.mode}:{}),...((this.preferences.reduced===true||(this.preferences.reduced===undefined&&matchMedia("(prefers-reduced-motion: reduce)").matches))?{animationPaused:true}:{})});});}
+  if(!this.preferencesApplied){this.preferencesApplied=true;queueMicrotask(()=>{if(!this.disposed)this.options.onPatch({reducedMotion:this.preferences.reduced??matchMedia("(prefers-reduced-motion: reduce)").matches});});}
   if(!previous||previous.selectedId!==state.selectedId)this.syncComponent();
   if(!state.page&&!this.authoring&&previous&&previous.selectedId!==state.selectedId){if(state.selectedAlertId)this.page="events";else if((view.selected.kind==="component"||view.selected.kind==="pier")&&!view.selected.spatialKind){this.page="components";this.syncComponent();}}
-  this.playback();const key=JSON.stringify([this.page,state.selectedId,state.selectedAlertId,state.mode,state.severity,state.eventStatus,state.eventQuery,state.timeRange,state.includeDemo,state.layers,state.animationPaused,state.engineeringAnnotations]);
+  this.playback();const key=JSON.stringify([this.page,state.selectedId,state.selectedAlertId,state.mode,state.severity,state.eventStatus,state.eventQuery,state.timeRange,state.includeDemo,state.layers,state.animationPaused,state.reducedMotion,state.engineeringAnnotations]);
   if(key===this.lastKey&&dataset===this.lastDataset)return;this.lastKey=key;this.lastDataset=dataset;if(this.visible)this.render();
  }
  private refresh():void{this.lastKey="";if(this.dataset&&this.state&&this.view)this.render();}
- private render():void{if(!this.dataset||!this.state||!this.view||this.disposed)return;this.renders++;this.root.dataset.mode=this.state.mode;this.ref("projectName").textContent=this.dataset.name;this.ref("projectName").title=this.dataset.name;this.ref("breadcrumbs").innerHTML=btn("home",icon("pin")+esc(this.dataset.name),"","v3-breadcrumb-project")+`<span>›</span><span>${pageNames[this.page]}</span>`;this.overview();this.inspection();this.eventList();this.componentList();this.detail();this.renderPage();this.playback();}
- private renderPage():void{this.root.dataset.page=this.page;this.ref("pageName").textContent=pageNames[this.page];this.root.querySelectorAll<HTMLElement>("[data-pages]").forEach(e=>e.hidden=!e.dataset.pages!.split(" ").includes(this.page));this.root.querySelectorAll<HTMLElement>('[data-action="tab"]').forEach(e=>{e.classList.toggle("is-active",e.dataset.tab===this.page);e.setAttribute("aria-pressed",String(e.dataset.tab===this.page));});this.ref("videoCard").hidden=!["overview","inspection"].includes(this.page);this.ref("legend").hidden=this.page!=="overview";this.ref("emptyCallout").hidden=this.authoring||this.page!=="overview"||!this.dataset||this.dataset.nodes.some(n=>!!n.spatialObjectId);this.resizeCharts();}
+ private render():void{if(!this.dataset||!this.state||!this.view||this.disposed)return;this.renders++;this.root.dataset.mode=this.appliedMode()||"unavailable";this.ref("projectName").textContent=this.dataset.name;this.ref("projectName").title=this.dataset.name;this.ref("breadcrumbs").innerHTML=btn("home",icon("pin")+esc(this.dataset.name),"","v3-breadcrumb-project")+`<span>›</span><span>${pageNames[this.page]}</span>`;this.overview();this.inspection();this.eventList();this.componentList();this.detail();this.renderPage();this.playback();}
+ private renderPage():void{this.root.dataset.page=this.page;this.ref("pageName").textContent=pageNames[this.page];this.root.querySelectorAll<HTMLElement>("[data-pages]").forEach(e=>e.hidden=!e.dataset.pages!.split(" ").includes(this.page));this.root.querySelectorAll<HTMLElement>('[data-action="tab"]').forEach(e=>{e.classList.toggle("is-active",e.dataset.tab===this.page);e.setAttribute("aria-pressed",String(e.dataset.tab===this.page));});this.ref("videoCard").hidden=!["overview","inspection"].includes(this.page);this.ref("legend").hidden=this.page!=="overview";this.resizeCharts();}
  private realEvents(): SafetyAlert[] { return (this.view?.alerts || []).filter(a => a.provenance !== "demo"); }
  private nodeSummary(node: SafetyNode): string {
   if (node.spatialKind === "risk-point") return `人工风险点 · ${grades[node.riskLevel || "unassessed"]}`;
@@ -116,7 +118,7 @@ export class SafetyDashboard {
   const spatial = ds.nodes.filter(n => n.spatialObjectId && n.provenance !== "demo");
   this.ref("metrics").innerHTML = [["施工区域","construction-area"],["铁路范围","railway"],["人工风险点","risk-point"]].map(([label,kind]) => `<div><b>${spatial.filter(n=>n.spatialKind===kind).length}</b><span>${label}</span></div>`).join("");
   const areas = spatial.filter(n => n.spatialKind !== "risk-point");
-  this.ref("areas").innerHTML = areas.length ? areas.map(n => this.nodeItem(n)).join("") : empty("尚未配置施工范围", "在模型上绘制并命名，即可建立你的施工区域。", "polygon");
+  this.ref("areas").innerHTML = areas.length ? areas.map(n => this.nodeItem(n)).join("") : empty("尚未配置施工范围", "在模型上绘制并命名，即可建立你的施工区域。", "polygon")+btn("authoring","＋ 开始配置","","v3-primary v3-wide");
   const tasks = view.tasks.filter(t=>t.provenance!=="demo");
   const completed = tasks.filter(t=>t.status==="complete").length;
   this.ref("taskSummary").innerHTML = `<strong class="v3-stat-number">${tasks.length ? completed : "—"}</strong><span>已完成巡检</span><small>${tasks.length ? `共 ${tasks.length} 项任务` : "尚未接入巡检记录"}</small>`;
@@ -129,7 +131,7 @@ export class SafetyDashboard {
   this.ref("connection").textContent = `${this.eventError?"事件服务暂不可用 · ":""}${spatial.length ? "人工配置已载入" : "施工范围待配置"} · ${this.realEvents().length ? "事件数据已接入" : "事件记录待接入"}`;
  }
  private charts(tasks: SafetyView["tasks"]): void {
-  const colors=platformTokens.colors, animation=this.visible&&!this.state!.animationPaused;
+  const colors=platformTokens.colors, animation=this.visible&&!this.state!.animationPaused&&!this.state!.reducedMotion;
   const counts=["complete","active","pending"].map(status=>tasks.filter(t=>t.status===status).length);
   this.distribution.setOption({animation,animationDuration:300,tooltip:{trigger:"item",formatter:"{b}：{c} 项"},series:[{type:"pie",radius:["66%","84%"],center:["50%","50%"],silent:!tasks.length,label:{show:false},data:tasks.length?counts.map((value,index)=>({value,name:["已完成","进行中","待开始"][index],itemStyle:{color:[colors.cyan,colors.blue,colors.attention][index]}})):[{value:1,name:"尚未接入",itemStyle:{color:"#183849"}}]}]},true);
   const [start,end]=this.state!.timeRange, step=Math.max(1,(end-start)/6);
@@ -210,15 +212,15 @@ export class SafetyDashboard {
   this.ref("playbackTime").textContent=canPlay?(independent?elapsedTime(elapsed):clock(state.time)):"—";this.ref("rangeStart").textContent=canPlay?(independent?"00:00":clock(state.timeRange[0])):"—";this.ref("rangeEnd").textContent=canPlay?(independent?(knownDuration?elapsedTime(duration):"时长未读取"):clock(state.timeRange[1])):"—";
   this.ref("timelineHeading").textContent=this.inspectionMode==="live"?"实时巡检":independent?"视频回放进度":"历史回放时间轴";this.ref("trackStatus").textContent=this.inspectionMode==="live"?"实时来源接入后更新画面":this.mediaState.hasTrack?"视频与航迹同步":"未关联航迹 · 按视频进度播放";
   const rate=this.root.querySelector<HTMLSelectElement>('[data-action="playback-rate"]')!;rate.value=String(this.mediaState.rate||1);rate.disabled=!canPlay;
-  this.root.querySelectorAll<HTMLElement>('[data-action="mode"]').forEach(e=>e.classList.toggle("is-active",e.dataset.mode===state.mode));
+  this.syncPresentationControls();
   this.root.querySelectorAll<HTMLElement>('[data-action="motion-toggle"]').forEach(e=>{e.textContent=state.animationPaused?"恢复装饰":"暂停装饰";e.setAttribute("aria-pressed",String(state.animationPaused));});
  }
  private popover(kind:"layers"|"settings"): void {
   this.ref("popover").hidden=false;this.ref("popoverBackdrop").hidden=false;this.root.dataset.overlay=kind;this.ref("popoverTitle").textContent=kind==="layers"?"图层":"显示设置";
   if(kind==="layers"){
-   const names={boundary:"施工范围",markers:"对象标记",track:"无人机航迹",heat:"事件热力",effects:"装饰效果",links:"展示连线"};
+   const names={boundary:"施工范围",markers:"对象标记",track:"无人机航迹",heat:"事件热力",effects:"装饰效果",links:"航迹流光"};
    this.ref("popoverBody").innerHTML=`<div class="v3-options">${Object.entries({constructionAreas:"人工施工区域",railwayAreas:"人工铁路范围",riskPoints:"人工风险点"}).map(([id,name])=>`<label><span>${name}</span><input type="checkbox" data-action="spatial-layer" data-layer="${id}" ${this.spatialLayers[id as keyof typeof this.spatialLayers]?"checked":""}></label>`).join("")}${Object.entries(names).map(([id,name])=>`<label><span>${name}</span><input type="checkbox" data-action="effect-layer" data-layer="${id}" ${this.state!.layers[id as keyof typeof names]?"checked":""}></label>`).join("")}<label><span>当前对象工程标注</span><input type="checkbox" data-action="engineering-annotations" ${this.state!.engineeringAnnotations?"checked":""}></label>${this.layers.map(layer=>`<label><span>${esc(layer.name)}</span><input type="checkbox" data-action="asset-layer" data-layer="${esc(layer.id)}" ${layer.visible?"checked":""}></label>`).join("")}</div><p class="v3-muted">工程标注仅显示当前选中对象，避免遮挡模型。</p>`;
-  }else this.ref("popoverBody").innerHTML=`<div class="v3-options"><label><span>显示模式</span><select data-action="preference-mode"><option value="presentation" ${this.state!.mode==="presentation"?"selected":""}>科技展示</option><option value="inspection" ${this.state!.mode==="inspection"?"selected":""}>实景巡检</option></select></label><label><span>减少装饰动画</span><input type="checkbox" data-action="preference-motion" ${this.state!.animationPaused?"checked":""}></label><label><span>较大字体</span><input type="checkbox" data-action="preference-font" ${this.preferences.largeText?"checked":""}></label></div><p class="v3-muted">只保存显示偏好，工程数据保持原状。</p>`;
+  }else this.ref("popoverBody").innerHTML=`<div class="v3-options"><label><span>显示模式</span><select data-action="preference-mode"><option value="presentation" ${this.appliedMode()==="presentation"?"selected":""}>科技展示</option><option value="inspection" ${this.appliedMode()==="inspection"?"selected":""}>实景巡检</option></select></label><label><span>减少装饰动画</span><input type="checkbox" data-action="preference-motion" ${this.state!.reducedMotion?"checked":""}></label><label><span>较大字体</span><input type="checkbox" data-action="preference-font" ${this.preferences.largeText?"checked":""}></label></div><p class="v3-muted">动画与文字偏好会保留；进入项目总览时使用展示外观。</p>`;
  }
  private closePopover(): void { this.ref("popover").hidden=true;this.ref("popoverBackdrop").hidden=true;delete this.root.dataset.overlay; }
  private async chooseMedia(id:string): Promise<void> {
@@ -260,7 +262,7 @@ export class SafetyDashboard {
   else if(action==="sidebar-toggle"){const side=element.dataset.side!;const open=this.root.classList.toggle(`v3-${side}-open`);this.root.classList.remove(`v3-${side==="left"?"right":"left"}-open`);element.setAttribute("aria-expanded",String(open));}
   else if(action==="popover-close")this.closePopover();else if((action==="layers"||action==="settings")&&state)this.popover(action);
   else if(action==="media")void this.chooseMedia(element.dataset.media!);
-  else if(action==="home"&&this.dataset){if(this.setPage("overview",true)!==false)this.options.onSelect({nodeId:this.dataset.projectId});}
+  else if(action==="home"&&this.dataset){if(this.options.onHome)this.options.onHome();else if(this.setPage("overview",true)!==false){this.options.onPatch({mode:"presentation"});this.options.onSelect({nodeId:this.dataset.projectId});}}
   else if(action==="locate"&&state)this.options.onSelect({nodeId:state.selectedId,alertId:state.selectedAlertId,fly:true});
   else if(action==="node"||action==="pier"){const id=element.dataset.node!;if(action==="pier"){this.pierId=id;this.category=undefined;}this.options.onSelect({nodeId:id});this.refresh();}
   else if(action==="alert"){const alert=this.realEvents().find(a=>a.id===element.dataset.alert);if(alert&&this.setPage("events",true)!==false){this.riskTab="events";this.handleId=undefined;this.options.onSelect({nodeId:alert.nodeId,alertId:alert.id,fly:alert.positionAvailable!==false});}}
@@ -283,8 +285,8 @@ export class SafetyDashboard {
   else if(action==="spatial-layer"){const key=input.dataset.layer as keyof typeof this.spatialLayers;this.spatialLayers[key]=(input as HTMLInputElement).checked;this.options.onSpatialLayers?.({[key]:this.spatialLayers[key]});}
   else if(action==="asset-layer")this.options.onLayerToggle(input.dataset.layer!,(input as HTMLInputElement).checked);
   else if(action==="engineering-annotations")this.options.onPatch({engineeringAnnotations:(input as HTMLInputElement).checked});
-  else if(action==="preference-mode"){this.preferences.mode=input.value as SafetyState["mode"];this.options.onPatch({mode:this.preferences.mode});this.storePreferences();}
-  else if(action==="preference-motion"){this.preferences.reduced=(input as HTMLInputElement).checked;this.options.onPatch({animationPaused:this.preferences.reduced});this.storePreferences();}
+  else if(action==="preference-mode"){this.options.onPatch({mode:input.value as SafetyState["mode"]});this.syncPresentationControls();}
+  else if(action==="preference-motion"){this.preferences.reduced=(input as HTMLInputElement).checked;this.options.onPatch({reducedMotion:this.preferences.reduced});this.storePreferences();}
   else if(action==="preference-font"){this.preferences.largeText=(input as HTMLInputElement).checked;this.root.classList.toggle("v3-large-text",this.preferences.largeText);this.storePreferences();this.resizeCharts();}
  }
  private input(event:Event): void {
@@ -293,6 +295,22 @@ export class SafetyDashboard {
   else if(action==="event-search"){this.eventSearch=input.value.trim();this.options.onEventFilter?.(this.eventStatus,this.eventSearch);this.eventList();}
   else if(action==="pier-search"){this.pierSearch=input.value.trim();this.componentList();}
   else if(action==="handle-text"&&this.handleId){this.drafts.set(this.handleId,input.value);this.errors.delete(this.handleId);this.ref("handleStatus").textContent="保存后由事件服务确认处理结果。";}
+ }
+ private appliedMode(): SafetyState["mode"]|undefined {
+  if(!this.presentationStatus)return this.state?.mode;
+  return this.presentationStatus.mode==="showcase"?"presentation":this.presentationStatus.mode==="reality"?"inspection":undefined;
+ }
+ private syncPresentationControls(): void {
+  const mode=this.appliedMode();this.root.dataset.mode=mode||"unavailable";
+  this.root.querySelectorAll<HTMLElement>('[data-action="mode"]').forEach(e=>{const selected=e.dataset.mode===mode;e.classList.toggle("is-active",selected);e.setAttribute("aria-pressed",String(selected));});
+  const select=this.root.querySelector<HTMLSelectElement>('[data-action="preference-mode"]');if(select)select.value=mode||"";
+ }
+ /** Runtime output is authoritative; a requested theme cannot claim an unapplied material/crop. */
+ setPresentationStatus(status:SafetyPresentationStatus): void {
+  this.presentationStatus={...status};this.syncPresentationControls();
+  const element=this.ref("presentationStatus");element.hidden=status.ok;
+  element.textContent=status.ok?"":status.message||"展示暂不可用，可继续查看实景";
+  element.classList.toggle("is-error",!status.ok);
  }
  private storePreferences(): void {try{localStorage.setItem(prefKey,JSON.stringify(this.preferences));}catch{/* Display preferences do not block project work. */}}
  setPage(page:SafetyDashboardPage,notify=false): boolean {
@@ -314,6 +332,6 @@ export class SafetyDashboard {
  setEventError(error?:string): void {this.eventError=error||"";this.refresh();}
  setVideoStatus(text:string): void {this.videoStatus=text;this.ref("videoStatus").textContent=text;}
  setLayers(layers:SafetyDashboardLayer[]): void {this.layers=layers;if(this.root.dataset.overlay==="layers"&&this.state)this.popover("layers");}
- debugStats(): Record<string,unknown> {return {page:this.page,chartCount:this.disposed?0:2,updates:this.updates,renders:this.renders,visible:this.visible,authoring:this.authoring,hasVideoHost:!!this.videoHost.isConnected,mediaMode:this.inspectionMode,eventStatus:this.eventStatus,pendingEventSaves:this.pending.size,eventDraftCount:this.drafts.size};}
+ debugStats(): Record<string,unknown> {return {page:this.page,chartCount:this.disposed?0:2,updates:this.updates,renders:this.renders,visible:this.visible,authoring:this.authoring,presentationStatus:this.presentationStatus,appliedMode:this.appliedMode(),reducedMotion:!!this.state?.reducedMotion,hasVideoHost:!!this.videoHost.isConnected,mediaMode:this.inspectionMode,eventStatus:this.eventStatus,pendingEventSaves:this.pending.size,eventDraftCount:this.drafts.size};}
  dispose(): void {if(this.disposed)return;this.disposed=true;this.events.abort();this.observer.disconnect();this.trend.dispose();this.distribution.dispose();this.drawing.dispose();this.root.remove();}
 }

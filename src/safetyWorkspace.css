@@ -15,3 +15,7 @@ body.safety-workspace-open .cesium-infoBox { display:none; }
 .safety-media-dialog img { display:block; max-width:78vw; max-height:68vh; object-fit:contain; }
 .safety-media-dialog button { float:right; margin-bottom:10px; padding:6px 12px; color:#b9efff; border:1px solid #397893; background:#0a2b44; cursor:pointer; }
 @media(max-width:1400px) { body.safety-workspace-open .cesium-viewer-toolbar { right:306px; top:94px; } }
+
+/* Keep the visible Cesium logo and data-attribution link outside temporary task panels. */
+@media(max-width:1500px) { body.safety-workspace-open:has(.safety-dashboard-v3.v3-left-open) .cesium-viewer-bottom { left:352px; } }
+body.safety-workspace-open:has(.safety-dashboard-v3.is-authoring) .cesium-viewer-bottom { left:460px; }

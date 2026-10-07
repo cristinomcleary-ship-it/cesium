@@ -1,9 +1,10 @@
-import { CallbackProperty, Cartesian2, Cartesian3, ClassificationType, Color, ConstantProperty, CustomDataSource, Entity, PolygonHierarchy, ScreenSpaceEventHandler, ScreenSpaceEventType, type Viewer } from "cesium";
+import { CallbackProperty, Cartesian2, Cartesian3, Color, ConstantProperty, CustomDataSource, Entity, PolygonHierarchy, ScreenSpaceEventHandler, ScreenSpaceEventType, type Viewer } from "cesium";
 import { SafetySpatialError, SafetySpatialRepository } from "./safetySpatialRepository";
 import { EMPTY_SPATIAL_SNAPSHOT, type SpatialKind, type SpatialObject, type SpatialRiskLevel, type SpatialSnapshot } from "./safetySpatialTypes";
 import type { SafetyDataset, SafetyPosition, SafetyState, SafetyView } from "./safetyTypes";
 import { nextSpatialName, validateDraftShape } from "./safetyDraftGeometry";
 import { modelTransformMatches, strictModelSurfacePick, type RegisteredPhotogrammetry, type SurfacePickResult } from "./safetyModelSurfacePicker";
+import { createSpatialDisplayEntity, SPATIAL_BOUNDARY_WIDTH } from "./safetySpatialDisplayGeometry";
 import "./safetySpatialEditor.css";
 
 type VertexSource = SpatialObject["source"]["vertices"][number];
@@ -385,11 +386,8 @@ export class SafetySpatialEditor {
   private rebuild(): void {
     this.source.entities.removeAll(); this.entities.clear();
     for (const object of this.snapshot.objects) {
-      if (object.deletedAt) continue; const color = Color.fromCssColorString(colors[object.kind]), g = object.geometry;
-      const common = { id: "spatial-geometry:" + object.id, name: object.name, show: object.visible, properties: { spatialObjectId: object.id } }; let entity: Entity;
-      if (g.type === "Point") entity = this.source.entities.add({ ...common, position: cart(g.position), point: { pixelSize: 12, color, outlineColor: Color.WHITE, outlineWidth: 2 } });
-      else if (g.type === "Corridor") entity = this.source.entities.add({ ...common, corridor: { positions: g.positions.map(cart), width: g.widthMeters, material: color.withAlpha(.12), classificationType: ClassificationType.CESIUM_3D_TILE }, polyline: { positions: g.positions.map(cart), width: 3, clampToGround: true, classificationType: ClassificationType.CESIUM_3D_TILE, material: color } });
-      else entity = this.source.entities.add({ ...common, polygon: { hierarchy: new PolygonHierarchy(g.positions.map(cart)), material: color.withAlpha(.12), classificationType: ClassificationType.CESIUM_3D_TILE }, polyline: { positions: [...g.positions, g.positions[0]].map(cart), width: 3, clampToGround: true, classificationType: ClassificationType.CESIUM_3D_TILE, material: color } });
+      if (object.deletedAt) continue;
+      const entity = this.source.entities.add(createSpatialDisplayEntity(object));
       this.entities.set(object.id, entity);
     } this.applyVisibility();
   }
@@ -403,7 +401,12 @@ export class SafetySpatialEditor {
       const entity = this.entities.get(object.id); if (!entity) continue;
       const layer = object.kind === "construction-area" ? this.layers.constructionAreas : object.kind === "railway" ? this.layers.railwayAreas : this.layers.riskPoints;
       entity.show = !object.deletedAt && object.visible && layer && (this.filterIds?.has(object.id) ?? true) && !(this.draft?.id === object.id && !this.draft.geometryLocked);
-      if (entity.polyline) entity.polyline.width = new ConstantProperty(this.selectedId === object.id ? 5 : 3);
+      if (entity.polyline) {
+        const width = this.selectedId === object.id ? SPATIAL_BOUNDARY_WIDTH.selected : SPATIAL_BOUNDARY_WIDTH.normal;
+        const property = entity.polyline.width;
+        if (property instanceof ConstantProperty) { if (property.getValue() !== width) property.setValue(width); }
+        else entity.polyline.width = new ConstantProperty(width);
+      }
     } this.options.viewer.scene.requestRender();
   }
 

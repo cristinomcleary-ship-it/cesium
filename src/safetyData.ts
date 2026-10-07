@@ -330,7 +330,7 @@ export class LocalSafetyDataAdapter implements SafetyDataAdapter {
     const firstSourceName = sources.find((source) => source.record.id === sections[0]?.sourceRecordId)?.record.name || "当前项目";
     const projectName = firstSourceName.replace(/\.(dwg|cadimport)$/i, "").replace(/主线中心线$/, "");
     const project: SafetyNode = { id: PROJECT_ID, kind: "project", name: `${projectName} · 邻近营业线施工巡检`, position: center(positions),
-      provenance: "derived", description: "由当前已加载 CAD 编号与无人机资料组成的工程样板。区域分组和展示包络来自 CAD 文字；真实营业线位置、正式业务接口待接入。",
+      provenance: "derived", description: "当前已加载 CAD 编号提供参考定位与已有资料关联，不代表实测位置或人工业务范围。项目展示范围使用独立显示配置；施工区域、铁路范围和风险点由用户在模型表面定义，正式业务接口待接入。",
       radius: radius(positions, 300), boundary: safetyEnvelope(sections.flatMap((node) => node.boundary || [node.position]), 25), mediaIds: media.map((entry) => entry.id) };
     const nodes = [project, ...cad.nodes];
     return { version: 1, projectId: PROJECT_ID, name: project.name, nodes, alerts: [], tasks: [], devices, media, timeExtent: extent,

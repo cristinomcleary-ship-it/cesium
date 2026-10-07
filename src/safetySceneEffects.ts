@@ -1,13 +1,13 @@
 import {
-  ArcType, BoundingSphere, CallbackPositionProperty, CallbackProperty, Cartesian2,
+  ArcType, BoundingSphere, CallbackPositionProperty, Cartesian2,
   Cartesian3, Cartographic, Cesium3DTileFeature, Color, ColorMaterialProperty, ConstantProperty, ConstantPositionProperty,
-  CustomDataSource, DistanceDisplayCondition, Entity, Event, Material, HeadingPitchRange, SceneTransforms,
-  HeightReference, ImageMaterialProperty, LabelStyle, Math as CesiumMath, Matrix4,
-  PolygonHierarchy, PolylineGlowMaterialProperty,
-  Rectangle, SceneMode, ScreenSpaceEventHandler, ScreenSpaceEventType, Transforms,
-  type Viewer, type MaterialProperty, type JulianDate,
+  CustomDataSource, DistanceDisplayCondition, Entity, HeadingPitchRange, SceneTransforms,
+  HeightReference, ImageMaterialProperty, LabelStyle, Math as CesiumMath,
+  Rectangle, SceneMode, ScreenSpaceEventHandler, ScreenSpaceEventType,
+  type Viewer,
 } from "cesium";
 import { interpolateDevicePosition } from "./safetyStore";
+import { splitActualTrackRuns, selectDecorativeTrackRun, selectionOutlinePositions } from "./safetyWorldEffectGeometry";
 import { safetyHeatWeights, spatialNodeLayerVisible, type SafetySpatialLayerVisibility } from "./safetySceneVisibility";
 import tokens from "./safetyDesignTokens.json";
 import { SafetyScenePresentation, type SafetyPresentationOptions } from "./safetyScenePresentation";
@@ -27,10 +27,10 @@ const SEVERITY = {
 const MAX_LABELS = tokens.scene.overviewMaxLabels;
 const FEATURE_KEYS = ["elementId", "componentId", "ElementId", "id", "ID"];
 
-type NodeVisual = { node: SafetyNode; marker: Entity; boundary?: Entity; plate?: Entity };
+type NodeVisual = { node: SafetyNode; marker: Entity };
 type DeviceVisual = {
-  device: SafetyDevice; marker: Entity; beam: Entity; link: Entity; tracks: Entity[];
-  position: Cartesian3; beamPosition: Cartesian3; linkPositions: Cartesian3[];
+  device: SafetyDevice; marker: Entity; tracks: Entity[]; trackRuns: Cartesian3[][];
+  position: Cartesian3;
   hasPosition: boolean; trackKey: string;
 };
 type TaggedPick = {
@@ -59,43 +59,6 @@ function nodeRadius(node: SafetyNode): number {
   return Math.max(node.kind === "project" ? 100 : node.kind === "section" ? 35 : 3, node.radius ?? 12);
 }
 
-function circlePositions(node: SafetyNode, radius: number): Cartesian3[] {
-  const transform = Transforms.eastNorthUpToFixedFrame(cartesian(node.position, 0.6));
-  return Array.from({ length: 65 }, (_, i) => Matrix4.multiplyByPoint(
-    transform, new Cartesian3(Math.cos(i / 64 * Math.PI * 2) * radius, Math.sin(i / 64 * Math.PI * 2) * radius, 0), new Cartesian3(),
-  ));
-}
-
-const FLOW_TYPE = "SafetySharedFlowV2";
-let flowRegistered = false;
-class SafetyFlowMaterialProperty implements MaterialProperty {
-  readonly isConstant = false;
-  readonly definitionChanged = new Event();
-  phase = 0;
-  constructor() {
-    if (!flowRegistered) {
-      // The documented Fabric constructor registers a reusable material type; no private cache mutation.
-      const template = new Material({ fabric: { type: FLOW_TYPE,
-        uniforms: { tint: CYAN.withAlpha(0.85), phase: 0, trail: tokens.motion.flow.trailFraction },
-        source: `czm_material czm_getMaterial(czm_materialInput materialInput) {
-          czm_material m = czm_getDefaultMaterial(materialInput);
-          float d = fract(phase - materialInput.st.s);
-          float tail = (1.0 - smoothstep(0.0, trail, d)) * (1.0 - step(trail, d));
-          m.diffuse = tint.rgb; m.emission = tint.rgb * tail * 0.3;
-          m.alpha = tint.a * (0.13 + tail * 0.87); return m;
-        }`,
-      }, translucent: true });
-      template.destroy(); flowRegistered = true;
-    }
-  }
-  getType(_time: JulianDate): string { return FLOW_TYPE; }
-  getValue(_time: JulianDate, result?: Record<string, unknown>): Record<string, unknown> {
-    const value = result ?? {}; value.tint = CYAN.withAlpha(0.85, value.tint as Color | undefined);
-    value.phase = this.phase; value.trail = tokens.motion.flow.trailFraction; return value;
-  }
-  equals(other?: MaterialProperty): boolean { return other === this; }
-}
-
 /** Presentation overlays only. It never modifies engineering coordinates, AR calibration or model quality. */
 export class SafetySceneEffects {
   private readonly source = new CustomDataSource("施工安全大屏 · 展示覆盖层");
@@ -114,6 +77,7 @@ export class SafetySceneEffects {
   private readonly anchorCamera = new Cartesian3();
   private readonly anchorDirection = new Cartesian3();
   private readonly anchorSamples = new Map<string, number>();
+  private anchorSurfaceReady = false;
   private decorativeTime = 0;
   private readonly nodeVisuals = new Map<string, NodeVisual>();
   private readonly deviceVisuals = new Map<string, DeviceVisual>();
@@ -121,9 +85,10 @@ export class SafetySceneEffects {
   private readonly pickTargets = new Map<string, SafetySelection>();
   private readonly heatCanvas = document.createElement("canvas");
   private readonly haloCanvas = document.createElement("canvas");
-  private readonly pulseColor = CYAN.clone();
-  private readonly beamColor = CYAN.withAlpha(0.16);
   private readonly selectedRing: Entity;
+  private selectionVisible = false;
+  private decoratedRouteDeviceId?: string;
+  private decoratedRouteVertexCount = 0;
   private readonly heat: Entity;
   private readonly selectedRingPositions = new ConstantProperty([]);
   private readonly selectedPosition = new Cartesian3();
@@ -140,8 +105,6 @@ export class SafetySceneEffects {
   private selectedNodeId = "";
   private lastFocus?: { nodeId: string; sourceHeight: number; surfaceHeight: number; heightSource: string; range: number };
   private selectedFeature?: { feature: Cesium3DTileFeature; color: Color; nodeId: string };
-  private readonly flowMaterial = new SafetyFlowMaterialProperty();
-  private readonly beamMaterial = new ColorMaterialProperty(new CallbackProperty(() => this.beamColor, false));
 
   constructor(private readonly viewer: Viewer, private readonly onSelect: (selection: SafetySelection) => void, private readonly options: SafetySceneEffectsOptions = {}) {
     this.source.show = false;
@@ -153,9 +116,7 @@ export class SafetySceneEffects {
       show: false,
       polyline: {
         positions: this.selectedRingPositions, width: 4,
-        material: new PolylineGlowMaterialProperty({
-          color: new CallbackProperty(() => this.pulseColor, false), glowPower: 0.2,
-        }), clampToGround: true,
+        material: CYAN, arcType: ArcType.NONE, clampToGround: false,
       },
     });
     this.heatImage = new ImageMaterialProperty({ image: this.heatCanvas, transparent: true, color: Color.WHITE.withAlpha(0.55) });
@@ -174,6 +135,8 @@ export class SafetySceneEffects {
   setDataset(dataset: SafetyDataset): void {
     if (this.disposed) return;
     this.restoreFeature();
+    this.presentation.removeWorldEffect("actual-flight-route"); this.presentation.removeWorldEffect("selected-outline");
+    this.decoratedRouteDeviceId = undefined; this.decoratedRouteVertexCount = 0; this.selectionVisible = false;
     this.presentation.restore();
     for (const entity of [...this.source.entities.values]) {
       if (entity !== this.selectedRing && entity !== this.heat) this.source.entities.remove(entity);
@@ -212,37 +175,17 @@ export class SafetySceneEffects {
     const marker = this.source.entities.add({
       id, name: node.name, show: false, position: cartesian(node.position),
       ...(node.eventId ? { billboard: { image: "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28"><path d="M14 2L27 25H1Z" fill="#FF687D" stroke="#E5F7FF" stroke-width="2"/><text x="14" y="21" text-anchor="middle" font-size="20" fill="#030B18">!</text></svg>'), width: 22, height: 22 } } : {}),
-      point: { show: !node.eventId && !node.spatialObjectId, pixelSize: node.kind === "pier" ? 9 : 6, color: CYAN, outlineColor: Color.fromCssColorString(tokens.colors.panel), outlineWidth: 2, heightReference: HeightReference.CLAMP_TO_GROUND },
+      point: { show: !node.eventId && !node.spatialObjectId, pixelSize: node.kind === "pier" ? 9 : 6, color: CYAN, outlineColor: Color.fromCssColorString(tokens.colors.panel), outlineWidth: 2, heightReference: HeightReference.NONE },
       label: {
         text: node.name, font: `${tokens.typographyPx.sceneLabel}px sans-serif`, fillColor: Color.fromCssColorString(tokens.colors.text),
         outlineColor: Color.fromCssColorString(tokens.colors.background), outlineWidth: 3, style: LabelStyle.FILL_AND_OUTLINE,
         pixelOffset: new Cartesian2(0, -21), showBackground: true, backgroundColor: Color.fromCssColorString(tokens.colors.panel)!.withAlpha(0.8),
-        backgroundPadding: new Cartesian2(7, 4), heightReference: HeightReference.CLAMP_TO_GROUND,
+        backgroundPadding: new Cartesian2(7, 4), heightReference: HeightReference.NONE,
         distanceDisplayCondition: new DistanceDisplayCondition(0, node.kind === "project" ? 2_000_000 : 30_000),
       },
     });
     this.pickTargets.set(id, { nodeId: node.id, fly: true });
     const visual: NodeVisual = { node, marker };
-    const points = node.boundary?.filter(validPosition);
-    if (points && points.length >= 3 && !node.spatialObjectId) {
-      const positions = points.map((p) => cartesian(p));
-      visual.boundary = this.source.entities.add({
-        id: `safety-boundary:${node.id}`, name: `${node.name} · CAD 推导展示范围`, show: false,
-        polyline: { positions: [...positions, positions[0]], width: 3, clampToGround: true, material: new PolylineGlowMaterialProperty({ color: CYAN.withAlpha(0.86), glowPower: 0.18 }) },
-      });
-      this.pickTargets.set(visual.boundary.id, { nodeId: node.id, fly: true });
-      const base = Math.min(...points.map((p) => p.height));
-      visual.plate = this.source.entities.add({
-        id: `safety-region:${node.id}`, name: `${node.name} · 展示性拉伸（非工程模型）`, show: false,
-        polygon: {
-          hierarchy: new PolygonHierarchy(positions), height: base - 4,
-          extrudedHeight: base + Math.min(12, nodeRadius(node) * 0.015),
-          material: Color.fromCssColorString(tokens.colors.blue)!.withAlpha(0.12),
-          closeTop: true, closeBottom: false, outline: false,
-        },
-      });
-      this.pickTargets.set(visual.plate.id, { nodeId: node.id, fly: true });
-    }
     this.nodeVisuals.set(node.id, visual);
   }
 
@@ -251,7 +194,6 @@ export class SafetySceneEffects {
     const first = device.track.find(validPosition);
     if (!node || !first) return; // A camera without coordinates is a list record, not an invented scene location.
     const position = cartesian(first);
-    const beamPosition = cartesian(first, 16);
     const marker = this.source.entities.add({
       id: `safety-device:${device.id}`, name: device.name, show: false,
       position: new CallbackPositionProperty((_time, result) => Cartesian3.clone(position, result), false),
@@ -260,33 +202,20 @@ export class SafetySceneEffects {
       label: { text: device.name, font: `${tokens.typographyPx.sceneLabel}px sans-serif`, fillColor: GOLD, outlineColor: Color.BLACK, outlineWidth: 3, style: LabelStyle.FILL_AND_OUTLINE, pixelOffset: new Cartesian2(0, -22), distanceDisplayCondition: new DistanceDisplayCondition(0, 30_000) },
     });
     this.pickTargets.set(marker.id, { nodeId: node.id, fly: true });
-    const beam = this.source.entities.add({
-      id: `safety-beam:${device.id}`, name: `${device.name} · 展示光柱`, show: false,
-      position: new CallbackPositionProperty((_time, result) => Cartesian3.clone(beamPosition, result), false),
-      cylinder: { length: 32, topRadius: 0.5, bottomRadius: 3.5, material: this.beamMaterial, numberOfVerticalLines: 0, slices: 24 },
-    });
-    const linkPositions = [cartesian(node.position), position];
-    const link = this.source.entities.add({
-      id: `safety-link:${device.id}`, name: `${device.name} · 示意联络线（非航迹）`, show: false,
-      polyline: {
-        positions: new CallbackProperty(() => linkPositions, false), width: tokens.motion.flow.headReferencePx,
-        arcType: ArcType.NONE,
-        material: this.flowMaterial,
-      },
-    });
-    this.deviceVisuals.set(device.id, { device, marker, beam, link, tracks: [], position, beamPosition, linkPositions, hasPosition: false, trackKey: "" });
+    this.deviceVisuals.set(device.id, { device, marker, tracks: [], trackRuns: [], position, hasPosition: false, trackKey: "" });
   }
 
   update(state: SafetyState, view: SafetyView): void {
     if (this.disposed || !this.dataset) return;
     const previous = this.state;
+    if (previous && previous.mode !== state.mode) { this.anchorSamples.clear(); this.anchorSurfaceReady = false; }
     this.state = state;
     this.view = view;
     // A playback cursor update only moves devices. It must not recreate point styles or chart-related textures.
     if (previous && previous.selectedId === state.selectedId && previous.selectedAlertId === state.selectedAlertId
       && previous.page === state.page && previous.eventStatus === state.eventStatus && previous.eventQuery === state.eventQuery
       && previous.mode === state.mode && previous.severity === state.severity && previous.includeDemo === state.includeDemo
-      && previous.heatOpacity === state.heatOpacity && previous.animationPaused === state.animationPaused
+      && previous.heatOpacity === state.heatOpacity && previous.animationPaused === state.animationPaused && previous.reducedMotion === state.reducedMotion
       && previous.engineeringAnnotations === state.engineeringAnnotations && previous.timeRange[0] === state.timeRange[0] && previous.timeRange[1] === state.timeRange[1]
       && (Object.keys(state.layers) as Array<keyof SafetyState["layers"]>).every((key) => previous.layers[key] === state.layers[key])) {
       this.tick(this.elapsed, state.time);
@@ -298,13 +227,12 @@ export class SafetySceneEffects {
       if (this.selectedFeature?.nodeId !== view.selected.id) this.restoreFeature();
       this.selectedNodeId = view.selected.id;
       cartesian(view.selected.position, 0.5, this.selectedPosition);
-      const radius = Math.min(120, Math.max(5, nodeRadius(view.selected) * (view.selected.kind === "project" || view.selected.kind === "section" ? 0.22 : 1.3)));
-      this.selectedRingPositions.setValue(circlePositions(view.selected, radius));
+      this.selectedRingPositions.setValue(selectionOutlinePositions(view.selected, this.selectedPosition));
     }
     const alertNodeIds = new Set(view.alerts.map((alert) => alert.nodeId));
     const candidates = view.nodes.filter((node) => spatialNodeLayerVisible(node, this.spatialLayers) && node.sceneAvailable !== false && !node.navigationDisabledReason && (node.kind !== "component" || node.parentId === view.selected.id || node.id === view.selected.id || !!node.spatialObjectId || !!node.eventId || alertNodeIds.has(node.id)));
     const ordered = [...candidates].sort((a, b) => Number(b.id === view.selected.id) * 2 + Number(alertNodeIds.has(b.id)) - Number(a.id === view.selected.id) * 2 - Number(alertNodeIds.has(a.id)));
-    const overview = view.selected.kind === "project" || view.selected.kind === "section";
+    const overview = view.selected.kind === "project";
     const overviewNodes = ordered.filter((node) => node.kind === "section" || node.kind === "pier" || !!node.spatialObjectId || !!node.eventId);
     const overviewIds = new Set<string>();
     if (overview) {
@@ -319,16 +247,14 @@ export class SafetySceneEffects {
       }
     }
     const displayNodes = overview ? ordered.filter((node) => overviewIds.has(node.id)) : ordered;
-    const deviceLabelIds = new Set(view.devices.slice(0, 1).map((device) => device.id));
     this.labelCandidates.splice(0, this.labelCandidates.length, ...displayNodes.map((node) => node.id));
     const labelIds = new Set(displayNodes.map((node) => node.id));
-    const visibleIds = new Set(view.nodes.map((node) => node.id));
     const alertByNode = new Map<string, SafetyView["alerts"][number]>();
     for (const alert of view.alerts) {
       const old = alertByNode.get(alert.nodeId);
       if (!old || alert.severity === "high" || (alert.severity === "medium" && old.severity === "low")) alertByNode.set(alert.nodeId, alert);
     }
-    for (const { node, marker, boundary, plate } of this.nodeVisuals.values()) {
+    for (const { node, marker } of this.nodeVisuals.values()) {
       marker.show = state.layers.markers && labelIds.has(node.id);
       const alert = alertByNode.get(node.id);
       marker.point!.color = new ConstantProperty(node.id === view.selected.id ? GOLD : alert ? SEVERITY[alert.severity] : CYAN);
@@ -336,15 +262,12 @@ export class SafetySceneEffects {
       marker.point!.disableDepthTestDistance = new ConstantProperty(0);
       marker.label!.disableDepthTestDistance = new ConstantProperty(0);
       this.pickTargets.set(marker.id, { nodeId: node.id, alertId: alert?.id, fly: true });
-      if (boundary) boundary.show = !!node.spatialObjectId && state.layers.boundary && visibleIds.has(node.id);
-      if (plate) plate.show = false;
     }
     this.visibleDeviceIds.clear();
     for (const device of view.devices) this.visibleDeviceIds.add(device.id);
     for (const visual of this.deviceVisuals.values()) {
       this.updateTrack(visual, state.timeRange);
       const visible = this.visibleDeviceIds.has(visual.device.id);
-      visual.marker.label!.show = new ConstantProperty(deviceLabelIds.has(visual.device.id));
       for (const track of visual.tracks) track.show = visible && state.layers.track;
       if (!visible) visual.hasPosition = false;
     }
@@ -353,34 +276,38 @@ export class SafetySceneEffects {
     if (heatKey !== this.heatKey) { this.heatKey = heatKey; this.updateHeat(view); }
     this.heatImage.color = new ConstantProperty(Color.WHITE.withAlpha(Math.min(0.9, Math.max(0, state.heatOpacity))));
     this.applyVisibility();
-    this.layoutLabels();
     this.tick(this.elapsed, state.time);
+    this.layoutLabels();
     this.viewer.scene.requestRender();
   }
 
   private layoutLabels(): void {
     if (!this.state || !this.view) return;
+    if (!this.active || this.authoring || this.earthMode || !this.source.show) {
+      for (const { marker } of [...this.nodeVisuals.values(), ...this.deviceVisuals.values()]) if (marker.label) constantValue(marker.label, "show", false);
+      return;
+    }
     const canvas = this.viewer.canvas;
     const safe = this.options.getStageRect?.() ?? { left: 330, top: 100, width: Math.max(200, canvas.clientWidth - 690), height: Math.max(180, canvas.clientHeight - 210) };
     const used: Array<{ x: number; y: number; w: number; h: number }> = [];
-    const limit = this.view.selected.kind === "project" || this.view.selected.kind === "section" ? MAX_LABELS : tokens.scene.focusMaxLabels;
+    const limit = this.view.selected.kind === "project" ? MAX_LABELS : tokens.scene.focusMaxLabels;
+    if (this.labelMeasure) this.labelMeasure.font = `${tokens.typographyPx.sceneLabel}px sans-serif`;
     let deviceCount = 0;
     for (const visual of this.deviceVisuals.values()) {
       const label = visual.marker.label;
       if (!label) continue;
       let visible = false;
-      if (!deviceCount && visual.marker.show) {
+      if (!deviceCount && visual.marker.show && visual.hasPosition) {
         const screen = SceneTransforms.worldToWindowCoordinates(this.viewer.scene, visual.position);
         const width = (this.labelMeasure?.measureText(visual.device.name).width ?? 220) + 16;
         if (screen && screen.x - width / 2 >= safe.left + 8 && screen.x + width / 2 <= safe.left + safe.width - 8
-          && screen.y - 46 >= safe.top + 8 && screen.y <= safe.top + safe.height - 8) {
+          && screen.y - 46 >= safe.top + 8 && screen.y <= safe.top + safe.height - 8 && !this.isAnchorOccluded(visual.position, screen)) {
           used.push({ x: screen.x - width / 2, y: screen.y - 46, w: width, h: 31 }); visible = true; deviceCount++;
         }
       }
       constantValue(label, "show", visible);
     }
     let count = 0;
-    if (this.labelMeasure) this.labelMeasure.font = `${tokens.typographyPx.sceneLabel}px sans-serif`;
     for (const visual of this.nodeVisuals.values()) if (visual.marker.label) constantValue(visual.marker.label, "show", false);
     for (const id of this.labelCandidates) {
       const visual = this.nodeVisuals.get(id);
@@ -421,7 +348,9 @@ export class SafetySceneEffects {
 
   private sampleDisplayAnchors(): void {
     if (!this.viewer.scene.pickPositionSupported || this.viewer.scene.mode !== SceneMode.SCENE3D || !this.labelCandidates.length) return;
-    if (document.hidden || !this.presentation.isSurfaceReady()) return;
+    if (document.hidden || this.authoring) return;
+    if (!this.presentation.isSurfaceReady()) { this.anchorSurfaceReady = false; return; }
+    if (!this.anchorSurfaceReady) { this.anchorSamples.clear(); this.anchorSurfaceReady = true; }
     if (Cartesian3.distanceSquared(this.anchorCamera, this.viewer.camera.positionWC) > 1 || Cartesian3.dot(this.anchorDirection, this.viewer.camera.directionWC) < 0.9999) {
       Cartesian3.clone(this.viewer.camera.positionWC, this.anchorCamera); Cartesian3.clone(this.viewer.camera.directionWC, this.anchorDirection);
       this.anchorSamples.clear(); return;
@@ -430,20 +359,23 @@ export class SafetySceneEffects {
     for (let count = 0; count < 3; count++) {
       const id = this.labelCandidates[this.anchorCursor++ % this.labelCandidates.length];
       const visual = this.nodeVisuals.get(id);
-      if (!visual || (this.anchorSamples.get(id) ?? 0) >= 3) continue;
+      // User model anchors and event coordinates are already authoritative positions.
+      // Only CAD-derived labels need display-height correction; never shift a saved risk onto a bridge overhead.
+      if (!visual || visual.node.spatialObjectId || visual.node.eventId || (this.anchorSamples.get(id) ?? 0) >= 3) continue;
       const p = Cartographic.fromDegrees(visual.node.position.longitude, visual.node.position.latitude, visual.node.position.height);
+      // Count failed/occluded samples too: a static view must not force unbounded GPU readbacks.
+      this.anchorSamples.set(id, (this.anchorSamples.get(id) ?? 0) + 1);
       try {
         const height = this.presentation.displaySurfaceHeight(p);
         if (typeof height !== "number" || !Number.isFinite(height)) continue;
-        this.anchorSamples.set(id, (this.anchorSamples.get(id) ?? 0) + 1);
         visual.marker.position = new ConstantPositionProperty(cartesian({ ...visual.node.position, height: height + 1.2 }));
         visual.marker.point!.heightReference = new ConstantProperty(HeightReference.NONE);
         visual.marker.label!.heightReference = new ConstantProperty(HeightReference.NONE);
         if (id === this.selectedNodeId) {
           cartesian({ ...visual.node.position, height: height + 1.2 }, 0, this.selectedPosition);
-          this.presentation.setFocus(this.selectedPosition, this.selectedRing.show);
+          this.refreshSelectionOutline(); this.presentation.setFocus(this.selectedPosition, this.selectionVisible);
         }
-      } catch { /* The real surface may not be loaded yet; retry without fabricating a height. */ }
+      } catch { /* Retry only within this view's budget; readiness or view changes reopen sampling. */ }
     }
   }
 
@@ -453,30 +385,16 @@ export class SafetySceneEffects {
     visual.trackKey = key;
     for (const entity of visual.tracks) { this.source.entities.remove(entity); this.pickTargets.delete(entity.id); }
     visual.tracks = [];
-    let run: Cartesian3[] = [];
-    let previousTime: number | undefined;
-    let previousSegment: number | undefined;
-    const flush = () => {
-      if (run.length > 1) {
-        const entity = this.source.entities.add({
-          id: `safety-track:${visual.device.id}:${visual.tracks.length}`,
-          name: `${visual.device.name} · 实际采样航迹`, show: false,
-          polyline: { positions: run, width: 2, arcType: ArcType.NONE, material: GOLD.withAlpha(0.8) },
-        });
-        this.pickTargets.set(entity.id, { nodeId: visual.device.nodeId, fly: true });
-        visual.tracks.push(entity);
-      }
-      run = [];
-    };
-    // Preserve every real sample in the chosen interval; a missing-data gap must not become an invented flight segment.
-    for (const point of visual.device.track) {
-      if (point.time < range[0] || point.time > range[1] || !validPosition(point)) continue;
-      if (previousTime !== undefined && (point.time - previousTime > 5_000 || point.time <= previousTime || point.segment !== previousSegment)) flush();
-      run.push(cartesian(point));
-      previousTime = point.time;
-      previousSegment = point.segment;
+    visual.trackRuns = splitActualTrackRuns(visual.device.track, range);
+    // Actual geometry keeps every real sample in each continuous source segment.
+    for (const run of visual.trackRuns) {
+      const entity = this.source.entities.add({
+        id: `safety-track:${visual.device.id}:${visual.tracks.length}`,
+        name: `${visual.device.name} · 实际采样航迹`, show: false,
+        polyline: { positions: run, width: 2, arcType: ArcType.NONE, material: GOLD.withAlpha(0.8) },
+      });
+      this.pickTargets.set(entity.id, { nodeId: visual.device.nodeId, fly: true }); visual.tracks.push(entity);
     }
-    flush();
   }
 
   private updateHeat(view: SafetyView): void {
@@ -543,36 +461,60 @@ export class SafetySceneEffects {
     }
   }
 
+  private refreshSelectionOutline(): void {
+    if (!this.view) return;
+    const positions = selectionOutlinePositions(this.view.selected, this.selectedPosition);
+    this.selectedRingPositions.setValue(positions);
+    const color = this.view.selected.spatialKind === "railway" ? "#FFB957" : "#43D9FF";
+    if (this.selectedRing.polyline) this.selectedRing.polyline.material = new ColorMaterialProperty(Color.fromCssColorString(color));
+    if (this.selectionVisible) this.presentation.setWorldSelection("selected-outline", positions, color);
+    else this.presentation.removeWorldEffect("selected-outline");
+  }
+
+  private syncWorldRoute(): void {
+    const state = this.state;
+    const eligible = this.active && !this.earthMode && !this.authoring && state?.layers.track && state.layers.links && state.layers.effects;
+    const visual = eligible ? [...this.deviceVisuals.values()].find(v => this.visibleDeviceIds.has(v.device.id) && v.trackRuns.length) : undefined;
+    const positions = visual && selectDecorativeTrackRun(visual.trackRuns);
+    if (positions) {
+      this.presentation.setWorldRoute("actual-flight-route", positions);
+      this.decoratedRouteDeviceId = visual!.device.id; this.decoratedRouteVertexCount = positions.length;
+    } else {
+      this.presentation.removeWorldEffect("actual-flight-route"); this.decoratedRouteDeviceId = undefined; this.decoratedRouteVertexCount = 0;
+    }
+  }
+
   private applyVisibility(): void {
     if (!this.state || !this.view) return;
-    const { state } = this;
-    this.selectedRing.show = !this.authoring && spatialNodeLayerVisible(this.view.selected, this.spatialLayers) && !this.view.selected.navigationDisabledReason && this.view.selected.sceneAvailable !== false && state.layers.markers && this.view.selected.kind !== "project" && this.view.selected.kind !== "section";
-    this.presentation.setFocus(this.selectedPosition, this.selectedRing.show);
-    this.heat.show = state.layers.heat && this.heatHasValues;
+    const { state } = this, selected = this.view.selected;
+    this.selectionVisible = this.active && !this.earthMode && !this.authoring && spatialNodeLayerVisible(selected, this.spatialLayers)
+      && !selected.navigationDisabledReason && selected.sceneAvailable !== false && state.layers.markers
+      && selected.kind !== "project" && (selected.kind !== "section" || !!selected.spatialObjectId);
+    // Reality retains a simple independent line. Showcase uses the package world-outline material.
+    this.selectedRing.show = this.selectionVisible && state.mode === "inspection";
+    this.refreshSelectionOutline(); this.presentation.setFocus(this.selectedPosition, this.selectionVisible);
+    this.syncWorldRoute(); this.heat.show = state.layers.heat && this.heatHasValues;
   }
 
   /** Called by the host's single animation clock; this module registers no clock listeners or RAF loop. */
   tick(elapsedSeconds: number, timeMs: number): void {
     if (this.disposed || !this.active || !this.state || !this.view) return;
-    const animated = this.state.mode === "presentation" && this.state.layers.effects && !this.state.animationPaused && !document.hidden && !this.reducedMotion.matches;
+    const reduced = this.state.reducedMotion === true || this.reducedMotion.matches;
+    const animated = this.state.mode === "presentation" && this.state.layers.effects && !this.state.animationPaused && !document.hidden && !reduced;
     if (animated && elapsedSeconds - this.elapsed < 1) this.decorativeTime += Math.max(0, elapsedSeconds - this.elapsed);
     this.elapsed = elapsedSeconds;
-    this.presentation.tick(elapsedSeconds, this.decorativeTime, animated, this.reducedMotion.matches);
+    this.presentation.tick(elapsedSeconds, this.decorativeTime, animated, reduced);
     if (elapsedSeconds - this.lastAnchorSample > 0.4) { this.lastAnchorSample = elapsedSeconds; this.sampleDisplayAnchors(); }
-    if (elapsedSeconds - this.lastLabelTime > 0.18) { this.lastLabelTime = elapsedSeconds; this.layoutLabels(); }
-    const phase = this.decorativeTime;
-    this.pulseColor.alpha = animated ? 0.64 + Math.sin(phase * Math.PI * 2 / tokens.motion.alertBreathingSeconds) * 0.2 : 0.92;
-    this.beamColor.alpha = animated ? 0.11 + (Math.sin(phase * Math.PI * 2 / tokens.motion.pulse.periodSeconds) + 1) * 0.04 : 0;
-    this.flowMaterial.phase = (phase / tokens.motion.flow.periodSeconds) % 1;
     for (const visual of this.deviceVisuals.values()) {
       const sample = this.visibleDeviceIds.has(visual.device.id) ? interpolateDevicePosition(visual.device, timeMs) : undefined;
       visual.hasPosition = !!sample;
-      if (sample) { cartesian(sample, 0, visual.position); cartesian(sample, 16, visual.beamPosition); }
+      if (sample) cartesian(sample, 0, visual.position);
       visual.marker.show = visual.hasPosition && this.state.layers.markers;
-      visual.beam.show = false; // Pulse/radar, base arc and one flow are the three permitted ornamental groups.
-      visual.link.show = visual.hasPosition && this.state.mode === "presentation" && this.state.layers.links && visual.device.id === this.visibleDeviceIds.values().next().value;
     }
+    if (elapsedSeconds - this.lastLabelTime > 0.18) { this.lastLabelTime = elapsedSeconds; this.layoutLabels(); }
   }
+
+  cancelPendingHome(): void { this.presentation.cancelHome(); }
 
   setPickingEnabled(enabled: boolean): void { this.pickingEnabled = enabled; }
 
@@ -592,6 +534,8 @@ export class SafetySceneEffects {
     if (this.disposed || !validPosition(node.position) || node.navigationDisabledReason) return;
     this.earthMode = false; this.source.show = this.active && !this.authoring;
     if (this.dataset && this.state && this.view) this.presentation.update(this.dataset, this.state, this.view, this.active);
+    if (node.kind === "project") { this.presentation.home(duration); return; }
+    this.presentation.cancelHome();
     const frame = this.presentation.frame();
     const sphere = node.boundary?.length
       ? BoundingSphere.fromPoints(node.boundary.filter(validPosition).map((p) => cartesian(p)))
@@ -602,22 +546,22 @@ export class SafetySceneEffects {
     const location = Cartographic.fromDegrees(node.position.longitude, node.position.latitude, node.position.height);
     let surfaceHeight: number | undefined;
     let heightSource = "node";
-    if (this.presentation.isSurfaceReady() && this.viewer.scene.mode === SceneMode.SCENE3D && this.viewer.scene.pickPositionSupported) {
+    if (!node.spatialObjectId && !node.eventId && this.presentation.isSurfaceReady() && this.viewer.scene.mode === SceneMode.SCENE3D && this.viewer.scene.pickPositionSupported) {
       try {
         surfaceHeight = this.presentation.displaySurfaceHeight(location);
         if (typeof surfaceHeight === "number" && Number.isFinite(surfaceHeight)) heightSource = "loaded-depth-display-reference";
       } catch { /* Unavailable depth sampling falls back to the loaded terrain, then source height. */ }
     }
-    if (typeof surfaceHeight !== "number" || !Number.isFinite(surfaceHeight)) {
+    if (!node.spatialObjectId && !node.eventId && (typeof surfaceHeight !== "number" || !Number.isFinite(surfaceHeight))) {
       surfaceHeight = this.viewer.scene.globe.getHeight(location);
       if (typeof surfaceHeight === "number" && Number.isFinite(surfaceHeight)) heightSource = "terrain";
     }
     if (typeof surfaceHeight !== "number" || !Number.isFinite(surfaceHeight)) surfaceHeight = node.position.height;
-    if (frame && (node.kind === "project" || node.kind === "section")) { Cartesian3.clone(frame.center, sphere.center); sphere.radius = frame.radius; }
+    if (frame && (node.kind === "section")) { Cartesian3.clone(frame.center, sphere.center); sphere.radius = frame.radius; }
     const center = Cartographic.fromCartesian(sphere.center) ?? location;
     Cartesian3.fromRadians(center.longitude, center.latitude, surfaceHeight + 2, undefined, sphere.center);
-    if (this.selectedNodeId === node.id) { cartesian({ ...node.position, height: surfaceHeight }, 0.5, this.selectedPosition); this.presentation.setFocus(this.selectedPosition, this.selectedRing.show); }
-    const range = frame && (node.kind === "project" || node.kind === "section") ? frame.range : Math.max(120, sphere.radius * 3.3);
+    if (this.selectedNodeId === node.id) { cartesian({ ...node.position, height: surfaceHeight }, 0.5, this.selectedPosition); this.refreshSelectionOutline(); this.presentation.setFocus(this.selectedPosition, this.selectionVisible); }
+    const range = frame && (node.kind === "section") ? frame.range : Math.max(120, sphere.radius * 3.3);
     this.lastFocus = { nodeId: node.id, sourceHeight: node.position.height, surfaceHeight, heightSource, range };
     this.viewer.camera.cancelFlight();
     this.viewer.camera.flyToBoundingSphere(sphere, {
@@ -627,8 +571,10 @@ export class SafetySceneEffects {
   }
 
   setAuthoring(active: boolean): void {
+    if (this.authoring !== active) { this.anchorSamples.clear(); this.anchorSurfaceReady = false; }
     this.authoring = active; this.presentation.setAuthoring(active);
     this.source.show = this.active && !this.earthMode && !active;
+    this.applyVisibility(); this.layoutLabels();
     this.viewer.scene.requestRender();
   }
 
@@ -679,14 +625,18 @@ export class SafetySceneEffects {
   }
 
   debugStats(): Record<string, unknown> {
+    const labelsVisible = this.active && !this.earthMode && !this.authoring && this.source.show;
+    const visibleNodeLabels = labelsVisible ? [...this.nodeVisuals.values()].filter(v => v.marker.show && v.marker.label?.show?.getValue(this.viewer.clock.currentTime)).length : 0;
+    const visibleDeviceLabels = labelsVisible ? [...this.deviceVisuals.values()].filter(v => v.marker.show && v.marker.label?.show?.getValue(this.viewer.clock.currentTime)).length : 0;
     return {
       active: this.active, disposed: this.disposed, dataSources: this.viewer.dataSources.contains(this.source) ? 1 : 0,
       entities: this.source.entities.values.length, nodeVisuals: this.nodeVisuals.size,
-      visibleLabels: [...this.nodeVisuals.values()].filter((visual) => visual.marker.show && visual.marker.label?.show?.getValue(this.viewer.clock.currentTime)).length,
-      presentation: this.presentation.debugStats(), decorativeTime: this.decorativeTime, reducedMotion: this.reducedMotion.matches,
+      visibleLabels: visibleNodeLabels + visibleDeviceLabels, visibleNodeLabels, visibleDeviceLabels, labelLimit: this.view?.selected.kind === "project" ? MAX_LABELS : tokens.scene.focusMaxLabels,
+      presentation: this.presentation.debugStats(), decorativeTime: this.decorativeTime, reducedMotion: !!this.state?.reducedMotion || this.reducedMotion.matches,
       visibleNodeIds: [...this.nodeVisuals.values()].filter((visual) => visual.marker.show).map((visual) => visual.node.id),
-      heatVisible: this.active && this.heat.show, visibleBoundaries: [...this.nodeVisuals.values()].filter((visual) => visual.boundary?.show).length,
+      heatVisible: this.active && this.heat.show, visibleBoundaries: 0,
       visibleDeviceIds: [...this.deviceVisuals.values()].filter((visual) => visual.marker.show).map((visual) => visual.device.id),
+      decoratedRouteDeviceId: this.decoratedRouteDeviceId, decoratedRouteVertexCount: this.decoratedRouteVertexCount, decorativeRouteSource: "one-existing-continuous-actual-track-run", schematicLinks: 0, selectionVisible: this.selectionVisible,
       actualTrackSegments: [...this.deviceVisuals.values()].reduce((sum, visual) => sum + visual.tracks.length, 0),
       deviceVisuals: this.deviceVisuals.size, actualTrackVertices: [...this.deviceVisuals.values()].reduce((sum, visual) => sum + visual.device.track.length, 0),
       motionPeriods: tokens.motion, animatedGroupsLimit: tokens.scene.maxDynamicHighlights, ownClockListeners: 0, pickHandlers: this.disposed ? 0 : 1, heatGeneration: this.heatGeneration,

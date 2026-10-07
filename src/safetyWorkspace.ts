@@ -73,6 +73,7 @@ export class SafetyWorkspace {
     this.eventRepository = options.eventAdapter ?? new SafetyEventRepository();
     this.dashboard = new SafetyDashboard(options.host, {
       onSelect: selection => this.select(selection), onPatch: patch => this.patch(patch),
+      onHome: () => this.spatial.requestClose(() => this.returnOverview()),
       onExit: () => { this.spatial.requestClose(() => this.close()); }, onEarth: () => { this.store?.patch({ cruise: false }); this.effects.earth(); },
       onMedia: (media, selection) => this.openMedia(media, selection), onRefresh: () => void this.reload(),
       onLayerToggle: (id, visible) => { options.setLayerVisible(id, visible); this.layersChanged(); },
@@ -87,7 +88,9 @@ export class SafetyWorkspace {
       onPlaybackRateChange: rate => { if (this.video && [0.5, 1, 1.5, 2].includes(rate)) this.video.playbackRate = rate; },
     });
     this.effects = new SafetySceneEffects(options.viewer, selection => this.select(selection), { getImports: options.getImports,
-      getStageRect: () => { const r = options.host.querySelector(".safety-scene-hud")?.getBoundingClientRect(); const c = options.viewer.canvas.getBoundingClientRect(); return r ? { left: r.left - c.left, top: r.top - c.top + 76, width: r.width, height: Math.max(180, r.height - 174) } : { left: 368, top: 180, width: Math.max(300, c.width - 736), height: Math.max(240, c.height - 380) }; }
+      getPresentationModels: () => this.runtimeModels(),
+      onPresentationState: status => this.dashboard.setPresentationStatus(status),
+      getStageRect: () => { const r = options.host.querySelector(".safety-scene-hud")?.getBoundingClientRect(); const c = options.viewer.canvas.getBoundingClientRect(); return r ? { left: r.left - c.left, top: r.top - c.top + 46, width: r.width, height: Math.max(180, r.height - 100) } : { left: 368, top: 160, width: Math.max(300, c.width - 736), height: Math.max(240, c.height - 300) }; }
     });
     this.spatial = new SafetySpatialEditor({ viewer: options.viewer, host: options.host,
       onSnapshot: snapshot => this.applySpatialSnapshot(snapshot),
@@ -147,7 +150,7 @@ export class SafetyWorkspace {
     if (!this.active || this.disposed) return;
     this.layersChanged();
     this.updateVideoStatus();
-    if (this.store) this.effects.focus(this.store.view.selected);
+    if (this.store) this.returnOverview();
   }
 
   close(): void {
@@ -243,6 +246,7 @@ export class SafetyWorkspace {
 
   private patch(patch: Partial<SafetyState>): void {
     if (!this.store) return;
+    if (patch.mode !== undefined) this.effects.cancelPendingHome();
     const seeks = patch.time !== undefined || patch.timeRange !== undefined;
     if (seeks) this.pause();
     this.store.patch(seeks ? { ...patch, playing: false } : patch);
@@ -414,9 +418,18 @@ export class SafetyWorkspace {
     return { ...dataset, nodes: dataset.nodes.map(n => n.id === project.id ? node : n) };
   }
 
+  private returnOverview(): void {
+    if (!this.store) return;
+    this.pause();
+    this.pageSelections.delete("overview");
+    this.dashboard.setPage("overview");
+    this.store.patch({ page: "overview", mode: "presentation", selectedId: this.store.dataset.projectId, selectedAlertId: undefined, cruise: false });
+    this.effects.focus(this.store.view.selected);
+  }
+
   private changePage(page: SafetyPage): boolean {
     if (!this.store) return true;
-    return this.spatial.requestClose(() => { this.applyPageChange(page); this.dashboard.setPage(page); });
+    return this.spatial.requestClose(() => { if (page === "overview") this.returnOverview(); else { this.applyPageChange(page); this.dashboard.setPage(page); } });
   }
 
   private applyPageChange(page: SafetyPage): void {
