@@ -13,7 +13,7 @@ export type ProgressRevision = { revision: number; quantity: number; unit: strin
 export type ProgressEntry = ManagementRecord & { taskId: string; entryId: string; revisions: ProgressRevision[]; confirmations: { entryRevision: number; confirmedAt: string; confirmedBy: string; revokedAt?: string; revokedBy?: string; reason?: string }[] };
 /** User-recorded actual attendance/use. Allocation remains a separate planned record. */
 export type ResourceUsage = ManagementRecord & { status: "recorded" | "confirmed"; taskId: string; resourceId: string; kind: "crew" | "equipment"; quantity: number; unit: string; businessDate: string; startAt: string; endAt: string; description: string; allocationId?: string; resourceRevision: number; allocationRevision?: number; recordedAt: string; recordedBy: string; confirmationBasis?: string; confirmedAt?: string; confirmedBy?: string };
-export type ManagementCheckItem = { id: string; name: string; required: boolean; result: "pending" | "pass" | "fail" | "not-applicable"; basis?: string; evidenceIds?: string[] };
+export type ManagementCheckItem = { id: string; name: string; required: boolean; result: "pending" | "pass" | "fail" | "not-applicable"; basis?: string; evidenceIds?: string[]; allowNotApplicable?: boolean };
 export type ManagementMetric = { id: string; name: string; numerator: number | null; denominator: number | null; value: number | null; unit: string; reason?: string; detailIds: string[]; detailRecords?: { kind: "tasks" | "actions"; record: ManagementRecord }[]; filters: ManagementFilters; businessAsOf: string; confirmedAsOf: string; formulaVersion: string; baselineId?: string; dataVersion: number; coverage: string; updatedAt: string };
 export type ManagementFilters = { periodStart?: string; periodEnd?: string; taskIds?: string[]; areaIds?: string[]; ownerId?: string; status?: string; query?: string };
 export type ManagementMetrics = { businessAsOf: string; confirmedAsOf: string; formulaVersion: string; taskProgress: { taskId: string; quantity: number; unit?: string; target?: number; percent: number | null; entryRevisions: { entryId: string; revision: number }[] }[]; metrics: ManagementMetric[]; dashboard: ManagementMetric[] };
@@ -22,6 +22,7 @@ export type ManagementSnapshot = { schemaVersion: 1; revision: number; projectId
 export type ManagementCommandType =
  | "project.create" | "project.update" | "member.save"
  | "wbs.create" | "wbs.update" | "task.create" | "task.update" | "task.publish" | "task.start" | "task.request-completion" | "task.confirm-completion" | "task.cancel" | "task.forecast"
+ | "task.conditions.configure"
  | "baseline.create" | "baseline.approve" | "commitment.create" | "commitment.publish" | "commitment.change"
  | "progress.create" | "progress.revise" | "progress.submit" | "progress.return" | "progress.confirm" | "progress.revoke" | "dailyLog.create"
  | "check.create" | "check.copy" | "check.record" | "check.confirm"
@@ -36,3 +37,13 @@ export type ManagementCommandType =
 export type ManagementCommand = { projectId: string; type: ManagementCommandType; id?: string; expectedRevision?: number; idempotencyKey: string; payload: Record<string, unknown> };
 export type ManagementApiError = { error: string; code: string; current?: ManagementRecord | ManagementProject | ManagementMember; details?: unknown };
 export const MANAGEMENT_ROLE_LABELS: Record<ManagementRole,string> = { owner:"本机所有者",manager:"项目负责人",planner:"计划工程",quality:"质量安全",inspector:"巡检管理",resource:"物资机械",document:"技术资料",worker:"现场填报",viewer:"授权查看" };
+
+/** Explicit task admission policies. Missing legacy configuration remains unconfigured. */
+export type TaskConditionKind = "predecessors" | "preconstruction-checks" | "resources" | "documents" | "external-permit" | "acceptance" | "blocking-issues" | "quantity";
+export type TaskConditionMode = "required" | "advisory" | "not-applicable";
+export type TaskConditionStage = "start" | "completion";
+export type TaskConditionRule = { id: string; kind: TaskConditionKind; stage: TaskConditionStage; mode: TaskConditionMode; referenceIds: string[]; note?: string; basis?: string; evidenceIds?: string[]; validUntil?: string };
+export type TaskConditionPolicy = { version: number; taskType: "quantity" | "milestone" | "non-quantity"; rules: TaskConditionRule[]; configuredAt: string; configuredBy: string; reason: string };
+export type TaskConditionResult = { id: string; kind: TaskConditionKind | "configuration"; stage: TaskConditionStage; mode: TaskConditionMode; satisfied: boolean | null; status: "satisfied" | "blocked" | "advisory" | "not-applicable" | "configuration-required"; reason: string; references: { collection: ManagementCollection; id: string; revision: number; name: string }[] };
+export type TaskConditionsResponse = { taskId: string; taskRevision: number; dataVersion: number; policy: TaskConditionPolicy | null; stages: { start: TaskConditionResult[]; completion: TaskConditionResult[] }; evaluatedAt: string };
+export type TaskConditionException = { conditionIds: string[]; reason: string; basis: string; evidenceIds?: string[] };

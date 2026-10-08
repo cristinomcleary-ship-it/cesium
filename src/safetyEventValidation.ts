@@ -32,13 +32,27 @@ function ids(value: unknown): string[] {
 }
 export function validateSafetyEvent(value: unknown): SafetyEventRecord {
   const item = record(value), source = record(item.source);
-  if (!["manual-record", "imported-event"].includes(String(source.kind))) fail("事件必须保留明确的人工记录或导入来源");
+  if (!["manual-record", "imported-event", "management-issue"].includes(String(source.kind))) fail("事件必须保留明确的人工记录或导入来源");
   if (!["low", "medium", "high"].includes(String(item.severity)) || !["pending", "processing", "completed"].includes(String(item.status))) fail("事件等级或处理状态无效");
   const result: SafetyEventRecord = { id: validateSpatialId(item.id), projectId: text(item.projectId), title: text(item.title, 160),
     severity: item.severity as SafetyEventRecord["severity"], status: item.status as SafetyEventRecord["status"], occurredAt: finite(item.occurredAt, 0, 7_258_118_400_000),
     mediaIds: ids(item.mediaIds), source: { kind: source.kind as SafetyEventRecord["source"]["kind"], ...(source.sourceRecordId === undefined ? {} : { sourceRecordId: text(source.sourceRecordId) }) },
     createdAt: date(item.createdAt), updatedAt: date(item.updatedAt) };
   if (result.source.kind === "imported-event" && !result.source.sourceRecordId) fail("导入事件需要真实来源编号");
+  if (item.lifecycle !== undefined) {
+    if (!["management-issue", "legacy-readonly"].includes(String(item.lifecycle))) fail("事件流程来源无效");
+    result.lifecycle = item.lifecycle as SafetyEventRecord["lifecycle"];
+  }
+  if (item.issueStatus !== undefined) {
+    if (!["pending-verification", "pending-rectification", "rectifying", "pending-review", "closed", "false-positive", "duplicate"].includes(String(item.issueStatus))) fail("管理问题状态无效");
+    result.issueStatus = String(item.issueStatus);
+  }
+  if (item.issueRevision !== undefined) { result.issueRevision = revision(item.issueRevision); if (result.issueRevision < 1) fail("问题修订号无效"); }
+  if (item.legacyEventId !== undefined) result.legacyEventId = validateSpatialId(item.legacyEventId);
+  if (item.taskId !== undefined) result.taskId = text(item.taskId);
+  if (item.taskIds !== undefined) result.taskIds = ids(item.taskIds);
+  if (item.evidenceIds !== undefined) result.evidenceIds = ids(item.evidenceIds);
+  if (item.mediaSeconds !== undefined) result.mediaSeconds = finite(item.mediaSeconds, 0, 31_536_000);
   for (const key of ["description", "nodeId", "createdBy"] as const) if (item[key] !== undefined) result[key] = text(item[key], key === "description" ? 4000 : 240, true);
   if (item.spatialObjectId !== undefined) result.spatialObjectId = validateSpatialId(item.spatialObjectId);
   if (item.position !== undefined) {

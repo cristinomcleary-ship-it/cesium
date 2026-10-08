@@ -49,7 +49,7 @@ export class ManagementWorkspace {
       onLocate: selection => this.locate(selection),
       onSceneAction: (action, args) => this.sceneAction(action, args).catch(e => {this.message(e instanceof Error ? e.message : String(e), true);return false;}),
       onSessionChange: session => this.sessionChanged(session),
-      onSnapshot: data => { const changed = this.data && this.data.projectId !== data.projectId; this.data = data; if (changed) { this.selection = null; this.backViews = []; this.safety.managementPause(); this.applyMode("management"); } this.refreshAnchors(); this.updateContext(this.safety.getManagementContext()); },
+      onSnapshot: data => { const changed = this.data && this.data.projectId !== data.projectId; this.data = data; if (changed) { this.selection = null; this.backViews = []; this.safety.managementPause(); this.applyMode("management"); } this.safety.setManagementIssues(data.collections.issues, data.revision, !Array.isArray(data.members.find(member=>member.id===data.session.userId)?.taskIds)); this.refreshAnchors(); this.updateContext(this.safety.getManagementContext()); },
       onExit: () => { this.exitToWorkbench(); },
       getCameraSnapshot: () => this.cameraSnapshot(),
     });
@@ -86,6 +86,7 @@ export class ManagementWorkspace {
     this.active = true; this.mode = 'management'; this.ui.setVisible(true);
     this.safety.attachManagementHost({ videoHost: this.ui.videoHost,
       onContext: context => this.updateContext(context), onSpatialSelected: id => this.spatialSelected(id),
+      onIssueSelected: id => { if (!this.syncingSelection && this.data?.collections.issues.some(issue => issue.id === id)) this.ui.showRecord('issues', id); },
       getStageRect: () => this.mode === 'scene' ? this.ui.getSceneStageRect() : undefined });
     this.nativeDoubleClick = this.viewer.screenSpaceEventHandler.getInputAction(ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
     this.viewer.screenSpaceEventHandler.removeInputAction(ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
@@ -112,6 +113,7 @@ export class ManagementWorkspace {
 
   private sessionChanged(session: ManagementSession | null): void {
     const actorChanged=this.session?.userId!==session?.userId;
+    if (actorChanged || !session) this.safety.clearManagementEvents();
     this.session = session;
     if(actorChanged){this.selection=null;this.backViews=[];this.ui?.setExternalSelection(null);this.safety.spatial.setManagementSelection([]);}
     this.safety.spatial.setActive(this.active && !!session?.permissions.includes('models'));
@@ -171,6 +173,7 @@ export class ManagementWorkspace {
   private select(selection: Selection): void {
     this.selection = selection;
     for(const [id,entity] of this.anchorEntities){if(entity.point){entity.point.color=new ConstantProperty(Color.fromCssColorString(selection.kind==='anchors'&&selection.id===id?'#F5B45C':'#A994EA'));entity.point.pixelSize=new ConstantProperty(selection.kind==='anchors'&&selection.id===id?14:9);}}
+    if(selection.kind==='issues'){this.syncingSelection=true;try{this.safety.managementSelectSpatial(undefined,[]);this.safety.managementSelectIssue(selection.id);}finally{this.syncingSelection=false;}return;}
     const ids = this.areas(selection); this.syncingSelection = true;
     try { this.safety.managementSelectSpatial(ids[0], ids); } finally { this.syncingSelection = false; }
   }
@@ -180,6 +183,7 @@ export class ManagementWorkspace {
     this.selection = current; this.ui.setExternalSelection(current);
   }
   private locate(selection: Selection): void {
+    if(selection.kind==='issues'){if(!this.changeMode('scene'))return;const view=this.cameraSnapshot();this.syncingSelection=true;try{if(this.safety.managementSelectIssue(selection.id,true))this.backViews.push(view);else this.message('此问题没有可核验模型位置。');}finally{this.syncingSelection=false;}return;}
     if(selection.kind==='anchors'){const anchor=this.anchorEntities.get(selection.id);if(!anchor){this.message('资料位置模型版本已变化或暂不可用',true);return;}if(!this.changeMode('scene'))return;this.backViews.push(this.cameraSnapshot());this.select(selection);this.safety.managementPause();void this.viewer.flyTo(anchor,{duration:1.2,offset:new HeadingPitchRange(this.viewer.camera.heading,-.65,130)});return;}
     const ids = this.areas(selection);
     if (!ids.length) { this.message('该记录未关联有效位置，仍可正常办理和统计。'); return; }

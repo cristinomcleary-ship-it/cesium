@@ -1,3 +1,5 @@
+import { newCheckItems,recordCheckItems,confirmCheckIntegrity,checklistVersion } from "./checkIntegrity.ts";
+import { configureTaskConditions,enforceTaskConditions } from "./taskConditions.ts";
 import { randomUUID } from "node:crypto";
 import type { ManagementCollection, ManagementCommand, ManagementRecord, ManagementRole, ManagementPermission, ProgressEntry, ProgressRevision, ManagementCheckItem } from "../../src/managementTypes.ts";
 
@@ -22,11 +24,11 @@ export function date(value:unknown,label="日期"):string {const s=str(value,lab
 export function instant(value:unknown,label="时间"):string {const s=str(value,label,40);ensure(/T.*(?:Z|[+-]\d\d:\d\d)$/.test(s)&&Number.isFinite(Date.parse(s)),"INVALID_TIME",`${label}须包含明确时区`);return new Date(s).toISOString();}
 export function pick(p:Record<string,unknown>,keys:string[]) { return Object.fromEntries(keys.filter(k=>p[k]!==undefined).map(k=>[k,structuredClone(p[k])])); }
 export interface DomainContext {
- actor:Actor; projectId:string; now:string; command:ManagementCommand; workingDays:number[];
+ actor:Actor; projectId:string; now:string; command:ManagementCommand; workingDays:number[]; dataVersion?:number; businessDate?:string;
  list:(kind:ManagementCollection)=>ManagementRecord[];
  get:(kind:ManagementCollection,id:string)=>ManagementRecord;
  save:(kind:ManagementCollection,record:ManagementRecord)=>void;
- member:(id:string)=>void; area:(id:string)=>void; evidence:(id:string)=>void;
+ member:(id:string,taskIds?:string[],permission?:ManagementPermission)=>void; area:(id:string)=>void; evidence:(id:string)=>void;
  freeze:(payload:Record<string,unknown>)=>Record<string,unknown>;
 }
 const mutableTaskFields=["name","wbsId","ownerId","planStart","planEnd","targetQuantity","unit","weight","milestone","areaIds","predecessorIds","description"];
@@ -47,8 +49,8 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
   validateLinks(c,fields);collection=kind;r={...fields,id:key,projectId:c.projectId,revision:1,name:String(fields.name||m.type),status,createdAt:now,updatedAt:now,createdBy:actor.id};return r;
  };
  const load=(kind:ManagementCollection):ManagementRecord=>{
-  collection=kind;r=structuredClone(c.get(kind,id(m.id)));if(m.expectedRevision!==r.revision)throw new ManagementError(409,"REVISION_CONFLICT","记录已变化，请核对新版本；当前输入仍可保留",{expected:m.expectedRevision,actual:r.revision},r);
-  if(r.taskId)taskAccess(c,r.taskId);if(kind==="tasks")taskAccess(c,r.id);r.revision++;r.updatedAt=now;return r;
+  collection=kind;r=structuredClone(c.get(kind,id(m.id)));if(r.taskId)taskAccess(c,r.taskId);for(const taskId of ids(r.taskIds))taskAccess(c,taskId);if(kind==="tasks")taskAccess(c,r.id);
+  if(m.expectedRevision!==r.revision)throw new ManagementError(409,"REVISION_CONFLICT","记录已变化，请核对新版本；当前输入仍可保留",{expected:m.expectedRevision,actual:r.revision},r);r.revision++;r.updatedAt=now;return r;
  };
  const evidence=(v:unknown)=>{const a=ids(v);a.forEach(c.evidence);return a;};
  const reason=()=>str(p.reason,"原因或意见");
@@ -83,9 +85,10 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
  case "task.create":create("tasks",{...pick(p,mutableTaskFields),name:str(p.name,"任务名称",200),areaIds:ids(p.areaIds),predecessorIds:ids(p.predecessorIds),planVersion:1});taskFields(r!);dependencyCheck(r!);break;
  case "task.update":{load("tasks");requiredState(r!,["draft","published","in-progress","pending-completion"]);if(r!.status!=="draft")reason();Object.assign(r!,pick(p,mutableTaskFields));r!.areaIds=ids(r!.areaIds);r!.predecessorIds=ids(r!.predecessorIds);r!.planVersion=Number(r!.planVersion)+1;taskFields(r!);dependencyCheck(r!);break;}
  case "task.publish":load("tasks");requiredState(r!,["draft"]);str(r!.ownerId,"负责人");date(r!.planStart);date(r!.planEnd);taskFields(r!);r!.status="published";break;
- case "task.start":load("tasks");requiredState(r!,["published"]);ensure(!c.list("resourceNeeds").some(n=>n.taskId===r!.id&&n.required!==false&&n.status!=="confirmed"),"TASK_NOT_READY","存在尚未确认的必要资源");{const latest=new Map<string,ManagementRecord>();for(const n of c.list("checks").filter(n=>n.taskId===r!.id&&n.status==="confirmed").sort((a,b)=>String(a.businessDate).localeCompare(String(b.businessDate))||String(a.confirmedAt).localeCompare(String(b.confirmedAt))))latest.set(String(n.purpose)+":"+String(n.inspectionObjectId||n.taskId),n);ensure(![...latest.values()].some(n=>n.satisfied===false),"CHECK_NOT_PASSED","最新适用检查尚未通过，请完成复检");}r!.status="in-progress";break;
+ case "task.conditions.configure":load("tasks");requiredState(r!,["draft","published","in-progress","pending-completion"]);r!.conditionPolicy=configureTaskConditions(c,r!,p);break;
+ case "task.start":load("tasks");requiredState(r!,["published"]);enforceTaskConditions(c,r!,"start");r!.status="in-progress";break;
  case "task.request-completion":load("tasks");requiredState(r!,["in-progress","published"]);r!.status="pending-completion";break;
- case "task.confirm-completion":load("tasks");requiredState(r!,["pending-completion"]);r!.status="completed";r!.completionConfirmedAt=now;r!.completionConfirmedBy=actor.id;break;
+ case "task.confirm-completion":load("tasks");requiredState(r!,["pending-completion"]);enforceTaskConditions(c,r!,"completion");r!.status="completed";r!.completionConfirmedAt=now;r!.completionConfirmedBy=actor.id;break;
  case "task.cancel":load("tasks");ensure(r!.status!=="completed","INVALID_STATE","已完成任务不能取消");r!.status="cancelled";r!.cancelReason=reason();break;
  case "task.forecast":load("tasks");r!.forecastEnd=date(p.forecastEnd,"预测完成日");r!.forecastReason=reason();break;
  case "baseline.create":{
@@ -113,17 +116,17 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
  case "dailyLog.create":{const t=taskAccess(c,p.taskId),refs=ids(p.progressEntryIds);refs.forEach(e=>ensure(c.get("progress",e).taskId===t.id,"REFERENCE_MISMATCH","日报只能引用本任务实绩"));ensure(refs.length||typeof p.description==="string"&&p.description.trim(),"EMPTY_LOG","请填写执行说明或引用实绩");create("dailyLogs",{name:String(p.name||t.name),taskId:t.id,businessDate:date(p.businessDate),progressEntryIds:refs,description:String(p.description||""),evidenceIds:evidence(p.evidenceIds)},"submitted");break;}
  case "check.create":case "check.copy":{
   const source=m.type==="check.copy"?c.get("checks",id(p.sourceId)):undefined;const input=source?source.items:p.items;ensure(Array.isArray(input)&&input.length>0,"NO_CHECK_ITEMS","请提供检查项目");
-  const items=(input as Record<string,unknown>[]).map(a=>({id:id(a.id||randomUUID()),name:str(a.name,"检查项",200),required:a.required!==false,result:"pending" as const}));
+  const items=newCheckItems(input);
   const purpose=p.purpose||source?.purpose||"preconstruction";ensure(["preconstruction","quality","safety","acceptance"].includes(String(purpose)),"CHECK_PURPOSE","检查专业或用途无效");
-  create("checks",{purpose,name:str(p.name||source?.name,"检查名称",200),taskId:p.taskId||source?.taskId,businessDate:date(p.businessDate),shift:String(p.shift||"日班"),inspectionObjectId:String(p.inspectionObjectId||source?.inspectionObjectId||p.taskId||""),items,sourceId:source?.id,templateVersion:p.templateVersion||source?.templateVersion||1});break;}
- case "check.record":load("checks");requiredState(r!,["draft"]);ensure(Array.isArray(p.items)&&p.items.length===(r!.items as unknown[]).length,"CHECK_ITEM_MISMATCH","请逐项填写原检查清单");r!.items=(p.items as Record<string,unknown>[]).map(a=>{const original=(r!.items as ManagementCheckItem[]).find(x=>x.id===a.id);ensure(original,"CHECK_ITEM_MISMATCH","检查项不存在");ensure(["pass","fail","pending","not-applicable"].includes(String(a.result)),"INVALID_RESULT","检查结论无效");if(a.result==="not-applicable")str(a.basis,"不适用依据");return {...original,result:a.result,basis:String(a.basis||""),evidenceIds:evidence(a.evidenceIds)};});break;
- case "check.confirm":load("checks");requiredState(r!,["draft"]);ensure((r!.items as ManagementCheckItem[]).every(a=>a.result!=="pending"),"CHECK_INCOMPLETE","仍有待核实检查项");r!.status="confirmed";r!.confirmedAt=now;r!.confirmedBy=actor.id;r!.satisfied=(r!.items as ManagementCheckItem[]).every(a=>!a.required||a.result==="pass"||a.result==="not-applicable");break;
+  create("checks",{purpose,name:str(p.name||source?.name,"检查名称",200),taskId:p.taskId||source?.taskId,businessDate:date(p.businessDate),shift:String(p.shift||"日班"),inspectionObjectId:String(p.inspectionObjectId||source?.inspectionObjectId||p.taskId||""),items,sourceId:source?.id,templateVersion:p.templateVersion??source?.templateVersion??1});ensure(Number.isSafeInteger(r!.templateVersion)&&Number(r!.templateVersion)>0,"CHECK_TEMPLATE_VERSION_INVALID","清单模板版本须为正整数");r!.checklistVersion=checklistVersion(r!);break;}
+ case "check.record":load("checks");requiredState(r!,["draft"]);r!.items=recordCheckItems(r!,p,evidence);r!.checklistVersion=checklistVersion(r!);break;
+ case "check.confirm":load("checks");requiredState(r!,["draft"]);confirmCheckIntegrity(r!,p);for(const item of r!.items as ManagementCheckItem[])(item.evidenceIds||[]).forEach(c.evidence);r!.checklistVersion=checklistVersion(r!);r!.status="confirmed";r!.confirmedAt=now;r!.confirmedBy=actor.id;r!.satisfied=(r!.items as ManagementCheckItem[]).every(a=>!a.required||a.result==="pass"||a.result==="not-applicable");break;
  case "issue.create":{
-  ensure(["quality","safety","coordination"].includes(String(p.kind)),"INVALID_KIND","问题类型无效");if(p.checkId)c.get("checks",id(p.checkId));
-  create("issues",{...pick(p,["taskId","taskIds","kind","checkId","riskPointId","positionSnapshot"]),name:str(p.name,"问题描述",1000),evidenceIds:evidence(p.evidenceIds),rounds:[],originalDueDate:null},"pending-verification");break;}
- case "issue.assign":load("issues");requiredState(r!,["pending-verification","pending-rectification","rectifying"]);c.member(id(p.ownerId));r!.ownerId=id(p.ownerId);r!.dueDate=date(p.dueDate);r!.originalDueDate??=r!.dueDate;r!.verifiedAt??=now;r!.status="pending-rectification";break;
- case "issue.start":load("issues");requiredState(r!,["pending-rectification"]);r!.status="rectifying";break;
- case "issue.submit":load("issues");requiredState(r!,["pending-rectification","rectifying"]);(r!.rounds as unknown[]).push({round:(r!.rounds as unknown[]).length+1,description:str(p.description,"整改说明"),evidenceIds:evidence(p.evidenceIds),submittedAt:now,submittedBy:actor.id});r!.status="pending-review";break;
+  ensure(["quality","safety","coordination"].includes(String(p.kind)),"INVALID_KIND","问题类型无效");ensure(p.blocksCompletion===undefined||typeof p.blocksCompletion==="boolean","INVALID_BLOCKING_RULE","完工阻断标识须为布尔值");if(p.checkId)c.get("checks",id(p.checkId));
+  create("issues",{...pick(p,["taskId","taskIds","kind","checkId","riskPointId","positionSnapshot","blocksCompletion","discovery"]),name:str(p.name,"问题描述",1000),evidenceIds:evidence(p.evidenceIds),rounds:[],originalDueDate:null},"pending-verification");break;}
+ case "issue.assign":load("issues");requiredState(r!,["pending-verification","pending-rectification","rectifying"]);c.member(id(p.ownerId),[...(r!.taskId?[r!.taskId]:[]),...ids(r!.taskIds)],"field");r!.ownerId=id(p.ownerId);r!.dueDate=date(p.dueDate);r!.originalDueDate??=r!.dueDate;r!.verifiedAt??=now;r!.status="pending-rectification";break;
+ case "issue.start":load("issues");if(r!.ownerId!==actor.id&&!actor.permissions.includes("review")&&!actor.permissions.includes("confirm"))throw new ManagementError(403,"ISSUE_EXECUTOR_REQUIRED","仅指派执行人或有权管理人员可办理整改");requiredState(r!,["pending-rectification"]);r!.status="rectifying";break;
+ case "issue.submit":load("issues");if(r!.ownerId!==actor.id&&!actor.permissions.includes("review")&&!actor.permissions.includes("confirm"))throw new ManagementError(403,"ISSUE_EXECUTOR_REQUIRED","仅指派执行人或有权管理人员可提交整改");requiredState(r!,["pending-rectification","rectifying"]);(r!.rounds as unknown[]).push({round:(r!.rounds as unknown[]).length+1,description:str(p.description,"整改说明"),evidenceIds:evidence(p.evidenceIds),submittedAt:now,submittedBy:actor.id});r!.status="pending-review";break;
  case "issue.review":load("issues");requiredState(r!,["pending-review"]);ensure(typeof p.passed==="boolean","INVALID_RESULT","请选择通过或退回");Object.assign((r!.rounds as Record<string,unknown>[]).at(-1)!,{passed:p.passed,reviewComment:reason(),reviewedAt:now,reviewedBy:actor.id,reviewEvidenceIds:evidence(p.evidenceIds)});r!.status=p.passed?"closed":"rectifying";if(p.passed)r!.closedAt=now;break;
  case "issue.dismiss":load("issues");requiredState(r!,["pending-verification"]);ensure(["false-positive","duplicate"].includes(String(p.disposition)),"INVALID_DISPOSITION","请明确误报或重复");r!.status=String(p.disposition);r!.dispositionReason=reason();if(p.disposition==="duplicate"){const other=c.get("issues",id(p.duplicateOf));ensure(other.id!==r!.id,"INVALID_REFERENCE","不能与自身重复");r!.duplicateOf=other.id;}break;
  case "issue.reschedule":load("issues");ensure(!["closed","false-positive","duplicate"].includes(r!.status),"INVALID_STATE","已归档问题不能改期");r!.dueDate=date(p.dueDate);r!.rescheduleReason=reason();break;
@@ -216,5 +219,5 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
  case "report.publish":load("reports");requiredState(r!,["frozen"]);r!.status="published";r!.publishedAt=now;r!.publishedBy=actor.id;r!.managerComment=String(p.managerComment||"");break;
  default:throw new ManagementError(400,"UNKNOWN_COMMAND","未知业务命令");
  }
- c.save(collection!,r!);return {collection:collection!,record:r!};
+ validateLinks(c,r!);c.save(collection!,r!);return {collection:collection!,record:r!};
 }

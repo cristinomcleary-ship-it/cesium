@@ -12,7 +12,16 @@ export type SafetyEventRecord = {
   nodeId?: string;
   spatialObjectId?: string;
   mediaIds: string[];
-  source: { kind: "manual-record" | "imported-event"; sourceRecordId?: string };
+  source: { kind: "manual-record" | "imported-event" | "management-issue"; sourceRecordId?: string };
+  /** The three-state map badge is a projection; issueStatus is the authoritative lifecycle. */
+  lifecycle?: "management-issue" | "legacy-readonly";
+  issueStatus?: string;
+  issueRevision?: number;
+  legacyEventId?: string;
+  taskId?: string;
+  taskIds?: string[];
+  evidenceIds?: string[];
+  mediaSeconds?: number;
   createdAt: string;
   updatedAt: string;
   createdBy?: string;

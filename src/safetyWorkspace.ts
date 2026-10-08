@@ -1,3 +1,5 @@
+import type { ManagementRecord } from './managementTypes';
+import { projectManagementEvents } from './managementEventProjection';
 import type { ManagementSceneContext, ManagementSceneHost } from "./managementSceneTypes";
 import { SafetyVideoRoam, type SafetyVideoRoamState } from "./safetyVideoRoam";
 import { SafetyModelOptimization } from "./safetyModelOptimization";
@@ -52,6 +54,8 @@ export class SafetyWorkspace {
   private eventSnapshot: SafetyEventSnapshot = structuredClone(EMPTY_EVENT_SNAPSHOT);
   private readonly eventRepository: SafetyEventAdapter;
   private eventServiceError = "";
+  private managedIssues?: ManagementRecord[];
+  private managedIssueSignature = "";
   private mediaLoading = false;
   private mediaRequestGeneration = 0;
   private mediaSourceTask: Promise<void> = Promise.resolve();
@@ -166,6 +170,7 @@ export class SafetyWorkspace {
   /** New management UI shares this original scene/video/editor ownership. */
   attachManagementHost(host?: ManagementSceneHost): void {
     this.managementHost = host;
+    if (!host) { this.managedIssues = undefined; this.managedIssueSignature = ''; }
     if (this.videoOrigin && this.video) (host?.videoHost ?? this.dashboard.videoHost).append(this.video);
     this.publishManagementContext();
   }
@@ -198,6 +203,24 @@ export class SafetyWorkspace {
     const node = this.store?.dataset.nodes.find(n => n.spatialObjectId === id);
     if (!node || node.sceneAvailable === false || node.navigationDisabledReason) return false;
     this.beforeManualNavigation(); this.effects.cancelPendingHome(); this.effects.focus(node, 1.2); return true;
+  }
+  setManagementIssues(issues: ManagementRecord[], revision: number, includeLegacy = true): void {
+    const signature = JSON.stringify([includeLegacy, issues.map(issue => [issue.id, issue.revision])]);
+    this.managedIssues = issues;
+    if (signature === this.managedIssueSignature) return;
+    this.managedIssueSignature = signature;
+    this.eventSnapshot = { ...this.eventSnapshot, revision, events: projectManagementEvents(issues, includeLegacy ? this.eventSnapshot.events.filter(event => event.source.kind !== 'management-issue') : []) };
+    this.applySpatialSnapshot(this.spatial.getSnapshot());
+  }
+  clearManagementEvents(): void {
+    this.managedIssues = []; this.managedIssueSignature = '';
+    this.eventSnapshot = structuredClone(EMPTY_EVENT_SNAPSHOT);
+    this.applySpatialSnapshot(this.spatial.getSnapshot());
+  }
+  managementSelectIssue(id: string, fly = false): boolean {
+    const node = this.store?.dataset.nodes.find(node => node.eventId === id);
+    if (!node || node.sceneAvailable === false || node.navigationDisabledReason) return false;
+    this.select({ nodeId: node.id, fly }); return true;
   }
   managementHome(): void { this.returnOverview(); }
   managementMode(mode: "presentation" | "inspection"): void { this.patch({ mode }); }
@@ -311,7 +334,7 @@ export class SafetyWorkspace {
       ]);
       if (controller.signal.aborted || this.disposed) return;
       this.modelRegistry = models;
-      if (events) { this.eventSnapshot = events; this.eventServiceError = ""; }
+      if (events) { this.eventSnapshot = this.managedIssues ? { ...events, events: projectManagementEvents(this.managedIssues, events.events.filter(event => event.source.kind !== 'management-issue')) } : events; this.eventServiceError = ""; }
       this.dashboard.setEventError(this.eventServiceError);
       const baseDataset = this.withProjectModelPosition(loadedDataset);
       if (controller.signal.aborted || this.disposed) return;
@@ -363,7 +386,8 @@ export class SafetyWorkspace {
     this.store.patch({ page, cruise: false, engineeringAnnotations: false });
     this.store.select(selection);
     if ((!this.managementHost ? selection.fly !== false : selection.fly === true) && !this.store.view.selected.navigationDisabledReason && this.store.view.selected.sceneAvailable !== false) this.effects.focus(this.store.view.selected);
-    if (this.managementHost && target?.spatialObjectId) this.managementHost.onSpatialSelected(target.spatialObjectId);
+    if (this.managementHost && target?.eventId) this.managementHost.onIssueSelected?.(target.eventId);
+    else if (this.managementHost && target?.spatialObjectId) this.managementHost.onSpatialSelected(target.spatialObjectId);
     const alert = this.store.view.alerts.find(a => a.id === selection.alertId);
     if (alert) {
       this.pause(); this.store.patch({ time: alert.timestamp });
@@ -644,6 +668,7 @@ export class SafetyWorkspace {
 
   private async handleEvent(id: string, text: string): Promise<void> {
     const eventId = this.store?.dataset.alerts.find(a => a.id === id)?.eventId || id;
+    if (this.managementHost?.onIssueSelected) { this.managementHost.onIssueSelected(eventId); return; }
     try { this.eventSnapshot = await this.eventRepository.complete(eventId, { description: text }, this.eventSnapshot.revision); }
     catch (error) { try { this.eventSnapshot = await this.eventRepository.load(); } catch { /* Keep last confirmed state. */ } throw error; }
     this.applySpatialSnapshot(this.spatial.getSnapshot());

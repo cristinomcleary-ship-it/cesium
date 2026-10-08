@@ -22,5 +22,6 @@ export type ManagementSceneHost = {
   videoHost: HTMLElement;
   onContext(context: ManagementSceneContext): void;
   onSpatialSelected(id: string): void;
+  onIssueSelected?(id: string): void;
   getStageRect(): { left: number; top: number; width: number; height: number } | undefined;
 };

@@ -58,6 +58,7 @@ export function createSafetyEventStore(options: SafetyEventStoreOptions = {}) {
       const events = [...snapshot.events], now = new Date().toISOString();
       if (mutation.operation === "create") {
         const event = mutation.event;
+        if (event.source.kind === "management-issue" || event.lifecycle || event.issueRevision !== undefined || event.issueStatus !== undefined) throw new EventStoreError(409, "MANAGEMENT_EVENT_REQUIRED", "管理问题由管理事务保存，旧事件存储不能伪造管理流程", snapshot);
         if (event.projectId !== (options.projectId || "safety:project")) throw new EventStoreError(400, "PROJECT_MISMATCH", "事件不属于当前项目", snapshot);
         if (events.some(item => item.id === event.id)) throw new EventStoreError(409, "EVENT_EXISTS", "事件编号已存在，未重复创建", snapshot);
         if (event.source.kind === "imported-event") {

@@ -1,7 +1,7 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import { join, resolve, relative, isAbsolute } from "node:path";
 
-export type LibraryEvidence = { name: string; url: string; size: number; sha256?: string; requiredPermission?: "files" | "media" | "models" };
+export type LibraryEvidence = { name: string; url: string; size: number; modifiedAtMs?: number; sha256?: string; requiredPermission?: "files" | "media" | "models" };
 const validId = /^[a-zA-Z0-9_-]{1,80}$/;
 function inside(root: string, file: string): boolean {
   const part = relative(root, file);
@@ -31,7 +31,7 @@ export function createLibraryEvidenceResolver(libraryRoot: string, projectId: st
       if (!inside(recordRoot, slot) || !inside(slot, target) || target.endsWith("record.json") || target.endsWith(".pending")) return;
       const info = await stat(target);
       if (!info.isFile() || info.size <= 0) return;
-      return { name: file.name, url: file.url, size: info.size, requiredPermission: record.kind === "Drone Video" ? "media" : ["3D Tiles", "Model", "Imagery"].includes(record.kind) ? "models" : "files" };
+      return { name: file.name, url: file.url, size: info.size, modifiedAtMs: info.mtimeMs, requiredPermission: record.kind === "Drone Video" ? "media" : ["3D Tiles", "Model", "Imagery"].includes(record.kind) ? "models" : "files" };
     } catch (error) {
       if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code || "") || error instanceof SyntaxError || error instanceof URIError) return;
       throw error;
