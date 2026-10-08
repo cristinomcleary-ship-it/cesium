@@ -6,6 +6,7 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { LibraryRecord, LibrarySettings, SceneView } from "../src/projectLibrary";
+import { managementActor, managementResourceReadable } from "./management/actorContext.ts";
 
 type TilesLocation = { root: string; entry: string; aggregate?: unknown } | { error: string };
 type Options = { storageRoot?: string; resolveTiles?: (path: string) => TilesLocation };
@@ -240,7 +241,17 @@ export function createProjectLibrary(projectRoot: string, options: Options = {})
       if (origin && new URL(origin).host !== req.headers.host) throw new HttpError(403, "不允许跨站访问资料库");
       const method = req.method ?? "GET";
       if (!["GET", "HEAD"].includes(method) && req.headers["x-cesium-library"] !== "1") throw new HttpError(403, "缺少资料库请求标识");
-      if (url.pathname === "/__library/records" && method === "GET") return send(res, 200, await list());
+      if (url.pathname === "/__library/records" && method === "GET") {
+        const listing = await list(), actor = managementActor(req);
+        if (!actor) return send(res, 200, listing);
+        const records = listing.records.filter(record => managementResourceReadable(actor, record.kind));
+        // Corrupt records have an unknown category, so do not disclose their IDs to a partial-resource session.
+        const problems = managementResourceReadable(actor, "unknown") ? listing.problems : [];
+        const view = actor.permissions.includes("models") && listing.view ? { ...listing.view } : undefined;
+        if (view?.activeVideoId && !records.some(record => record.id === view.activeVideoId && record.kind === "Drone Video")) delete view.activeVideoId;
+        if (view?.activeImageryId && !records.some(record => record.id === view.activeImageryId && record.kind === "Imagery")) delete view.activeImageryId;
+        return send(res, 200, { records, problems, view });
+      }
       if (url.pathname === "/__library/view" && method === "PUT") {
         const value = await bodyJson(req);
         for (const key of ["position", "direction", "up"]) {
@@ -257,7 +268,11 @@ export function createProjectLibrary(projectRoot: string, options: Options = {})
       const id = match[1]; recordRoot(id);
       if (match[3] && method === "POST") return send(res, 200, await upload(id, match[3], url.searchParams.get("name") ?? "data.bin", req));
       if (match[2] === "copy" && method === "POST") return send(res, 200, await copySource(id, await bodyJson(req)));
-      if (!match[2] && method === "GET") return send(res, 200, await readRecord(id));
+      if (!match[2] && method === "GET") {
+        const record = await readRecord(id);
+        if (!managementResourceReadable(managementActor(req), record.kind)) throw new HttpError(403, "当前账户没有此类资料权限");
+        return send(res, 200, record);
+      }
       if (!match[2] && method === "PUT") return send(res, 200, await save(id, await bodyJson(req)));
       if (!match[2] && method === "PATCH") return send(res, 200, await patch(id, await bodyJson(req)));
       if (!match[2] && method === "DELETE") { await remove(id); return send(res, 200, { ok: true }); }

@@ -1,4 +1,4 @@
-import { CallbackProperty, Cartesian2, Cartesian3, Color, ConstantProperty, CustomDataSource, Entity, PolygonHierarchy, ScreenSpaceEventHandler, ScreenSpaceEventType, type Viewer } from "cesium";
+import { CallbackProperty, Cartesian2, Cartesian3, Color, ConstantProperty, ColorMaterialProperty, CustomDataSource, Entity, PolygonHierarchy, ScreenSpaceEventHandler, ScreenSpaceEventType, type Viewer } from "cesium";
 import { SafetySpatialError, SafetySpatialRepository } from "./safetySpatialRepository";
 import { EMPTY_SPATIAL_SNAPSHOT, type SpatialKind, type SpatialObject, type SpatialRiskLevel, type SpatialSnapshot } from "./safetySpatialTypes";
 import type { SafetyDataset, SafetyPosition, SafetyState, SafetyView } from "./safetyTypes";
@@ -10,7 +10,7 @@ import "./safetySpatialEditor.css";
 type VertexSource = SpatialObject["source"]["vertices"][number];
 type Fields = { name: string; description: string; responsiblePerson: string; lineName: string; riskType: string; level: SpatialRiskLevel; areaId: string; linkedMediaIds: string[] };
 type GeometryState = { positions: SafetyPosition[]; sources: VertexSource[]; geometryLocked: boolean };
-type Draft = GeometryState & { id: string; kind: SpatialKind; fields: Fields; original?: SpatialObject; stage: "draw" | "name"; initial: string; history: GeometryState[] };
+type Draft = GeometryState & { id: string; kind: SpatialKind; fields: Fields; original?: SpatialObject; stage: "draw" | "name"; initial: string; history: GeometryState[]; future?: GeometryState[] };
 export type SpatialLayerVisibility = { constructionAreas?: boolean; railwayAreas?: boolean; riskPoints?: boolean };
 export type SpatialEditorOptions = {
   viewer: Viewer; host: HTMLElement;
@@ -46,6 +46,8 @@ export class SafetySpatialEditor {
   private active = false; private disposed = false; private saving = false; private drawing = false;
   private draft?: Draft; private selectedId?: string; private detailId?: string; private recentDeleted = false; private menuId?: string;
   private baseRevision = 0; private loadGeneration = 0;
+  private managementSelection?: Set<string>;
+  private managementTopic?: { colors: Record<string, string>; visibleIds?: Set<string> };
   private entities = new Map<string, Entity>(); private filterIds?: Set<string>;
   private layers: Required<SpatialLayerVisibility> = { constructionAreas: true, railwayAreas: true, riskPoints: true };
   private pendingLeave?: () => void; private down?: Cartesian2; private moved = false; private hover?: Cartesian2;
@@ -93,7 +95,7 @@ export class SafetySpatialEditor {
 
     else if (action === "new-area" || action === "new-railway" || action === "new-risk") this.guard(() => this.begin(action === "new-area" ? "construction-area" : action === "new-railway" ? "railway" : "risk-point"));
     else if (action === "cancel") this.guard(() => { const original = this.draft?.original?.id; this.cancelDraft(); this.detailId = original; this.message(""); this.render(); });
-    else if (action === "undo") this.undo(); else if (action === "finish") this.finish(); else if (action === "save") void this.save();
+    else if (action === "undo") this.undo(); else if (action === "redo") this.redo(); else if (action === "finish") this.finish(); else if (action === "save") void this.save();
     else if (action === "redraw" || action === "reposition") this.redraw(); else if (action === "delete-vertex") this.deleteVertex();
     else if (action === "level" && this.draft && target.dataset.level) { this.draft.fields.level = target.dataset.level as SpatialRiskLevel; this.render(); }
     else if (action === "choose") this.guard(() => { this.cancelDraft(); this.detailId = undefined; this.recentDeleted = false; this.message(""); this.render(); });
@@ -120,7 +122,8 @@ export class SafetySpatialEditor {
       else if (this.draft) this.guard(() => { this.cancelDraft(); this.detailId = undefined; this.message(""); this.render(); });
       else this.requestClose();
     } else if (!(event.target as HTMLElement)?.closest("input,textarea,select")) {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); this.undo(); }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); if (event.shiftKey) this.redo(); else this.undo(); }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") { event.preventDefault(); this.redo(); }
       if (event.key === "Delete" && this.draft?.stage === "name") { event.preventDefault(); this.deleteVertex(); }
     }
   }
@@ -147,6 +150,7 @@ export class SafetySpatialEditor {
     this.detailId = selected && this.savedObject(selected) ? selected : undefined;
     this.recentDeleted = false; this.panel.hidden = false; this.options.onVisibility?.(true); this.message(""); this.render();
   }
+  showDefinitionTypes(): void { this.show(); if (!this.panel.hidden) this.guard(() => { this.cancelDraft(); this.detailId = undefined; this.render(); }); }
   setLayers(layers: SpatialLayerVisibility): void { this.layers = { ...this.layers, ...layers }; this.applyVisibility(); }
   get isDrawing(): boolean { return this.drawing; } get isVisible(): boolean { return !this.panel.hidden; } getSnapshot(): SpatialSnapshot { return this.snapshot; }
   async load(report = false): Promise<SpatialSnapshot> {
@@ -160,14 +164,14 @@ export class SafetySpatialEditor {
   }
   private savedObject(id: string): SpatialObject | undefined { return this.snapshot.objects.find(o => o.id === id && !o.deletedAt); }
   private selectObject(id: string): void {
-    if (!this.savedObject(id)) return; this.cancelDraft(); this.detailId = id; this.selectedId = id; this.menuId = undefined; this.message(""); this.render(); this.options.onSelect(id, { fly: true });
+    if (!this.savedObject(id)) return; this.cancelDraft(); this.detailId = id; this.selectedId = id; this.menuId = undefined; this.message(""); this.render(); this.options.onSelect(id, { fly: false });
   }
   private begin(kind: SpatialKind, original?: SpatialObject): void {
     if (!this.options.getContext()) return; this.cancelDraft(); this.baseRevision = this.snapshot.revision;
     const fields: Fields = { name: original?.name ?? nextSpatialName(kind, this.snapshot.objects.map(o => o.name)), description: original?.description || original?.risk?.description || "",
       responsiblePerson: original?.responsiblePerson || "", lineName: original?.lineName || "", riskType: original?.riskType || "", level: original?.level || original?.risk?.severity || "unassessed", areaId: original?.areaId || "", linkedMediaIds: [...(original?.linkedMediaIds || [])] };
     this.draft = { id: original?.id || crypto.randomUUID(), kind, fields, positions: original ? structuredClone(positionsOf(original)) : [], sources: structuredClone(original?.source.vertices || []),
-      original, stage: original ? "name" : "draw", geometryLocked: !!original && (original.geometry.type === "Corridor" || !original.creationSource || original.source.vertices.some(v => !v.anchor)), initial: "", history: [] };
+      original, stage: original ? "name" : "draw", geometryLocked: !!original && (original.geometry.type === "Corridor" || !original.creationSource || original.source.vertices.some(v => !v.anchor)), initial: "", history: [], future: [] };
     this.draft.initial = signature(this.draft); this.detailId = undefined; this.selectedVertex = undefined; this.badEdges = [];
     this.setDrawing(true); this.makeDraftEntities(); this.refreshGeometry(); this.message(""); this.render(); this.applyVisibility();
   }
@@ -184,13 +188,31 @@ export class SafetySpatialEditor {
     this.selectedVertex = undefined; this.badEdges = []; this.setDrawing(true); this.refreshGeometry(); this.message(""); this.render();
   }
   private geometryState(): GeometryState { const d = this.draft!; return structuredClone({ positions: d.positions, sources: d.sources, geometryLocked: d.geometryLocked }); }
-  private remember(): void { if (this.draft) { this.draft.history.push(this.geometryState()); if (this.draft.history.length > 100) this.draft.history.shift(); } }
+  private remember(): void { if (this.draft) { this.draft.future = []; this.draft.history.push(this.geometryState()); if (this.draft.history.length > 100) this.draft.history.shift(); } }
   private undo(): void {
-    if (!this.draft) return; const previous = this.draft.history.pop();
-    if (previous) Object.assign(this.draft, previous); else if (this.draft.stage === "draw") { this.draft.positions.pop(); this.draft.sources.pop(); } else return;
+    if (!this.draft || this.saving || !this.draft.history.length) return;
+    const current = this.geometryState(), previous = this.draft.history.pop()!;
+    (this.draft.future ??= []).push(current); Object.assign(this.draft, previous);
     if (this.draft.geometryLocked) this.draft.stage = "name";
     this.selectedVertex = undefined; this.badEdges = []; this.refreshGeometry(); this.message(""); this.render();
   }
+  private redo(): void {
+    if (!this.draft || this.saving || !this.draft.future?.length) return;
+    const current = this.geometryState(), next = this.draft.future.pop()!;
+    this.draft.history.push(current); Object.assign(this.draft, next);
+    if (this.draft.geometryLocked) this.draft.stage = "name";
+    this.selectedVertex = undefined; this.badEdges = []; this.refreshGeometry(); this.message(""); this.render();
+  }
+  /** Commands from the shared management toolbar reuse the same validated draft. */
+  command(action: "undo" | "redo" | "finish" | "cancel"): void {
+    if (!this.active || this.saving) return;
+    if (action === "undo") this.undo();
+    else if (action === "redo") this.redo();
+    else if (action === "finish") this.finish();
+    else this.requestClose();
+  }
+  beginDefinition(kind: SpatialKind): void { this.show(); this.guard(() => this.begin(kind)); }
+  editDefinition(id: string): void { this.show(); this.guard(() => { const item = this.savedObject(id); if (item) this.begin(item.kind, item); }); }
   private finish(): void {
     if (!this.draft || this.draft.stage !== "draw" || this.saving) return;
     const validation = validateDraftShape(this.draft.kind, this.draft.positions);
@@ -213,7 +235,7 @@ export class SafetySpatialEditor {
     if (!this.active || this.saving || this.pendingLeave) return;
     if (!this.draft) {
       const entity = this.options.viewer.scene.pick(screen)?.id as Entity | undefined;
-      if (entity && this.source.entities.contains(entity)) { const id = entity.properties?.spatialObjectId?.getValue(); if (id) { this.options.onSelect(id, { fly: true }); if (!this.panel.hidden) { this.detailId = id; this.render(); } } }
+      if (entity && this.source.entities.contains(entity)) { const id = entity.properties?.spatialObjectId?.getValue(); if (id) { this.options.onSelect(id, { fly: false }); if (!this.panel.hidden) { this.detailId = id; this.render(); } } }
       return;
     }
     if (this.draft.stage !== "draw") return;
@@ -396,13 +418,20 @@ export class SafetySpatialEditor {
     const object = this.selectedId ? this.savedObject(this.selectedId) : undefined;
     if (object?.areaId) this.filterIds.add(object.areaId); if (object?.railwayId) this.filterIds.add(object.railwayId); this.applyVisibility();
   }
+  setManagementSelection(ids?: readonly string[]): void { this.managementSelection = ids ? new Set(ids) : undefined; this.applyVisibility(); }
+  setManagementTopic(value?: { colors: Record<string, string>; visibleIds?: readonly string[] }): void { this.managementTopic = value ? { colors: value.colors, visibleIds: value.visibleIds ? new Set(value.visibleIds) : undefined } : undefined; this.applyVisibility(); }
   private applyVisibility(): void {
     for (const object of this.snapshot.objects) {
       const entity = this.entities.get(object.id); if (!entity) continue;
       const layer = object.kind === "construction-area" ? this.layers.constructionAreas : object.kind === "railway" ? this.layers.railwayAreas : this.layers.riskPoints;
-      entity.show = !object.deletedAt && object.visible && layer && (this.filterIds?.has(object.id) ?? true) && !(this.draft?.id === object.id && !this.draft.geometryLocked);
+      entity.show = !object.deletedAt && object.visible && layer && (this.managementSelection !== undefined ? (this.managementTopic?.visibleIds?.has(object.id) ?? true) : (this.filterIds?.has(object.id) ?? true)) && !(this.draft?.id === object.id && !this.draft.geometryLocked);
+      const selected = this.managementSelection?.has(object.id) ?? this.selectedId === object.id;
+      const displayColor = Color.fromCssColorString(selected ? "#F5B45C" : this.managementTopic?.colors[object.id] || colors[object.kind]);
+      if (entity.point) { entity.point.color = new ConstantProperty(displayColor); entity.point.pixelSize = new ConstantProperty(selected ? 15 : 12); }
       if (entity.polyline) {
-        const width = this.selectedId === object.id ? SPATIAL_BOUNDARY_WIDTH.selected : SPATIAL_BOUNDARY_WIDTH.normal;
+        entity.polyline.material = new ColorMaterialProperty(displayColor);
+        if (entity.polygon) entity.polygon.show = new ConstantProperty(this.managementSelection === undefined);
+        const width = (this.managementSelection?.has(object.id) ?? this.selectedId === object.id) ? SPATIAL_BOUNDARY_WIDTH.selected : SPATIAL_BOUNDARY_WIDTH.normal;
         const property = entity.polyline.width;
         if (property instanceof ConstantProperty) { if (property.getValue() !== width) property.setValue(width); }
         else entity.polyline.width = new ConstantProperty(width);
@@ -420,7 +449,7 @@ export class SafetySpatialEditor {
       const badge = '<div class="spatial-row"><span class="spatial-badge">' + icon(draft.kind) + (draft.original ? "编辑" : "新增") + names[draft.kind] + '</span><small>' + (draft.kind === "risk-point" ? (draft.positions.length ? "位置已选定" : "等待点选") : "已选 " + draft.positions.length + " 点") + '</small></div>';
       if (draft.stage === "draw") {
         const hint = draft.kind === "risk-point" ? (draft.positions.length ? "已选中候选位置" : "在模型上点击风险所在位置") : draft.kind === "railway" ? "沿需要界定的铁路范围边界依次点击" : "沿施工边界依次点击，至少 3 个点";
-        body.innerHTML = steps + badge + '<div class="spatial-draw-hint"><strong>' + hint + '</strong><p>' + (draft.kind === "risk-point" ? "可以再次点击调整，确认后进入命名。" : "完成后仍可拖动顶点调整；拖动场景可旋转查看。") + '</p></div><div class="spatial-draw-count"><span>' + (draft.kind === "risk-point" ? (draft.positions.length ? "候选位置已就绪" : "等待选择位置") : '已选 <b>' + draft.positions.length + '</b> 个点') + '</span><small>Esc 取消</small></div><div class="spatial-button-row">' + button("撤销上一点", "undo", false, draft.positions.length ? "" : "disabled") + button(draft.kind === "risk-point" ? "使用此位置" : "完成绘制", "finish", true, draft.positions.length >= (draft.kind === "risk-point" ? 1 : 3) ? "" : "disabled") + '</div><button type="button" class="spatial-text spatial-cancel" data-spatial="cancel">取消</button>';
+        body.innerHTML = steps + badge + '<div class="spatial-draw-hint"><strong>' + hint + '</strong><p>' + (draft.kind === "risk-point" ? "可以再次点击调整，确认后进入命名。" : "完成后仍可拖动顶点调整；拖动场景可旋转查看。") + '</p></div><div class="spatial-draw-count"><span>' + (draft.kind === "risk-point" ? (draft.positions.length ? "候选位置已就绪" : "等待选择位置") : '已选 <b>' + draft.positions.length + '</b> 个点') + '</span><small>Esc 取消</small></div><div class="spatial-button-row">' + button("撤销", "undo", false, draft.history.length ? "" : "disabled") + button("重做", "redo", false, draft.future?.length ? "" : "disabled") + button(draft.kind === "risk-point" ? "使用此位置" : "完成绘制", "finish", true, draft.positions.length >= (draft.kind === "risk-point" ? 1 : 3) ? "" : "disabled") + '</div><button type="button" class="spatial-text spatial-cancel" data-spatial="cancel">取消</button>';
         this.hint.textContent = draft.kind === "risk-point" ? "点击模型表面，选择风险位置" : "在模型上依次点选边界";
       } else {
         const f = draft.fields;
@@ -439,7 +468,7 @@ export class SafetySpatialEditor {
           + '<details class="spatial-more"><summary>更多信息（选填）</summary>' + more + '</details><div class="spatial-draw-hint"><strong>' + (draft.geometryLocked ? "需要调整原范围？" : draft.kind === "risk-point" ? "需要调整位置？" : "边界可以继续调整") + '</strong><p>'
           + (draft.geometryLocked ? lockedText : draft.kind === "risk-point" ? "重新选点后，点击“使用此位置”返回。" : "拖动顶点调整；点击边中点加点。选择顶点后可删除，至少保留 3 个。") + '</p>'
           + (draft.geometryLocked || draft.kind === "risk-point" ? '<button type="button" class="spatial-text" data-spatial="' + (draft.kind === "risk-point" ? "reposition" : "redraw") + '">' + (draft.kind === "risk-point" ? "重新选点" : "重新绘制多边形") + '</button>' : '<button type="button" class="spatial-text" data-spatial="delete-vertex" disabled>选择顶点后可删除</button>')
-          + '</div><div class="spatial-button-row spatial-save-row">' + button("取消", "cancel") + button("保存", "save", true) + '</div>';
+          + '</div><div class="spatial-button-row spatial-history-row">' + button("撤销", "undo", false, draft.history.length ? "" : "disabled") + button("重做", "redo", false, draft.future?.length ? "" : "disabled") + '</div><div class="spatial-button-row spatial-save-row">' + button("取消", "cancel") + button("保存", "save", true) + '</div>';
         this.updateDeleteButton(); this.hint.textContent = draft.kind === "risk-point" ? "位置已确定，命名后保存" : draft.geometryLocked ? "原范围已保留；可修改名称与说明" : "拖动亮色顶点，可微调边界";
       }
       this.positionHandles(); return;
@@ -463,7 +492,7 @@ export class SafetySpatialEditor {
   debugStats() {
     return { revision: this.snapshot.revision, objects: this.snapshot.objects.map(o => ({ id: o.id, kind: o.kind, name: o.name, deleted: !!o.deletedAt })),
       entities: this.source.entities.values.length, visible: !this.panel.hidden, stage: this.panel.dataset.stage, drawing: this.drawing,
-      draftVertices: this.draft?.positions.length || 0, draftId: this.draft?.id, draftName: this.draft?.fields.name,
+      draftVertices: this.draft?.positions.length || 0, canUndo: !!this.draft?.history.length, canRedo: !!this.draft?.future?.length, draftId: this.draft?.id, draftName: this.draft?.fields.name,
       draftGeometry: this.draft ? structuredClone({ positions: this.draft.positions, sources: this.draft.sources }) : undefined,
       selectedVertex: this.selectedVertex, selectedId: this.selectedId, dirty: !!this.draft && signature(this.draft) !== this.draft.initial,
       confirmDiscard: !!this.pendingLeave, handlerCount: this.disposed ? 0 : 1, postRenderListeners: this.disposed ? 0 : 1, strictModelPicking: true };

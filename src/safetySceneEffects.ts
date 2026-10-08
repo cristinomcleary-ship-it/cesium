@@ -654,6 +654,8 @@ export class SafetySceneEffects {
     this.selectedFeature = undefined;
   }
 
+  getDisplayMode(): 'presentation' | 'inspection' | undefined { return this.presentation.getDisplayMode(); }
+
   debugStats(): Record<string, unknown> {
     const labelsVisible = this.active && !this.earthMode && !this.authoring && this.source.show;
     const visibleNodeLabels = labelsVisible ? [...this.nodeVisuals.values()].filter(v => v.marker.show && v.marker.label?.show?.getValue(this.viewer.clock.currentTime)).length : 0;

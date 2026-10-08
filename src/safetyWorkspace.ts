@@ -1,3 +1,4 @@
+import type { ManagementSceneContext, ManagementSceneHost } from "./managementSceneTypes";
 import { SafetyVideoRoam, type SafetyVideoRoamState } from "./safetyVideoRoam";
 import { SafetyModelOptimization } from "./safetyModelOptimization";
 import { Cartographic, Cesium3DTileset, Math as CesiumMath, Matrix4, type Viewer } from "cesium";
@@ -28,16 +29,21 @@ export type SafetyWorkspaceOptions = {
   openVideoSettings: () => void;
   adapter?: SafetyDataAdapter; eventAdapter?: SafetyEventAdapter;
   loadVideoSource?: (recordId: string) => Promise<void>;
+  clearVideoSource?: () => void;
 };
 
 /** Shared navigation/data clock. The existing Viewer, video decoder and library remain the owners of their resources. */
 export class SafetyWorkspace {
+  private managementHost?: ManagementSceneHost;
+  private managementSceneVisible = true;
   readonly dashboard: SafetyDashboard;
   readonly effects: SafetySceneEffects;
   readonly spatial: SafetySpatialEditor;
   readonly optimization: SafetyModelOptimization;
   private videoRoam?: SafetyVideoRoam;
   private roamBindingKey = "";
+  private managementMediaRevoked = false;
+  private readonly managementHiddenResources = new Map<object, boolean>();
   private roamState?: SafetyVideoRoamState;
   private optimizationEntryMode?: SafetyState["mode"];
   private baseDataset?: SafetyDataset;
@@ -99,7 +105,7 @@ export class SafetyWorkspace {
       onMediaSeekSeconds: seconds => this.seekMediaSeconds(seconds),
       onPlaybackRateChange: rate => { if (this.video && [0.5, 1, 1.5, 2].includes(rate)) this.video.playbackRate = rate; },
     });
-    this.effects = new SafetySceneEffects(options.viewer, selection => this.select(selection), { getImports: options.getImports,
+    this.effects = new SafetySceneEffects(options.viewer, selection => this.select(this.managementHost ? { ...selection, fly: false } : selection), { getImports: options.getImports,
       getPresentationModels: () => this.runtimeModels(),
       onPresentationState: status => this.dashboard.setPresentationStatus(status),
       getStageRect: () => this.sceneStageRect(false),
@@ -109,8 +115,8 @@ export class SafetyWorkspace {
       onSnapshot: snapshot => this.applySpatialSnapshot(snapshot),
       suspendOverlays: () => this.effects.suspendOverlaysForPicking(),
       onSelect: (id, options) => { this.select({ nodeId: `spatial:${id}`, fly: options?.fly ?? true }); },
-      onDrawing: drawing => { this.effects.setPickingEnabled(!drawing); this.effects.setAuthoring(drawing); if (drawing) { this.beforeManualNavigation(); this.store?.patch({ cruise: false }); } },
-      onVisibility: visible => this.dashboard.setAuthoring(visible),
+      onDrawing: drawing => { this.effects.setPickingEnabled(!drawing); this.effects.setAuthoring(drawing); if (drawing) { this.pause(); this.beforeManualNavigation(); this.store?.patch({ cruise: false }); } this.publishManagementContext(); },
+      onVisibility: visible => { this.dashboard.setAuthoring(visible); this.publishManagementContext(); },
       getModelRegistry: () => this.runtimeModels(),
       getContext: () => {
         if (!this.store) return;
@@ -142,10 +148,10 @@ export class SafetyWorkspace {
       this.video = video;
       this.videoRoam = new SafetyVideoRoam({ viewer: options.viewer, video,
         onState: state => this.acceptVideoRoamState(state),
-        canTakeCamera: () => this.active && this.store?.state.page === "inspection" && this.inspectionMode === "replay" && !this.optimization.isOpen && !this.spatial.debugStats().drawing,
+        canTakeCamera: () => this.active && this.store?.state.page === "inspection" && this.inspectionMode === "replay" && !this.optimization.isOpen && !this.spatial.debugStats().drawing && this.managementSceneVisible,
         beforeTakeCamera: () => { this.effects.cancelPendingHome(); options.viewer.camera.cancelFlight(); this.store?.patch({ cruise: false }); },
       });
-      for (const event of ["play", "pause", "ended", "loadedmetadata", "durationchange", "seeked", "error"]) video.addEventListener(event, () => {
+      for (const event of ["play", "pause", "ended", "loadedmetadata", "durationchange", "seeked", "error", "timeupdate"]) video.addEventListener(event, () => {
         if (!this.active) return;
         if (event === "error") this.dashboard.setVideoStatus("原片暂不能解码，可在视频 AR 设置中检查媒体格式。");
         else {
@@ -155,6 +161,88 @@ export class SafetyWorkspace {
         }
       }, { signal: this.events.signal });
     }
+  }
+
+  /** New management UI shares this original scene/video/editor ownership. */
+  attachManagementHost(host?: ManagementSceneHost): void {
+    this.managementHost = host;
+    if (this.videoOrigin && this.video) (host?.videoHost ?? this.dashboard.videoHost).append(this.video);
+    this.publishManagementContext();
+  }
+  getManagementContext(): ManagementSceneContext {
+    const d = this.spatial.debugStats(), available = this.hasBoundVideo();
+    return { mode: this.effects.getDisplayMode(), spatialObjects: this.spatial.getSnapshot().objects.filter(o => !o.deletedAt),
+      media: this.store?.dataset.media ?? [], sourceAssets: this.store?.dataset.media ?? [],
+      models: this.modelRegistry.map(m => ({ id: m.assetId, name: this.options.getImports().find(r => r.id === m.assetId)?.name ?? m.assetId, version: m.assetVersion })),
+      layers: this.options.getImports().map(r => ({ id: r.id, name: r.name, kind: r.kind, visible: r.visible })),
+      selectedSpatialId: this.store?.view.selected.spatialObjectId,
+      videoState: { selectedId: this.selectedMedia, available, playing: available && !this.video!.paused,
+        currentTime: this.video?.currentTime ?? 0, duration: Number.isFinite(this.video?.duration) ? this.video!.duration : 0,
+        rate: this.video?.playbackRate ?? 1, roam: this.roamState, error: this.video?.error?.message },
+      toolState: { visible: d.visible, drawing: d.drawing, stage: d.stage ?? "choose", canUndo: d.canUndo, canRedo: d.canRedo, draftVertices: d.draftVertices } };
+  }
+  private publishManagementContext(): void { if (this.managementHost && this.spatial) this.managementHost.onContext(this.getManagementContext()); }
+  setManagementSceneVisible(visible: boolean): void {
+    this.managementSceneVisible = visible;
+    if (!visible) { this.pause(); this.beforeManualNavigation(); this.effects.cancelPendingHome(); this.options.viewer.camera.cancelFlight(); }
+    this.options.viewer.useDefaultRenderLoop = visible;
+    if (visible) { this.options.viewer.resize(); this.options.viewer.scene.requestRender(); }
+    this.publishManagementContext();
+  }
+  managementSelectSpatial(id?: string, highlightIds: string[] = []): void {
+    if (id && this.store?.dataset.nodes.some(n => n.spatialObjectId === id)) this.select({ nodeId: `spatial:${id}`, fly: false });
+    else if (this.store) this.store.patch({ selectedId: this.store.dataset.projectId, selectedAlertId: undefined });
+    this.spatial.setManagementSelection(highlightIds.length ? highlightIds : id ? [id] : []);
+  }
+  managementLocateSpatial(id: string): boolean {
+    const node = this.store?.dataset.nodes.find(n => n.spatialObjectId === id);
+    if (!node || node.sceneAvailable === false || node.navigationDisabledReason) return false;
+    this.beforeManualNavigation(); this.effects.cancelPendingHome(); this.effects.focus(node, 1.2); return true;
+  }
+  managementHome(): void { this.returnOverview(); }
+  managementMode(mode: "presentation" | "inspection"): void { this.patch({ mode }); }
+  managementPause(): void { this.pause(); this.beforeManualNavigation(); this.effects.cancelPendingHome(); this.options.viewer.camera.cancelFlight(); this.store?.patch({ cruise: false }); }
+  managementOpenEditor(kind?: "construction-area" | "railway" | "risk-point", id?: string): void {
+    this.spatial.requestClose(() => { this.optimization.close(); this.pause(); this.beforeManualNavigation(); this.store?.patch({ cruise: false });
+      if (id) this.spatial.editDefinition(id); else if (kind) this.spatial.beginDefinition(kind); else this.spatial.showDefinitionTypes();
+    });
+  }
+  managementQuality(): void { this.spatial.requestClose(() => { this.pause(); this.beforeManualNavigation(); this.optimizationEntryMode = this.store?.state.mode; this.optimization.open(this.store?.state.mode === "inspection"); }); }
+  managementLayer(id: string, visible: boolean): void { this.options.setLayerVisible(id, visible); this.layersChanged(); this.publishManagementContext(); }
+  async managementPlayMedia(id: string): Promise<void> {
+    const media = this.store?.dataset.media.find(m => m.id === id || m.sourceRecordId === id);
+    if (!media || media.kind !== "video") throw new Error("录像来源暂不可用");
+    this.applyPageChange("inspection"); await this.openMedia(media); this.publishManagementContext();
+  }
+  managementMediaControl(action: "play" | "pause" | "seek" | "rate" | "follow", value?: number | boolean): void {
+    if (action === "play") this.patch({ playing: true });
+    else if (action === "pause") this.pause();
+    else if (action === "seek") this.seekMediaSeconds(Number(value));
+    else if (action === "rate" && this.video && [.5,1,1.5,2].includes(Number(value))) this.video.playbackRate = Number(value);
+    else if (action === "follow") this.videoRoam?.setEnabled(Boolean(value));
+    this.publishManagementContext();
+  }
+  getManagementModels() { return this.runtimeModels(); }
+  getManagementModelVersions() { return this.modelRegistry.map(({assetId,assetVersion,coordinateTransformVersion})=>({assetId,assetVersion,coordinateTransformVersion})); }
+  getManagementViewer(): Viewer { return this.options.viewer; }
+  getManagementVideo(): HTMLVideoElement | undefined { return this.video; }
+  setManagementResourceAccess(access: {models:boolean;files:boolean;media:boolean}): void {
+    const resources=new Set<object>();
+    for(const item of this.options.getImports()){
+      const resource=item.resource as object & {show?:boolean};resources.add(resource);
+      const allowed=(item.kind==='CAD'||item.kind==='GIS')?access.files:access.models;
+      if(!allowed&&typeof resource.show==='boolean'){if(!this.managementHiddenResources.has(resource))this.managementHiddenResources.set(resource,resource.show);resource.show=false;}
+      else if(allowed&&this.managementHiddenResources.has(resource)){resource.show=this.managementHiddenResources.get(resource)!&&item.visible;this.managementHiddenResources.delete(resource);}
+    }
+    for(const resource of this.managementHiddenResources.keys())if(!resources.has(resource))this.managementHiddenResources.delete(resource);
+  }
+  setManagementMediaAccess(allowed: boolean): void {
+    if(this.managementMediaRevoked === !allowed)return;
+    this.managementMediaRevoked = !allowed;
+    if(allowed)return;
+    this.mediaRequestGeneration++;this.mediaLoading=false;this.selectedMedia=undefined;this.explicitlySelectedMedia=undefined;this.boundSourceKey='';
+    this.pause();this.unbindVideoRoam();this.options.clearVideoSource?.();
+    if(this.video){this.video.removeAttribute('src');this.video.load();}
   }
 
   get isOpen(): boolean { return this.active; }
@@ -188,6 +276,7 @@ export class SafetyWorkspace {
   close(): void {
     if (!this.active) return;
     // Block synchronous pause/store subscribers from rebinding during teardown.
+    this.options.viewer.useDefaultRenderLoop = true; this.managementSceneVisible = true;
     this.active = false; this.mediaRequestGeneration++; this.mediaLoading = false;
     this.loading?.abort();
     this.pause();
@@ -249,7 +338,7 @@ export class SafetyWorkspace {
       this.layersChanged();
       this.renderState();
       this.updateVideoStatus();
-      if (this.active && !preserveSelection) this.effects.focus(this.store.view.selected);
+      if (this.active && !preserveSelection && !this.managementHost) this.effects.focus(this.store.view.selected);
     } catch (error) {
       if (!controller.signal.aborted) this.dashboard.setError(error instanceof Error ? error.message : "巡检数据读取失败");
     } finally {
@@ -267,14 +356,14 @@ export class SafetyWorkspace {
 
   private select(selection: SafetySelection): void {
     if (!this.active || !this.store) return;
-    this.optimization.close(); this.beforeManualNavigation();
-    this.pause();
+    if (!this.managementHost || selection.fly === true) { this.optimization.close(); this.beforeManualNavigation(); this.pause(); }
     const target = this.store.dataset.nodes.find(n => n.id === selection.nodeId);
-    const page: SafetyPage = selection.alertId || target?.eventId ? "events" : target && !target.spatialObjectId && (target.kind === "pier" || target.kind === "component") ? "components" : this.store.state.page || "overview";
+    const page: SafetyPage = this.managementHost ? this.store.state.page || "overview" : selection.alertId || target?.eventId ? "events" : target && !target.spatialObjectId && (target.kind === "pier" || target.kind === "component") ? "components" : this.store.state.page || "overview";
     this.dashboard.setPage(page);
     this.store.patch({ page, cruise: false, engineeringAnnotations: false });
     this.store.select(selection);
-    if (selection.fly !== false && !this.store.view.selected.navigationDisabledReason && this.store.view.selected.sceneAvailable !== false) this.effects.focus(this.store.view.selected);
+    if ((!this.managementHost ? selection.fly !== false : selection.fly === true) && !this.store.view.selected.navigationDisabledReason && this.store.view.selected.sceneAvailable !== false) this.effects.focus(this.store.view.selected);
+    if (this.managementHost && target?.spatialObjectId) this.managementHost.onSpatialSelected(target.spatialObjectId);
     const alert = this.store.view.alerts.find(a => a.id === selection.alertId);
     if (alert) {
       this.pause(); this.store.patch({ time: alert.timestamp });
@@ -400,7 +489,7 @@ export class SafetyWorkspace {
     const video = this.video;
     if (!video?.parentNode || this.videoOrigin) return;
     this.videoOrigin = { parent: video.parentNode, next: video.nextSibling, hidden: video.hidden, controls: video.controls };
-    this.dashboard.videoHost.append(video);
+    (this.managementHost?.videoHost ?? this.dashboard.videoHost).append(video);
     video.hidden = false; video.controls = false;
     video.classList.add("safety-reused-video");
   }
@@ -427,10 +516,11 @@ export class SafetyWorkspace {
       currentTimeSeconds: available ? this.video!.currentTime : undefined, durationSeconds: available && Number.isFinite(this.video!.duration) ? this.video!.duration : undefined,
       rate: this.video?.playbackRate || 1, hasTrack: this.hasReplayTrack(),
       error: this.video?.error ? "画面暂不可用，请重试或切换来源" : undefined });
+    this.publishManagementContext();
   }
 
   private async openMedia(media: SafetyMedia, selection?: SafetySelection): Promise<void> {
-    if (!this.active || this.disposed || media.kind !== "video") return;
+    if (!this.active || this.disposed || this.managementMediaRevoked || media.kind !== "video") return;
     const generation = ++this.mediaRequestGeneration;
     const current = () => this.active && !this.disposed && generation === this.mediaRequestGeneration;
     const retained = selection || (this.store ? { nodeId: this.store.state.selectedId, alertId: this.store.state.selectedAlertId } : undefined);
@@ -440,10 +530,10 @@ export class SafetyWorkspace {
     // overwrite a newer source; obsolete queued requests never start a restore.
     const task = this.mediaSourceTask.catch(() => undefined).then(async () => {
       if (!current()) return;
-      if (media.sourceRecordId && media.sourceRecordId !== this.options.getPlaybackSource().recordId) {
+      if (media.sourceRecordId && (media.sourceRecordId !== this.options.getPlaybackSource().recordId || !this.options.getPlaybackSource().url)) {
         if (!this.options.loadVideoSource) throw new Error("当前来源暂不可用，请在原工作台选择已有视频");
         await this.options.loadVideoSource(media.sourceRecordId);
-        if (!current()) return;
+        if (!current()) {if(this.managementMediaRevoked)this.options.clearVideoSource?.();return;}
         await this.reload(true);
       }
     });
@@ -496,6 +586,8 @@ export class SafetyWorkspace {
 
   private sceneStageRect(overview: boolean) {
     const c = this.options.viewer.canvas.getBoundingClientRect();
+    const external = this.managementHost?.getStageRect();
+    if (external) return { left: external.left - c.left, top: external.top - c.top, width: external.width, height: external.height };
     if (!overview) {
       const r = this.options.host.querySelector(".safety-scene-hud")?.getBoundingClientRect();
       if (r) return { left: r.left - c.left, top: r.top - c.top + 52, width: r.width, height: Math.max(180, r.height - 52) };

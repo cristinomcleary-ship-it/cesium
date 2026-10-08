@@ -1,3 +1,4 @@
+import { managementActor } from "./management/actorContext.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm, readdir, stat, realpath } from "node:fs/promises";
 import { join, resolve, relative, sep } from "node:path";
@@ -106,11 +107,15 @@ export function createSafetySpatialStore(options: SafetySpatialStoreOptions = {}
   }
   function publicSnapshot(value: Persisted): SpatialSnapshot { const { mutations: _mutations, ...snapshot } = value; return snapshot; }
   async function load(): Promise<SpatialSnapshot> { return publicSnapshot(await read()); }
-  function mutate(value: unknown): Promise<SpatialSnapshot> {
-    const mutation = validateSpatialMutation(value);
+  function mutate(value: unknown, actorId?: string): Promise<SpatialSnapshot> {
+    // This field is output metadata, not an optimistic-lock input. Keep the snapshot expectedRevision contract.
+    const input = value && typeof value === "object" ? value as Record<string, unknown> : undefined;
+    const candidate = input?.operation === "upsert" && input.object && typeof input.object === "object" && !Array.isArray(input.object)
+      ? { ...input, object: { ...input.object, revision: undefined } } : value;
+    const mutation = validateSpatialMutation(candidate);
     const task = queue.catch(() => undefined).then(async () => {
       const persisted = await read(); const snapshot = publicSnapshot(persisted);
-      const signature = createHash("sha256").update(JSON.stringify(mutation)).digest("hex");
+      const signature = createHash("sha256").update(JSON.stringify(actorId ? { actorId, mutation } : mutation)).digest("hex");
       const receipt = persisted.mutations.find((item) => item.id === mutation.mutationId);
       if (receipt) {
         if (receipt.signature !== signature) throw new StoreError(409, "MUTATION_ID_REUSED", "保存请求编号已用于另一项操作，请重新读取数据", snapshot);
@@ -119,6 +124,10 @@ export function createSafetySpatialStore(options: SafetySpatialStoreOptions = {}
       if (mutation.expectedRevision !== snapshot.revision) throw new StoreError(409, "REVISION_CONFLICT", "空间对象已被另一页面更新；请先读取最新版本，当前草稿不会被覆盖", snapshot);
       const now = new Date().toISOString();
       const objects = [...snapshot.objects];
+      const nextObjectRevision = (object?: SpatialObject): number => {
+        if (object?.revision === Number.MAX_SAFE_INTEGER) throw new StoreError(409, "OBJECT_REVISION_LIMIT", "空间对象修订号已达到可存储上限，原记录保留", snapshot);
+        return (object?.revision ?? 0) + 1;
+      };
       if (mutation.operation === "upsert") {
         const index = objects.findIndex((item) => item.id === mutation.object.id);
         const previous = objects[index];
@@ -128,18 +137,18 @@ export function createSafetySpatialStore(options: SafetySpatialStoreOptions = {}
         if (mutation.object.creationSource === "user_drawn_model_surface") assertModelVersions(mutation.object, await loadProjectModelRegistry(options));
         else if (!previous || previous.creationSource || JSON.stringify(previous.geometry) !== JSON.stringify(mutation.object.geometry)
           || JSON.stringify(previous.source) !== JSON.stringify(mutation.object.source)) throw new StoreError(400, "MODEL_SURFACE_REQUIRED", "新增或重绘对象须使用项目倾斜摄影表面；旧来源和位置已保留", snapshot);
-        const object = { ...mutation.object, createdAt: previous?.createdAt || now, updatedAt: now };
+        const object = { ...mutation.object, revision: nextObjectRevision(previous), ...(actorId ? { createdBy: previous?.createdBy || actorId, updatedBy: actorId } : {}), createdAt: previous?.createdAt || now, updatedAt: now };
         if (index >= 0) objects[index] = object; else objects.push(object);
       } else {
         const index = objects.findIndex((item) => item.id === mutation.id);
         if (index === -1) throw new StoreError(404, "OBJECT_NOT_FOUND", "空间对象已不存在，请刷新列表", snapshot);
         if (mutation.operation === "delete") {
           if (objects[index].deletedAt) throw new StoreError(409, "OBJECT_DELETED", "对象已在最近删除中", snapshot);
-          objects[index] = { ...objects[index], deletedAt: now, updatedAt: now };
+          objects[index] = { ...objects[index], revision: nextObjectRevision(objects[index]), deletedAt: now, updatedAt: now, ...(actorId ? { deletedBy: actorId, updatedBy: actorId } : {}) };
         } else {
           if (!objects[index].deletedAt) throw new StoreError(409, "OBJECT_NOT_DELETED", "对象已恢复，请读取最新记录", snapshot);
           const { deletedAt: _deletedAt, deletedBy: _deletedBy, ...restored } = objects[index];
-          objects[index] = { ...restored, updatedAt: now };
+          objects[index] = { ...restored, revision: nextObjectRevision(restored), updatedAt: now, ...(actorId ? { updatedBy: actorId } : {}) };
         }
       }
       const next = validateSpatialSnapshot({ version: 1, revision: snapshot.revision + 1, updatedAt: now, objects });
@@ -168,7 +177,7 @@ export function createSafetySpatialStore(options: SafetySpatialStoreOptions = {}
       for await (const chunk of req) { const data = Buffer.from(chunk); bytes += data.length; if (bytes > SPATIAL_LIMITS.bodyBytes) throw new StoreError(413, "BODY_TOO_LARGE", "人工标绘请求不能超过1MB"); chunks.push(data); }
       let mutation: SpatialMutation;
       try { mutation = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new StoreError(400, "INVALID_JSON", "人工标绘请求不是有效 JSON"); }
-      output(res, 200, await mutate(mutation));
+      output(res, 200, await mutate(mutation, managementActor(req)?.id));
     } catch (error) {
       if (error instanceof StoreError) output(res, error.status, { error: error.message, code: error.code, ...(error.snapshot ? { snapshot: error.snapshot } : {}) });
       else if (error instanceof SpatialValidationError) output(res, 400, { error: error.message, code: "VALIDATION" });

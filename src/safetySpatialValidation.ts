@@ -163,6 +163,11 @@ export function validateSpatialObject(value: unknown): SpatialObject {
     confirmation: { status: "user-confirmed", scope: "geometry-and-description", confirmedAt: timestamp(confirmation.confirmedAt, "确认时间") },
     createdAt: timestamp(input.createdAt, "创建时间"), updatedAt: timestamp(input.updatedAt, "更新时间"),
   };
+  if (input.revision !== undefined) {
+    const revision = integer(input.revision, "空间对象修订号");
+    if (revision < 1) fail("空间对象修订号必须为正整数");
+    result.revision = revision;
+  }
   if (v3) result.creationSource = "user_drawn_model_surface";
   if (input.level !== undefined || v3 && kind === "risk-point") {
     if (kind !== "risk-point") fail("只有风险点具有风险等级");

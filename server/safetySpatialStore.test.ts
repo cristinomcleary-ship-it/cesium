@@ -180,3 +180,34 @@ test("changed model transform blocks saved-definition edits without moving geome
     assert.equal(restored.objects[0].source.vertices[0].anchor!.model.coordinateTransformVersion, "test-transform-v1");
   } finally { await f.close(); }
 });
+
+
+test("HTTP object revisions are server-owned, mutation retries stable and historical objects remain unnumbered until edited", async () => {
+  const f = await fixture();
+  try {
+    const untouched = spatialV3Fixture("railway", "untouched"), legacy = spatialFixture("railway", "historical");
+    const original = JSON.stringify({ ...spatialSnapshot(untouched, legacy), revision: 10, mutations: [] });
+    await writeFile(f.store.path, original);
+    const initial = await f.call(); assert.equal(initial.status, 200);
+    assert.equal(Object.hasOwn(initial.body.objects[0], "revision"), false);
+    assert.equal(await readFile(f.store.path, "utf8"), original, "reading does not migrate original JSON");
+    const first = { operation: "upsert", object: { ...spatialV3Fixture("risk-point", "new"), revision: "forged" }, expectedRevision: 10, mutationId: "new-revision" };
+    const created = await f.call(first); assert.equal(created.status, 200); assert.equal(created.body.objects[2].revision, 1);
+    const retried = await f.call({ ...first, object: { ...first.object, revision: -900 } });
+    assert.equal(retried.status, 200); assert.equal(retried.body.revision, 11); assert.equal(retried.body.objects[2].revision, 1);
+    const edit = await f.call({ operation: "upsert", object: { ...created.body.objects[2], revision: Number.MAX_SAFE_INTEGER, name: "revised" }, expectedRevision: 11, mutationId: "edit-revision" });
+    assert.equal(edit.body.objects[2].revision, 2);
+    const beforeConflict = await readFile(f.store.path, "utf8");
+    assert.equal((await f.call({ operation: "delete", id: "new", expectedRevision: 11, mutationId: "stale-delete" })).status, 409);
+    assert.equal(await readFile(f.store.path, "utf8"), beforeConflict);
+    const deleted = await f.call({ operation: "delete", id: "new", expectedRevision: 12, mutationId: "delete-revision" });
+    assert.equal(deleted.body.objects[2].revision, 3);
+    const restored = await f.call({ operation: "restore", id: "new", expectedRevision: 13, mutationId: "restore-revision" });
+    assert.equal(restored.body.objects[2].revision, 4); assert.deepEqual(restored.body.objects[2].geometry, created.body.objects[2].geometry);
+    const editedLegacy = await f.call({ operation: "upsert", object: { ...legacy, name: "renamed historical" }, expectedRevision: 14, mutationId: "historical-edit" });
+    assert.equal(editedLegacy.body.objects[1].revision, 1); assert.deepEqual(editedLegacy.body.objects[1].source, legacy.source);
+    assert.deepEqual(editedLegacy.body.objects[0], untouched, "unrelated historical object is not assigned a revision");
+    const reopened = await createSafetySpatialStore({ dataDir: f.root }).load();
+    assert.equal(reopened.objects[2].revision, 4); assert.equal(reopened.objects[0].revision, undefined);
+  } finally { await f.close(); }
+});

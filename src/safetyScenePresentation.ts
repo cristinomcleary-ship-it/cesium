@@ -377,6 +377,12 @@ export class SafetyScenePresentation {
       range: camera.rangeMeters ?? sphere.radius * (camera.rangeMultiplier ?? 3) };
   }
 
+  getDisplayMode(): 'presentation' | 'inspection' | undefined {
+    const status = this.controller?.getStatus();
+    if (!status?.ok) return undefined;
+    return status.engineStatus?.mode === 'showcase' ? 'presentation' : status.engineStatus?.mode === 'reality' ? 'inspection' : undefined;
+  }
+
   debugStats(): Record<string, unknown> {
     const evidence = this.controller?.getEvidence();
     const engine = evidence?.scene as Record<string, unknown> | undefined;

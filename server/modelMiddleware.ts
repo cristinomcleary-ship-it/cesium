@@ -413,7 +413,8 @@ export function createModelMiddleware(projectRoot: string) {
     } catch { return sendJson(response, 404, { error: "模型文件不存在" }); }
     response.statusCode = 200;
     response.setHeader("Content-Type", "model/gltf-binary");
-    response.setHeader("Cache-Control", "public, max-age=3600");
+    response.setHeader("Cache-Control", "private, no-store");
+    response.setHeader("Vary", "Cookie");
     createReadStream(requested).pipe(response);
   };
 }

@@ -1,0 +1,28 @@
+body.management-studio-open .safety-dashboard-v3{display:none!important}
+body.management-studio-open .shell>.app-header,body.management-studio-open .shell>.sidebar,body.management-studio-open .viewport>.topbar{display:none!important}
+body.management-studio-open .viewport{position:fixed;inset:0;width:100%;height:100%;background:#081725}
+body.management-studio-open:not(.management-studio-scene) #cesiumContainer{visibility:hidden}
+body.management-studio-open .cesium-viewer-toolbar{display:none!important}
+body.safety-workspace-open.management-studio-open:has(.safety-dashboard-v5) .cesium-viewer-bottom{left:328px!important;bottom:8px!important;max-width:calc(100% - 680px)!important}
+body.management-studio-open:not(.management-studio-scene) .cesium-viewer-bottom{display:none!important}
+body.management-studio-open #safetyWorkspaceHost{z-index:24}
+body.management-studio-open .safety-spatial-editor{top:112px!important;left:auto!important;right:20px;width:336px!important;max-height:calc(100% - 184px)!important;border:1px solid #25465e;border-radius:10px;background:#0d2438;color:#eaf2f8;box-shadow:none}
+body.management-studio-open .spatial-header h2{font-size:16px!important}
+body.management-studio-open .spatial-body{padding:16px!important}
+body.management-studio-open .spatial-primary{background:#128aa5;border-color:#128aa5;color:white;border-radius:6px}
+body.management-studio-open .spatial-secondary{border-radius:6px;border-color:#25465e;background:#102c42;color:#eaf2f8}
+body.management-studio-open .spatial-scene-hint{top:auto;bottom:65px;left:50%;max-width:calc(100% - 730px)}
+body.management-studio-open .safety-reused-video{min-height:0;max-height:none;aspect-ratio:16/9;width:100%;height:auto}
+body.management-spatial-tool [data-management-scene-detail]{visibility:hidden}
+.management-scene-feedback{position:fixed;bottom:96px;left:50%;transform:translateX(-50%);max-width:min(660px,calc(100% - 40px));z-index:200;pointer-events:auto;border:1px solid #25465e;border-radius:7px;background:#0d2438f5;color:#eaf2f8;box-shadow:0 5px 24px #0003;padding:12px 18px;font:14px/1.6 'Noto Sans SC','Microsoft YaHei',sans-serif}
+.management-scene-feedback[hidden]{display:none}.management-scene-feedback.is-error{border-color:#bd4d49}
+.management-layers-dialog{width:min(520px,calc(100vw - 32px));max-height:80vh;overflow:auto;padding:20px;border:1px solid #dfe7ed;border-radius:10px;background:#fff;color:#173041;pointer-events:auto;font:14px/1.5 'Noto Sans SC','Microsoft YaHei',sans-serif}
+.management-layers-dialog::backdrop{background:#102d4355}.management-layers-dialog header{display:flex;align-items:center;justify-content:space-between;gap:16px}.management-layers-dialog h2{margin:0;font-size:20px}.management-layers-dialog p{color:#697e8d}.management-layers-dialog button{min-height:36px;padding:7px 12px;border:1px solid #dfe7ed;border-radius:6px;color:#173041;background:#f3f6f9;cursor:pointer}.management-layers-dialog footer{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+.management-layer-list{max-height:48vh;overflow:auto}.management-layer-list label{display:flex;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid #dfe7ed}.management-layer-list span{overflow-wrap:anywhere}.management-layer-list small{display:block;color:#697e8d}
+@media(max-width:1450px){body.management-studio-open .safety-spatial-editor{top:104px!important;right:16px;width:300px!important;max-height:calc(100% - 170px)!important}body.safety-workspace-open.management-studio-open:has(.safety-dashboard-v5) .cesium-viewer-bottom{left:284px!important;max-width:calc(100% - 600px)!important}}
+@media(max-width:760px){body.management-studio-open .safety-spatial-editor{top:66px!important;right:8px;width:280px!important;max-height:calc(100% - 140px)!important}body.safety-workspace-open.management-studio-open:has(.safety-dashboard-v5) .cesium-viewer-bottom{left:8px!important;max-width:calc(100% - 16px)!important}.management-scene-feedback{bottom:70px}}
+
+body.management-studio-open .safety-model-optimization{top:112px;right:20px;width:336px;max-height:calc(100% - 182px);border:1px solid #25465e;border-radius:10px;background:#0d2438;font-family:"Noto Sans SC","Microsoft YaHei",sans-serif}
+@media(max-width:1450px){body.management-studio-open .safety-model-optimization{top:104px;right:16px;width:300px;max-height:calc(100% - 170px)}}
+
+body.management-studio-open .spatial-button-row button{padding-left:8px;padding-right:8px;white-space:nowrap;font-size:12px;}

@@ -1,5 +1,6 @@
 import { SceneLibrary } from "./sceneLibrary";
 import type { SafetyWorkspace } from "./safetyWorkspace";
+import type { ManagementWorkspace } from "./managementWorkspace";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import {
   BoundingSphere,
@@ -95,7 +96,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <button class="tab" data-tab="monitoring" data-label="基坑监测" data-menu-icon="▥">基坑监测</button>
         <button class="tab" data-tab="report" data-label="3维汇报" data-menu-icon="▣">3维汇报</button>
       </nav>
-      <button id="openSafetyWorkspace" class="text-button safety-entry-button" type="button">安全巡检大屏</button>
+      <button id="openSafetyWorkspace" class="text-button safety-entry-button" type="button">项目统筹平台</button>
       <a href="/ar-v2.html" class="text-button" title="独立视觉定位与融合">AR V2</a>
       <div class="workspace-mode"><span class="workspace-pulse"></span><span>数字孪生工作台</span></div>
     </header>
@@ -572,6 +573,8 @@ viewer.camera.setView({ destination: Cartesian3.fromDegrees(105, 35, 18_000_000)
 const imports: ImportRecord[] = [];
 let safetyWorkspace: SafetyWorkspace | undefined;
 let safetyWorkspaceLoading: Promise<SafetyWorkspace> | undefined;
+let managementWorkspace: ManagementWorkspace | undefined;
+let managementWorkspaceLoading: Promise<ManagementWorkspace> | undefined;
 let projectLibrary: SceneLibrary | undefined;
 const tilesetSourceIds = new Map<string, string>();
 let selectedCad: File | null = null;
@@ -2681,6 +2684,7 @@ async function openSafetyWorkspace(): Promise<void> {
         setVideoPanelActive: active => videoArFusion.setPanelActive(active),
         getPlaybackSource: () => ({ ...videoArFusion.getSharedPlaybackSource(), recordId: projectLibrary!.activeVideoRecordId }),
         syncVideoPlayback: () => videoArFusion.synchronizeSharedPlayback(),
+        clearVideoSource: () => videoArFusion.clear(),
         loadVideoSource: async recordId => {
           await projectLibrary!.restore(recordId);
           if (projectLibrary!.activeVideoRecordId !== recordId) throw new Error("视频来源未能加载，请重试");
@@ -2710,13 +2714,22 @@ async function openSafetyWorkspace(): Promise<void> {
       if (import.meta.env.DEV) Object.assign(window, { __safetyWorkspace: safetyWorkspace });
       return safetyWorkspace;
     }).catch(error => { safetyWorkspaceLoading = undefined; throw error; });
-    await (await safetyWorkspaceLoading).open();
-  } catch (error) { toast(`安全巡检大屏打开失败：${error instanceof Error ? error.message : String(error)}`, true); }
+    const sceneWorkspace = await safetyWorkspaceLoading;
+    if (new URLSearchParams(window.location.search).get("interface") === "legacy") await sceneWorkspace.open();
+    else {
+      managementWorkspaceLoading ??= import("./managementWorkspace").then(({ ManagementWorkspace }) => {
+        managementWorkspace = new ManagementWorkspace(sceneWorkspace, $("#safetyWorkspaceHost"));
+        if (import.meta.env.DEV) Object.assign(window, { __managementWorkspace: managementWorkspace });
+        return managementWorkspace;
+      }).catch(error => { managementWorkspaceLoading = undefined; throw error; });
+      await (await managementWorkspaceLoading).open();
+    }
+  } catch (error) { toast(`项目统筹平台打开失败：${error instanceof Error ? error.message : String(error)}`, true); }
 }
 $("#openSafetyWorkspace").addEventListener("click", () => void openSafetyWorkspace());
 void projectLibrary.start().then(() => {
   renderLayers(); viewer.scene.requestRender();
-  if (new URLSearchParams(window.location.search).get("screen") === "safety") void openSafetyWorkspace();
+  if (["safety", "management"].includes(new URLSearchParams(window.location.search).get("screen") || "")) void openSafetyWorkspace();
 });
 $("#basemap").addEventListener("change", () => projectLibrary?.saveView());
 

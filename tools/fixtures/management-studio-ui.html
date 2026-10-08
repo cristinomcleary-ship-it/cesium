@@ -1,0 +1,11 @@
+<!doctype html><html lang="zh-CN"><meta charset="UTF-8"><title>Management UI isolated contract fixture</title><style>html,body{margin:0;width:100%;height:100%;background:#081725}</style><div id="fixture"></div><script type="module">
+import '/src/style.css';
+import '/src/safetyWorkspace.css';
+import {ManagementStudio} from '/src/managementStudio.ts';
+import {MANAGEMENT_FORMS} from '/src/management/forms.ts';
+window.events=[];window.forms=MANAGEMENT_FORMS;
+window.ui=new ManagementStudio(document.querySelector('#fixture'),{onViewMode:mode=>{events.push(['mode',mode]);return true},onSelect:s=>events.push(['select',s]),onLocate:s=>events.push(['locate',s]),onSceneAction:(a,v)=>events.push([a,v]),onExit:()=>events.push(['exit']),getCameraSnapshot:()=>({position:[1,2,3],direction:[0,1,0],up:[0,0,1],models:[{assetId:'fixture-only',assetVersion:'1',coordinateTransformVersion:'1'}]})});
+window.ui.setVisible(true);
+window.context={spatialObjects:[],media:[],sourceAssets:[],models:[],layers:[],videoState:{available:false,playing:false,currentTime:0,duration:0,rate:1},toolState:{visible:false,drawing:false,stage:'idle',canUndo:false,canRedo:false,draftVertices:0}};
+window.ui.updateSceneContext(window.context);
+</script></html>

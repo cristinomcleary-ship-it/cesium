@@ -1,3 +1,4 @@
+import { managementActor } from "./management/actorContext.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -43,11 +44,11 @@ export function createSafetyEventStore(options: SafetyEventStoreOptions = {}) {
       await rename(temporary, path);
     } catch (error) { await rm(temporary, { force: true }).catch(() => {}); throw error; }
   }
-  function mutate(value: unknown): Promise<SafetyEventSnapshot> {
+  function mutate(value: unknown, actorId?: string): Promise<SafetyEventSnapshot> {
     const mutation = validateSafetyEventMutation(value);
     const task = queue.catch(() => undefined).then(async () => {
       const persisted = await read(), snapshot = publicSnapshot(persisted);
-      const signature = createHash("sha256").update(JSON.stringify(mutation)).digest("hex");
+      const signature = createHash("sha256").update(JSON.stringify(actorId ? { actorId, mutation } : mutation)).digest("hex");
       const receipt = persisted.mutations.find(item => item.id === mutation.mutationId);
       if (receipt) {
         if (receipt.signature !== signature) throw new EventStoreError(409, "MUTATION_ID_REUSED", "请求编号已用于其他操作，请重新读取", snapshot);
@@ -62,14 +63,14 @@ export function createSafetyEventStore(options: SafetyEventStoreOptions = {}) {
         if (event.source.kind === "imported-event") {
           if (!options.validateImportedEvent || !await options.validateImportedEvent(event)) throw new EventStoreError(400, "IMPORT_SOURCE_UNVERIFIED", "导入事件尚未通过现有业务来源核验", snapshot);
         } else if (event.status !== "pending" || event.handling) throw new EventStoreError(400, "INVALID_INITIAL_STATUS", "新人工事件应从待处理开始", snapshot);
-        events.push({ ...event, createdAt: event.source.kind === "imported-event" ? event.createdAt : now, updatedAt: now });
+        events.push({ ...event, ...(actorId ? { createdBy: actorId } : {}), createdAt: event.source.kind === "imported-event" ? event.createdAt : now, updatedAt: now });
       } else {
         const index = events.findIndex(event => event.id === mutation.id);
         if (index < 0) throw new EventStoreError(404, "EVENT_NOT_FOUND", "事件不存在，请重新读取", snapshot);
         if (events[index].status === "completed") throw new EventStoreError(409, "EVENT_COMPLETED", "事件已完成，原处理结果保留", snapshot);
         events[index] = { ...events[index], status: "completed", updatedAt: now,
           handling: { description: mutation.result.description, attachmentIds: mutation.result.attachmentIds || [], handledAt: now,
-            ...(mutation.result.handledBy ? { handledBy: mutation.result.handledBy } : {}) } };
+            ...(actorId || mutation.result.handledBy ? { handledBy: actorId || mutation.result.handledBy } : {}) } };
       }
       const next = validateSafetyEventSnapshot({ version: 1, revision: snapshot.revision + 1, updatedAt: now, events });
       await atomicWrite({ ...next, mutations: [...persisted.mutations, { id: mutation.mutationId, signature }].slice(-64) });
@@ -92,7 +93,7 @@ export function createSafetyEventStore(options: SafetyEventStoreOptions = {}) {
       for await (const raw of req) { const chunk = Buffer.from(raw); bytes += chunk.length; if (bytes > 1_048_576) throw new EventStoreError(413, "BODY_TOO_LARGE", "事件请求过大"); chunks.push(chunk); }
       let value: unknown;
       try { value = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new EventStoreError(400, "INVALID_JSON", "事件请求格式无效"); }
-      output(res, 200, await mutate(value));
+      output(res, 200, await mutate(value, managementActor(req)?.id));
     } catch (error) {
       if (error instanceof EventStoreError) output(res, error.status, { code: error.code, error: error.message, ...(error.snapshot ? { snapshot: error.snapshot } : {}) });
       else if (error instanceof SpatialValidationError) output(res, 400, { code: "VALIDATION", error: error.message });

@@ -201,3 +201,14 @@ test("V3 retains all valid V2 corridor/status sources and skips soft-deleted def
   assert.equal(merged.nodes.some(node => node.spatialObjectId === "deleted"), false);
   assert.equal(merged.alerts.some(alert => alert.id.startsWith("spatial-alert:")), false);
 });
+
+
+test("optional object revisions preserve historical absence and reject invalid persisted numbers", () => {
+  const historical = spatialV3Fixture();
+  assert.equal(Object.hasOwn(validateSpatialObject(historical), "revision"), false);
+  assert.equal(validateSpatialObject({ ...historical, revision: 7 }).revision, 7);
+  assert.equal(validateSpatialSnapshot(spatialSnapshot({ ...historical, revision: 7 })).objects[0].revision, 7);
+  for (const revision of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "7", null]) {
+    assert.throws(() => validateSpatialObject({ ...historical, revision }), /修订号/);
+  }
+});

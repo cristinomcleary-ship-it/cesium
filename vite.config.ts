@@ -1,3 +1,4 @@
+import { managementPlugin } from "./server/managementStore";
 import { modelOptimizationPlugin } from "./server/modelOptimization";
 import { safetyEventPlugin } from "./server/safetyEventStore";
 import { safetySpatialPlugin } from "./server/safetySpatialStore";
@@ -354,18 +355,11 @@ function localTilesMiddleware(request: IncomingMessage, response: ServerResponse
         localMounts.set(id, { root: found.root, entry: found.entry, aggregate: found.aggregate });
         const entryRelative = encodeRelativePath(found.root, found.entry);
         const relativeUrl = `/__local_tiles/files/${id}/${entryRelative}`;
-        const requestHost = request.headers.host ?? "localhost:5173";
-        const priorityHost = requestHost.toLowerCase().startsWith("localhost:")
-          ? `127.0.0.1:${requestHost.split(":").pop()}`
-          : requestHost.toLowerCase().startsWith("127.0.0.1:")
-            ? `localhost:${requestHost.split(":").pop()}`
-            : "";
         return json(response, 200, {
           ok: true,
           entry: found.entry,
-          // A second loopback hostname gives local 3D Tiles an independent
-          // Cesium RequestScheduler pool from slow online basemap requests.
-          url: priorityHost ? `http://${priorityHost}${relativeUrl}` : relativeUrl,
+          // Authenticated model subresources retain the page origin and its session.
+          url: relativeUrl,
           candidateCount: found.candidateCount,
           topLevelCount: found.topLevelCount,
           aggregate: Boolean(found.aggregate),
@@ -391,7 +385,8 @@ function localTilesMiddleware(request: IncomingMessage, response: ServerResponse
   response.setHeader("Content-Type", contentType(requested));
   response.setHeader("Content-Length", fileStats.size);
   response.setHeader("Last-Modified", fileStats.mtime.toUTCString());
-  response.setHeader("Cache-Control", extname(requested).toLowerCase() === ".json" ? "no-cache" : "public, max-age=86400, immutable");
+  response.setHeader("Cache-Control", "private, no-store");
+  response.setHeader("Vary", "Cookie");
   createReadStream(requested).pipe(response);
 }
 
@@ -566,6 +561,7 @@ export default defineConfig({
     },
   },
   plugins: [
+    managementPlugin(),
     safetySpatialPlugin(),
     modelOptimizationPlugin(),
     safetyEventPlugin(),

@@ -24,6 +24,8 @@ export type SpatialGeometry =
   | { type: "Point"; position: SafetyPosition };
 export type SpatialObject = {
   id: string;
+  /** Server-owned object revision; absent on preserved historical records until their next mutation. */
+  revision?: number;
   kind: SpatialKind;
   name: string;
   creationSource?: "user_drawn_model_surface";
