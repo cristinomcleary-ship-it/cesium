@@ -70,7 +70,7 @@ export async function installPresentation(options = {}) {
         clippingPositions: displayEnvelope.clippingPositions?.map(p => [p?.x, p?.y, p?.z]) },
       home, homeOnInstall: options.homeOnInstall !== false, allowMaterialReplacement: advanced.allowMaterialReplacement === true,
       configurationSource: advanced.configurationSource, materialReplacementReason: advanced.materialReplacementReason,
-      effects: options.effects
+      effects: options.effects, palette: options.palette
     });
   } catch (error) {
     return notifyFailure('CONFIGURATION_INVALID', `显示配置无法读取：${errorText(error)}`);
@@ -205,7 +205,7 @@ async function connect(options, record) {
       return { ...current, engineStatus: currentEngine,
         effects: effects?.getState() || { effects: [], paused: effectsPaused, reducedMotion } };
     },
-    getEvidence: () => ({ scope: 'existing-viewer-host-wiring', source: 'Cesium_Platform_Design_v4/runtime/install-presentation.js', createdViewerCount: 0,
+    getEvidence: () => ({ scope: 'existing-viewer-host-wiring', source: 'Cesium_Platform_Design_v5/runtime/install-presentation.js', createdViewerCount: 0,
       businessGeometryWrites: 0, installed, destroyed, boundCleanupCount: removers.length,
       scene: engine?.getEvidence(), effects: effects?.getState() || { effects: [] },
       advancedConfigurationSource: advanced.configurationSource || null,
@@ -215,7 +215,7 @@ async function connect(options, record) {
     const created = await createScenePresentation({
       Cesium: C, viewer, tilesets: record.tilesets, displayEnvelope: options.displayEnvelope,
       initialMode: 'showcase', allowMaterialReplacement: advanced.allowMaterialReplacement === true,
-      ellipsoid: advanced.ellipsoid, onStatus: engineStatus
+      ellipsoid: advanced.ellipsoid, palette: options.palette, onStatus: engineStatus
     });
     if (!created.ok) {
       if (installations.get(viewer) === record) installations.delete(viewer);

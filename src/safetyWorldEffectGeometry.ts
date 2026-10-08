@@ -1,9 +1,29 @@
 import { Cartesian3, Matrix4, Transforms } from "cesium";
-import type { SafetyNode, SafetyPosition, SafetyTrackPoint } from "./safetyTypes.ts";
+import type { SafetyDevice, SafetyNode, SafetyPage, SafetyPosition, SafetyTrackPoint } from "./safetyTypes.ts";
 
 function validPosition(point: SafetyPosition): boolean {
   return Number.isFinite(point.longitude) && Math.abs(point.longitude) <= 180
     && Number.isFinite(point.latitude) && Math.abs(point.latitude) <= 90 && Number.isFinite(point.height);
+}
+
+export type SafetyInspectionContext = { mediaId: string; trajectoryValid: boolean; deviceId?: string };
+
+/** A displayed flight belongs to the selected recording, never just to the current project. */
+export function inspectionDeviceEligible(device: SafetyDevice, page: SafetyPage | undefined, context?: SafetyInspectionContext): boolean {
+  if (page !== "inspection" || !context?.trajectoryValid || !context.mediaId || device.mediaId !== context.mediaId
+    || device.provenance === "demo" || (context.deviceId && device.id !== context.deviceId)) return false;
+  return device.track.some((point, i) => {
+    const previous = device.track[i - 1];
+    return previous && validPosition(previous) && validPosition(point)
+      && Number.isFinite(previous.mediaSeconds) && Number.isFinite(point.mediaSeconds)
+      && Number.isFinite(previous.time) && Number.isFinite(point.time)
+      && point.time > previous.time && point.time - previous.time <= 5000
+      && point.mediaSeconds > previous.mediaSeconds && point.segment === previous.segment;
+  });
+}
+
+export function sceneLabelPixels(kind: SafetyNode["kind"] | "device", selected = false, largeText = false): number {
+  return (selected ? 14 : kind === "section" || kind === "device" ? 13 : 12) + (largeText ? 2 : 0);
 }
 
 /** Keep source order and elevations; never bridge missing, excluded, or discontinuous telemetry. */

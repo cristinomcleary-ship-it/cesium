@@ -3,6 +3,9 @@
  * No Viewer creation; no modelMatrix/geometry/data-store changes; no picking.
  * Input positions are world ECEF on the declared project's ellipsoid, with known heights.
  * Showcase extent is a presentation configuration, NEVER a saved business polygon.
+ * The default showcase grades the original material toward the approved blue-gray
+ * reference while retaining texture detail, material differences and source lighting.
+ * It never replaces the original surface with one flat blue color or fabricated lamps.
  * See the unified requirement for real-project visual acceptance and integration.
  */
 export async function createScenePresentation(options = {}) {
@@ -16,6 +19,29 @@ export async function createScenePresentation(options = {}) {
   };
   if (!C || !viewer?.scene || viewer.isDestroyed?.())
     return fail('VIEWER_REQUIRED', 'Pass the existing live Cesium Viewer and its Cesium namespace.');
+  if (options.palette !== undefined && (!options.palette || typeof options.palette !== 'object' || Array.isArray(options.palette)))
+    return fail('INVALID_PALETTE', 'palette must be an optional plain configuration object.');
+  // Color strings are sRGB/CSS. Shader grading is explicitly converted from and
+  // back to Cesium's linear material.diffuse, before the inherited lighting stage.
+  const palette = Object.freeze({
+    saturation: 0.72, brightness: 0.98, contrast: 1.04,
+    coolness: 0.12, blueGrayMix: 0.24, shadowLift: 0.020,
+    background: '#030c18', sidewall: '#0b2747', bottom: '#061326',
+    outline: '#29c6ff', outlineOpacity: 0.90, outlineWidth: 1.8,
+    outlineGlowWidth: 4.2, outlineGlowOpacity: 0.16,
+    bottomOutline: '#176591', bottomOutlineOpacity: 0.50, bottomOutlineWidth: 1,
+    ...(options.palette || {})
+  });
+  const ranges = { saturation: [0, 1.2], brightness: [0.7, 1.3], contrast: [0.8, 1.2],
+    coolness: [0, 0.15], blueGrayMix: [0, 0.4], shadowLift: [0, 0.04], outlineOpacity: [0, 1],
+    outlineWidth: [0.5, 3], outlineGlowWidth: [0, 8], outlineGlowOpacity: [0, 0.25],
+    bottomOutlineOpacity: [0, 1], bottomOutlineWidth: [0.5, 2] };
+  if (Object.entries(ranges).some(([k, [lo, hi]]) =>
+      !Number.isFinite(palette[k]) || palette[k] < lo || palette[k] > hi))
+    return fail('INVALID_PALETTE', 'Palette grading/line parameters must stay within their documented modest ranges.');
+  if (['background', 'sidewall', 'bottom', 'outline', 'bottomOutline'].some(k =>
+      typeof palette[k] !== 'string' || !C.Color.fromCssColorString(palette[k])))
+    return fail('INVALID_PALETTE_COLOR', 'Palette colors must be valid CSS colors.');
   const scene = viewer.scene;
   if (scene.mode !== C.SceneMode.SCENE3D)
     return fail('SCENE_3D_REQUIRED', 'Finish scene morphing and enter 3D before applying presentation.');
@@ -92,7 +118,7 @@ export async function createScenePresentation(options = {}) {
     ...xy.map(p => distanceToRing(p, clipXY)), ...clipXY.map(p => distanceToRing(p, xy)));
   if (clippingBoundaryDeviationMeters > 1)
     return fail('CLIPPING_ENVELOPE_MISMATCH', 'Clipping corners and sampled skirt must describe the same horizontal display perimeter.');
-  const depth = env.baseDepthMeters ?? 40;
+  const depth = env.baseDepthMeters ?? Math.max(3, Math.min(90, sphere.radius * 0.09));
   if (!(Number.isFinite(depth) && depth > 0 && depth < 5000))
     return fail('BASE_DEPTH', 'baseDepthMeters must be positive and less than 5000; it is decorative, not excavation depth.');
   const baseHeight = Math.min(...cartographics.map(p => p.height)) - depth;
@@ -152,30 +178,56 @@ export async function createScenePresentation(options = {}) {
   const topHeights = [...cartographics.map(p => p.height), cartographics[0].height];
   const bottom = cartographics.map(p => ellipsoid.cartographicToCartesian(new C.Cartographic(p.longitude, p.latitude, baseHeight)));
   tagged('skirt', { wall: { positions: closed, maximumHeights: topHeights,
-    minimumHeights: closed.map(() => baseHeight), material: color('#10263c'), outline: false } });
+    minimumHeights: closed.map(() => baseHeight), material: color(palette.sidewall), outline: false } });
   tagged('bottom', { polygon: { hierarchy: new C.PolygonHierarchy(bottom), perPositionHeight: true,
-    material: color('#08182a'), outline: false } });
+    material: color(palette.bottom), outline: false } });
   const raised = cartographics.map(p => ellipsoid.cartographicToCartesian(new C.Cartographic(p.longitude, p.latitude, p.height + 0.15)));
-  tagged('top-edge', { polyline: { positions: [...raised, raised[0]], width: 3,
-    arcType: C.ArcType.NONE, material: new C.PolylineGlowMaterialProperty({ color: color('#43d9ff'), glowPower: 0.18 }) } });
-  tagged('bottom-edge', { polyline: { positions: [...bottom, bottom[0]], width: 2,
-    arcType: C.ArcType.NONE, material: color('#156b88') } });
-  // Low-saturation material keeps the original texture luminance. POSITION is mandatory
-  // in glTF; derivative normals avoid depending on an optional NORMAL attribute.
-  // RGB constants below are linear shader values, not sRGB/CSS values.
+  // A bounded translucent halo under a narrow cyan core. PolylineGlow's built-in
+  // singular center can become white; these two controlled layers never add white
+  // or bloom to the model surface. They belong only to the decorative display edge.
+  tagged('top-halo', { polyline: { positions: [...raised, raised[0]],
+    show: palette.outlineGlowWidth > palette.outlineWidth && palette.outlineGlowOpacity > 0,
+    width: Math.max(palette.outlineWidth, palette.outlineGlowWidth),
+    arcType: C.ArcType.NONE, material: color(palette.outline).withAlpha(palette.outlineGlowOpacity) } });
+  tagged('top-edge', { polyline: { positions: [...raised, raised[0]], width: palette.outlineWidth,
+    arcType: C.ArcType.NONE, material: color(palette.outline).withAlpha(palette.outlineOpacity) } });
+  tagged('bottom-edge', { polyline: { positions: [...bottom, bottom[0]], width: palette.bottomOutlineWidth,
+    arcType: C.ArcType.NONE, material: color(palette.bottomOutline).withAlpha(palette.bottomOutlineOpacity) } });
+  // MODIFY_MATERIAL runs after Cesium has sampled the original base-color texture.
+  // The installed Cesium 1.144 MaterialStageFS converts that texture from sRGB to
+  // linear; LightingStageFS later performs output conversion/tone mapping.
+  // Grade once in display-like sRGB then return linear values for lighting. Do not
+  // gamma-encode material.diffuse twice, paint over it, or replace its normals.
+  // No lightingModel override: preserve each primitive's original PBR/UNLIT model.
+  // Sources: Cesium CustomShaderGuide and packages/engine/Source/Shaders/Model/
+  // MaterialStageFS.glsl + LightingStageFS.glsl (checked against this project's locked Cesium 1.144 source).
   const makeShader = () => new C.CustomShader({
-    mode: C.CustomShaderMode.MODIFY_MATERIAL, lightingModel: C.LightingModel.UNLIT,
+    mode: C.CustomShaderMode.MODIFY_MATERIAL,
+    uniforms: {
+      u_saturation: { type: C.UniformType.FLOAT, value: palette.saturation },
+      u_brightness: { type: C.UniformType.FLOAT, value: palette.brightness },
+      u_contrast: { type: C.UniformType.FLOAT, value: palette.contrast },
+      u_coolness: { type: C.UniformType.FLOAT, value: palette.coolness },
+      u_blueGrayMix: { type: C.UniformType.FLOAT, value: palette.blueGrayMix },
+      u_shadowLift: { type: C.UniformType.FLOAT, value: palette.shadowLift }
+    },
     fragmentShaderText: `
       void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
-        float value = clamp(dot(material.diffuse, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
-        vec3 dx = dFdx(fsInput.attributes.positionEC);
-        vec3 dy = dFdy(fsInput.attributes.positionEC);
-        vec3 rawN = cross(dx, dy);
-        vec3 n = rawN / max(length(rawN), 0.00001);
-        float shade = 0.45 + 0.55 * abs(dot(n, normalize(vec3(-0.35, 0.65, 0.72))));
-        vec3 blue = mix(vec3(0.002, 0.007, 0.018), vec3(0.040, 0.140, 0.280), pow(value, 1.25));
-        material.diffuse = blue * shade;
-        material.emissive = vec3(0.0);
+        vec3 source = czm_linearToSrgb(max(material.diffuse, vec3(0.0)));
+        float luminance = dot(source, vec3(0.2126, 0.7152, 0.0722));
+        vec3 graded = mix(vec3(luminance), source, u_saturation);
+        graded = (graded - vec3(0.5)) * u_contrast + vec3(0.5);
+        graded *= u_brightness * vec3(1.0 - 0.45 * u_coolness,
+                                     1.0 + 0.08 * u_coolness,
+                                     1.0 + 0.35 * u_coolness);
+        // Limited blue-gray grading preserves at least 60% of the graded original
+        // color even at the strongest allowed setting. Brighter concrete remains
+        // brighter than darker ground; warm source materials retain their identity.
+        vec3 blueGray = luminance * vec3(0.58, 0.84, 1.10);
+        graded = mix(graded, blueGray, u_blueGrayMix);
+        float shadowWeight = 1.0 - smoothstep(0.08, 0.50, luminance);
+        graded += u_shadowLift * shadowWeight * (vec3(1.0) - graded);
+        material.diffuse = czm_srgbToLinear(max(graded, vec3(0.0)));
       }
     `
   });
@@ -217,7 +269,7 @@ export async function createScenePresentation(options = {}) {
     }
     if (lastRestoreConflicts.length) return emit();
     try {
-      patch(scene, 'backgroundColor', color('#030b18'));
+      patch(scene, 'backgroundColor', color(palette.background));
       for (const target of [scene.skyBox, scene.skyAtmosphere, scene.sun, scene.moon, scene.globe]) patch(target, 'show', false);
       patch(scene.fog, 'enabled', false);
       for (const r of originals) {
@@ -284,6 +336,7 @@ export async function createScenePresentation(options = {}) {
     boundaryVertices: positions.map(p => ({ x: p.x, y: p.y, z: p.z })),
     boundaryHeightRange: [Math.min(...topHeights), Math.max(...topHeights)],
     clippingVertexCount: clippingPositions.length, sampledBoundaryVertexCount: positions.length, clippingBoundaryDeviationMeters,
+    palette: { ...palette }, lightingModel: 'inherited', materialColorStrategy: 'source-texture-with-blue-gray-grade',
     displayOnly: true, envelopeWritesToBusinessStore: 0
   });
   const destroy = () => {

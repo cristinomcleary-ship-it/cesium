@@ -7,16 +7,18 @@ import platformTokens from "./safetyPlatformTokens.json";
 import { applySafetyVisualTokens } from "./safetyVisualConfig.ts";
 import { SafetyDrawingViewer } from "./safetyDrawingViewer.ts";
 import "./safetyDashboardV3.css";
+import "./safetyDashboardV5.css";
 echarts.use([LineChart, PieChart, GridComponent, TooltipComponent, CanvasRenderer]);
 export type SafetyDashboardPage = "overview" | "inspection" | "events" | "components";
 export type SafetyDashboardLayer = { id: string; name: string; kind: string; visible: boolean };
 export type SafetyDashboardMediaSource = SafetyMedia & { mode: "live" | "replay"; recordedAt?: number; durationSeconds?: number };
 export type SafetyDashboardMediaState = { selectedId?: string; mode?: "live" | "replay"; canPlay?: boolean; playing?: boolean; rate?: number; updatedAt?: number; hasTrack?: boolean; currentTimeSeconds?: number; durationSeconds?: number; error?: string };
+export type SafetyDashboardVideoRoamState = { available: boolean; enabled: boolean; active: boolean; state: string; label: string; message?: string; missing?: string[]; mode?: "path" | "camera"; userWantsFollow?: boolean; mediaTime?: number; telemetryTimeMs?: number };
 export type SafetyPresentationStatus = { mode?: "showcase" | "reality"; ok: boolean; state?: string; message?: string; authoring?: boolean };
 export type SafetyDashboardOptions = {
   onSelect(selection: SafetySelection): void; onPatch(patch: Partial<SafetyState>): void;
   onHome?(): void; onExit(): void; onEarth(): void; onMedia(media: SafetyMedia, selection?: SafetySelection): void | Promise<void>;
-  onVideoSettings?(): void; onAuthoring?(): void; onRefresh(): void; onLayerToggle(id: string, visible: boolean): void;
+  onVideoSettings?(): void; onModelOptimization?(): void; onTextScaleChange?(large: boolean): void; onVideoRoamChange?(enabled: boolean): void; onAuthoring?(): void; onRefresh(): void; onLayerToggle(id: string, visible: boolean): void;
   onPageChange?(page: SafetyDashboardPage): boolean | void; onInspectionModeChange?(mode: "live" | "replay"): void;
   onHandleEvent?(id: string, text: string): Promise<void>;
   onEventFilter?(status: "all" | SafetyAlert["status"], query: string): void; onPlaybackRateChange?(rate: number): void; onMediaSeekSeconds?(seconds: number): void;
@@ -26,7 +28,7 @@ const esc = (v: unknown): string => String(v ?? "").replace(/[&<>"']/g, c => ({ 
 const date = (v: number): string => Number.isFinite(v) ? new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(v) : "时间未录入";
 const clock = (v: number): string => Number.isFinite(v) ? new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(v) : "—";
 const elapsedTime = (seconds: number): string => { const value=Math.max(0,Math.floor(seconds)); const h=Math.floor(value/3600),m=Math.floor(value/60)%60,s=value%60; return `${h?`${String(h).padStart(2,"0")}:`:""}${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`; };
-const pageNames = { overview: "项目总览", inspection: "现场巡检", events: "风险处置", components: "构件资料" };
+const pageNames = { overview: "项目总览", inspection: "无人机巡检", events: "风险管控", components: "构件资料" };
 const components = { cap: "盖梁", column: "墩柱", footing: "承台", pile: "桩基" };
 const statuses = { open: "待处理", rectifying: "处理中", closed: "已完成", all: "全部" };
 const grades = { unassessed: "待评估", high: "重大", medium: "较高", low: "一般" };
@@ -64,23 +66,25 @@ export class SafetyDashboard {
  private pierId?: string; private category?: keyof typeof components; private pierSearch = "";
  private preferences: { reduced?: boolean; largeText?: boolean } = {}; private preferencesApplied = false;
  private presentationStatus?: SafetyPresentationStatus;
+ private roamState: SafetyDashboardVideoRoamState = {available:false,enabled:false,active:false,state:"unavailable",label:"未关联同录像航迹"};
+ private optimizationVisible = false; private lastRoamUiKey = "";
  constructor(host: HTMLElement, private readonly options: SafetyDashboardOptions) {
-  this.root.className = "safety-dashboard safety-dashboard-v3"; applySafetyVisualTokens(this.root);
+  this.root.className = "safety-dashboard safety-dashboard-v3 safety-dashboard-v5"; applySafetyVisualTokens(this.root);
   for (const [key,value] of Object.entries(platformTokens.colors)) this.root.style.setProperty(`--v3-${key}`,value);
   const nav=(key:SafetyDashboardPage,symbol:string)=>btn("tab",icon(symbol)+pageNames[key],`data-tab="${key}"`,"v3-nav");
   const pages=(names:string,body:string)=>`<div data-pages="${names}" class="v3-page-panels">${body}</div>`;
-  this.root.innerHTML=`<header class="v3-header"><nav aria-label="主导航左侧">${nav("overview","home")}${nav("inspection","drone")}</nav><div class="v3-brand"><h1>邻近营业线施工安全平台</h1><p><span data-ref="projectName">工程项目</span> · <span data-ref="pageName">项目总览</span></p></div><nav class="v3-nav-right" aria-label="主导航右侧">${nav("events","shield")}${nav("components","bridge")}</nav></header>
+  this.root.innerHTML=`<header class="v3-header"><nav aria-label="主导航左侧">${nav("overview","home")}${nav("inspection","drone")}</nav><div class="v3-brand"><h1>邻近营业线施工安全数字孪生平台</h1><p><span data-ref="projectName">工程项目</span> · <span data-ref="pageName">项目总览</span></p></div><nav class="v3-nav-right" aria-label="主导航右侧">${nav("events","shield")}${nav("components","bridge")}</nav></header>
   <div class="v3-sidebar-toggles">${btn("sidebar-toggle","☰ 列表",'data-side="left" aria-expanded="false"')}${btn("sidebar-toggle","详情 ☰",'data-side="right" aria-expanded="false"')}</div>
-  <aside class="v3-sidebar v3-left" aria-label="项目与任务">${pages("overview",card("工程概况","bridge",'<div data-ref="metrics" class="v3-metrics"></div>')+card("施工区域","polygon",'<div data-ref="areas"></div>',"v3-area-card",btn("authoring","配置 ›","","v3-text-button"))+card("巡检概况","chart",'<div class="v3-task-stats"><div data-ref="distribution" class="v3-donut"></div><div data-ref="taskSummary"></div></div><div data-ref="trend" class="v3-trend"></div><p data-ref="taskStatus" class="v3-muted"></p>'))}
-  ${pages("inspection",card("巡检记录","drone",'<div class="v3-segmented">'+btn("inspection-mode","实时画面",'data-inspection-mode="live"')+btn("inspection-mode","历史回放",'data-inspection-mode="replay"')+'</div><div data-ref="mediaSources"></div><p class="v3-muted">视频与已关联轨迹共用回放时间，未关联轨迹的画面可独立查看。</p>',"v3-full-card"))}
+  <aside class="v3-sidebar v3-left" aria-label="项目与任务">${pages("overview",card("工程概况","bridge",'<div data-ref="metrics" class="v3-metrics"></div><div data-ref="spatialCounts" class="v5-spatial-counts"></div>',"v5-overview-metrics")+card("施工区段","polygon",'<div data-ref="areas"></div>',"v3-area-card",btn("authoring","配置 ›","","v3-text-button"))+card("巡检任务","chart",'<div data-ref="taskCharts" class="v3-task-stats"><div data-ref="distribution" class="v3-donut"></div><div data-ref="taskSummary"></div></div><div data-ref="trend" class="v3-trend"></div><p data-ref="taskStatus" class="v3-muted"></p>',"v5-overview-tasks",btn("tab","查看 ›",'data-tab="inspection"',"v3-text-button")))}
+  ${pages("inspection",card("巡检任务","drone",'<div class="v3-segmented">'+btn("inspection-mode","实时画面",'data-inspection-mode="live"')+btn("inspection-mode","历史回放",'data-inspection-mode="replay"')+'</div><div data-ref="mediaSources"></div><p class="v3-muted v5-list-note" data-ref="inspectionNote">选择记录后查看画面。</p>',"v3-full-card"))}
   ${pages("events",card("风险处置","shield",'<div class="v3-segmented">'+btn("risk-tab","告警事件",'data-risk-tab="events"')+btn("risk-tab","人工风险点",'data-risk-tab="points"')+'</div><div data-ref="eventFilters" class="v3-status-filters"></div><details data-ref="eventSearchBox" class="v3-search"><summary>搜索与筛选</summary><label>事件名称<input data-action="event-search" type="search" placeholder="搜索事件"></label><label>事件等级<select data-action="severity"><option value="all">全部等级</option><option value="high">重大</option><option value="medium">较高</option><option value="low">一般</option></select></label></details><div data-ref="alerts"></div><p data-ref="eventNote" class="v3-muted"></p>',"v3-full-card"))}
   ${pages("components",card("构件资料","bridge",'<label class="v3-field">选择墩位<input type="search" data-action="pier-search" placeholder="查找墩位"></label><div data-ref="piers" class="v3-piers"></div><h3 class="v3-field-title">选择构件类别</h3><div data-ref="categories" class="v3-components"></div><p class="v3-muted">选择构件类别，查看已有参数与施工图。</p>',"v3-full-card"))}</aside>
-  <div class="safety-scene-hud"><div data-ref="breadcrumbs" class="v3-breadcrumbs"></div><div class="v3-scene-actions">${btn("locate",icon("pin"),'aria-label="定位当前对象"')}${btn("earth","◎",'aria-label="地球视角"')}</div><div class="v3-scene-status" data-ref="presentationStatus" role="status" hidden></div><div class="v3-notice" data-ref="notice" role="status" hidden></div><div class="v3-legend" data-ref="legend"><span>━ 施工区域</span><span>┄ 铁路范围</span><span>● 人工风险点</span></div></div>
-  <aside class="v3-sidebar v3-right" aria-label="现场与详情"><section class="v3-card v3-video-card" data-ref="videoCard"><header><h2>${icon("camera")}<span data-ref="videoHeading">现场画面</span></h2>${btn("video-settings","选择视频 ›","","v3-text-button")}</header><div class="v3-card-body"><div data-ref="videoHost" class="v3-video-host"><div class="v3-video-empty">${icon("camera")}<strong>暂无可用画面</strong><p>选择已有视频，或继续查看模型</p></div></div><div class="v3-video-caption"><strong data-ref="mediaName">暂未关联视频</strong><span data-ref="mediaUpdated"></span></div><p data-ref="videoStatus" class="v3-muted"></p><div data-ref="videoActions" class="v3-video-actions"></div>${pages("overview",btn("tab","进入现场巡检 ›",'data-tab="inspection"',"v3-text-button"))}</div></section>
-  ${pages("overview",card("待处理事件","shield",'<div data-ref="summaryAlerts"></div>',"",btn("tab","查看 ›",'data-tab="events"',"v3-text-button"))+card("选中对象","pin",'<div data-ref="summaryObject"></div>'))}
+  <div class="safety-scene-hud"><div data-ref="breadcrumbs" class="v3-breadcrumbs"></div><div class="v3-scene-actions" hidden></div><div class="v3-scene-status" data-ref="presentationStatus" role="status" hidden></div><div class="v3-notice" data-ref="notice" role="status" hidden></div><div class="v3-legend" data-ref="legend" hidden></div><div data-ref="roamScene" class="v5-roam-scene" hidden>${icon("drone")}<strong data-ref="roamSceneLabel"></strong><span data-ref="roamSceneTime"></span>${btn("roam-stop","退出跟随","","v3-text-button")}</div></div>
+  <aside class="v3-sidebar v3-right" aria-label="现场与详情"><section class="v3-card v3-video-card" data-ref="videoCard"><header><h2>${icon("camera")}<span data-ref="videoHeading">现场视频</span></h2>${btn("video-settings","选择视频 ›","","v3-text-button")}</header><div class="v3-card-body"><div data-ref="videoEmpty" class="v5-video-empty"><span>${icon("camera")}</span><div><strong>暂无可用画面</strong><p>请选择已有视频，模型仍可操作。</p></div></div><div data-ref="videoHost" class="v3-video-host"><div class="v3-video-empty">${icon("camera")}<strong>暂无可用画面</strong><p>选择已有视频，或继续查看模型</p></div></div><div class="v3-video-caption"><strong data-ref="mediaName">暂未关联视频</strong><span data-ref="mediaUpdated"></span></div><p data-ref="videoStatus" class="v3-muted"></p><div data-ref="roamControls" class="v5-roam-controls" hidden>${btn("video-roam",icon("drone")+"视频漫游",'aria-pressed="false" disabled',"v5-roam-toggle")}<span data-ref="roamStatus">未关联同录像航迹</span></div><div data-ref="videoActions" class="v3-video-actions"></div>${pages("overview",btn("tab","进入现场巡检 ›",'data-tab="inspection"',"v3-text-button"))}</div></section>
+  ${pages("overview",card("风险事件","shield",'<div data-ref="summaryAlerts"></div>',"",btn("tab","查看 ›",'data-tab="events"',"v3-text-button"))+card("设备状态","drone",'<div data-ref="devices"></div><div data-ref="summaryObject" class="v5-selected-summary"></div>'))}
   ${pages("events components",card('<span data-ref="detailHeading">事件详情</span>',"file",'<div data-ref="detail"></div><div data-ref="media"></div><section data-ref="handleForm" class="v3-handle-form" hidden><div class="v3-workflow"><span>✓ 发现</span><b>2 处理</b><span>3 完成</span></div><label class="v3-field">处理说明 <small>必填</small><textarea data-action="handle-text" maxlength="4000" rows="6" placeholder="简要说明现场采取的处理措施"></textarea></label><p data-ref="handleStatus" class="v3-form-status" role="status"></p><div class="v3-button-row">'+btn("handle-cancel","返回详情","","v3-secondary")+btn("handle-save","保存处理结果","","v3-primary")+'</div></section><div data-ref="detailActions" class="v3-button-row"></div>',"v3-full-card"))}</aside>
-  <section data-ref="timeline" class="v3-timeline-panel" data-pages="inspection"><div class="v3-timeline-title"><span data-ref="timelineHeading">历史回放时间轴</span><b data-ref="playbackTime">—</b></div><div class="v3-timeline-controls">${btn("play","▶ 播放",'aria-label="播放"',"v3-primary")}<input type="range" data-action="time" min="0" max="1" step="1" aria-label="共享回放时间轴"><label><span class="v3-sr-only">播放速度</span><select data-action="playback-rate"><option value="0.5">0.5×</option><option value="1">1×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label></div><div class="v3-time-labels"><span data-ref="rangeStart">—</span><span data-ref="trackStatus"></span><span data-ref="rangeEnd">—</span></div></section>
-  <footer class="v3-toolbar"><div class="v3-segmented">${btn("mode","展示",'data-mode="presentation"')}${btn("mode","实景",'data-mode="inspection"')}</div><span class="v3-toolbar-divider"></span>${btn("layers",icon("layers")+"图层")}${btn("authoring",icon("polygon")+"区域配置")}${btn("home",icon("home")+"回到总览")}${btn("motion-toggle","暂停装饰")}${btn("settings",icon("settings")+"显示设置")}</footer><div data-ref="connection" class="v3-footer-note">正在载入项目</div>${btn("exit","原有工作台 ↗","","v3-workbench")}
+  <section data-ref="timeline" class="v3-timeline-panel" data-pages="overview inspection"><div class="v3-timeline-title"><span data-ref="timelineHeading">暂无可回放记录</span><span data-ref="trackStatus"></span>${btn("timeline-records","选择回放 ›","","v3-text-button")}</div><div class="v3-timeline-controls">${btn("play","▶",'aria-label="播放" title="播放"',"v3-primary")}<b data-ref="playbackTime">00:00</b><div class="v5-scrub"><input type="range" data-action="time" min="0" max="1" step="1" aria-label="共享回放时间轴"><div data-ref="timelineMarkers" class="v5-timeline-markers"></div></div><span data-ref="rangeEnd">时长未读取</span><label><span class="v3-sr-only">播放速度</span><select data-action="playback-rate"><option value="0.5">0.5×</option><option value="1">1×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label></div><span data-ref="rangeStart" class="v3-sr-only">00:00</span></section>
+  <div class="v3-toolbar" aria-label="模型工具"><div class="v3-segmented">${btn("mode","展示",'data-mode="presentation"')}${btn("mode","实景",'data-mode="inspection"')}</div>${btn("home",icon("home"),'title="回到总览" aria-label="回到总览"',"v5-icon-tool")}${btn("layers",icon("layers"),'title="图层" aria-label="图层"',"v5-icon-tool")}${btn("authoring",icon("polygon")+"区域配置")}${btn("model-optimization",icon("bridge")+"模型优化")}${btn("motion-toggle","Ⅱ",'title="暂停装饰" aria-label="暂停装饰"',"v5-icon-tool")}${btn("settings",icon("settings"),'title="显示设置" aria-label="显示设置"',"v5-icon-tool")}</div><div data-ref="connection" class="v3-footer-note">正在载入项目</div>${btn("exit","原有工作台 ↗","","v3-workbench")}
   <div data-ref="popoverBackdrop" class="v3-popover-backdrop" hidden></div><aside data-ref="popover" class="v3-popover" hidden><header><h2 data-ref="popoverTitle">显示设置</h2>${btn("popover-close","×",'aria-label="关闭工具"')}</header><div data-ref="popoverBody"></div>${btn("popover-close","完成","","v3-primary v3-wide")}</aside>`;
   host.append(this.root);this.videoHost=this.ref<HTMLDivElement>("videoHost");this.drawing=new SafetyDrawingViewer(host,()=>options.onExit());
   this.trend=echarts.init(this.ref("trend"),undefined,{renderer:"canvas"});this.distribution=echarts.init(this.ref("distribution"),undefined,{renderer:"canvas"});
@@ -88,7 +92,7 @@ export class SafetyDashboard {
   this.observer=new ResizeObserver(()=>this.resizeCharts());this.observer.observe(this.ref("trend"));this.observer.observe(this.ref("distribution"));
   this.root.addEventListener("click",e=>this.click(e),{signal:this.events.signal});this.root.addEventListener("change",e=>this.change(e),{signal:this.events.signal});this.root.addEventListener("input",e=>this.input(e),{signal:this.events.signal});
   try{const p=JSON.parse(localStorage.getItem(prefKey)||"{}");this.preferences={reduced:typeof p.reduced==="boolean"?p.reduced:undefined,largeText:p.largeText===true};}catch{/* Preferences are optional. */}
-  this.root.classList.toggle("v3-large-text",!!this.preferences.largeText);this.renderPage();
+  this.root.classList.toggle("v3-large-text",!!this.preferences.largeText);queueMicrotask(()=>{if(!this.disposed)this.options.onTextScaleChange?.(!!this.preferences.largeText);});this.renderPage();
  }
  private ref<T extends HTMLElement=HTMLElement>(name:string):T{return this.root.querySelector<T>(`[data-ref="${name}"]`)!;}
  private resizeCharts():void{if(!this.visible||this.disposed)return;if(this.ref("trend").offsetWidth)this.trend.resize();if(this.ref("distribution").offsetWidth)this.distribution.resize();}
@@ -104,33 +108,41 @@ export class SafetyDashboard {
  }
  private refresh():void{this.lastKey="";if(this.dataset&&this.state&&this.view)this.render();}
  private render():void{if(!this.dataset||!this.state||!this.view||this.disposed)return;this.renders++;this.root.dataset.mode=this.appliedMode()||"unavailable";this.ref("projectName").textContent=this.dataset.name;this.ref("projectName").title=this.dataset.name;this.ref("breadcrumbs").innerHTML=btn("home",icon("pin")+esc(this.dataset.name),"","v3-breadcrumb-project")+`<span>›</span><span>${pageNames[this.page]}</span>`;this.overview();this.inspection();this.eventList();this.componentList();this.detail();this.renderPage();this.playback();}
- private renderPage():void{this.root.dataset.page=this.page;this.ref("pageName").textContent=pageNames[this.page];this.root.querySelectorAll<HTMLElement>("[data-pages]").forEach(e=>e.hidden=!e.dataset.pages!.split(" ").includes(this.page));this.root.querySelectorAll<HTMLElement>('[data-action="tab"]').forEach(e=>{e.classList.toggle("is-active",e.dataset.tab===this.page);e.setAttribute("aria-pressed",String(e.dataset.tab===this.page));});this.ref("videoCard").hidden=!["overview","inspection"].includes(this.page);this.ref("legend").hidden=this.page!=="overview";this.resizeCharts();}
+ private renderPage():void{this.root.dataset.page=this.page;this.ref("pageName").textContent=pageNames[this.page];this.root.querySelectorAll<HTMLElement>("[data-pages]").forEach(e=>e.hidden=!e.dataset.pages!.split(" ").includes(this.page));this.root.querySelectorAll<HTMLElement>('[data-action="tab"]').forEach(e=>{e.classList.toggle("is-active",e.dataset.tab===this.page);e.setAttribute("aria-pressed",String(e.dataset.tab===this.page));});this.ref("videoCard").hidden=!["overview","inspection"].includes(this.page);this.ref("legend").hidden=true;this.ref("timeline").hidden=this.authoring||!(this.page==="overview"||(this.page==="inspection"&&!!this.mediaState.selectedId&&this.inspectionMode==="replay"));this.ref("videoCard").classList.toggle("is-empty",!this.sources().some(m=>m.id===this.mediaState.selectedId));this.renderRoam();this.resizeCharts();}
  private realEvents(): SafetyAlert[] { return (this.view?.alerts || []).filter(a => a.provenance !== "demo"); }
  private nodeSummary(node: SafetyNode): string {
   if (node.spatialKind === "risk-point") return `人工风险点 · ${grades[node.riskLevel || "unassessed"]}`;
   if (node.spatialKind === "construction-area") return "施工区域 · 已保存";
   if (node.spatialKind === "railway") return "铁路范围 · 已保存";
-  return node.modelFeatureId ? "模型构件 · 已关联" : node.kind === "pier" ? "参考墩位 · 可查看资料" : node.kind === "component" ? "构件资料 · 未绑定模型" : "工程项目";
+  return node.kind==="section" ? "参考区段 · 状态未录入" : node.modelFeatureId ? "模型构件 · 已关联" : node.kind === "pier" ? "参考墩位 · 可查看资料" : node.kind === "component" ? "构件资料 · 未绑定模型" : "工程项目";
  }
  private nodeItem(node: SafetyNode): string { return btn("node", `<span><strong>${esc(node.name)}</strong><small>${esc(this.nodeSummary(node))}</small></span><span class="v3-chevron">›</span>`, `data-node="${esc(node.id)}" title="${esc(node.name)}"`, `v3-list-item ${this.state?.selectedId === node.id ? "is-selected" : ""}`); }
  private overview(): void {
-  const ds = this.dataset!, view = this.view!;
-  const spatial = ds.nodes.filter(n => n.spatialObjectId && n.provenance !== "demo");
-  this.ref("metrics").innerHTML = [["施工区域","construction-area"],["铁路范围","railway"],["人工风险点","risk-point"]].map(([label,kind]) => `<div><b>${spatial.filter(n=>n.spatialKind===kind).length}</b><span>${label}</span></div>`).join("");
-  const areas = spatial.filter(n => n.spatialKind !== "risk-point");
-  this.ref("areas").innerHTML = areas.length ? areas.map(n => this.nodeItem(n)).join("") : empty("尚未配置施工范围", "在模型上绘制并命名，即可建立你的施工区域。", "polygon")+btn("authoring","＋ 开始配置","","v3-primary v3-wide");
-  const tasks = view.tasks.filter(t=>t.provenance!=="demo");
-  const completed = tasks.filter(t=>t.status==="complete").length;
-  this.ref("taskSummary").innerHTML = `<strong class="v3-stat-number">${tasks.length ? completed : "—"}</strong><span>已完成巡检</span><small>${tasks.length ? `共 ${tasks.length} 项任务` : "尚未接入巡检记录"}</small>`;
-  this.ref("taskStatus").textContent = tasks.length ? "统计范围与当前时间筛选一致" : "接入任务记录后展示巡检趋势。";
+  const ds=this.dataset!,view=this.view!,spatial=ds.nodes.filter(n=>n.spatialObjectId&&n.provenance!=="demo");
+  const boundComponents=ds.nodes.filter(n=>n.kind==="component"&&!n.eventId&&!n.spatialKind&&n.modelFeatureId&&n.provenance!=="demo");
+  this.ref("metrics").innerHTML=[["总构件数量",boundComponents.length?String(boundComponents.length):"未接入","bridge"],["施工中的","未接入","polygon"],["风险事件",this.eventError?"未读取":String(this.realEvents().length),"shield"]].map(([label,value,symbol])=>`<div><span class="v5-metric-icon">${icon(symbol)}</span><b class="${/^\d+$/.test(value)?"":"is-unavailable"}">${value}</b><span>${label}</span></div>`).join("");
+  this.ref("spatialCounts").innerHTML=[["施工区","construction-area"],["铁路范围","railway"],["人工风险点","risk-point"]].map(([label,kind])=>`<span>${label} <b>${spatial.filter(n=>n.spatialKind===kind).length}</b></span>`).join("");
+  const areas=spatial.filter(n=>n.spatialKind!=="risk-point"),sections=ds.nodes.filter(n=>n.kind==="section"&&!n.spatialKind&&n.provenance!=="demo");
+  this.ref("areas").innerHTML=areas.length||sections.length?[...areas,...sections].map(n=>this.nodeItem(n)).join(""):empty("尚未定义区域和风险点","","polygon")+btn("authoring","＋ 开始配置","","v3-primary v3-wide");
+  const tasks=view.tasks.filter(t=>t.provenance!=="demo");
+  this.ref("taskCharts").hidden=!tasks.length;this.ref("trend").hidden=!tasks.length;
+  this.ref("taskSummary").innerHTML=tasks.length?["complete","active","pending"].map((status,i)=>`<span class="v5-task-status"><i></i>${["已完成","进行中","待执行"][i]}<b>${tasks.filter(t=>t.status===status).length}</b></span>`).join(""):"";
+  this.ref("taskStatus").innerHTML=tasks.length?"巡检任务趋势（项） · 当前时间范围":empty("暂无巡检任务统计","接入真实任务记录后显示状态和趋势。","chart");
   this.charts(tasks);
-  const alerts = this.realEvents().filter(a=>a.status!=="closed");
-  this.ref("summaryAlerts").innerHTML = this.eventError ? empty("事件记录暂未载入", "请重试读取，已有工程场景仍可操作。", "shield")+btn("refresh","重新读取","","v3-text-button") : alerts.length ? alerts.slice(0,3).map(a=>this.eventItem(a,true)).join("") : empty("暂无待处理事件", "当前接入记录中没有待处理事件。", "shield");
-  const selected = view.selected;
-  this.ref("summaryObject").innerHTML = selected.kind === "project" ? empty("选择一个对象", "点击区域、风险点或墩位，查看关联资料。", "pin") : `<h3 class="v3-object-title">${esc(selected.name)}</h3><p class="v3-muted">${esc(this.nodeSummary(selected))}</p>${btn("locate",icon("pin")+"定位当前对象","","v3-secondary")}`;
-  this.ref("connection").textContent = `${this.eventError?"事件服务暂不可用 · ":""}${spatial.length ? "人工配置已载入" : "施工范围待配置"} · ${this.realEvents().length ? "事件数据已接入" : "事件记录待接入"}`;
+  const alerts=this.realEvents().filter(a=>a.status!=="closed");
+  this.ref("summaryAlerts").innerHTML=this.eventError?empty("事件记录暂未载入","已有工程场景仍可操作。","shield")+btn("refresh","重新读取","","v3-text-button"):alerts.length?alerts.slice(0,3).map(a=>this.eventItem(a,true)).join(""):empty("暂无待处理事件","","shield");
+  const devices=ds.devices.filter(d=>d.provenance!=="demo"),liveDevices=devices.filter(d=>d.status!=="replay"),replayDevices=devices.filter(d=>d.status==="replay");
+  this.ref("devices").innerHTML=liveDevices.length?liveDevices.map(d=>`<div class="v5-device-row">${icon(d.kind)}<strong>${esc(d.name)}</strong><span data-status="${d.status}">${{online:"在线",offline:"离线",unknown:"状态未接入",replay:"回放记录"}[d.status]}</span></div>`).join(""):empty("实时设备状态未接入",replayDevices.length?`已有 ${replayDevices.length} 条关联录像，可进入巡检查看。`:"未接入设备不会计入在线数量。","drone");
+  this.root.classList.toggle("v5-no-live-devices",!liveDevices.length);this.root.classList.toggle("v5-few-events",alerts.length<2);
+  const selected=view.selected;this.ref("summaryObject").hidden=selected.kind==="project";
+  this.ref("summaryObject").innerHTML=selected.kind==="project"?"":`<small>当前对象</small><strong title="${esc(selected.name)}">${esc(selected.name)}</strong>${btn("locate",icon("pin"),'title="定位当前对象" aria-label="定位当前对象"',"v3-text-button")}`;
+  const connection=`${this.eventError?"事件服务暂不可用 · ":""}${spatial.length?"人工配置已载入":"施工范围待配置"} · ${this.realEvents().length?"事件数据已接入":"事件记录待接入"}`;this.ref("connection").textContent=connection;this.ref("connection").title=connection;
+  const records=this.sources().filter(m=>m.mode==="replay"&&Number.isFinite(m.recordedAt));
+  const markers=[...this.realEvents().map(a=>({time:a.timestamp,id:a.id,title:a.title,action:"alert"})),...records.map(m=>({time:m.recordedAt!,id:m.id,title:m.name,action:"media"}))].filter(m=>m.time>=this.state!.timeRange[0]&&m.time<=this.state!.timeRange[1]);
+  this.ref("timelineMarkers").innerHTML=markers.map(m=>btn(m.action,"",`data-${m.action==="alert"?"alert":"media"}="${esc(m.id)}" style="left:${100*(m.time-this.state!.timeRange[0])/Math.max(1,this.state!.timeRange[1]-this.state!.timeRange[0])}%" title="${esc(m.title)} · ${date(m.time)}" aria-label="${esc(m.title)}"`,"v5-timeline-mark")).join("");
  }
  private charts(tasks: SafetyView["tasks"]): void {
+  if(!tasks.length){this.distribution.clear();this.trend.clear();return;}
   const colors=platformTokens.colors, animation=this.visible&&!this.state!.animationPaused&&!this.state!.reducedMotion;
   const counts=["complete","active","pending"].map(status=>tasks.filter(t=>t.status===status).length);
   this.distribution.setOption({animation,animationDuration:300,tooltip:{trigger:"item",formatter:"{b}：{c} 项"},series:[{type:"pie",radius:["66%","84%"],center:["50%","50%"],silent:!tasks.length,label:{show:false},data:tasks.length?counts.map((value,index)=>({value,name:["已完成","进行中","待开始"][index],itemStyle:{color:[colors.cyan,colors.blue,colors.attention][index]}})):[{value:1,name:"尚未接入",itemStyle:{color:"#183849"}}]}]},true);
@@ -143,14 +155,16 @@ export class SafetyDashboard {
   const sources=this.sources().filter(m=>m.mode===this.inspectionMode).map(m=>({ ...m,
    durationSeconds: Number.isFinite(m.durationSeconds) && m.durationSeconds! > 0 ? m.durationSeconds : m.id===this.mediaState.selectedId ? this.mediaState.durationSeconds : undefined,
   }));
-  this.ref("mediaSources").innerHTML=sources.length?sources.map(m=>btn("media",`<span class="v3-source-icon">${icon(m.mode==="live"?"camera":"drone")}</span><span><strong>${esc(m.name)}</strong><small>${m.recordedAt?date(m.recordedAt):m.mode==="live"?"实时接入":"录制时间未录入"}${Number.isFinite(m.durationSeconds)&&m.durationSeconds!>0?` · ${elapsedTime(m.durationSeconds!)}`:""}</small></span><span class="v3-chevron">›</span>`,`data-media="${esc(m.id)}"`,`v3-list-item v3-source ${m.id===this.mediaState.selectedId?"is-selected":""}`)).join(""):empty(this.inspectionMode==="live"?"暂未接入实时画面":"暂无巡检回放",this.inspectionMode==="live"?"可切换历史回放，查看已导入的巡检记录。":"导入已有视频后，可在这里选择和回放。","camera");
+  this.ref("mediaSources").innerHTML=sources.length?sources.map(m=>btn("media",`<span class="v3-source-icon">${icon(m.mode==="live"?"camera":"drone")}</span><span><strong>${esc(m.name)}</strong><small>${m.recordedAt?date(m.recordedAt):m.mode==="live"?"实时接入":"录制时间未录入"}${Number.isFinite(m.durationSeconds)&&m.durationSeconds!>0?` · ${elapsedTime(m.durationSeconds!)}`:""}</small></span><span class="v3-chevron">›</span>`,`data-media="${esc(m.id)}" title="${esc(m.name)}"`,`v3-list-item v3-source ${m.id===this.mediaState.selectedId?"is-selected":""}`)).join(""):empty(this.inspectionMode==="live"?"暂未接入实时画面":"暂无巡检回放",this.inspectionMode==="live"?"可切换历史回放，查看已导入的巡检记录。":"导入已有视频后，可在这里选择和回放。","camera");
   this.root.querySelectorAll<HTMLElement>('[data-action="inspection-mode"]').forEach(e=>e.classList.toggle("is-active",e.dataset.inspectionMode===this.inspectionMode));
   const source=this.sources().find(m=>m.id===this.mediaState.selectedId);
-  this.ref("videoHeading").textContent=this.page==="inspection"?(this.inspectionMode==="live"?"实时画面":"巡检回放"):"现场画面";
+  this.ref("videoHeading").textContent=this.page==="inspection"?(this.inspectionMode==="live"?"实时画面":"历史回放"):"现场视频";
+  this.ref("inspectionNote").textContent=sources.length?`${sources.length} 条${this.inspectionMode==="live"?"实时来源":"历史记录"} · 选择后查看`:(this.inspectionMode==="live"?"可切换历史回放":"可从已有工作台导入视频");
+  this.ref("videoCard").classList.toggle("is-empty",!source);this.ref("videoEmpty").hidden=!!source;this.ref("mediaName").title=source?.name||"";
   this.ref("mediaName").textContent=source?.name||"暂未关联视频";
   this.ref("mediaUpdated").textContent=this.mediaState.updatedAt?`更新于 ${clock(this.mediaState.updatedAt)}`:"";
   this.ref("videoStatus").textContent=this.mediaState.error||this.videoStatus;
-  this.ref("videoActions").innerHTML=this.page==="inspection"?btn("video-settings","视频 AR 设置 ↗","","v3-text-button"):"";
+  this.ref("videoActions").innerHTML=this.page==="inspection"&&source?btn("video-settings","视频 AR 设置 ↗","","v3-text-button"):"";this.renderRoam();
  }
  private eventItem(alert: SafetyAlert, compact=false): string {
   return btn("alert",`<span class="v3-event-dot" data-grade="${alert.severity}"></span><span><strong>${esc(alert.title)}</strong><small>${date(alert.timestamp)} · ${statuses[alert.status]}</small>${compact?"":`<small>${alert.positionAvailable===false?"位置未关联":esc(this.dataset?.nodes.find(n=>n.id===alert.nodeId)?.name||"对象待关联")}</small>`}</span>${compact?"":`<span class="v3-status" data-status="${alert.status}">${statuses[alert.status]}</span>`}`,`data-alert="${esc(alert.id)}"`,`v3-list-item v3-event ${this.state?.selectedAlertId===alert.id?"is-selected":""}`);
@@ -203,23 +217,24 @@ export class SafetyDashboard {
  }
  private playback(): void {
   if(!this.state)return;const state=this.state,canPlay=this.inspectionMode==="replay"&&!!this.mediaState.canPlay;
-  const independent=this.mediaState.hasTrack===false;
   const duration=this.mediaState.durationSeconds,elapsed=this.mediaState.currentTimeSeconds||0,knownDuration=duration!==undefined&&Number.isFinite(duration)&&duration>0;
   const slider=this.root.querySelector<HTMLInputElement>('[data-action="time"]')!;
-  slider.min=independent?"0":String(state.timeRange[0]);slider.max=independent?String(knownDuration?duration:1):String(Math.max(state.timeRange[0]+1,state.timeRange[1]));slider.step=independent?"0.01":"1";slider.value=String(independent?elapsed:state.time);slider.disabled=!canPlay||(independent&&!knownDuration);
-  const playing=independent?!!this.mediaState.playing:state.playing;
-  const play=this.root.querySelector<HTMLButtonElement>('[data-action="play"]')!;play.disabled=!canPlay;play.textContent=playing?"Ⅱ 暂停":"▶ 播放";play.setAttribute("aria-label",playing?"暂停":"播放");
-  this.ref("playbackTime").textContent=canPlay?(independent?elapsedTime(elapsed):clock(state.time)):"—";this.ref("rangeStart").textContent=canPlay?(independent?"00:00":clock(state.timeRange[0])):"—";this.ref("rangeEnd").textContent=canPlay?(independent?(knownDuration?elapsedTime(duration):"时长未读取"):clock(state.timeRange[1])):"—";
-  this.ref("timelineHeading").textContent=this.inspectionMode==="live"?"实时巡检":independent?"视频回放进度":"历史回放时间轴";this.ref("trackStatus").textContent=this.inspectionMode==="live"?"实时来源接入后更新画面":this.mediaState.hasTrack?"视频与航迹同步":"未关联航迹 · 按视频进度播放";
+  slider.min="0";slider.max=String(knownDuration?duration:1);slider.step="0.01";slider.value=String(elapsed);slider.disabled=!canPlay||!knownDuration;
+  const playing=!!this.mediaState.playing;
+  const play=this.root.querySelector<HTMLButtonElement>('[data-action="play"]')!;play.disabled=!canPlay;play.textContent=playing?"Ⅱ":"▶";play.title=playing?"暂停":"播放";play.setAttribute("aria-label",playing?"暂停":"播放");
+  this.ref("playbackTime").textContent=canPlay?elapsedTime(elapsed):"00:00";this.ref("rangeStart").textContent="00:00";this.ref("rangeEnd").textContent=knownDuration?elapsedTime(duration):"时长未读取";
+  const source=this.sources().find(m=>m.id===this.mediaState.selectedId),replays=this.sources().filter(m=>m.mode==="replay");
+  this.ref("timelineHeading").textContent=source?.name||(replays.length?"选择历史录像开始回放":this.realEvents().length?"事件时间线 · 选择标记查看":"暂无可回放记录");this.ref("timelineHeading").title=source?.name||"";this.ref("trackStatus").textContent=source?(this.mediaState.hasTrack?(this.roamState.available?"航迹已核验":"遥测时间已关联 · 三维航迹待核验"):"未关联航迹 · 视频独立播放"):"";
+  this.ref("timelineMarkers").hidden=this.page!=="overview"||canPlay;this.ref("timeline").hidden=this.authoring||!(this.page==="overview"||(this.page==="inspection"&&!!source&&this.inspectionMode==="replay"));
   const rate=this.root.querySelector<HTMLSelectElement>('[data-action="playback-rate"]')!;rate.value=String(this.mediaState.rate||1);rate.disabled=!canPlay;
   this.syncPresentationControls();
-  this.root.querySelectorAll<HTMLElement>('[data-action="motion-toggle"]').forEach(e=>{e.textContent=state.animationPaused?"恢复装饰":"暂停装饰";e.setAttribute("aria-pressed",String(state.animationPaused));});
+  this.root.querySelectorAll<HTMLElement>('[data-action="motion-toggle"]').forEach(e=>{e.textContent=state.animationPaused?"▷":"Ⅱ";e.title=state.animationPaused?"恢复装饰":"暂停装饰";e.setAttribute("aria-label",e.title);e.setAttribute("aria-pressed",String(state.animationPaused));});
  }
  private popover(kind:"layers"|"settings"): void {
   this.ref("popover").hidden=false;this.ref("popoverBackdrop").hidden=false;this.root.dataset.overlay=kind;this.ref("popoverTitle").textContent=kind==="layers"?"图层":"显示设置";
   if(kind==="layers"){
-   const names={boundary:"施工范围",markers:"对象标记",track:"无人机航迹",heat:"事件热力",effects:"装饰效果",links:"航迹流光"};
-   this.ref("popoverBody").innerHTML=`<div class="v3-options">${Object.entries({constructionAreas:"人工施工区域",railwayAreas:"人工铁路范围",riskPoints:"人工风险点"}).map(([id,name])=>`<label><span>${name}</span><input type="checkbox" data-action="spatial-layer" data-layer="${id}" ${this.spatialLayers[id as keyof typeof this.spatialLayers]?"checked":""}></label>`).join("")}${Object.entries(names).map(([id,name])=>`<label><span>${name}</span><input type="checkbox" data-action="effect-layer" data-layer="${id}" ${this.state!.layers[id as keyof typeof names]?"checked":""}></label>`).join("")}<label><span>当前对象工程标注</span><input type="checkbox" data-action="engineering-annotations" ${this.state!.engineeringAnnotations?"checked":""}></label>${this.layers.map(layer=>`<label><span>${esc(layer.name)}</span><input type="checkbox" data-action="asset-layer" data-layer="${esc(layer.id)}" ${layer.visible?"checked":""}></label>`).join("")}</div><p class="v3-muted">工程标注仅显示当前选中对象，避免遮挡模型。</p>`;
+   const names={markers:"参考位置标记",track:"当前巡检轨迹",heat:"事件热力",effects:"选中光圈",links:"航迹流光"};
+   this.ref("popoverBody").innerHTML=`<div class="v3-button-row v5-view-actions">${btn("locate",icon("pin")+"定位当前对象","","v3-secondary")}${btn("earth","◎ 地球视角","","v3-secondary")}</div><div class="v3-options">${Object.entries({constructionAreas:"施工区域",railwayAreas:"铁路范围",riskPoints:"风险标记"}).map(([id,name])=>`<label><span>${name}</span><input type="checkbox" data-action="spatial-layer" data-layer="${id}" ${this.spatialLayers[id as keyof typeof this.spatialLayers]?"checked":""}></label>`).join("")}${Object.entries(names).map(([id,name])=>`<label><span>${name}</span><input type="checkbox" data-action="effect-layer" data-layer="${id}" ${this.state!.layers[id as keyof typeof names]?"checked":""}></label>`).join("")}<label><span>工程标注</span><input type="checkbox" data-action="engineering-annotations" ${this.state!.engineeringAnnotations?"checked":""}></label>${this.layers.map(layer=>`<label><span>${esc(layer.name)}</span><input type="checkbox" data-action="asset-layer" data-layer="${esc(layer.id)}" ${layer.visible?"checked":""}></label>`).join("")}</div><p class="v3-muted">工程标注仅显示当前选中对象，避免遮挡模型。</p>`;
   }else this.ref("popoverBody").innerHTML=`<div class="v3-options"><label><span>显示模式</span><select data-action="preference-mode"><option value="presentation" ${this.appliedMode()==="presentation"?"selected":""}>科技展示</option><option value="inspection" ${this.appliedMode()==="inspection"?"selected":""}>实景巡检</option></select></label><label><span>减少装饰动画</span><input type="checkbox" data-action="preference-motion" ${this.state!.reducedMotion?"checked":""}></label><label><span>较大字体</span><input type="checkbox" data-action="preference-font" ${this.preferences.largeText?"checked":""}></label></div><p class="v3-muted">动画与文字偏好会保留；进入项目总览时使用展示外观。</p>`;
  }
  private closePopover(): void { this.ref("popover").hidden=true;this.ref("popoverBackdrop").hidden=true;delete this.root.dataset.overlay; }
@@ -258,6 +273,10 @@ export class SafetyDashboard {
   const element=(event.target as Element)?.closest<HTMLButtonElement>("[data-action]");if(!element||element.disabled)return;const action=element.dataset.action,state=this.state;
   if(action==="tab")this.setPage(element.dataset.tab as SafetyDashboardPage,true);
   else if(action==="exit")this.options.onExit();else if(action==="earth")this.options.onEarth();else if(action==="refresh")this.options.onRefresh();
+  else if(action==="model-optimization"){this.closePopover();this.options.onModelOptimization?.();}
+  else if(action==="video-roam")this.options.onVideoRoamChange?.(!this.roamState.enabled);
+  else if(action==="roam-stop")this.options.onVideoRoamChange?.(false);
+  else if(action==="timeline-records"){if(this.setPage("inspection",true)!==false){this.inspectionMode="replay";this.options.onInspectionModeChange?.("replay");this.refresh();}}
   else if(action==="authoring")this.options.onAuthoring?.();else if(action==="video-settings")this.options.onVideoSettings?.();
   else if(action==="sidebar-toggle"){const side=element.dataset.side!;const open=this.root.classList.toggle(`v3-${side}-open`);this.root.classList.remove(`v3-${side==="left"?"right":"left"}-open`);element.setAttribute("aria-expanded",String(open));}
   else if(action==="popover-close")this.closePopover();else if((action==="layers"||action==="settings")&&state)this.popover(action);
@@ -275,7 +294,7 @@ export class SafetyDashboard {
   else if(action==="handle-save")void this.saveHandle();
   else if(action==="mode")this.options.onPatch({mode:element.dataset.mode as SafetyState["mode"]});
   else if(action==="motion-toggle"&&state)this.options.onPatch({animationPaused:!state.animationPaused});
-  else if(action==="play"&&state)this.options.onPatch({playing:!(this.mediaState.hasTrack===false?this.mediaState.playing:state.playing)});
+  else if(action==="play"&&state)this.options.onPatch({playing:!this.mediaState.playing});
  }
  private change(event:Event): void {
   const input=event.target as HTMLInputElement|HTMLSelectElement,action=input.dataset.action,state=this.state;if(!action||!state)return;
@@ -287,11 +306,11 @@ export class SafetyDashboard {
   else if(action==="engineering-annotations")this.options.onPatch({engineeringAnnotations:(input as HTMLInputElement).checked});
   else if(action==="preference-mode"){this.options.onPatch({mode:input.value as SafetyState["mode"]});this.syncPresentationControls();}
   else if(action==="preference-motion"){this.preferences.reduced=(input as HTMLInputElement).checked;this.options.onPatch({reducedMotion:this.preferences.reduced});this.storePreferences();}
-  else if(action==="preference-font"){this.preferences.largeText=(input as HTMLInputElement).checked;this.root.classList.toggle("v3-large-text",this.preferences.largeText);this.storePreferences();this.resizeCharts();}
+  else if(action==="preference-font"){this.preferences.largeText=(input as HTMLInputElement).checked;this.root.classList.toggle("v3-large-text",this.preferences.largeText);this.storePreferences();this.options.onTextScaleChange?.(!!this.preferences.largeText);this.resizeCharts();}
  }
  private input(event:Event): void {
   const input=event.target as HTMLInputElement|HTMLTextAreaElement,action=input.dataset.action;
-  if(action==="time"){if(this.mediaState.hasTrack===false)this.options.onMediaSeekSeconds?.(Number(input.value));else this.options.onPatch({time:Number(input.value),playing:false});}
+  if(action==="time")this.options.onMediaSeekSeconds?.(Number(input.value));
   else if(action==="event-search"){this.eventSearch=input.value.trim();this.options.onEventFilter?.(this.eventStatus,this.eventSearch);this.eventList();}
   else if(action==="pier-search"){this.pierSearch=input.value.trim();this.componentList();}
   else if(action==="handle-text"&&this.handleId){this.drafts.set(this.handleId,input.value);this.errors.delete(this.handleId);this.ref("handleStatus").textContent="保存后由事件服务确认处理结果。";}
@@ -313,6 +332,20 @@ export class SafetyDashboard {
   element.classList.toggle("is-error",!status.ok);
  }
  private storePreferences(): void {try{localStorage.setItem(prefKey,JSON.stringify(this.preferences));}catch{/* Display preferences do not block project work. */}}
+ setModelOptimizationVisible(visible:boolean): void {this.optimizationVisible=visible;this.root.classList.toggle("is-optimizing",visible);if(visible)this.closePopover();}
+ setVideoRoamState(state:SafetyDashboardVideoRoamState): void {const changed=this.roamState.available!==state.available||JSON.stringify(this.roamState.missing)!==JSON.stringify(state.missing);this.roamState={...state};this.renderRoam();if(changed)this.playback();}
+ private renderRoam(): void {
+  const state=this.roamState,visible=this.page==="inspection"&&!!this.mediaState.selectedId;
+  const key=JSON.stringify([visible,state.available,state.enabled,state.active,state.state,state.label,state.message,state.missing,Math.floor(state.mediaTime||0)]);if(key===this.lastRoamUiKey)return;this.lastRoamUiKey=key;
+  this.ref("roamControls").hidden=!visible;
+  const button=this.root.querySelector<HTMLButtonElement>('[data-action="video-roam"]')!;
+  button.disabled=!state.available;button.classList.toggle("is-active",state.enabled);button.setAttribute("aria-pressed",String(state.enabled));
+  const message=[state.message,...(state.missing||[])].filter(Boolean).join("；");button.title=message||state.label;
+  this.ref("roamStatus").textContent=state.available?state.label:message?`未关联同录像航迹 · ${/高程|椭球|高度|height/i.test(message)?"高程基准待核验":state.missing?.[0]||state.message}`:"未关联同录像航迹";this.ref("roamStatus").title=message;
+  this.ref("roamScene").hidden=!visible||!state.enabled;
+  if(this.ref("roamSceneLabel").textContent!==state.label)this.ref("roamSceneLabel").textContent=state.label;
+  const time=elapsedTime(state.mediaTime||0);if(this.ref("roamSceneTime").textContent!==time)this.ref("roamSceneTime").textContent=time;
+ }
  setPage(page:SafetyDashboardPage,notify=false): boolean {
   if(!Object.hasOwn(pageNames,page))return false;if(notify&&this.options.onPageChange?.(page)===false)return false;
   this.page=page;this.closePopover();this.root.classList.remove("v3-left-open","v3-right-open");this.refresh();this.renderPage();return true;
@@ -332,6 +365,6 @@ export class SafetyDashboard {
  setEventError(error?:string): void {this.eventError=error||"";this.refresh();}
  setVideoStatus(text:string): void {this.videoStatus=text;this.ref("videoStatus").textContent=text;}
  setLayers(layers:SafetyDashboardLayer[]): void {this.layers=layers;if(this.root.dataset.overlay==="layers"&&this.state)this.popover("layers");}
- debugStats(): Record<string,unknown> {return {page:this.page,chartCount:this.disposed?0:2,updates:this.updates,renders:this.renders,visible:this.visible,authoring:this.authoring,presentationStatus:this.presentationStatus,appliedMode:this.appliedMode(),reducedMotion:!!this.state?.reducedMotion,hasVideoHost:!!this.videoHost.isConnected,mediaMode:this.inspectionMode,eventStatus:this.eventStatus,pendingEventSaves:this.pending.size,eventDraftCount:this.drafts.size};}
+ debugStats(): Record<string,unknown> {return {page:this.page,chartCount:this.disposed?0:2,updates:this.updates,renders:this.renders,visible:this.visible,authoring:this.authoring,presentationStatus:this.presentationStatus,appliedMode:this.appliedMode(),reducedMotion:!!this.state?.reducedMotion,hasVideoHost:!!this.videoHost.isConnected,mediaMode:this.inspectionMode,eventStatus:this.eventStatus,pendingEventSaves:this.pending.size,eventDraftCount:this.drafts.size,optimizationVisible:this.optimizationVisible,roam:this.roamState};}
  dispose(): void {if(this.disposed)return;this.disposed=true;this.events.abort();this.observer.disconnect();this.trend.dispose();this.distribution.dispose();this.drawing.dispose();this.root.remove();}
 }

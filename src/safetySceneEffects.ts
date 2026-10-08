@@ -7,7 +7,7 @@ import {
   type Viewer,
 } from "cesium";
 import { interpolateDevicePosition } from "./safetyStore";
-import { splitActualTrackRuns, selectDecorativeTrackRun, selectionOutlinePositions } from "./safetyWorldEffectGeometry";
+import { splitActualTrackRuns, selectDecorativeTrackRun, selectionOutlinePositions, inspectionDeviceEligible, sceneLabelPixels, type SafetyInspectionContext } from "./safetyWorldEffectGeometry";
 import { safetyHeatWeights, spatialNodeLayerVisible, type SafetySpatialLayerVisibility } from "./safetySceneVisibility";
 import tokens from "./safetyDesignTokens.json";
 import { SafetyScenePresentation, type SafetyPresentationOptions } from "./safetyScenePresentation";
@@ -17,7 +17,7 @@ import type {
   SafetyState, SafetyView,
 } from "./safetyTypes";
 
-const CYAN = Color.fromCssColorString(tokens.colors.cyan)!;
+const CYAN = Color.fromCssColorString("#28CFFF")!;
 const GOLD = Color.fromCssColorString(tokens.colors.attention)!;
 const SEVERITY = {
   high: Color.fromCssColorString(tokens.colors.alert)!,
@@ -82,6 +82,8 @@ export class SafetySceneEffects {
   private readonly nodeVisuals = new Map<string, NodeVisual>();
   private readonly deviceVisuals = new Map<string, DeviceVisual>();
   private readonly visibleDeviceIds = new Set<string>();
+  private inspectionContext?: SafetyInspectionContext;
+  private largeText = false;
   private readonly pickTargets = new Map<string, SafetySelection>();
   private readonly heatCanvas = document.createElement("canvas");
   private readonly haloCanvas = document.createElement("canvas");
@@ -115,7 +117,7 @@ export class SafetySceneEffects {
       id: "safety-selection-ring",
       show: false,
       polyline: {
-        positions: this.selectedRingPositions, width: 4,
+        positions: this.selectedRingPositions, width: 3,
         material: CYAN, arcType: ArcType.NONE, clampToGround: false,
       },
     });
@@ -163,7 +165,7 @@ export class SafetySceneEffects {
       if (dataset.railway && dataset.railway.positions.length > 1 && dataset.railway.positions.every(validPosition)) {
         this.source.entities.add({
           id: "safety-railway", name: "营业线（来源见项目说明）",
-          polyline: { positions: dataset.railway.positions.map((p) => cartesian(p)), width: 3, material: GOLD, arcType: ArcType.NONE },
+          polyline: { positions: dataset.railway.positions.map((p) => cartesian(p)), width: 2, material: GOLD, arcType: ArcType.NONE },
         });
       }
     } finally { this.source.entities.resumeEvents(); }
@@ -177,10 +179,10 @@ export class SafetySceneEffects {
       ...(node.eventId ? { billboard: { image: "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28"><path d="M14 2L27 25H1Z" fill="#FF687D" stroke="#E5F7FF" stroke-width="2"/><text x="14" y="21" text-anchor="middle" font-size="20" fill="#030B18">!</text></svg>'), width: 22, height: 22 } } : {}),
       point: { show: !node.eventId && !node.spatialObjectId, pixelSize: node.kind === "pier" ? 9 : 6, color: CYAN, outlineColor: Color.fromCssColorString(tokens.colors.panel), outlineWidth: 2, heightReference: HeightReference.NONE },
       label: {
-        text: node.name, font: `${tokens.typographyPx.sceneLabel}px sans-serif`, fillColor: Color.fromCssColorString(tokens.colors.text),
-        outlineColor: Color.fromCssColorString(tokens.colors.background), outlineWidth: 3, style: LabelStyle.FILL_AND_OUTLINE,
-        pixelOffset: new Cartesian2(0, -21), showBackground: true, backgroundColor: Color.fromCssColorString(tokens.colors.panel)!.withAlpha(0.8),
-        backgroundPadding: new Cartesian2(7, 4), heightReference: HeightReference.NONE,
+        text: node.name, font: `${sceneLabelPixels(node.kind, false, this.largeText)}px sans-serif`, fillColor: Color.fromCssColorString(tokens.colors.text),
+        outlineColor: Color.fromCssColorString(tokens.colors.background), outlineWidth: 2, style: LabelStyle.FILL_AND_OUTLINE,
+        pixelOffset: new Cartesian2(0, -21), showBackground: true, backgroundColor: Color.fromCssColorString(tokens.colors.panel)!.withAlpha(0.7),
+        backgroundPadding: new Cartesian2(4, 2), heightReference: HeightReference.NONE,
         distanceDisplayCondition: new DistanceDisplayCondition(0, node.kind === "project" ? 2_000_000 : 30_000),
       },
     });
@@ -197,9 +199,9 @@ export class SafetySceneEffects {
     const marker = this.source.entities.add({
       id: `safety-device:${device.id}`, name: device.name, show: false,
       position: new CallbackPositionProperty((_time, result) => Cartesian3.clone(position, result), false),
-      billboard: { image: this.haloCanvas, width: 70, height: 70, color: CYAN, distanceDisplayCondition: new DistanceDisplayCondition(0, 30_000) },
-      point: { pixelSize: 11, color: GOLD, outlineColor: Color.fromCssColorString(tokens.colors.panel), outlineWidth: 2 },
-      label: { text: device.name, font: `${tokens.typographyPx.sceneLabel}px sans-serif`, fillColor: GOLD, outlineColor: Color.BLACK, outlineWidth: 3, style: LabelStyle.FILL_AND_OUTLINE, pixelOffset: new Cartesian2(0, -22), distanceDisplayCondition: new DistanceDisplayCondition(0, 30_000) },
+      billboard: { image: this.haloCanvas, width: 36, height: 36, color: CYAN, distanceDisplayCondition: new DistanceDisplayCondition(0, 30_000) },
+      point: { pixelSize: 8, color: GOLD, outlineColor: Color.fromCssColorString(tokens.colors.panel), outlineWidth: 2 },
+      label: { text: device.name, font: `${sceneLabelPixels("device", false, this.largeText)}px sans-serif`, fillColor: GOLD, outlineColor: Color.BLACK, outlineWidth: 2, style: LabelStyle.FILL_AND_OUTLINE, pixelOffset: new Cartesian2(0, -22), distanceDisplayCondition: new DistanceDisplayCondition(0, 30_000) },
     });
     this.pickTargets.set(marker.id, { nodeId: node.id, fly: true });
     this.deviceVisuals.set(device.id, { device, marker, tracks: [], trackRuns: [], position, hasPosition: false, trackKey: "" });
@@ -263,14 +265,7 @@ export class SafetySceneEffects {
       marker.label!.disableDepthTestDistance = new ConstantProperty(0);
       this.pickTargets.set(marker.id, { nodeId: node.id, alertId: alert?.id, fly: true });
     }
-    this.visibleDeviceIds.clear();
-    for (const device of view.devices) this.visibleDeviceIds.add(device.id);
-    for (const visual of this.deviceVisuals.values()) {
-      this.updateTrack(visual, state.timeRange);
-      const visible = this.visibleDeviceIds.has(visual.device.id);
-      for (const track of visual.tracks) track.show = visible && state.layers.track;
-      if (!visible) visual.hasPosition = false;
-    }
+    this.refreshInspectionTracks();
     const heatKey = [view.selected.id, state.timeRange.join(":"), state.severity, state.includeDemo,
       ...view.alerts.map((alert) => `${alert.id}:${alert.nodeId}:${alert.timestamp}`)].join("|");
     if (heatKey !== this.heatKey) { this.heatKey = heatKey; this.updateHeat(view); }
@@ -291,18 +286,20 @@ export class SafetySceneEffects {
     const safe = this.options.getStageRect?.() ?? { left: 330, top: 100, width: Math.max(200, canvas.clientWidth - 690), height: Math.max(180, canvas.clientHeight - 210) };
     const used: Array<{ x: number; y: number; w: number; h: number }> = [];
     const limit = this.view.selected.kind === "project" ? MAX_LABELS : tokens.scene.focusMaxLabels;
-    if (this.labelMeasure) this.labelMeasure.font = `${tokens.typographyPx.sceneLabel}px sans-serif`;
+    const deviceFont = sceneLabelPixels("device", false, this.largeText);
+    if (this.labelMeasure) this.labelMeasure.font = `${deviceFont}px sans-serif`;
     let deviceCount = 0;
     for (const visual of this.deviceVisuals.values()) {
       const label = visual.marker.label;
       if (!label) continue;
+      constantValue(label, "font", `${deviceFont}px sans-serif`);
       let visible = false;
       if (!deviceCount && visual.marker.show && visual.hasPosition) {
         const screen = SceneTransforms.worldToWindowCoordinates(this.viewer.scene, visual.position);
-        const width = (this.labelMeasure?.measureText(visual.device.name).width ?? 220) + 16;
+        const width = (this.labelMeasure?.measureText(visual.device.name).width ?? visual.device.name.length * deviceFont) + 12;
         if (screen && screen.x - width / 2 >= safe.left + 8 && screen.x + width / 2 <= safe.left + safe.width - 8
           && screen.y - 46 >= safe.top + 8 && screen.y <= safe.top + safe.height - 8 && !this.isAnchorOccluded(visual.position, screen)) {
-          used.push({ x: screen.x - width / 2, y: screen.y - 46, w: width, h: 31 }); visible = true; deviceCount++;
+          used.push({ x: screen.x - width / 2, y: screen.y - 46, w: width, h: deviceFont + 8 }); visible = true; deviceCount++;
         }
       }
       constantValue(label, "show", visible);
@@ -320,10 +317,14 @@ export class SafetySceneEffects {
       const characters = Array.from(visual.node.name);
       const shortName = characters.length > 15 ? `${characters.slice(0, 14).join("")}…` : visual.node.name;
       const name = selected && this.isAnchorOccluded(world, screen) ? `${shortName} · 遮挡定位` : shortName;
-      const width = (this.labelMeasure?.measureText(name).width ?? name.length * 18) + 20, height = 31;
+      const pixels = sceneLabelPixels(visual.node.kind, selected, this.largeText);
+      constantValue(visual.marker.label, "font", `${pixels}px sans-serif`);
+      constantValue(visual.marker.label, "fillColor", selected ? GOLD : Color.fromCssColorString("#EAF6FC"));
+      if (this.labelMeasure) this.labelMeasure.font = `${pixels}px sans-serif`;
+      const width = (this.labelMeasure?.measureText(name).width ?? name.length * pixels) + 12, height = pixels + 8;
       let rectangle: { x: number; y: number; w: number; h: number } | undefined;
       let offset = -25;
-      for (const yOffset of [-25, -63, 35]) {
+      for (const yOffset of [-22, -50, 26]) {
         const candidate = { x: screen.x - width / 2, y: screen.y + yOffset - height / 2, w: width, h: height };
         if (candidate.x < safe.left + 8 || candidate.x + width > safe.left + safe.width - 8 || candidate.y < safe.top + 8 || candidate.y + height > safe.top + safe.height - 8) continue;
         if (!used.some((r) => candidate.x < r.x + r.w + 10 && candidate.x + width + 10 > r.x && candidate.y < r.y + r.h + 10 && candidate.y + height + 10 > r.y)) { rectangle = candidate; offset = yOffset; break; }
@@ -449,6 +450,7 @@ export class SafetySceneEffects {
     this.earthMode = false;
     if (active && this.dataset && this.state && this.view) this.presentation.update(this.dataset, this.state, this.view, true);
     if (!active) { this.presentation.restore(); this.viewer.camera.cancelFlight(); this.restoreFeature(); }
+    this.refreshInspectionTracks(); this.applyVisibility();
     this.viewer.scene.requestRender();
   }
 
@@ -465,15 +467,43 @@ export class SafetySceneEffects {
     if (!this.view) return;
     const positions = selectionOutlinePositions(this.view.selected, this.selectedPosition);
     this.selectedRingPositions.setValue(positions);
-    const color = this.view.selected.spatialKind === "railway" ? "#FFB957" : "#43D9FF";
+    const color = "#FFB957"; // Warm emphasis is the explicit selection, not an inferred material or alarm.
     if (this.selectedRing.polyline) this.selectedRing.polyline.material = new ColorMaterialProperty(Color.fromCssColorString(color));
     if (this.selectionVisible) this.presentation.setWorldSelection("selected-outline", positions, color);
     else this.presentation.removeWorldEffect("selected-outline");
   }
 
+  setInspectionContext(context?: SafetyInspectionContext): void {
+    if (this.disposed) return;
+    if (this.inspectionContext?.mediaId === context?.mediaId && this.inspectionContext?.deviceId === context?.deviceId
+      && this.inspectionContext?.trajectoryValid === context?.trajectoryValid) return;
+    this.inspectionContext = context ? { ...context } : undefined;
+    this.refreshInspectionTracks(); this.syncWorldRoute();
+    if (this.state) this.tick(this.elapsed, this.state.time);
+    this.layoutLabels(); this.viewer.scene.requestRender();
+  }
+
+  setLargeText(large: boolean): void {
+    if (this.disposed) return;
+    if (this.largeText === large) return;
+    this.largeText = large; this.layoutLabels(); this.viewer.scene.requestRender();
+  }
+
+  private refreshInspectionTracks(): void {
+    this.visibleDeviceIds.clear();
+    if (!this.state || !this.view) return;
+    for (const device of this.view.devices) if (this.active && !this.earthMode && !this.authoring && inspectionDeviceEligible(device, this.state.page, this.inspectionContext)) this.visibleDeviceIds.add(device.id);
+    for (const visual of this.deviceVisuals.values()) {
+      const visible = this.visibleDeviceIds.has(visual.device.id);
+      if (visible) this.updateTrack(visual, this.state.timeRange);
+      for (const track of visual.tracks) track.show = visible && this.state.layers.track;
+      if (!visible) { visual.hasPosition = false; visual.marker.show = false; }
+    }
+  }
+
   private syncWorldRoute(): void {
     const state = this.state;
-    const eligible = this.active && !this.earthMode && !this.authoring && state?.layers.track && state.layers.links && state.layers.effects;
+    const eligible = this.active && !this.earthMode && !this.authoring && state?.page === "inspection" && state.layers.track && state.layers.links && state.layers.effects;
     const visual = eligible ? [...this.deviceVisuals.values()].find(v => this.visibleDeviceIds.has(v.device.id) && v.trackRuns.length) : undefined;
     const positions = visual && selectDecorativeTrackRun(visual.trackRuns);
     if (positions) {
@@ -574,7 +604,7 @@ export class SafetySceneEffects {
     if (this.authoring !== active) { this.anchorSamples.clear(); this.anchorSurfaceReady = false; }
     this.authoring = active; this.presentation.setAuthoring(active);
     this.source.show = this.active && !this.earthMode && !active;
-    this.applyVisibility(); this.layoutLabels();
+    this.refreshInspectionTracks(); this.applyVisibility(); this.layoutLabels();
     this.viewer.scene.requestRender();
   }
 
@@ -635,6 +665,8 @@ export class SafetySceneEffects {
       presentation: this.presentation.debugStats(), decorativeTime: this.decorativeTime, reducedMotion: !!this.state?.reducedMotion || this.reducedMotion.matches,
       visibleNodeIds: [...this.nodeVisuals.values()].filter((visual) => visual.marker.show).map((visual) => visual.node.id),
       heatVisible: this.active && this.heat.show, visibleBoundaries: 0,
+      inspectionContext: this.inspectionContext ?? null, labelFontPixels: { ordinary: sceneLabelPixels("pier", false, this.largeText), section: sceneLabelPixels("section", false, this.largeText), selected: sceneLabelPixels("pier", true, this.largeText) },
+      visibleActualTrackSegments: [...this.deviceVisuals.values()].reduce((sum, v) => sum + v.tracks.filter(t => t.show).length, 0),
       visibleDeviceIds: [...this.deviceVisuals.values()].filter((visual) => visual.marker.show).map((visual) => visual.device.id),
       decoratedRouteDeviceId: this.decoratedRouteDeviceId, decoratedRouteVertexCount: this.decoratedRouteVertexCount, decorativeRouteSource: "one-existing-continuous-actual-track-run", schematicLinks: 0, selectionVisible: this.selectionVisible,
       actualTrackSegments: [...this.deviceVisuals.values()].reduce((sum, visual) => sum + visual.tracks.length, 0),

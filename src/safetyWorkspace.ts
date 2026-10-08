@@ -1,3 +1,5 @@
+import { SafetyVideoRoam, type SafetyVideoRoamState } from "./safetyVideoRoam";
+import { SafetyModelOptimization } from "./safetyModelOptimization";
 import { Cartographic, Cesium3DTileset, Math as CesiumMath, Matrix4, type Viewer } from "cesium";
 import { SafetySpatialEditor } from "./safetySpatialEditor";
 import { mergeSpatialDataset, spatialReplayTimeAt } from "./safetySpatialData";
@@ -33,6 +35,11 @@ export class SafetyWorkspace {
   readonly dashboard: SafetyDashboard;
   readonly effects: SafetySceneEffects;
   readonly spatial: SafetySpatialEditor;
+  readonly optimization: SafetyModelOptimization;
+  private videoRoam?: SafetyVideoRoam;
+  private roamBindingKey = "";
+  private roamState?: SafetyVideoRoamState;
+  private optimizationEntryMode?: SafetyState["mode"];
   private baseDataset?: SafetyDataset;
   private reloading = false;
   private modelRegistry: ModelRegistryEntry[] = [];
@@ -40,6 +47,8 @@ export class SafetyWorkspace {
   private readonly eventRepository: SafetyEventAdapter;
   private eventServiceError = "";
   private mediaLoading = false;
+  private mediaRequestGeneration = 0;
+  private mediaSourceTask: Promise<void> = Promise.resolve();
   private inspectionMode: "live" | "replay" = "replay";
   private readonly pageSelections = new Map<SafetyPage, SafetySelection>();
   private store?: SafetyStore;
@@ -74,11 +83,14 @@ export class SafetyWorkspace {
     this.dashboard = new SafetyDashboard(options.host, {
       onSelect: selection => this.select(selection), onPatch: patch => this.patch(patch),
       onHome: () => this.spatial.requestClose(() => this.returnOverview()),
-      onExit: () => { this.spatial.requestClose(() => this.close()); }, onEarth: () => { this.store?.patch({ cruise: false }); this.effects.earth(); },
+      onExit: () => { this.spatial.requestClose(() => this.close()); }, onEarth: () => { this.beforeManualNavigation(); this.store?.patch({ cruise: false }); this.effects.earth(); },
       onMedia: (media, selection) => this.openMedia(media, selection), onRefresh: () => void this.reload(),
       onLayerToggle: (id, visible) => { options.setLayerVisible(id, visible); this.layersChanged(); },
       onVideoSettings: () => { this.close(); options.openVideoSettings(); },
-      onAuthoring: () => { this.spatial.requestClose(() => { this.applyPageChange("overview"); this.dashboard.setPage("overview"); this.spatial.show(); }); },
+      onModelOptimization: () => { this.spatial.requestClose(() => { this.beforeManualNavigation(); this.pause(); this.optimizationEntryMode = this.store?.state.mode; this.optimization.open(this.store?.state.mode === 'inspection'); }); },
+      onTextScaleChange: large => this.effects?.setLargeText(large),
+      onVideoRoamChange: enabled => this.videoRoam?.setEnabled(enabled),
+      onAuthoring: () => { this.spatial.requestClose(() => { this.optimization.close(); this.beforeManualNavigation(); this.applyPageChange("overview"); this.dashboard.setPage("overview"); this.spatial.show(); }); },
       onPageChange: page => this.changePage(page),
       onInspectionModeChange: mode => { this.inspectionMode = mode; this.pause(); this.updateVideoStatus(); },
       onHandleEvent: (id, text) => this.handleEvent(id, text),
@@ -90,13 +102,14 @@ export class SafetyWorkspace {
     this.effects = new SafetySceneEffects(options.viewer, selection => this.select(selection), { getImports: options.getImports,
       getPresentationModels: () => this.runtimeModels(),
       onPresentationState: status => this.dashboard.setPresentationStatus(status),
-      getStageRect: () => { const r = options.host.querySelector(".safety-scene-hud")?.getBoundingClientRect(); const c = options.viewer.canvas.getBoundingClientRect(); return r ? { left: r.left - c.left, top: r.top - c.top + 46, width: r.width, height: Math.max(180, r.height - 100) } : { left: 368, top: 160, width: Math.max(300, c.width - 736), height: Math.max(240, c.height - 300) }; }
+      getStageRect: () => this.sceneStageRect(false),
+      getOverviewStageRect: () => this.sceneStageRect(true)
     });
     this.spatial = new SafetySpatialEditor({ viewer: options.viewer, host: options.host,
       onSnapshot: snapshot => this.applySpatialSnapshot(snapshot),
       suspendOverlays: () => this.effects.suspendOverlaysForPicking(),
       onSelect: (id, options) => { this.select({ nodeId: `spatial:${id}`, fly: options?.fly ?? true }); },
-      onDrawing: drawing => { this.effects.setPickingEnabled(!drawing); this.effects.setAuthoring(drawing); if (drawing) this.store?.patch({ cruise: false }); },
+      onDrawing: drawing => { this.effects.setPickingEnabled(!drawing); this.effects.setAuthoring(drawing); if (drawing) { this.beforeManualNavigation(); this.store?.patch({ cruise: false }); } },
       onVisibility: visible => this.dashboard.setAuthoring(visible),
       getModelRegistry: () => this.runtimeModels(),
       getContext: () => {
@@ -107,6 +120,17 @@ export class SafetyWorkspace {
           ...(time === undefined ? {} : { mediaId: this.selectedMedia, mediaSeconds: seconds }) };
       },
     });
+    this.optimization = new SafetyModelOptimization({ host: options.host, getModels: () => this.modelRegistry,
+      onVisibility: visible => {
+        this.dashboard.setModelOptimizationVisible(visible);
+        this.effects.setPickingEnabled(!visible);
+        if (!visible && this.optimizationEntryMode !== undefined) {
+          const mode = this.optimizationEntryMode; this.optimizationEntryMode = undefined;
+          this.store?.patch({ mode });
+        }
+      },
+      onCompare: original => { this.beforeManualNavigation(); this.store?.patch({ mode: original ? "inspection" : "presentation" }); },
+    });
     this.dashboard.setVisible(false);
     this.mediaDialog.className = "safety-media-dialog";
     document.body.append(this.mediaDialog);
@@ -116,11 +140,17 @@ export class SafetyWorkspace {
     const video = document.querySelector<HTMLVideoElement>("#videoArSourceVideo");
     if (video) {
       this.video = video;
+      this.videoRoam = new SafetyVideoRoam({ viewer: options.viewer, video,
+        onState: state => this.acceptVideoRoamState(state),
+        canTakeCamera: () => this.active && this.store?.state.page === "inspection" && this.inspectionMode === "replay" && !this.optimization.isOpen && !this.spatial.debugStats().drawing,
+        beforeTakeCamera: () => { this.effects.cancelPendingHome(); options.viewer.camera.cancelFlight(); this.store?.patch({ cruise: false }); },
+      });
       for (const event of ["play", "pause", "ended", "loadedmetadata", "durationchange", "seeked", "error"]) video.addEventListener(event, () => {
         if (!this.active) return;
         if (event === "error") this.dashboard.setVideoStatus("原片暂不能解码，可在视频 AR 设置中检查媒体格式。");
         else {
-          this.store?.patch({ playing: this.hasBoundVideo() && !video.paused && !video.ended });
+          const mapped = event === "seeked" && this.hasBoundVideo() ? this.mapReplayTime(video.currentTime, "mediaSeconds") : undefined;
+          this.store?.patch({ playing: this.hasBoundVideo() && !video.paused && !video.ended, ...(mapped === undefined ? {} : { time: mapped }) });
           this.updateVideoStatus();
         }
       }, { signal: this.events.signal });
@@ -132,6 +162,8 @@ export class SafetyWorkspace {
   async open(): Promise<void> {
     if (this.disposed || this.active) return;
     this.active = true;
+    // Re-entry always starts at overview before any stale inspection state can bind.
+    this.store?.patch({ page: "overview", playing: false });
     this.restoreInteractions = this.options.prepareOpen();
     document.body.classList.add("safety-workspace-open");
     this.dashboard.setVisible(true);
@@ -155,9 +187,12 @@ export class SafetyWorkspace {
 
   close(): void {
     if (!this.active) return;
+    // Block synchronous pause/store subscribers from rebinding during teardown.
+    this.active = false; this.mediaRequestGeneration++; this.mediaLoading = false;
+    this.loading?.abort();
     this.pause();
+    this.optimization.close(); this.unbindVideoRoam();
     this.store?.patch({ cruise: false });
-    this.active = false;
     this.removeClock?.(); this.removeClock = undefined;
     this.effects.setActive(false);
     this.dashboard.setVisible(false);
@@ -176,6 +211,7 @@ export class SafetyWorkspace {
     if (this.disposed) return;
     this.loading?.abort();
     this.reloading = true;
+    this.unbindVideoRoam();
     const controller = this.loading = new AbortController();
     this.dashboard.setLoading("正在读取工程资料与巡检数据…");
     try {
@@ -184,6 +220,7 @@ export class SafetyWorkspace {
         new SafetySpatialRepository().loadModels().catch(() => [] as ModelRegistryEntry[]),
         this.eventRepository.load().catch(error => { this.eventServiceError = error instanceof Error ? error.message : "事件服务暂不可用"; return undefined; }),
       ]);
+      if (controller.signal.aborted || this.disposed) return;
       this.modelRegistry = models;
       if (events) { this.eventSnapshot = events; this.eventServiceError = ""; }
       this.dashboard.setEventError(this.eventServiceError);
@@ -215,7 +252,9 @@ export class SafetyWorkspace {
       if (this.active && !preserveSelection) this.effects.focus(this.store.view.selected);
     } catch (error) {
       if (!controller.signal.aborted) this.dashboard.setError(error instanceof Error ? error.message : "巡检数据读取失败");
-    } finally { if (this.loading === controller) this.reloading = false; }
+    } finally {
+      if (this.loading === controller) { this.reloading = false; this.updateVideoStatus(); }
+    }
   }
 
   private renderState(): void {
@@ -228,6 +267,7 @@ export class SafetyWorkspace {
 
   private select(selection: SafetySelection): void {
     if (!this.active || !this.store) return;
+    this.optimization.close(); this.beforeManualNavigation();
     this.pause();
     const target = this.store.dataset.nodes.find(n => n.id === selection.nodeId);
     const page: SafetyPage = selection.alertId || target?.eventId ? "events" : target && !target.spatialObjectId && (target.kind === "pier" || target.kind === "component") ? "components" : this.store.state.page || "overview";
@@ -247,16 +287,20 @@ export class SafetyWorkspace {
   private patch(patch: Partial<SafetyState>): void {
     if (!this.store) return;
     if (patch.mode !== undefined) this.effects.cancelPendingHome();
-    const seeks = patch.time !== undefined || patch.timeRange !== undefined;
+    if (patch.cruise) this.beforeManualNavigation();
+    if (patch.reducedMotion !== undefined) this.videoRoam?.setReducedMotion(patch.reducedMotion);
+    // A business filter never seeks the original recording. Only an explicit time does.
+    const seeks = patch.time !== undefined;
     if (seeks) this.pause();
     this.store.patch(seeks ? { ...patch, playing: false } : patch);
     if (seeks) this.seekVideo(this.store.state.time);
     if (patch.playing === false) this.pause();
     if (patch.playing === true && this.inspectionMode !== "live") {
-      if (this.hasReplayTrack() && this.store.state.time >= this.store.state.timeRange[1] - 100) {
-        this.store.patch({ time: this.store.state.timeRange[0] }); this.seekVideo(this.store.state.time);
-      } else if (this.hasBoundVideo() && !this.hasReplayTrack() && (this.video!.ended || this.video!.currentTime >= this.video!.duration - .05)) {
-        this.video!.currentTime = 0;
+      if (this.hasBoundVideo()) {
+        // Sparse telemetry may finish before the video; its extent cannot restart the media.
+        if (this.video!.ended || (Number.isFinite(this.video!.duration) && this.video!.currentTime >= this.video!.duration)) this.video!.currentTime = 0;
+      } else if (!this.selectedMedia && this.store.state.time >= this.store.state.timeRange[1] - 100) {
+        this.store.patch({ time: this.store.state.timeRange[0] });
       }
       if (this.hasBoundVideo()) void this.video!.play().catch(() => {
         this.store?.patch({ playing: false }); this.dashboard.setVideoStatus("浏览器未开始播放，请再次点击时间轴播放按钮。");
@@ -288,14 +332,16 @@ export class SafetyWorkspace {
     const associated = this.store?.view.media.some(m => m.id === this.selectedMedia);
     return !!((associated || this.explicitlySelectedMedia === this.selectedMedia) && this.boundSourceKey && this.boundSourceKey === this.playbackSourceKey() && media?.provenance === "real"
       && media.sourceRecordId === source.recordId && media.name === source.name
-      && this.video?.currentSrc && this.video.readyState >= 1);
+      && !!source.url && this.video?.currentSrc === source.url && this.video.readyState >= 1);
   }
 
   /** An untracked video's elapsed seconds never become a scene timestamp or a measured flight position. */
   private seekMediaSeconds(seconds: number): void {
-    if (!this.hasBoundVideo() || this.hasReplayTrack() || !Number.isFinite(seconds) || !Number.isFinite(this.video!.duration)) return;
+    if (!this.hasBoundVideo() || !Number.isFinite(seconds) || !Number.isFinite(this.video!.duration)) return;
     this.pause();
     this.video!.currentTime = Math.max(0, Math.min(this.video!.duration, seconds));
+    const mapped = this.mapReplayTime(this.video!.currentTime, "mediaSeconds");
+    if (mapped !== undefined) this.store?.patch({ time: mapped });
     this.updateVideoStatus();
   }
 
@@ -328,7 +374,8 @@ export class SafetyWorkspace {
     const bound = this.hasBoundVideo(), synchronized = bound && this.hasReplayTrack();
     if (synchronized && !this.video!.paused) time = this.mapReplayTime(this.video!.currentTime, "mediaSeconds") ?? time;
     else if (!bound && !this.selectedMedia && this.store.state.playing) time += delta;
-    if (!bound || synchronized) {
+    // Media time drives telemetry, never the reverse. Keep uncovered video frames playing.
+    if (!bound) {
       if (time >= this.store.state.timeRange[1]) { this.pause(); time = this.store.state.timeRange[1]; this.seekVideo(time); }
       if (time < this.store.state.timeRange[0]) { time = this.store.state.timeRange[0]; this.seekVideo(time); }
     }
@@ -369,12 +416,13 @@ export class SafetyWorkspace {
 
   private updateVideoStatus(): void {
     if (!this.store) return;
+    this.syncVideoRoamBinding();
     const media = this.store.dataset.media.find(m => m.id === this.selectedMedia);
     const available = this.inspectionMode === "replay" && !this.mediaLoading && this.hasBoundVideo();
     if (this.video && this.videoOrigin) this.video.hidden = !available;
     const associated = this.store.view.media.some(m => m.id === this.selectedMedia);
     const relation = this.store.view.selected.kind !== "project" && !associated ? "项目来源 · 未与当前对象关联" : media?.relation === "object" ? "对象关联视频" : "项目视频";
-    this.dashboard.setVideoStatus(this.mediaLoading ? "正在加载原片…" : available ? `${relation} · ${this.hasReplayTrack() ? "已关联真实航迹" : "未关联航迹，按视频进度播放"}` : this.inspectionMode === "live" ? "暂无可用实时画面" : "暂无可用画面");
+    this.dashboard.setVideoStatus(this.mediaLoading ? "正在加载原片…" : available ? `${relation} · ${this.hasReplayTrack() ? "遥测时间已关联" : "未关联航迹，按视频进度播放"}` : this.inspectionMode === "live" ? "暂无可用实时画面" : "暂无可用画面");
     this.dashboard.setMediaState({ selectedId: this.selectedMedia, mode: this.inspectionMode, canPlay: available, playing: available && !this.video!.paused,
       currentTimeSeconds: available ? this.video!.currentTime : undefined, durationSeconds: available && Number.isFinite(this.video!.duration) ? this.video!.duration : undefined,
       rate: this.video?.playbackRate || 1, hasTrack: this.hasReplayTrack(),
@@ -382,20 +430,79 @@ export class SafetyWorkspace {
   }
 
   private async openMedia(media: SafetyMedia, selection?: SafetySelection): Promise<void> {
-    if (media.kind !== "video") return; // Drawing/photo viewer is owned by the V3 dashboard.
-    this.pause(); this.inspectionMode = "replay";
+    if (!this.active || this.disposed || media.kind !== "video") return;
+    const generation = ++this.mediaRequestGeneration;
+    const current = () => this.active && !this.disposed && generation === this.mediaRequestGeneration;
     const retained = selection || (this.store ? { nodeId: this.store.state.selectedId, alertId: this.store.state.selectedAlertId } : undefined);
-    if (media.sourceRecordId && media.sourceRecordId !== this.options.getPlaybackSource().recordId) {
-      if (!this.options.loadVideoSource) throw new Error("当前来源暂不可用，请在原工作台选择已有视频");
-      this.mediaLoading = true; this.updateVideoStatus();
-      try { await this.options.loadVideoSource(media.sourceRecordId); await this.reload(true); }
-      finally { this.mediaLoading = false; this.updateVideoStatus(); }
+    this.mediaLoading = true;
+    this.pause(); this.unbindVideoRoam(); this.inspectionMode = "replay"; this.updateVideoStatus();
+    // The shared library loader is not abortable. Serialize it so an older restore cannot
+    // overwrite a newer source; obsolete queued requests never start a restore.
+    const task = this.mediaSourceTask.catch(() => undefined).then(async () => {
+      if (!current()) return;
+      if (media.sourceRecordId && media.sourceRecordId !== this.options.getPlaybackSource().recordId) {
+        if (!this.options.loadVideoSource) throw new Error("当前来源暂不可用，请在原工作台选择已有视频");
+        await this.options.loadVideoSource(media.sourceRecordId);
+        if (!current()) return;
+        await this.reload(true);
+      }
+    });
+    this.mediaSourceTask = task;
+    try {
+      await task;
+      if (!current()) return;
+      this.selectedMedia = media.id; this.explicitlySelectedMedia = media.id;
+      const source = this.options.getPlaybackSource();
+      this.boundSourceKey = media.sourceRecordId === source.recordId && media.name === source.name && source.url ? this.playbackSourceKey() : "";
+      if (retained && this.store?.dataset.nodes.some(n => n.id === retained.nodeId)) this.store.patch({ selectedId: retained.nodeId, selectedAlertId: retained.alertId });
+    } finally {
+      if (current()) { this.mediaLoading = false; this.updateVideoStatus(); }
     }
-    this.selectedMedia = media.id; this.explicitlySelectedMedia = media.id;
-    const source = this.options.getPlaybackSource();
-    this.boundSourceKey = media.sourceRecordId === source.recordId && media.name === source.name && source.url ? this.playbackSourceKey() : "";
-    if (retained && this.store?.dataset.nodes.some(n => n.id === retained.nodeId)) this.store.patch({ selectedId: retained.nodeId, selectedAlertId: retained.alertId });
-    this.updateVideoStatus();
+  }
+
+  private beforeManualNavigation(): void { this.videoRoam?.beforeManualNavigation(); }
+
+  private acceptVideoRoamState(state: SafetyVideoRoamState): void {
+    // A same-URL media reload invalidates the host even if the library generation stayed equal.
+    if (state.state === "unbound" || state.state === "source-changed" || state.state === "destroyed") this.roamBindingKey = "";
+    this.roamState = state; this.dashboard.setVideoRoamState(state); this.updateInspectionContext();
+  }
+
+  private unbindVideoRoam(): void {
+    this.roamBindingKey = "";
+    if (this.videoRoam?.getState().state !== "unbound") this.videoRoam?.unbind();
+    this.effects?.setInspectionContext(undefined);
+  }
+
+  private syncVideoRoamBinding(): void {
+    if (!this.active || this.reloading || this.store?.state.page !== "inspection" || this.inspectionMode !== "replay" || this.mediaLoading || !this.hasBoundVideo()) { this.unbindVideoRoam(); return; }
+    const source = this.options.getPlaybackSource(), media = this.store.dataset.media.find(m => m.id === this.selectedMedia);
+    if (!media || !source.url || this.video?.currentSrc !== source.url) { this.unbindVideoRoam(); return; }
+    const key = JSON.stringify([media.id, source.recordId, source.generation, source.url]);
+    if (this.roamBindingKey !== key) {
+      this.roamBindingKey = key;
+      void this.videoRoam?.bind({ mediaId: media.id, sourceRecordId: source.recordId, sourceUrl: source.url, generation: source.generation, mediaName: source.name, reducedMotion: !!this.store.state.reducedMotion });
+    }
+    this.updateInspectionContext();
+  }
+
+  private updateInspectionContext(): void {
+    const valid = this.active && this.store?.state.page === "inspection" && this.inspectionMode === "replay" && this.roamState?.available && this.selectedMedia;
+    // The roam runtime owns the converted display geometry as well as its camera.
+    // Raw device.track remains business evidence and must not render at an unconverted height/time.
+    this.videoRoam?.setLayerVisibility(!!valid && !!this.store?.state.layers.track, !!valid && !!this.store?.state.layers.markers);
+    this.effects?.setInspectionContext(undefined);
+  }
+
+  private sceneStageRect(overview: boolean) {
+    const c = this.options.viewer.canvas.getBoundingClientRect();
+    if (!overview) {
+      const r = this.options.host.querySelector(".safety-scene-hud")?.getBoundingClientRect();
+      if (r) return { left: r.left - c.left, top: r.top - c.top + 52, width: r.width, height: Math.max(180, r.height - 52) };
+    }
+    const compact = c.width <= 1550, side = Math.max(compact ? 268 : 270, Math.min(compact ? 305 : 414, c.width * .198));
+    const top = (compact ? 76 : 90) + 64;
+    return { left: side + 30, top, width: Math.max(300, c.width - 2 * (side + 30)), height: Math.max(240, c.height - top - 102) };
   }
 
   private runtimeModels(): Array<ModelRegistryEntry & { tileset: Cesium3DTileset }> {
@@ -420,16 +527,17 @@ export class SafetyWorkspace {
 
   private returnOverview(): void {
     if (!this.store) return;
-    this.pause();
+    this.optimization.close(); this.beforeManualNavigation();
     this.pageSelections.delete("overview");
     this.dashboard.setPage("overview");
     this.store.patch({ page: "overview", mode: "presentation", selectedId: this.store.dataset.projectId, selectedAlertId: undefined, cruise: false });
+    this.unbindVideoRoam(); this.pause();
     this.effects.focus(this.store.view.selected);
   }
 
   private changePage(page: SafetyPage): boolean {
     if (!this.store) return true;
-    return this.spatial.requestClose(() => { if (page === "overview") this.returnOverview(); else { this.applyPageChange(page); this.dashboard.setPage(page); } });
+    return this.spatial.requestClose(() => { this.optimization.close(); this.beforeManualNavigation(); if (page === "overview") this.returnOverview(); else { this.applyPageChange(page); this.dashboard.setPage(page); } });
   }
 
   private applyPageChange(page: SafetyPage): void {
@@ -480,7 +588,7 @@ export class SafetyWorkspace {
 
   debugStats(): Record<string, unknown> {
     return { active: this.active, clockListeners: Number(!!this.removeClock), viewerCount: document.querySelectorAll("#cesiumContainer canvas").length,
-      videoElements: document.querySelectorAll("video").length, spatial: this.spatial.debugStats(), models: this.modelRegistry.map(({assetId,assetVersion,coordinateTransformVersion})=>({assetId,assetVersion,coordinateTransformVersion})), events: { revision: this.eventSnapshot.revision, count: this.eventSnapshot.events.length, error: this.eventServiceError }, effects: this.effects.debugStats(), ui: this.dashboard.debugStats(),
+      videoElements: document.querySelectorAll("video").length, spatial: this.spatial.debugStats(), videoRoam: this.videoRoam?.debugStats(), optimization: this.optimization.debugStats(), models: this.modelRegistry.map(({assetId,assetVersion,coordinateTransformVersion})=>({assetId,assetVersion,coordinateTransformVersion})), events: { revision: this.eventSnapshot.revision, count: this.eventSnapshot.events.length, error: this.eventServiceError }, effects: this.effects.debugStats(), ui: this.dashboard.debugStats(),
       data: this.store ? { nodes: this.store.dataset.nodes.length, alerts: this.store.view.alerts.map(a => a.id), nodeIds: this.store.view.nodes.map(n => n.id),
         selectedId: this.store.state.selectedId, state: this.store.state, metrics: this.store.view.metrics, sources: this.store.dataset.sourceNotes, missing: this.store.dataset.missingData } : null };
   }
@@ -495,7 +603,7 @@ export class SafetyWorkspace {
   dispose(): void {
     if (this.disposed) return;
     this.close(); this.disposed = true; this.loading?.abort(); this.events.abort(); this.unsubscribe?.();
-    this.store?.dispose(); this.spatial.dispose(); this.effects.dispose(); this.dashboard.dispose(); this.mediaDialog.remove();
+    this.videoRoam?.dispose(); this.optimization.dispose(); this.store?.dispose(); this.spatial.dispose(); this.effects.dispose(); this.dashboard.dispose(); this.mediaDialog.remove();
     this.restoreTags();
   }
 }

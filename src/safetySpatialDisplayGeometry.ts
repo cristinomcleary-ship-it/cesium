@@ -3,7 +3,7 @@ import type { SpatialObject } from "./safetySpatialTypes.ts";
 
 /** Visual anti-flicker offset only. Never write these coordinates back to the ledger. */
 export const SPATIAL_DISPLAY_OFFSET_METERS = 0.12;
-export const SPATIAL_BOUNDARY_WIDTH = { normal: 3, selected: 4 } as const;
+export const SPATIAL_BOUNDARY_WIDTH = { normal: 2, selected: 3 } as const;
 const colors = { "construction-area": "#43D9FF", railway: "#FFB957", "risk-point": "#FFB957" };
 
 export function spatialDisplayPositions(object: SpatialObject): Cartesian3[] {

@@ -15,13 +15,14 @@ export type SafetyStageRect = { left: number; top: number; width: number; height
 export type SafetyPresentationOptions = {
   getImports?: () => readonly ImportRecord[];
   getStageRect?: () => SafetyStageRect;
+  getOverviewStageRect?: () => SafetyStageRect;
   getPresentationModels?: () => readonly RegisteredPhotogrammetry[];
   onPresentationStatus?: (messages: string[]) => void;
   onPresentationState?: (status: PresentationStatus) => void;
 };
 type LabelState = { labels: LabelCollection; show: boolean; individual: Array<{ show: boolean; id: unknown }> };
 
-/** Adapts the supplied V4 runtime to this application's existing Viewer and shared clock. */
+/** Adapts V5 presentation to the application's existing Viewer and shared clock. */
 export class SafetyScenePresentation {
   private controller?: PresentationController;
   private configuration?: ProjectDisplayConfiguration;
@@ -95,7 +96,7 @@ export class SafetyScenePresentation {
       return;
     }
     // This is a separately calibrated DISPLAY extent, never an area derived from user geometry.
-    const configuration = resolveProjectDisplayConfiguration(models, this.dataset, this.stageRect(), this.viewer);
+    const configuration = resolveProjectDisplayConfiguration(models, this.dataset, this.options.getOverviewStageRect?.() ?? this.stageRect(), this.viewer);
     if (!configuration) {
       this.invalidateUnavailableInstallation();
       this.report({ ok: false, state: "waiting-for-display-calibration", mode: "reality", message: "项目展示范围和表面高程尚未校准，保留实景查看。" });
@@ -126,14 +127,14 @@ export class SafetyScenePresentation {
     void installPresentation({
       Cesium, viewer: this.viewer,
       tilesets: models.map(model => ({ id: model.assetId, tileset: model.tileset, contentType: "model" as const })),
-      displayEnvelope: configuration.displayEnvelope, home: { ...configuration.home, duration: 0 }, homeOnInstall: false,
+      displayEnvelope: configuration.displayEnvelope, palette: configuration.palette, home: { ...configuration.home, duration: 0 }, homeOnInstall: false,
       effects: { externalClock: true, paused: true, reducedMotion: false },
       onStatus: status => { if (generation === this.generation && !this.disposed && this.active && matchingModels()) this.report(status); },
     }).then(result => {
       settlePending();
       const current = generation === this.generation && !this.disposed && this.active ? matchingModels() : undefined;
       const currentConfiguration = current && this.dataset
-        ? resolveProjectDisplayConfiguration(current, this.dataset, this.stageRect(), this.viewer) : undefined;
+        ? resolveProjectDisplayConfiguration(current, this.dataset, this.options.getOverviewStageRect?.() ?? this.stageRect(), this.viewer) : undefined;
       if (!current || !currentConfiguration || this.installationKey(current, currentConfiguration) !== key) {
         result.controller?.destroy();
         if (generation === this.generation) { this.cancelHome(); this.releaseController(); }
@@ -157,7 +158,7 @@ export class SafetyScenePresentation {
 
   private installationKey(models: readonly RegisteredPhotogrammetry[], configuration: ProjectDisplayConfiguration): string {
     return JSON.stringify({ models: models.map(m => [m.assetId, m.assetVersion, m.coordinateTransformVersion]),
-      envelope: configuration.displayEnvelope });
+      envelope: configuration.displayEnvelope, palette: configuration.palette });
   }
 
   private invalidateUnavailableInstallation(): void {
@@ -211,7 +212,7 @@ export class SafetyScenePresentation {
   private rebuildFocus(): void {
     if (!this.controller || !this.focusPosition || Cartesian3.magnitude(this.focusPosition) < 1e6) return;
     if (this.focusAdded) this.controller.removeEffect("selected-pulse");
-    this.controller.addPulseRing({ id: "selected-pulse", anchor: this.focusPosition, radiusMeters: 28, color: "#43D9FF", opacity: 0.65 });
+    this.controller.addPulseRing({ id: "selected-pulse", anchor: this.focusPosition, radiusMeters: 16, color: "#FFB957", opacity: 0.45 });
     this.focusAdded = true; this.effectIds.add("selected-pulse"); this.focusGeometryBuilds++;
     this.applyMode();
   }
@@ -234,7 +235,7 @@ export class SafetyScenePresentation {
     const value = this.worldEffects.get(id);
     if (!this.controller || !value) return;
     if (this.effectIds.has(id)) this.controller.removeEffect(id);
-    if (value.kind === "route") this.controller.addFlowRoute({ id, positions: value.positions, widthPx: 4, color: value.color });
+    if (value.kind === "route") this.controller.addFlowRoute({ id, positions: value.positions, widthPx: 2, color: value.color });
     else this.controller.addSelectionOutline({ id, positions: value.positions, color: value.color, widthPx: 3 });
     this.effectIds.add(id); this.applyMode();
   }

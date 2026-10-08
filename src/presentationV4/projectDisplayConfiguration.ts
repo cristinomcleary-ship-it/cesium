@@ -15,7 +15,7 @@ export function resolveProjectDisplayConfiguration(
   if (!models.some(m => m.assetId === envelope.assetId && m.assetVersion === envelope.assetVersion
     && m.coordinateTransformVersion === envelope.coordinateTransformVersion)) return;
   const positions = envelope.positions.map(p => new Cartesian3(p[0], p[1], p[2]));
-  const baseDepthMeters = 42;
+  const baseDepthMeters = 38;
   const sphere = BoundingSphere.fromPoints(positions);
   const inverse = Matrix4.inverseTransformation(Transforms.eastNorthUpToFixedFrame(sphere.center), new Matrix4());
   const bottom = Math.min(...positions.map(p => Cartographic.fromCartesian(p).height)) - baseDepthMeters;
@@ -41,7 +41,7 @@ export function resolveProjectDisplayConfiguration(
     const xs = points.map(p => width / 2 + (p.x - cx) * scale / (range + p.d - cd));
     const ys = points.map(p => height / 2 - (p.y - cy) * scale / (range + p.d - cd));
     const xmin = Math.min(...xs), xmax = Math.max(...xs), ymin = Math.min(...ys), ymax = Math.max(...ys);
-    range *= Math.max((xmax - xmin) / (stage.width * 0.82), (ymax - ymin) / (stage.height * 0.78));
+    range *= Math.max((xmax - xmin) / (stage.width * 0.86), (ymax - ymin) / (stage.height * 0.78));
     const dx = ((xmin + xmax) / 2 - (stage.left + stage.width / 2)) * range / scale;
     const dy = ((stage.top + stage.height / 2) - (ymin + ymax) / 2) * range / scale;
     Cartesian3.add(targetOffset, Cartesian3.multiplyByScalar(right, dx, new Cartesian3()), targetOffset);
@@ -49,6 +49,11 @@ export function resolveProjectDisplayConfiguration(
   }
   const target = Matrix4.multiplyByPoint(Transforms.eastNorthUpToFixedFrame(sphere.center), targetOffset, new Cartesian3());
   return {
+    // V5: modest blue-gray grading keeps photographed material colors and lighting.
+    palette: { saturation: 0.72, brightness: 0.98, contrast: 1.04, coolness: 0.12, blueGrayMix: 0.24, shadowLift: 0.020,
+      background: "#041020", sidewall: "#0B2747", bottom: "#061326", outline: "#28CFFF",
+      outlineWidth: 1.6, outlineOpacity: 0.9, outlineGlowWidth: 3.8, outlineGlowOpacity: 0.14,
+      bottomOutline: "#176591", bottomOutlineWidth: 1, bottomOutlineOpacity: 0.5 },
     displayEnvelope: { id: envelope.id, positions, clippingPositions: envelope.clippingPositions.map(p => new Cartesian3(p[0], p[1], p[2])), heightSource: "sampled-model", baseDepthMeters },
     home: { headingDegrees, pitchDegrees, rangeMeters: range, target, duration: 1.6,
       padding: { left: stage.left, right: Math.max(0, width - stage.left - stage.width),

@@ -18,7 +18,12 @@ export type PresentationHome = {
   rangeMultiplier?: number;
   padding?: { left: number; right: number; top: number; bottom: number };
 };
-export type ProjectDisplayConfiguration = { displayEnvelope: DisplayEnvelope; home: PresentationHome };
+export type PresentationPalette = {
+  saturation?: number; brightness?: number; contrast?: number; coolness?: number; blueGrayMix?: number; shadowLift?: number;
+  background?: string; sidewall?: string; bottom?: string; outline?: string; outlineOpacity?: number; outlineWidth?: number;
+  outlineGlowWidth?: number; outlineGlowOpacity?: number; bottomOutline?: string; bottomOutlineOpacity?: number; bottomOutlineWidth?: number;
+};
+export type ProjectDisplayConfiguration = { displayEnvelope: DisplayEnvelope; home: PresentationHome; palette?: PresentationPalette };
 export type PresentationStatus = {
   ok: boolean; state?: string; mode?: "showcase" | "reality"; code?: string; message?: string;
   engineStatus?: PresentationStatus; [key: string]: unknown;

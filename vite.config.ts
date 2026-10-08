@@ -1,3 +1,4 @@
+import { modelOptimizationPlugin } from "./server/modelOptimization";
 import { safetyEventPlugin } from "./server/safetyEventStore";
 import { safetySpatialPlugin } from "./server/safetySpatialStore";
 import { defineConfig } from "vite";
@@ -566,6 +567,7 @@ export default defineConfig({
   },
   plugins: [
     safetySpatialPlugin(),
+    modelOptimizationPlugin(),
     safetyEventPlugin(),
     projectLibraryPlugin,
     basemapAndDiagnosticsPlugin,

@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Cartesian3, Cartographic, Matrix4, Transforms } from "cesium";
-import { selectionOutlinePositions, selectDecorativeTrackRun, splitActualTrackRuns } from "./safetyWorldEffectGeometry.ts";
-import type { SafetyNode, SafetyTrackPoint } from "./safetyTypes.ts";
+import { selectionOutlinePositions, selectDecorativeTrackRun, splitActualTrackRuns, inspectionDeviceEligible, sceneLabelPixels } from "./safetyWorldEffectGeometry.ts";
+import type { SafetyDevice, SafetyNode, SafetyTrackPoint } from "./safetyTypes.ts";
 
 const point = (time: number, segment = 0): SafetyTrackPoint => ({ longitude: 120 + time / 1e8, latitude: 30,
   height: 20 + time / 1000, time, mediaSeconds: time / 1000, segment });
@@ -71,4 +71,29 @@ test("default ring origin offsets only display by 0.6 m and bounds decoration ra
     assert.ok(Math.abs(Cartesian3.distance(positions[0], origin) - expected) < 1e-7);
     assert.deepEqual(object, before);
   }
+});
+
+
+test("current flight requires the inspection page, selected recording and verified time/position association", () => {
+  const device: SafetyDevice = { id: "device-a", nodeId: "node-a", name: "Recorded flight", kind: "drone",
+    provenance: "real", status: "replay", mediaId: "recording-a", coordinateNote: "explicit test fixture",
+    track: [point(0), point(1000)] };
+  const original = structuredClone(device), context = { mediaId: "recording-a", trajectoryValid: true };
+  assert.equal(inspectionDeviceEligible(device, "inspection", context), true);
+  for (const page of ["overview", "events", "components", undefined] as const) assert.equal(inspectionDeviceEligible(device, page, context), false);
+  assert.equal(inspectionDeviceEligible(device, "inspection"), false);
+  assert.equal(inspectionDeviceEligible(device, "inspection", { ...context, mediaId: "recording-b" }), false);
+  assert.equal(inspectionDeviceEligible(device, "inspection", { ...context, trajectoryValid: false }), false);
+  assert.equal(inspectionDeviceEligible(device, "inspection", { ...context, deviceId: "device-b" }), false);
+  assert.equal(inspectionDeviceEligible({ ...device, provenance: "demo" }, "inspection", context), false);
+  assert.equal(inspectionDeviceEligible({ ...device, track: [point(0), point(8000)] }, "inspection", context), false);
+  assert.equal(inspectionDeviceEligible({ ...device, track: [point(0), { ...point(1000), mediaSeconds: NaN }] }, "inspection", context), false);
+  assert.deepEqual(device, original, "context changes never trim or rewrite the saved trajectory");
+});
+
+test("scene text sizes match selected and large-text collision layout inputs", () => {
+  assert.equal(sceneLabelPixels("pier"), 12); assert.equal(sceneLabelPixels("section"), 13);
+  assert.equal(sceneLabelPixels("device"), 13); assert.equal(sceneLabelPixels("pier", true), 14);
+  assert.equal(sceneLabelPixels("pier", false, true), 14); assert.equal(sceneLabelPixels("section", false, true), 15);
+  assert.equal(sceneLabelPixels("component", true, true), 16);
 });

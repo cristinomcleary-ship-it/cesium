@@ -141,3 +141,41 @@ test("V4 overview target only changes camera framing and rejects invalid world t
   assert.equal(f.flights.length, 1);
   result.controller!.destroy();
 });
+
+
+test("V5 grading inherits source lighting and creates five bounded edge/base entities", async () => {
+  const f = fixture();
+  const result = await installPresentation({ ...f.inputs, palette: { saturation: 0.72, blueGrayMix: 0.24,
+    outlineWidth: 1.6, outlineGlowWidth: 3.8, outlineGlowOpacity: 0.14 } });
+  assert.equal(result.ok, true);
+  assert.equal(f.tileset.customShader!.lightingModel, undefined, "each asset keeps its PBR/UNLIT lighting");
+  assert.equal(f.tileset.customShader!.uniforms.u_saturation.value, 0.72);
+  const entities = f.viewer.dataSources.get(0).entities.values;
+  assert.equal(entities.length, 5);
+  const bySuffix = (suffix: string) => entities.find(e => e.id.endsWith(":" + suffix))!;
+  assert.equal(bySuffix("top-edge").polyline!.width!.getValue(), 1.6);
+  assert.equal(bySuffix("top-halo").polyline!.width!.getValue(), 3.8);
+  const halo = bySuffix("top-halo").polyline!.material!.getValue(Cesium.JulianDate.now());
+  assert.equal(halo.color.alpha, 0.14);
+  assert.equal(bySuffix("top-edge").polyline!.material!.getType(Cesium.JulianDate.now()), "Color");
+  const evidence = result.controller!.getEvidence().scene as { lightingModel: string; materialColorStrategy: string };
+  assert.equal(evidence.lightingModel, "inherited");
+  assert.equal(evidence.materialColorStrategy, "source-texture-with-blue-gray-grade");
+  result.controller!.destroy();
+  assert.equal(f.viewer.dataSources.length, 0); assert.equal(f.tileset.customShader, undefined);
+});
+
+test("V5 palette is part of installation ownership and invalid grading allocates no resources", async () => {
+  const f = fixture(), palette = { blueGrayMix: 0.24 };
+  const first = await installPresentation({ ...f.inputs, palette });
+  const originalShader = f.tileset.customShader;
+  assert.equal(first.ok, true);
+  const conflict = await installPresentation({ ...f.inputs, palette: { blueGrayMix: 0.30 } });
+  assert.equal(conflict.ok, false); assert.equal(conflict.status.code, "INSTALLATION_EXISTS");
+  assert.equal(f.tileset.customShader, originalShader);
+  first.controller!.destroy();
+  const invalid = await installPresentation({ ...f.inputs, palette: { blueGrayMix: 1 } });
+  assert.equal(invalid.ok, false); assert.equal(invalid.status.code, "INVALID_PALETTE");
+  assert.equal(f.viewer.dataSources.length, 0); assert.equal(f.scene.primitives.length, 0);
+  assert.equal(f.tileset.customShader, undefined);
+});

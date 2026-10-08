@@ -19,3 +19,33 @@ body.safety-workspace-open .cesium-infoBox { display:none; }
 /* Keep the visible Cesium logo and data-attribution link outside temporary task panels. */
 @media(max-width:1500px) { body.safety-workspace-open:has(.safety-dashboard-v3.v3-left-open) .cesium-viewer-bottom { left:352px; } }
 body.safety-workspace-open:has(.safety-dashboard-v3.is-authoring) .cesium-viewer-bottom { left:460px; }
+
+/* V5 keeps source attribution above the full-width overview timebar. */
+body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-viewer-bottom{left:8px;bottom:4px;}
+body.safety-workspace-open:has(.safety-dashboard-v5[data-page=overview]:not(.is-authoring)) .cesium-viewer-bottom{left:8px;bottom:68px;}
+body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-viewer-toolbar{top:155px;right:calc(clamp(270px,19.8vw,414px) + 98px);}
+body.safety-workspace-open:has(.safety-dashboard-v5[data-page=inspection]) .cesium-viewer-toolbar,body.safety-workspace-open:has(.safety-dashboard-v5[data-page=events]) .cesium-viewer-toolbar,body.safety-workspace-open:has(.safety-dashboard-v5[data-page=components]) .cesium-viewer-toolbar{right:466px;}
+body.safety-workspace-open:has(.safety-dashboard-v5) .safety-spatial-editor{top:100px;left:16px;width:380px;max-height:calc(100% - 164px);border-radius:3px;}
+body.safety-workspace-open:has(.safety-dashboard-v5) .spatial-header{padding:11px 16px;}
+body.safety-workspace-open:has(.safety-dashboard-v5) .spatial-header h2{font-size:18px;}
+body.safety-workspace-open:has(.safety-dashboard-v5) .spatial-body{padding:14px 16px;}
+@media(max-width:1550px){body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-viewer-toolbar{top:141px;}body.safety-workspace-open:has(.safety-dashboard-v5) .safety-spatial-editor{top:86px;width:350px;max-height:calc(100% - 150px);}}
+
+/* Viewer.resize writes inline credit offsets; scoped overrides keep the full attribution visible. */
+body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-viewer-bottom{left:8px!important;right:auto!important;bottom:4px!important;max-width:calc(100% - 16px);}
+body.safety-workspace-open:has(.safety-dashboard-v5[data-page=overview]:not(.is-authoring)) .cesium-viewer-bottom{bottom:68px!important;}
+body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-viewer-toolbar{top:105px;right:calc(clamp(270px,19.8vw,414px) + 28px);}
+body.safety-workspace-open:has(.safety-dashboard-v5[data-page=inspection]) .cesium-viewer-toolbar,body.safety-workspace-open:has(.safety-dashboard-v5[data-page=events]) .cesium-viewer-toolbar,body.safety-workspace-open:has(.safety-dashboard-v5[data-page=components]) .cesium-viewer-toolbar{right:396px;}
+body.safety-workspace-open:has(.safety-dashboard-v5.is-authoring) .cesium-viewer-toolbar{right:16px;}
+body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-viewer-toolbar>.cesium-button,body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-geocoder-searchButton{width:30px;height:30px;border:1px solid #165570;border-radius:3px;background:#061b30f5;color:#95cfe6;box-shadow:none;}
+body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-viewer-geocoderContainer .cesium-geocoder-input{height:30px;border-color:#165570;background:#061b30f5;color:#d2eaf5;}
+@media(max-width:1550px){body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-viewer-toolbar{top:91px;}}
+
+/* V5 native geocoder keeps its compact button; the real input expands below the tools. */
+body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-viewer-geocoderContainer{width:30px;height:30px;vertical-align:middle;}
+body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-viewer-geocoderContainer form{height:30px;margin:0;}
+body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-viewer-geocoderContainer .cesium-geocoder-input{position:absolute;right:0;top:0;width:30px;height:30px;padding:0 28px 0 0;transition:background-color .2s ease-in-out;}
+body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-viewer-geocoderContainer:is(:hover,:focus-within,:has(.cesium-geocoder-input-wide)) .cesium-geocoder-input{top:42px;width:250px;padding:0 8px;border-color:#2b9fc3;box-shadow:0 5px 18px #0006;}
+body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-viewer-geocoderContainer:is(:hover,:focus-within,:has(.cesium-geocoder-input-wide))::before{content:"";position:absolute;top:30px;right:0;width:30px;height:12px;}
+body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-viewer-geocoderContainer .cesium-geocoder-searchButton{top:0;right:0;box-sizing:border-box;}
+body.safety-workspace-open:has(.safety-dashboard-v5) .cesium-viewer-geocoderContainer .search-results{top:74px;right:0;width:250px;max-height:min(320px,calc(100vh - 230px));background:#061b30;border:1px solid #165570;box-sizing:border-box;opacity:1;}

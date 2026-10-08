@@ -1,7 +1,9 @@
-# V4 presentation integration
+# V5 presentation on the existing integration
 
-The three runtime JavaScript modules were supplied in
-`Cesium_Platform_Design_v4/runtime/`. They operate on the application's existing
+The scene grading/base and palette wiring are updated from
+`Cesium_Platform_Design_v5/runtime/`. The existing directory name is retained to
+avoid unnecessary migration; ownership, serial installation, the shared animation
+clock and project calibration remain intact. They operate on the application's existing
 Cesium 1.144.0 Viewer and the verified, already loaded project photogrammetry.
 They load no demo asset and create no business geometry.
 
@@ -55,3 +57,24 @@ Actual-project compatibility findings:
   configuration consistency and is not an engineering or safety criterion.
 - `home.target` offsets only the overview camera's look-at point. It is validated
   as finite ECEF and does not move the envelope, model or saved user geometry.
+
+
+V5 host integration:
+
+- `getOverviewStageRect` describes the available center between overview cards;
+  `getStageRect` separately describes the current task's label-safe rectangle.
+  Switching to the inspection layout cannot overwrite the calibrated overview.
+- The workspace passes `undefined` to `SafetySceneEffects.setInspectionContext`
+  so the legacy raw `device.track` never duplicates the verified flight geometry.
+  `SafetyVideoRoam` alone supplies the camera, segmented path and marker from one
+  source-bound set of converted ECEF positions and media seconds. Its
+  `setLayerVisibility(track, markers)` follows the existing layer controls and
+  requires a valid selected replay in the inspection page. Unknown height/time
+  association allocates no path or marker and never rewrites source telemetry.
+- `setLargeText` changes both actual label fonts and collision measurements.
+- Palette grading preserves source texture chroma and inherited material lighting.
+  The independent base has skirt, bottom, restrained halo, narrow top edge and
+  bottom edge. Palette parameters participate in the installation identity.
+- Project depth starts at 38 m and overview width at 86% of the free center.
+  The 32–56 CSS pixel depth and 76–92% width gates still require actual screenshots
+  at all three V5 viewports; these configuration values are not acceptance proof.
