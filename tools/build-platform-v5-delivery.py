@@ -100,8 +100,30 @@ def read_json(path: Path) -> dict:
     return value
 
 
+def verified_empty_log(path: Path) -> bool:
+    """Quiet compiler commands legitimately emit no text. Require their own result,
+    rather than treating every empty log (or other empty artifact) as successful.
+    """
+    if path.suffix.lower() != ".log":
+        return False
+    resolved = path.resolve()
+    for kind in ("typecheck", "build"):
+        if resolved == (OUTPUT / (kind + ".log")).resolve():
+            report = read_json(OUTPUT / "cpu-regression-report.json")
+            result = report.get(kind, {})
+            return (report.get("result") == "passed" and isinstance(result, dict)
+                    and result.get("passed") is True and result.get("log") == path.name)
+        if resolved == (ROOT / "output/platform-v5-ui" / (kind + ".log")).resolve():
+            report = read_json(ROOT / "output/platform-v5-ui/final-validation.json")
+            exit_code = report.get(kind + "Exit")
+            return type(exit_code) is int and exit_code == 0
+    return False
+
+
 def existing(path: Path) -> Path:
-    require(path.is_file() and path.stat().st_size > 0, f"缺少或为空：{path}")
+    require(path.is_file(), f"缺少文件：{path}")
+    require(path.stat().st_size > 0 or verified_empty_log(path),
+            f"文件为空且缺少对应结构化成功结果：{path}")
     return path
 
 
