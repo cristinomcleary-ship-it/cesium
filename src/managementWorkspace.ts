@@ -1,3 +1,4 @@
+import { VideoDiagnostics } from './management/videoDiagnostics';
 import { Cartesian2, Cartesian3, Color, ConstantPositionProperty, ConstantProperty, Entity, HeadingPitchRange, ScreenSpaceEventHandler, ScreenSpaceEventType, type Viewer } from 'cesium';
 import { ManagementStudio } from './managementStudio';
 import type { ManagementSession, ManagementSnapshot } from './managementTypes';
@@ -19,6 +20,7 @@ export class ManagementWorkspace {
   private readonly events = new AbortController();
   private readonly feedback = document.createElement('div');
   private readonly layersDialog = document.createElement('dialog');
+  private readonly videoDiagnostics: VideoDiagnostics;
   private active = false;
   private openedScene = false;
   private mode: 'management' | 'scene' = 'management';
@@ -42,6 +44,7 @@ export class ManagementWorkspace {
 
   constructor(private readonly safety: SafetyWorkspace, host: HTMLElement) {
     this.viewer = safety.getManagementViewer();
+    this.videoDiagnostics = new VideoDiagnostics({ read: () => safety.getManagementVideoDiagnostics(), quality: mode => safety.managementVideoQuality(mode), reset: () => safety.managementVideoPerformanceReset(), capture: () => safety.managementCaptureVideoTexture(), fps: value => safety.managementProjectionFps(value), preview: enabled => { if(enabled && (this.measurement || this.anchorPicking)) throw new Error("请先结束测量或资料取点，再开始融合试算"); if(!this.session?.permissions.includes("media") || !this.session.permissions.includes("models")) throw new Error("当前账户无模型融合试算权限"); safety.managementSetProjectionPreview(enabled); }, calibration: () => this.exitToWorkbench("videoar") });
     this.ui = new ManagementStudio(host, {
       onViewMode: mode => this.changeMode(mode),
       onBeforeNavigate: () => this.guardNavigation(),
@@ -49,7 +52,7 @@ export class ManagementWorkspace {
       onLocate: selection => this.locate(selection),
       onSceneAction: (action, args) => this.sceneAction(action, args).catch(e => {this.message(e instanceof Error ? e.message : String(e), true);return false;}),
       onSessionChange: session => this.sessionChanged(session),
-      onSnapshot: data => { const changed = this.data && this.data.projectId !== data.projectId; this.data = data; if (changed) { this.selection = null; this.backViews = []; this.safety.managementPause(); this.applyMode("management"); } this.safety.setManagementIssues(data.collections.issues, data.revision, !Array.isArray(data.members.find(member=>member.id===data.session.userId)?.taskIds)); this.refreshAnchors(); this.updateContext(this.safety.getManagementContext()); },
+      onSnapshot: data => { const changed = this.data && this.data.projectId !== data.projectId; this.data = data; if (changed) { this.selection = null; this.backViews = []; this.videoDiagnostics.close(); this.safety.managementInvalidateProjection("project-change"); this.safety.managementPause(); this.applyMode("management"); } this.safety.setManagementIssues(data.collections.issues, data.revision, !Array.isArray(data.members.find(member=>member.id===data.session.userId)?.taskIds)); this.refreshAnchors(); this.updateContext(this.safety.getManagementContext()); },
       onExit: () => { this.exitToWorkbench(); },
       getCameraSnapshot: () => this.cameraSnapshot(),
     });
@@ -104,7 +107,7 @@ export class ManagementWorkspace {
 
   close(): void {
     if (!this.active) return;
-    this.active = false; this.endMeasurement(); this.endAnchorPick(); this.layersDialog.close(); this.feedback.hidden = true;
+    this.active = false; this.endMeasurement(); this.endAnchorPick(); this.layersDialog.close(); this.videoDiagnostics.close(); this.feedback.hidden = true;
     this.safety.spatial.setManagementSelection(undefined); this.safety.spatial.setManagementTopic(undefined); this.topicSignature=""; this.clearAnchors(); this.safety.attachManagementHost(undefined);
     this.safety.setManagementResourceAccess({models:true,files:true,media:true});
     this.safety.close(); this.ui.setVisible(false);
@@ -114,6 +117,8 @@ export class ManagementWorkspace {
   private sessionChanged(session: ManagementSession | null): void {
     const actorChanged=this.session?.userId!==session?.userId;
     if (actorChanged || !session) this.safety.clearManagementEvents();
+    this.videoDiagnostics.close();
+    if (actorChanged || !session?.permissions.includes("media") || !session.permissions.includes("models")) this.safety.managementSetProjectionPreview(false);
     this.session = session;
     if(actorChanged){this.selection=null;this.backViews=[];this.ui?.setExternalSelection(null);this.safety.spatial.setManagementSelection([]);}
     this.safety.spatial.setActive(this.active && !!session?.permissions.includes('models'));
@@ -246,6 +251,8 @@ export class ManagementWorkspace {
     if (action === 'end-measure') { this.endMeasurement();return; }
     if (action === 'play-media') { if(!this.session?.permissions.includes('media'))throw new Error('当前账户没有录像权限');if(!this.changeMode('scene'))return;await this.safety.managementPlayMedia(String(args.id));return; }
     if (['play','pause','seek','rate','follow'].includes(action)) { this.safety.managementMediaControl(action as 'play'|'pause'|'seek'|'rate'|'follow',action==='seek'?Number(args.seconds):action==='rate'?Number(args.rate):!!args.enabled);return; }
+    if (action === 'end-fusion') { this.safety.managementSetProjectionPreview(false);return; }
+    if (action === 'video-diagnostics') { if (!this.session?.permissions.includes('media') || !this.session.permissions.includes('models') || this.data?.projectId !== 'safety:project') throw new Error('当前项目或账户无视频与模型诊断权限'); this.videoDiagnostics.open(); return; }
     if (action === 'capture') { this.safety.managementPause();this.message('正在固定当前原片帧…');await this.captureEvidence();return; }
     if (action === 'import-media' || action === 'source-settings' || action === 'calibration') { this.exitToWorkbench('videoar');return; }
     if (action === 'model-settings' || action === 'import-model') { this.exitToWorkbench('tiles');return; }
@@ -254,13 +261,13 @@ export class ManagementWorkspace {
   }
   private openLayers(): void {
     const layers=this.safety.getManagementContext().layers;
-    this.layersDialog.innerHTML='<header><h2>图层与显示</h2><button type="button" data-scene-config="close">关闭</button></header><p>工程原始坐标不随显示配置改变。</p><div class="management-layer-list">'+layers.map(r=>`<label><input type="checkbox" data-layer-id="${escapeHtml(r.id)}" ${r.visible?'checked':''}><span>${escapeHtml(r.name)}<small>${escapeHtml(r.kind)}</small></span></label>`).join('')+'</div><footer><button type="button" data-scene-config="mode" data-mode="presentation">展示材质</button><button type="button" data-scene-config="mode" data-mode="inspection">原始实景</button><button type="button" data-scene-config="measure">两点空间测量</button></footer>';
+    this.layersDialog.innerHTML='<header><h2>图层与显示</h2><button type="button" data-scene-config="close">关闭</button></header><p>工程原始坐标不随显示配置改变。</p><div class="management-layer-list">'+layers.map(r=>`<label><input type="checkbox" data-layer-id="${escapeHtml(r.id)}" ${r.visible?'checked':''}><span>${escapeHtml(r.name)}<small>${escapeHtml(r.kind)}${r.quality ? ` · ${escapeHtml(r.quality)}` : ''}</small></span></label>`).join('')+'</div><footer><button type="button" data-scene-config="mode" data-mode="presentation">展示材质</button><button type="button" data-scene-config="mode" data-mode="inspection">原始实景</button><button type="button" data-scene-config="measure">两点空间测量</button></footer>';
     this.layersDialog.showModal();
   }
   private beginMeasurement(): void {
     if (!this.session?.permissions.includes('models')) return;
     this.safety.spatial.requestClose(()=>{
-      this.endMeasurement();this.endAnchorPick();this.safety.managementPause();this.safety.optimization.close();this.safety.effects.setPickingEnabled(false);this.safety.effects.setAuthoring(true);
+      this.endMeasurement();this.endAnchorPick();this.safety.managementSetProjectionPreview(false);this.safety.managementPause();this.safety.optimization.close();this.safety.effects.setPickingEnabled(false);this.safety.effects.setAuthoring(true);
       const handler=new ScreenSpaceEventHandler(this.viewer.canvas), state=this.measurement={handler,points:[] as Cartesian3[],entities:[] as Entity[]};
       handler.setInputAction(({position}:{position:Cartesian2})=>{
         const hit=strictModelSurfacePick(this.viewer,position,this.safety.getManagementModels(),()=>this.safety.effects.suspendOverlaysForPicking());
@@ -280,7 +287,7 @@ export class ManagementWorkspace {
   }
   private beginAnchorPick(purpose: 'document'|'quality'): void {
     this.safety.spatial.requestClose(()=>{
-      this.endMeasurement();this.endAnchorPick();this.safety.managementPause();this.safety.optimization.close();
+      this.endMeasurement();this.endAnchorPick();this.safety.managementSetProjectionPreview(false);this.safety.managementPause();this.safety.optimization.close();
       this.safety.effects.setPickingEnabled(false);this.safety.effects.setAuthoring(true);
       const handler=this.anchorPicking=new ScreenSpaceEventHandler(this.viewer.canvas);
       handler.setInputAction(({position}:{position:Cartesian2})=>{
@@ -360,5 +367,5 @@ export class ManagementWorkspace {
     this.messageTimer=setTimeout(()=>{this.feedback.hidden=true},7000);
   }
   debugStats() {return{active:this.active,mode:this.mode,selection:this.selection,measurement:!!this.measurement,backViews:this.backViews.length,viewerCount:document.querySelectorAll('#cesiumContainer canvas').length,videoCount:document.querySelectorAll('video').length,listeners:{preRender:this.viewer.scene.preRender.numberOfListeners,postRender:this.viewer.scene.postRender.numberOfListeners,clock:this.viewer.clock.onTick.numberOfListeners,cameraChanged:this.viewer.camera.changed.numberOfListeners},scene:this.safety.debugStats()};}
-  dispose():void {this.close();this.events.abort();clearTimeout(this.messageTimer);this.ui.dispose();this.anchorSelector.destroy();this.feedback.remove();this.layersDialog.remove();}
+  dispose():void {this.close();this.events.abort();clearTimeout(this.messageTimer);this.ui.dispose();this.anchorSelector.destroy();this.feedback.remove();this.layersDialog.remove();this.videoDiagnostics.dispose();}
 }

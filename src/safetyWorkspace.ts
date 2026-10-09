@@ -1,3 +1,8 @@
+import type { VideoArFusion } from './videoArFusion';
+import type { ModelQualityState } from './modelQualityState';
+import { buildVideoArInputProfile } from './videoArInputProfile';
+import type { SafetyVideoRoamAudit } from './safetyVideoRoamData';
+import type { VideoQualityMode, ManagementVideoDiagnostics } from './management/videoDiagnostics';
 import type { ManagementRecord } from './managementTypes';
 import { projectManagementEvents } from './managementEventProjection';
 import type { ManagementSceneContext, ManagementSceneHost } from "./managementSceneTypes";
@@ -32,12 +37,22 @@ export type SafetyWorkspaceOptions = {
   adapter?: SafetyDataAdapter; eventAdapter?: SafetyEventAdapter;
   loadVideoSource?: (recordId: string) => Promise<void>;
   clearVideoSource?: () => void;
+  getVideoDiagnostics?: () => ReturnType<VideoArFusion["getDiagnostics"]>;
+  setVideoTextureQuality?: (mode: VideoQualityMode) => void;
+  setModelProjectionPreview?: (enabled: boolean) => void;
+  setVideoProjectionFps?: (fps: number) => void;
+  captureVideoTexture?: () => {dataUrl: string};
+  resetVideoPerformance?: () => void;
+  invalidateVideoProjection?: (reason: string) => void;
+  getModelQualityStates?: () => ModelQualityState[];
+  subscribeModelQuality?: (listener: () => void) => () => void;
 };
 
 /** Shared navigation/data clock. The existing Viewer, video decoder and library remain the owners of their resources. */
 export class SafetyWorkspace {
   private managementHost?: ManagementSceneHost;
   private managementSceneVisible = true;
+  private managementProjectionPreview = false;
   readonly dashboard: SafetyDashboard;
   readonly effects: SafetySceneEffects;
   readonly spatial: SafetySpatialEditor;
@@ -67,6 +82,7 @@ export class SafetyWorkspace {
   private loading?: AbortController;
   private unsubscribe?: () => void;
   private removeClock?: () => void;
+  private removeModelQuality?: () => void;
   private restoreInteractions?: () => void;
   private active = false;
   private disposed = false;
@@ -119,7 +135,7 @@ export class SafetyWorkspace {
       onSnapshot: snapshot => this.applySpatialSnapshot(snapshot),
       suspendOverlays: () => this.effects.suspendOverlaysForPicking(),
       onSelect: (id, options) => { this.select({ nodeId: `spatial:${id}`, fly: options?.fly ?? true }); },
-      onDrawing: drawing => { this.effects.setPickingEnabled(!drawing); this.effects.setAuthoring(drawing); if (drawing) { this.pause(); this.beforeManualNavigation(); this.store?.patch({ cruise: false }); } this.publishManagementContext(); },
+      onDrawing: drawing => { this.effects.setPickingEnabled(!drawing); this.effects.setAuthoring(drawing); if (drawing) { this.managementSetProjectionPreview(false); this.pause(); this.beforeManualNavigation(); this.store?.patch({ cruise: false }); } this.publishManagementContext(); },
       onVisibility: visible => { this.dashboard.setAuthoring(visible); this.publishManagementContext(); },
       getModelRegistry: () => this.runtimeModels(),
       getContext: () => {
@@ -141,6 +157,7 @@ export class SafetyWorkspace {
       },
       onCompare: original => { this.beforeManualNavigation(); this.store?.patch({ mode: original ? "inspection" : "presentation" }); },
     });
+    this.removeModelQuality = options.subscribeModelQuality?.(() => this.publishManagementContext());
     this.dashboard.setVisible(false);
     this.mediaDialog.className = "safety-media-dialog";
     document.body.append(this.mediaDialog);
@@ -179,16 +196,17 @@ export class SafetyWorkspace {
     return { mode: this.effects.getDisplayMode(), spatialObjects: this.spatial.getSnapshot().objects.filter(o => !o.deletedAt),
       media: this.store?.dataset.media ?? [], sourceAssets: this.store?.dataset.media ?? [],
       models: this.modelRegistry.map(m => ({ id: m.assetId, name: this.options.getImports().find(r => r.id === m.assetId)?.name ?? m.assetId, version: m.assetVersion })),
-      layers: this.options.getImports().map(r => ({ id: r.id, name: r.name, kind: r.kind, visible: r.visible })),
+      layers: this.options.getImports().map(r => ({ id: r.id, name: r.name, kind: r.kind, visible: r.visible, quality: this.options.getModelQualityStates?.().find(m => m.modelId === r.id)?.label })),
       selectedSpatialId: this.store?.view.selected.spatialObjectId,
       videoState: { selectedId: this.selectedMedia, available, playing: available && !this.video!.paused,
         currentTime: this.video?.currentTime ?? 0, duration: Number.isFinite(this.video?.duration) ? this.video!.duration : 0,
-        rate: this.video?.playbackRate ?? 1, roam: this.roamState, error: this.video?.error?.message },
+        rate: this.video?.playbackRate ?? 1, previewActive: this.managementProjectionPreview, roam: this.roamState, error: this.video?.error?.message },
       toolState: { visible: d.visible, drawing: d.drawing, stage: d.stage ?? "choose", canUndo: d.canUndo, canRedo: d.canRedo, draftVertices: d.draftVertices } };
   }
   private publishManagementContext(): void { if (this.managementHost && this.spatial) this.managementHost.onContext(this.getManagementContext()); }
   setManagementSceneVisible(visible: boolean): void {
     this.managementSceneVisible = visible;
+    if (!visible) this.managementSetProjectionPreview(false);
     if (!visible) { this.pause(); this.beforeManualNavigation(); this.effects.cancelPendingHome(); this.options.viewer.camera.cancelFlight(); }
     this.options.viewer.useDefaultRenderLoop = visible;
     if (visible) { this.options.viewer.resize(); this.options.viewer.scene.requestRender(); }
@@ -226,11 +244,12 @@ export class SafetyWorkspace {
   managementMode(mode: "presentation" | "inspection"): void { this.patch({ mode }); }
   managementPause(): void { this.pause(); this.beforeManualNavigation(); this.effects.cancelPendingHome(); this.options.viewer.camera.cancelFlight(); this.store?.patch({ cruise: false }); }
   managementOpenEditor(kind?: "construction-area" | "railway" | "risk-point", id?: string): void {
+    this.managementSetProjectionPreview(false);
     this.spatial.requestClose(() => { this.optimization.close(); this.pause(); this.beforeManualNavigation(); this.store?.patch({ cruise: false });
       if (id) this.spatial.editDefinition(id); else if (kind) this.spatial.beginDefinition(kind); else this.spatial.showDefinitionTypes();
     });
   }
-  managementQuality(): void { this.spatial.requestClose(() => { this.pause(); this.beforeManualNavigation(); this.optimizationEntryMode = this.store?.state.mode; this.optimization.open(this.store?.state.mode === "inspection"); }); }
+  managementQuality(): void { this.managementSetProjectionPreview(false); this.spatial.requestClose(() => { this.pause(); this.beforeManualNavigation(); this.optimizationEntryMode = this.store?.state.mode; this.optimization.open(this.store?.state.mode === "inspection"); }); }
   managementLayer(id: string, visible: boolean): void { this.options.setLayerVisible(id, visible); this.layersChanged(); this.publishManagementContext(); }
   async managementPlayMedia(id: string): Promise<void> {
     const media = this.store?.dataset.media.find(m => m.id === id || m.sourceRecordId === id);
@@ -245,6 +264,21 @@ export class SafetyWorkspace {
     else if (action === "follow") this.videoRoam?.setEnabled(Boolean(value));
     this.publishManagementContext();
   }
+  getManagementVideoDiagnostics(): ManagementVideoDiagnostics {
+    const diagnostics = this.options.getVideoDiagnostics?.() ?? null;
+    const roamAudit = this.videoRoam?.debugStats().audit as SafetyVideoRoamAudit | undefined;
+    return { diagnostics, profile: buildVideoArInputProfile({diagnostics, roamAudit}), modelQuality: this.options.getModelQualityStates?.() ?? [], roam: this.roamState ?? null };
+  }
+  managementSetProjectionPreview(enabled: boolean): void {
+    if (enabled && (this.spatial.debugStats().visible || this.optimization.isOpen)) throw new Error("请先结束绘制或模型优化，再开始融合试算");
+    if (enabled && (!this.active || !this.managementSceneVisible || this.managementMediaRevoked || !this.hasBoundVideo())) throw new Error("请先在三维场景中选择并加载真实录像");
+    this.options.setModelProjectionPreview?.(enabled); this.managementProjectionPreview=enabled; this.publishManagementContext();
+  }
+  managementVideoQuality(mode: VideoQualityMode): void { this.options.setVideoTextureQuality?.(mode); this.publishManagementContext(); }
+  managementCaptureVideoTexture(): {dataUrl: string} { if (!this.options.captureVideoTexture) throw new Error("当前纹理导出不可用"); return this.options.captureVideoTexture(); }
+  managementProjectionFps(fps: number): void { this.options.setVideoProjectionFps?.(fps); }
+  managementVideoPerformanceReset(): void { this.options.resetVideoPerformance?.(); }
+  managementInvalidateProjection(reason: string): void { if(reason === "project-change") this.managementSetProjectionPreview(false); this.options.invalidateVideoProjection?.(reason); }
   getManagementModels() { return this.runtimeModels(); }
   getManagementModelVersions() { return this.modelRegistry.map(({assetId,assetVersion,coordinateTransformVersion})=>({assetId,assetVersion,coordinateTransformVersion})); }
   getManagementViewer(): Viewer { return this.options.viewer; }
@@ -279,6 +313,7 @@ export class SafetyWorkspace {
     document.body.classList.add("safety-workspace-open");
     this.dashboard.setVisible(true);
     this.options.viewer.resize();
+    this.managementSetProjectionPreview(false);
     this.options.setVideoPanelActive(false);
     this.mountVideo();
     this.spatial.setActive(true);
@@ -298,6 +333,7 @@ export class SafetyWorkspace {
 
   close(): void {
     if (!this.active) return;
+    this.managementSetProjectionPreview(false);
     // Block synchronous pause/store subscribers from rebinding during teardown.
     this.options.viewer.useDefaultRenderLoop = true; this.managementSceneVisible = true;
     this.active = false; this.mediaRequestGeneration++; this.mediaLoading = false;
@@ -548,6 +584,7 @@ export class SafetyWorkspace {
     const generation = ++this.mediaRequestGeneration;
     const current = () => this.active && !this.disposed && generation === this.mediaRequestGeneration;
     const retained = selection || (this.store ? { nodeId: this.store.state.selectedId, alertId: this.store.state.selectedAlertId } : undefined);
+    this.managementSetProjectionPreview(false);
     this.mediaLoading = true;
     this.pause(); this.unbindVideoRoam(); this.inspectionMode = "replay"; this.updateVideoStatus();
     // The shared library loader is not abortable. Serialize it so an older restore cannot
@@ -720,7 +757,7 @@ export class SafetyWorkspace {
   dispose(): void {
     if (this.disposed) return;
     this.close(); this.disposed = true; this.loading?.abort(); this.events.abort(); this.unsubscribe?.();
-    this.videoRoam?.dispose(); this.optimization.dispose(); this.store?.dispose(); this.spatial.dispose(); this.effects.dispose(); this.dashboard.dispose(); this.mediaDialog.remove();
+    this.managementSetProjectionPreview(false); this.removeModelQuality?.(); this.videoRoam?.dispose(); this.optimization.dispose(); this.store?.dispose(); this.spatial.dispose(); this.effects.dispose(); this.dashboard.dispose(); this.mediaDialog.remove();
     this.restoreTags();
   }
 }

@@ -34,8 +34,12 @@ A 批验收：全 src/server 回归 278/278，TypeScript 与 Vite 生产构建�
 
 ## 分批提交与回退
 
-各批最终 SHA 记录在本轮交付的版本清单。回退代码使用 `git revert <对应批次SHA>` 创建反向提交，先停止服务并备份数据；不使用 hard reset，不删除 SQLite、工程文件或历史报告。回退 B/C 不需要回退 A。A 的新规则、清单版本、事件记录均为增量字段/既有集合，不做数据破坏性降级；回退 A 会恢复原有业务校验缺陷，需保留该限制并重新核验使用范围。
+各批最终 SHA 记录在本轮交付的版本清单。回退代码使用 `git revert <对应批次SHA>` 创建反向提交，先停止服务并备份数据；不使用 hard reset，不删除 SQLite、工程文件或历史报告。C 可单独回退到 B；若要回退 B 且已部署 C，应先回退 C，再回退 B；回退到审查基线则继续回退 A。逆序回退后重新执行类型检查、构建及对应业务验收，不用启动时备份覆盖后续新增业务。回退 B/C 不需要回退 A。A 的新规则、清单版本、事件记录均为增量字段/既有集合，不做数据破坏性降级；回退 A 会恢复原有业务校验缺陷，需保留该限制并重新核验使用范围。
 
 ## B / C 验收
 
-A 提交为 `4a2f4426d28209ef89035745e7c3c6d518eec034`。B 结果详见 [工作台验收](platform-revision-b-workbench.md) 与 [布局验收](platform-revision-b-layout.md)：工点全链28项、甘特/真实照片19项、CPU布局18项通过；源码287项通过。C 在 B 独立提交后实施，其精度缺项不由界面、构建或高播放帧率代替。
+A 提交为 `4a2f4426d28209ef89035745e7c3c6d518eec034`。B 独立提交为 `8c6cdbc9cc8e0e6c07a46b9463479a16fd930f9b`，结果详见 [工作台验收](platform-revision-b-workbench.md)、[布局验收](platform-revision-b-layout.md) 与 [完整工点业务链](platform-revision-b-workpoint-acceptance.md)：工点全链28项、甘特/真实照片19项、CPU布局18项通过；源码287项通过。
+
+C 在 B 提交后实施，详见 [C 批实际主平台验收](platform-revision-c-acceptance.md)。已接入主路由显式模型试算、三档实际 GPU 纹理、媒体同帧守卫、可追溯输入档案和持续模型质量状态。使用 RTX 4080 / Edge149、原 4K 115.68 秒录像和真实 Production_2 整段测量，24 fps 投影目标未通过；缺可靠高程、独立相机校准及最终检查点，工程精度为未测。这些限制不由界面、构建或原视频播放帧率代替。
+
+本轮实际截图、操作录像、分批结果和 SHA 清单位于 `output/platform-revision-20261009/delivery/index.html` 与 `manifest.json`；最终 C SHA 记录在同目录 `delivery-state.json`。交付包只收录验收白名单，不含正式 SQLite 备份、账号凭据、原片或模型原件。代码改动文件可用 `git show --stat <批次SHA>` 核查，验证范围和未完成项按 A/B/C 分列。

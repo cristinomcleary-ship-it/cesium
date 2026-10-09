@@ -9,11 +9,11 @@ export type ManagementSceneContext = {
   media: SafetyMedia[];
   sourceAssets: SafetyMedia[];
   models: Array<{ id: string; name: string; version: string }>;
-  layers: Array<{ id: string; name: string; kind: string; visible: boolean }>;
+  layers: Array<{ id: string; name: string; kind: string; visible: boolean; quality?: string }>;
   selectedSpatialId?: string;
   videoState: {
     selectedId?: string; available: boolean; playing: boolean; currentTime: number;
-    duration: number; rate: number; roam?: SafetyVideoRoamState; error?: string;
+    duration: number; rate: number; previewActive?: boolean; roam?: SafetyVideoRoamState; error?: string;
   };
   toolState: { visible: boolean; drawing: boolean; stage: string; canUndo: boolean; canRedo: boolean; draftVertices: number };
 };

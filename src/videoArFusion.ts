@@ -29,6 +29,8 @@ import {
   type Viewer,
 } from "cesium";
 import "./videoArFusion.css";
+import { isTextureQuality, planVideoTexture, scaleTextureIntrinsics, type VideoTextureQuality } from "./videoArTextureQuality";
+import { VideoArPerformance, projectionTick } from "./videoArPerformance";
 import { VideoArModelProjector, type ModelProjectionDiagnosticMode, type ModelProjectionFrame } from "./videoArModelProjector";
 import { VideoArControlPointPicker, type ControlPointFrame } from "./videoArControlPointPicker";
 import type { ControlPointSession } from "./videoArControlPointSession";
@@ -117,6 +119,7 @@ type ParsedTrajectoryMetadata = {
   /** Trusted root-level video identity, independent of per-frame pose validity. */
   readonly sourceVideoDataset?: DjiSrtDataset;
   readonly embeddedFootprints: GeoFootprintCollection;
+  readonly declarations: Record<string, string | null>;
 };
 
 const trajectoryMetadata = new WeakMap<FlightPoint[], ParsedTrajectoryMetadata>();
@@ -192,7 +195,6 @@ const MAX_ENTRY_BYTES = 64 * 1024 * 1024;
 const MAX_TRAJECTORY_POINTS = 100_000;
 const MAX_TRAJECTORY_RENDER_POINTS = 5_000;
 const MAX_LIVE_TRAJECTORY_POINTS = 5_000;
-const MAX_TEXTURE_EDGE = 1024;
 const MAX_PREVIEW_EDGE = 480;
 const MAX_GROUND_PROJECTION_DISTANCE = 50_000;
 const MAX_FRAME_POSE_DELTA_MS = 1_500;
@@ -292,7 +294,8 @@ export const videoArFusionPanelHtml = `
       <label>高程校正（米）<input id="videoArHeightOffset" type="number" step="0.1" value="0" /></label>
       <label>数据地表高程（普通轨迹）<input id="videoArGroundHeight" type="number" step="0.1" placeholder="自动：轨迹低位高程" /></label>
       <label>视锥诊断距离<input id="videoArFallbackDistance" type="number" min="1" max="5000" step="1" value="60" /></label>
-      <label>纹理刷新上限<select id="videoArFps"><option value="8">8 FPS（低配）</option><option value="12" selected>12 FPS（推荐）</option><option value="18">18 FPS</option></select></label>
+      <label>视频画质<select id="videoArTextureQuality"><option value="economy">节能（长边1024）</option><option value="clear" selected>清晰（长边1920）</option><option value="inspection">暂停精查（原始分辨率）</option></select></label>
+      <label>投影刷新目标<select id="videoArFps"><option value="8">8 FPS（低配）</option><option value="12">12 FPS</option><option value="18">18 FPS</option><option value="24" selected>24 FPS（待设备实测）</option></select></label>
       <label>播放速度<select id="videoArSpeed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
     </div>
     <details class="video-ar-source-details video-ar-calibration">
@@ -772,7 +775,15 @@ export function parseVideoArTrajectory(input: unknown): FlightPoint[] {
   for (let index = 0; index < points.length; index += 1) {
     if (points[index].timestampMs < base) points[index].timestampMs = base + index * 100;
   }
-  trajectoryMetadata.set(points, { sourceVideoDataset, embeddedFootprints });
+  const declaredText = (value: unknown) => typeof value === "string" && value.trim() ? value : null;
+  trajectoryMetadata.set(points, { sourceVideoDataset, embeddedFootprints, declarations: {
+    sourceCrs: declaredText(declaredCrsValue), altitudeReference: declaredText(flightInfo.altitude_reference ?? root.altitude_reference),
+    generator: declaredText(flightInfo.generator ?? root.generator), timeline: declaredText(flightInfo.timeline ?? root.timeline),
+    associationBasis: declaredText(flightInfo.association_basis ?? root.association_basis),
+    attitudeDefinition: declaredText(cameraModel.attitude_definition ?? flightInfo.attitude_definition ?? root.attitude_definition),
+    mountingRelation: declaredText(cameraModel.mounting_relation ?? flightInfo.mounting_relation ?? root.mounting_relation),
+    declarationLocation: "trajectory root and flight_info; original values, not independently verified",
+  } });
   return points;
 }
 
@@ -819,6 +830,13 @@ export class VideoArFusion {
   private pendingTextureFrame?: TextureFrameIdentity;
   private currentBitmapFrame?: TextureFrameIdentity;
   private textureNeedsRefresh = false;
+  private performanceMetrics = new VideoArPerformance();
+  private textureAllocationCount = 0;
+  private textureReuseCount = 0;
+  private lastTextureReplacement: { previousWidth: number | null; previousHeight: number | null; previousDestroyed: boolean | null; nextWidth: number; nextHeight: number } | null = null;
+  private maximumTextureSize: number | null | undefined;
+  private projectionInvalidationReason: string | null = null;
+  private modelPreviewControls?: { surface: string; terrain: boolean; fps: string };
   private liveMediaTimeOriginMs?: number;
   private liveBitmapSequence = 0;
   private calibrationSessions: ControlPointSession[] = [];
@@ -934,6 +952,114 @@ export class VideoArFusion {
     this.viewer.scene.requestRender();
   }
 
+  getTextureQuality() {
+    const selected = this.element<HTMLSelectElement>("#videoArTextureQuality").value;
+    const mode: VideoTextureQuality = isTextureQuality(selected) ? selected : "clear";
+    if (this.maximumTextureSize === undefined) {
+      try {
+        const gl = (this.viewer.scene as unknown as { context?: { _gl?: WebGLRenderingContext } }).context?._gl;
+        const value = gl?.getParameter(gl.MAX_TEXTURE_SIZE);
+        this.maximumTextureSize = typeof value === "number" && Number.isFinite(value) ? value : null;
+      } catch { this.maximumTextureSize = null; }
+    }
+    const plan = planVideoTexture(mode, this.mediaSourceWidth, this.mediaSourceHeight,
+      this.videoObjectUrl ? this.video.paused : !this.playing, this.maximumTextureSize);
+    const texture = this.readyMaterialTexture(this.textureCanvas);
+    const width = texture?.width ?? texture?._width, height = texture?.height ?? texture?._height;
+    const gpuAllocated = width && height ? { width, height, rgbaBytes: width * height * 4 } : null;
+    return { ...plan, canvas: this.textureWidth && this.textureHeight ? { width: this.textureWidth, height: this.textureHeight } : null,
+      gpuAllocated, currentFrameUploaded: Boolean(gpuAllocated && this.stableTextureUpload && sameTextureFrame(this.activeTextureFrame, this.uploadedTextureFrame)
+        && gpuAllocated.width === this.textureWidth && gpuAllocated.height === this.textureHeight),
+      uploadedToPlannedDimensions: Boolean(gpuAllocated && plan.planned && gpuAllocated.width === plan.planned.width && gpuAllocated.height === plan.planned.height),
+      uploadedFrame: this.stableTextureUpload ? this.uploadedTextureFrame ?? null : null,
+      estimatedGpuBytes: gpuAllocated?.rgbaBytes ?? null, measuredGpuBytes: null,
+      allocationCount: this.textureAllocationCount, reuseCount: this.textureReuseCount,
+      lastReplacement: this.lastTextureReplacement,
+      memoryMeaning: "RGBA texture estimate only; not total measured GPU memory; transition budget reserves old and new textures" };
+  }
+
+  /** Read-only, paused evidence of the canvas actually copied to the resident texture. */
+  captureTextureEvidence() {
+    if (this.liveOnline || (this.videoObjectUrl ? !this.video.paused || this.video.seeking : this.playing)
+      || this.textureNeedsRefresh || this.awaitingDecodedTexture || this.pendingTextureUpload
+      || this.pendingTextureFrame || this.pendingTextureCanvas || this.textureTransactionPending()) return null;
+    const quality = this.getTextureQuality();
+    if (!quality.currentFrameUploaded || !this.uploadedTextureFrame) return null;
+    try {
+      return { dataUrl: this.textureCanvas.toDataURL("image/png"), quality,
+        frameIdentity: { ...this.uploadedTextureFrame },
+        note: "actual uploaded CPU canvas, not GPU framebuffer readback" as const };
+    } catch { return null; }
+  }
+
+  /** Main-workspace opt-in preview. This never declares height/calibration valid or reveals hidden models. */
+  setModelPreviewActive(active: boolean) {
+    if (active) {
+      if (this.modelPreviewControls) { this.setPanelActive(true); return; }
+      if (!this.points.length || !this.videoObjectUrl) throw new Error("请先加载真实录像及对应轨迹，再启用模型融合试算");
+      if (!this.modelPreviewControls) this.modelPreviewControls = {
+        surface: this.element<HTMLSelectElement>("#videoArSurfaceMode").value,
+        terrain: this.element<HTMLInputElement>("#videoArTerrain").checked,
+        fps: this.element<HTMLSelectElement>("#videoArFps").value,
+      };
+      this.element<HTMLSelectElement>("#videoArSurfaceMode").value = "model";
+      this.element<HTMLInputElement>("#videoArTerrain").checked = true;
+      this.element<HTMLSelectElement>("#videoArFps").value = "24";
+      this.setPanelActive(true);
+      this.refreshCurrentGeometry();
+    } else if (this.modelPreviewControls) {
+      const previous = this.modelPreviewControls;
+      this.modelPreviewControls = undefined;
+      this.element<HTMLSelectElement>("#videoArSurfaceMode").value = previous.surface;
+      this.element<HTMLInputElement>("#videoArTerrain").checked = previous.terrain;
+      this.element<HTMLSelectElement>("#videoArFps").value = previous.fps;
+      this.setPanelActive(false);
+    }
+  }
+
+  getProjectionFps() { return this.targetFps(); }
+  setProjectionFps(fps: number) {
+    if (![8, 12, 18, 24].includes(fps)) throw new Error("投影目标帧率必须为8、12、18或24");
+    this.element<HTMLSelectElement>("#videoArFps").value = String(fps);
+    this.lastProjectionUpdate = 0;
+    this.cancelPendingProjectionUpdates();
+    this.saveReplayControls();
+    this.viewer.scene.requestRender();
+  }
+
+  setTextureQuality(mode: VideoTextureQuality) {
+    if (!isTextureQuality(mode)) throw new Error("未知视频画质档");
+    this.element<HTMLSelectElement>("#videoArTextureQuality").value = mode;
+    this.cancelPendingProjectionUpdates();
+    this.textureNeedsRefresh = true;
+    if (this.points.length) this.updateAtPlayback(this.playbackMs, true);
+    if (this.videoObjectUrl && this.video.readyState >= 2 && !this.video.seeking) this.drawTexture(this.video, true);
+    else if (this.requestedFrameName && !this.videoObjectUrl) { this.displayedFrameName = null; this.frameRequestVersion++; void this.loadRequestedFrame(); }
+    this.saveReplayControls();
+    this.viewer.scene.requestRender();
+  }
+
+  resetPerformanceMetrics() {
+    this.performanceMetrics = new VideoArPerformance();
+    this.synchronizePerformanceClock();
+  }
+
+  /** Called by actual model/project ownership changes; old candidates cannot survive the boundary. */
+  invalidateProjection(reason: string) {
+    this.projectionInvalidationReason = reason;
+    this.performanceMetrics.invalidate(reason);
+    this.frameRequestVersion++;
+    this.cancelPendingProjectionUpdates();
+    this.invalidateCameraFrame();
+    this.modelProjector?.invalidateDepth();
+    if (this.panelActive && !this.replaySelectionPending) this.refreshCurrentGeometry();
+    this.applyVisibility();
+  }
+
+  private synchronizePerformanceClock(now = performance.now()) {
+    this.performanceMetrics.setActive(Boolean(this.videoObjectUrl && !this.video.paused && !this.video.seeking), now);
+  }
+
   /** Captures resolved state; form values alone are never evidence of rendered parameters. */
   getDiagnostics(includeSessions = true) {
     const camera = this.effectiveCamera;
@@ -947,6 +1073,20 @@ export class VideoArFusion {
         committedModel: this.committedModelTextureFrame ?? null, pending: this.pendingTextureFrame ?? null,
         refreshRequested: this.textureNeedsRefresh },
       projectionDecision: this.projectionDecision,
+      projectionInvalidationReason: this.projectionInvalidationReason,
+      textureQuality: this.getTextureQuality(),
+      performance: { ...this.performanceMetrics.snapshot(),
+        targetFps: this.targetFps(), scheduledProjectionFps: this.continuousProjectionFps(),
+        renderedProjectionScope: "model-depth path; counts valid current-frame depth submissions, not independently proven image coverage",
+        rejectionMeaning: "Pair-assembly guards include normal waiting for a matching upload; refused candidates are not evidence of visible wrong frames",
+        nativePlaybackQuality: this.videoObjectUrl && typeof this.video.getVideoPlaybackQuality === "function"
+          ? (() => { const q = this.video.getVideoPlaybackQuality(); return { totalVideoFrames: q.totalVideoFrames, droppedVideoFrames: q.droppedVideoFrames, creationTime: q.creationTime, scope: "browser media-element cumulative counters" }; })() : null },
+      sourceMetadata: { ...(trajectoryMetadata.get(this.points)?.declarations ?? { sourceCrs: null, altitudeReference: null, generator: null, timeline: null, associationBasis: null, attitudeDefinition: null, mountingRelation: null }),
+        sourceFile: fileInfo(this.trajectoryFile), sourceSession: this.loadGeneration,
+        recordingMatched: Boolean(this.videoObjectUrl && (this.independentDjiPoseProjection || this.exactMediaBinding)),
+        timelineMatched: this.independentVideoExactTimeline,
+        runtimeAssociationBasis: this.independentDjiPoseProjection ? "DJI declared filename, byte size, decoded dimensions/duration and monotonic full-coverage PTS validated" : this.exactMediaBinding ? "Explicit georeference video identity and media PTS anchors validated" : null,
+        associationLimitation: "Metadata association does not verify sensor latency, altitude datum or camera calibration" },
       calibrationFrameState: { available: Boolean(this.calibrationFrame), frameTime: this.calibrationFrame?.frameTime ?? null, cameraInteracting: this.cameraInteracting, picking: this.controlPointPicking, selectionPending: this.replaySelectionPending },
       media: { source: this.projectionSource,
         video: this.projectionSource === "live" ? null : fileInfo(this.videoFile),
@@ -958,7 +1098,7 @@ export class VideoArFusion {
         seeking: this.video.seeking, readyState: this.video.readyState,
         poseMinusDecodedMs: camera?.poseVideoTimeMs !== undefined && Number.isFinite(this.decodedVideoTime) ? camera.poseVideoTimeMs - this.decodedVideoTime * 1000 : null,
         synchronizationNote: "PTS alignment is not independent verification of sensor/telemetry latency" },
-      rendering: { selectedSurface: this.element<HTMLSelectElement>("#videoArSurfaceMode").value,
+      rendering: { previewActive: Boolean(this.modelPreviewControls), selectedSurface: this.element<HTMLSelectElement>("#videoArSurfaceMode").value,
         panelActive: this.panelActive, enabled: this.element<HTMLInputElement>("#videoArTerrain").checked,
         flatPrimitiveExists: Boolean(this.projectionPrimitive), flatPrimitiveVisible: Boolean(this.projectionPrimitive?.show),
         parameterMeaning: "effectiveCamera is the resolved camera; model.camera is the applied projector uniform state. Neither alone proves a pixel was rendered.",
@@ -1011,6 +1151,7 @@ export class VideoArFusion {
   }
 
   private newReplaySelection() {
+    this.setModelPreviewActive(false);
     this.calibrationSessions = [];
     this.replaySelectionPending = true;
     this.loadGeneration += 1;
@@ -1020,18 +1161,23 @@ export class VideoArFusion {
     this.invalidateCameraFrame();
   }
 
-  private replayControls() {
+  private replayControls(forPersistence = false) {
     const controls: Record<string, string | boolean> = {};
     document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input[id^="videoAr"], select[id^="videoAr"]').forEach(input => {
       if (input.type === "file" || /Socket|Progress|FlightSelect|DepthDiagnostic/i.test(input.id)) return;
       controls[input.id] = input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input.value;
     });
+    if (forPersistence && this.modelPreviewControls) {
+      controls.videoArSurfaceMode = this.modelPreviewControls.surface;
+      controls.videoArTerrain = this.modelPreviewControls.terrain;
+      controls.videoArFps = this.modelPreviewControls.fps;
+    }
     return controls;
   }
 
   private saveReplayControls() {
     if (this.points.length && this.replaySettingsReady && !this.restoringReplay) {
-      void Promise.resolve(this.onReplaySettingsChanged?.(this.replayControls(), structuredClone(this.calibrationSessions)))
+      void Promise.resolve(this.onReplaySettingsChanged?.(this.replayControls(true), structuredClone(this.calibrationSessions)))
         .catch(error => this.reportError("配准设置未保存", error));
     }
   }
@@ -1043,7 +1189,7 @@ export class VideoArFusion {
     if (!this.points.length || !this.replaySettingsReady || this.restoringReplay || !this.onReplaySettingsChanged) {
       throw new Error("记录保留在当前会话中，但视频尚未保存到资料库；请先保存回放，或导出诊断记录");
     }
-    await this.onReplaySettingsChanged(this.replayControls(), structuredClone(this.calibrationSessions), true);
+    await this.onReplaySettingsChanged(this.replayControls(true), structuredClone(this.calibrationSessions), true);
   }
 
   private snapshotReplay(name: string): SavedReplay {
@@ -1064,7 +1210,7 @@ export class VideoArFusion {
       }
     }
     if (this.georeferenceFile) files.georeference = this.georeferenceFile;
-    const controls = this.replayControls();
+    const controls = this.replayControls(true);
     return { name, files, settings: { flight: this.element<HTMLSelectElement>("#videoArFlightSelect").value, framePaths, controls, calibrationSessions: structuredClone(this.calibrationSessions) } };
   }
 
@@ -1207,6 +1353,16 @@ export class VideoArFusion {
     this.dataSourceReady = this.viewer.dataSources.add(this.dataSource);
     this.removeProjectionPostRenderListener = this.viewer.scene.postRender.addEventListener(() => {
       this.finishProjectionCandidate();
+      const metricTime = performance.now();
+      this.synchronizePerformanceClock(metricTime);
+      this.performanceMetrics.mark("cesiumRenders", metricTime);
+      if (this.modelProjector?.ready && this.stableTextureUpload
+          && sameTextureFrame(this.committedModelTextureFrame, this.uploadedTextureFrame)
+          && cameraMatchesTexture(this.committedModelCamera, this.uploadedTextureFrame?.mediaTimeMs ?? Number.NaN)) {
+        this.performanceMetrics.mark("renderedProjectionFrames", metricTime, this.committedModelTextureFrame);
+      } else if (this.modelProjectionAllowed && this.committedModelTextureFrame) {
+        this.performanceMetrics.reject("source-depth-not-ready", this.committedModelTextureFrame);
+      }
       const status = this.element<HTMLElement>("#videoArModelStatus");
       status.hidden = this.element<HTMLSelectElement>("#videoArSurfaceMode").value !== "model";
       if (!status.hidden) {
@@ -1217,10 +1373,10 @@ export class VideoArFusion {
       }
     });
     const refreshTerrain = () => {
-      if (this.terrainRefreshTimer || this.controlPointPicking || !this.panelActive || !this.points.length || this.playing) return;
+      if (this.terrainRefreshTimer || this.controlPointPicking || !this.panelActive || !this.points.length || this.mediaPlaying()) return;
       this.terrainRefreshTimer = window.setTimeout(() => {
         this.terrainRefreshTimer = 0;
-        if (this.panelActive && !this.playing && !this.controlPointPicking) this.refreshCurrentGeometry();
+        if (this.panelActive && !this.mediaPlaying() && !this.controlPointPicking) this.refreshCurrentGeometry();
       }, 250);
     };
     this.removeTerrainProgressListener = this.viewer.scene.globe.tileLoadProgressEvent.addEventListener(refreshTerrain);
@@ -1340,6 +1496,7 @@ export class VideoArFusion {
   }
 
   clear() {
+    this.setModelPreviewActive(false);
     this.calibrationSessions = [];
     this.effectiveCamera = undefined;
     this.committedModelCamera = undefined;
@@ -1498,7 +1655,7 @@ export class VideoArFusion {
     this.element("#videoArLoad").addEventListener("click", () => void this.loadSelectedSource(), { signal });
     this.element("#videoArLocate").addEventListener("click", () => this.locate(), { signal });
     this.element("#videoArClear").addEventListener("click", () => this.clear(), { signal });
-    this.element("#videoArPlay").addEventListener("click", () => void (this.playing ? this.pause() : this.play()), { signal });
+    this.element("#videoArPlay").addEventListener("click", () => void (this.mediaPlaying() ? this.pause() : this.play()), { signal });
     this.element("#videoArPrevious").addEventListener("click", () => this.step(-1), { signal });
     this.element("#videoArNext").addEventListener("click", () => this.step(1), { signal });
     this.element<HTMLInputElement>("#videoArProgress").addEventListener("input", (event) => {
@@ -1506,6 +1663,11 @@ export class VideoArFusion {
       const ratio = finite((event.currentTarget as HTMLInputElement).value) / 1000;
       this.seek(ratio * this.durationMs);
     }, { signal });
+    this.element<HTMLSelectElement>("#videoArTextureQuality").addEventListener("change", () => {
+      const mode = this.element<HTMLSelectElement>("#videoArTextureQuality").value;
+      if (isTextureQuality(mode)) this.setTextureQuality(mode);
+    }, { signal });
+    this.element<HTMLSelectElement>("#videoArFps").addEventListener("change", () => this.setProjectionFps(Number(this.element<HTMLSelectElement>("#videoArFps").value)), { signal });
     this.element<HTMLSelectElement>("#videoArSpeed").addEventListener("change", () => {
       this.video.playbackRate = this.playbackSpeed();
     }, { signal });
@@ -1867,6 +2029,7 @@ export class VideoArFusion {
       this.releaseVideo();
       return;
     }
+    this.resetPerformanceMetrics();
     this.mediaSourceWidth = this.video.videoWidth;
     this.mediaSourceHeight = this.video.videoHeight;
     let frameCallback = 0;
@@ -1882,29 +2045,47 @@ export class VideoArFusion {
     const decoded = (now: number, metadata: VideoFrameCallbackMetadata) => {
       if (generation !== this.loadGeneration || this.videoObjectUrl !== url) return;
       this.decodedVideoTime = metadata.mediaTime;
+      this.synchronizePerformanceClock(now);
+      this.performanceMetrics.decoded(now, textureFrameIdentity(generation, "video", "video", metadata.mediaTime * 1000), metadata.presentedFrames);
       frameCallback = this.video.requestVideoFrameCallback(decoded);
-      const interval = 1000 / Math.min(this.targetFps(), MAX_CONTINUOUS_GEOMETRY_FPS);
-      if (this.points.length && this.panelActive && !this.cameraInteracting && !this.video.seeking
-          && (!this.playing || now - this.lastProjectionUpdate >= interval || this.awaitingDecodedTexture)) {
-        this.lastProjectionUpdate = now;
-        this.updateAtPlayback(this.playbackMs, !this.playing);
-        this.drawTexture(this.video, !this.playing);
+      // The main workspace uses this same native media element; its play state
+      // must not be inferred from the legacy panel's animation flag.
+      const mediaPlaying = !this.video.paused;
+      const tick = projectionTick(now, this.lastProjectionUpdate, this.continuousProjectionFps(), !mediaPlaying || this.awaitingDecodedTexture);
+      if (this.points.length && this.panelActive && !this.cameraInteracting && !this.video.seeking && tick.due) {
+        this.lastProjectionUpdate = tick.next;
+        this.updateAtPlayback(this.playbackMs, !mediaPlaying);
+        this.drawTexture(this.video, !mediaPlaying);
         this.viewer.scene.requestRender();
       }
     };
     if (this.usesDecodedFrameCallbacks) frameCallback = this.video.requestVideoFrameCallback(decoded);
     const seeking = () => {
+      this.synchronizePerformanceClock();
+      this.performanceMetrics.invalidate("seek");
+      this.modelProjector?.invalidateDepth();
       this.decodedVideoTime = Number.NaN;
       this.awaitingDecodedTexture = true;
       this.cancelPendingProjectionUpdates();
     };
     this.video.addEventListener("seeking", seeking);
+    const performanceClock = () => this.synchronizePerformanceClock();
+    const pausedFrame = () => { performanceClock(); if (this.panelActive && !this.controlPointPicking) drawFirstDecodedFrame(true); };
+    const rateChanged = () => { this.performanceMetrics.invalidate("playback-rate"); this.cancelPendingProjectionUpdates(); this.modelProjector?.invalidateDepth(); if (this.video.paused) drawFirstDecodedFrame(true); this.viewer.scene.requestRender(); };
+    this.video.addEventListener("play", performanceClock);
+    this.video.addEventListener("pause", pausedFrame);
+    this.video.addEventListener("seeked", performanceClock);
+    this.video.addEventListener("ratechange", rateChanged);
     const loadedData = () => drawFirstDecodedFrame();
     const seeked = () => drawFirstDecodedFrame(true);
     this.video.addEventListener("seeked", seeked);
     this.removePreparedVideoListeners = () => {
       if (frameCallback) this.video.cancelVideoFrameCallback(frameCallback);
       this.video.removeEventListener("seeking", seeking);
+      this.video.removeEventListener("play", performanceClock);
+      this.video.removeEventListener("pause", pausedFrame);
+      this.video.removeEventListener("seeked", performanceClock);
+      this.video.removeEventListener("ratechange", rateChanged);
       this.video.removeEventListener("loadeddata", loadedData);
       this.video.removeEventListener("seeked", seeked);
     };
@@ -2328,8 +2509,16 @@ export class VideoArFusion {
     return Math.min(4, Math.max(0.25, this.numberInput("#videoArSpeed", 1)));
   }
 
+  private mediaPlaying() { return this.videoObjectUrl ? !this.video.paused && !this.video.ended : this.playing; }
+
   private targetFps() {
-    return Math.min(24, Math.max(4, this.numberInput("#videoArFps", 12)));
+    return Math.min(24, Math.max(4, this.numberInput("#videoArFps", 24)));
+  }
+
+  private continuousProjectionFps() {
+    // Model depth is prepared by the source-camera GPU pass each Cesium frame.
+    // CPU terrain rays and control meshes retain their bounded geometry rate.
+    return this.modelProjectionAllowed ? this.targetFps() : Math.min(this.targetFps(), MAX_CONTINUOUS_GEOMETRY_FPS);
   }
 
   private async play() {
@@ -2383,9 +2572,7 @@ export class VideoArFusion {
     } else {
       this.playbackMs = Math.min(this.durationMs, this.playbackMs + elapsed * this.playbackSpeed());
     }
-    const effectiveFps = this.independentDjiPoseProjection
-      ? Math.min(this.targetFps(), MAX_CONTINUOUS_GEOMETRY_FPS)
-      : this.targetFps();
+    const effectiveFps = this.videoObjectUrl ? this.continuousProjectionFps() : this.targetFps();
     const interval = 1000 / effectiveFps;
     if (!(this.videoObjectUrl && this.usesDecodedFrameCallbacks) && (time - this.lastProjectionUpdate >= interval || this.playbackMs >= this.durationMs)) {
       this.lastProjectionUpdate = time;
@@ -3670,13 +3857,20 @@ export class VideoArFusion {
     const context = (this.viewer.scene as unknown as { context?: unknown }).context;
     if (!context || typeof material.update !== "function" || this.projectionMaterial.isDestroyed()) return undefined;
     this.projectionMaterial.uniforms.image = canvas;
+    const previousTexture = material._textures?.image;
+    const previousWidth = previousTexture?.width ?? previousTexture?._width ?? null;
+    const previousHeight = previousTexture?.height ?? previousTexture?._height ?? null;
     try {
       // The first update queues a new Canvas identity; the second consumes that
       // queue and creates the real texture.  No Viewer-wide render setting is
       // changed, so the AR module remains isolated from the rest of the app.
       material.update(context);
       material.update(context);
-      return this.readyMaterialTexture(canvas);
+      const nextTexture = this.readyMaterialTexture(canvas);
+      if (nextTexture && previousTexture && previousTexture !== material._defaultTexture && previousTexture !== nextTexture) {
+        this.lastTextureReplacement = { previousWidth, previousHeight, previousDestroyed: previousTexture.isDestroyed?.() ?? null, nextWidth: canvas.width, nextHeight: canvas.height };
+      }
+      return nextTexture;
     } catch (error) {
       if (!this.textureUploadWarningShown) {
         this.textureUploadWarningShown = true;
@@ -3722,6 +3916,7 @@ export class VideoArFusion {
     if (!texture) return false;
     try {
       texture.copyFrom({ source: this.textureCanvas });
+      if (resizedCanvas) this.textureAllocationCount++; else this.textureReuseCount++;
       this.pendingTextureUpload = false;
       this.pendingTextureCanvas = undefined;
       if (Number.isFinite(this.pendingVideoTextureTime)) this.lastVideoTextureTime = this.pendingVideoTextureTime;
@@ -3757,7 +3952,7 @@ export class VideoArFusion {
     this.mediaSourceHeight = sourceHeight;
     if (source instanceof HTMLVideoElement && source.seeking) return;
     const frameIdentity = source instanceof HTMLVideoElement ? this.currentTextureFrame() : bitmapFrame;
-    if (!frameIdentity || frameIdentity.sourceSession !== this.loadGeneration) return;
+    if (!frameIdentity || frameIdentity.sourceSession !== this.loadGeneration) { this.performanceMetrics?.reject("stale-source", frameIdentity); return; }
     if (this.projectionGeometryBuildFailed) return;
     if (source instanceof HTMLVideoElement && this.projectionMeshPoints.length > 0 && !this.meshVideoFrameReady) {
       return;
@@ -3769,9 +3964,9 @@ export class VideoArFusion {
       && !this.pendingTextureUpload
       && sameTextureFrame(frameIdentity, this.uploadedTextureFrame)
     ) return;
-    const scale = Math.min(1, MAX_TEXTURE_EDGE / Math.max(sourceWidth, sourceHeight));
-    const width = Math.max(2, Math.round(sourceWidth * scale));
-    const height = Math.max(2, Math.round(sourceHeight * scale));
+    const plan = this.getTextureQuality().planned;
+    if (!plan) return;
+    const { width, height } = plan;
     const nextAspectRatio = sourceWidth / sourceHeight;
     const aspectChanged = this.sourceAspectRatio === undefined
       || Math.abs(this.sourceAspectRatio - nextAspectRatio) > 0.001;
@@ -3814,6 +4009,7 @@ export class VideoArFusion {
         this.pendingTextureUpload = false;
         this.pendingTextureCanvas = undefined;
         if (newTextureReady) {
+          this.textureAllocationCount++;
           this.awaitingDecodedTexture = false;
           this.lastVideoTextureTime = frameIdentity.mediaTimeMs / 1000;
           this.uploadedTextureFrame = frameIdentity;
@@ -3825,7 +4021,7 @@ export class VideoArFusion {
       // Always stage decoded media in the bounded, reusable canvas.  Direct
       // HTMLVideoElement -> WebGL uploads can produce black frames on some
       // hardware-decoder/browser combinations; the canvas path is consistent
-      // and 4K sources are already capped to MAX_TEXTURE_EDGE above.
+      // and source dimensions are bounded by the selected quality/device budget above.
       const staging = this.textureCanvas.getContext("2d", { alpha: false });
       if (!staging) throw new Error("无法创建视频纹理画布");
       staging.drawImage(source, 0, 0, width, height);
@@ -3842,6 +4038,7 @@ export class VideoArFusion {
         if (texture) {
           try {
             texture.copyFrom({ source: uploadSource });
+            this.textureReuseCount++;
             this.pendingTextureUpload = false;
             this.pendingTextureCanvas = undefined;
             this.pendingVideoTextureTime = Number.NaN;
@@ -3928,6 +4125,9 @@ export class VideoArFusion {
     this.awaitingDecodedTexture = false;
     delete this.element<HTMLElement>("#videoArPreview").dataset.textureUpload;
     this.projectionMaterial.uniforms.image = this.canvasA;
+    // Material.update owns and destroys its prior GPU texture on replacement.
+    // Allocate a 16x9 placeholder now so a cleared 4K source is not retained until another load.
+    this.primeMaterialTexture(this.canvasA);
     this.element("#videoArPreviewPlaceholder").classList.remove("hidden");
     this.element("#videoArProjectionMode").textContent = "未加载";
   }
@@ -3954,8 +4154,15 @@ export class VideoArFusion {
     const camera = this.effectiveCamera;
     const matches = sameTextureFrame(this.activeTextureFrame, this.uploadedTextureFrame)
       && cameraMatchesTexture(camera, this.uploadedTextureFrame?.mediaTimeMs ?? Number.NaN);
-    if (!this.modelProjectionAllowed || !this.modelProjectionFrame || !this.modelProjector || !matches || !this.stableTextureUpload) return;
-    this.modelProjector.setFrame(this.modelProjectionFrame);
+    if (!this.modelProjectionAllowed || !this.modelProjectionFrame || !this.modelProjector || !matches || !this.stableTextureUpload) {
+      if (this.modelProjectionAllowed && !matches) this.performanceMetrics?.reject("camera-image-mismatch", this.activeTextureFrame);
+      return;
+    }
+    const appliedFrame = this.textureWidth > 0 && this.textureHeight > 0
+      ? { ...this.modelProjectionFrame, intrinsics: scaleTextureIntrinsics(this.modelProjectionFrame.intrinsics, this.textureWidth, this.textureHeight), identity: this.uploadedTextureFrame }
+      : { ...this.modelProjectionFrame, identity: this.uploadedTextureFrame };
+    this.modelProjector.setFrame(appliedFrame);
+    this.performanceMetrics?.mark("pairedCommits", performance.now(), this.uploadedTextureFrame);
     this.committedModelCamera = camera;
     this.committedModelTextureFrame = this.uploadedTextureFrame;
     if (camera) {
@@ -4047,7 +4254,7 @@ export class VideoArFusion {
     this.element<HTMLInputElement>("#videoArProgress").disabled = !loaded;
     this.element<HTMLButtonElement>("#videoArLocate").disabled = !loaded && !this.liveTrajectory.length;
     this.element<HTMLButtonElement>("#videoArClear").disabled = !loaded && !this.liveState;
-    this.element("#videoArPlay").textContent = this.playing ? "❚❚" : "▶";
+    this.element("#videoArPlay").textContent = this.mediaPlaying() ? "❚❚" : "▶";
     if (!loaded && !this.liveState) {
       this.element("#videoArEffectiveCamera").textContent = "实际相机参数：等待同帧姿态";
       this.element("#videoArPosition").textContent = "--";
@@ -4082,6 +4289,7 @@ export class VideoArFusion {
   }
 
   private releaseVideo() {
+    this.performanceMetrics?.setActive(false);
     this.removePreparedVideoListeners?.();
     this.decodedVideoTime = Number.NaN;
     this.usesDecodedFrameCallbacks = false;

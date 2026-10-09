@@ -1,4 +1,5 @@
 import * as CesiumRuntime from "cesium";
+import type { TextureFrameIdentity } from "./videoArTextureFrame";
 import {
   Camera, Cartesian2, Cartesian3, Cartesian4, Matrix4, PerspectiveFrustum,
   PostProcessStage, PrimitiveCollection, SceneMode, ShadowMap, ShadowMode, type Viewer, type CullingVolume,
@@ -13,6 +14,7 @@ export type ModelProjectionFrame = Readonly<{
   distortion?: LensDistortion;
   maxDistance?: number;
   opacity?: number;
+  identity?: TextureFrameIdentity;
 }>;
 
 export type ModelProjectionDiagnosticMode = "off" | "source-depth" | "observer-depth" | "depth-difference" | "rejection-reason" | "extrapolation-mask";
@@ -44,6 +46,10 @@ export type ModelProjectionDiagnosticState = Readonly<{
     far: number;
     sourceFrameNumber: number | null;
     currentSceneFrameNumber: number;
+    configuredCameraRevision: number;
+    sourceDepthCameraRevision: number | null;
+    configuredMediaFrame: TextureFrameIdentity | null;
+    sourceDepthMediaFrame: TextureFrameIdentity | null;
     sourceTilesetCount: number;
     sourceCommandCount: number;
     castCommandCount: number;
@@ -53,6 +59,12 @@ export type ModelProjectionDiagnosticState = Readonly<{
       processing: number | null;
     }>;
     sourceError: string | null;
+    sourceCameraMotion: Readonly<{
+      nativeBookkeepingAvailable: boolean;
+      lastUpdatedFrameNumber: number | null;
+      timeSinceMovedSeconds: number | null;
+      positionDeltaMeters: number | null;
+    }>;
   }>;
   camera: Readonly<{
     originEcef: Readonly<{ x: number; y: number; z: number }>;
@@ -84,6 +96,11 @@ export type ModelProjectionDiagnosticState = Readonly<{
   }>;
 }>;
 
+type SourceCameraInternals = Camera & {
+  _updateCameraChanged?: () => void;
+  timeSinceMoved?: number;
+  positionWCDeltaMagnitude?: number;
+};
 type GpuTexture = { isDestroyed?: () => boolean; width?: number; height?: number };
 type ShadowInternals = ShadowMap & {
   fromLightSource: boolean;
@@ -299,6 +316,10 @@ export class VideoArModelProjector {
   private sourceTileCount = 0;
   private sourceCastCount = 0;
   private lastSourceFrame = -1;
+  private lastSourceCameraMotionFrame = -1;
+  private cameraRevision = 0;
+  private sourceDepthCameraRevision = -1;
+  private sourceDepthMediaFrame?: TextureFrameIdentity;
   private sourceError = "";
   private k3 = 0;
   private opacity = 1;
@@ -381,6 +402,8 @@ export class VideoArModelProjector {
         if (!this.enabled || !this.frame || this.destroyed || state.mode !== SceneMode.SCENE3D || state.passes.pick || !this.videoTexture()) return;
         this.prepareCasters();
         this.lastSourceFrame = state.frameNumber;
+        this.sourceDepthCameraRevision = this.cameraRevision;
+        this.sourceDepthMediaFrame = this.frame.identity;
         this.sourceCastCount = 0;
         // Cesium otherwise caches the pass camera by its bounding sphere;
         // a roll-only or intrinsic change would reuse stale caster matrices.
@@ -406,7 +429,8 @@ export class VideoArModelProjector {
 
   private hasCurrentSourceDepth(): boolean {
     const frame = (this.viewer.scene as unknown as { frameState: { frameNumber: number } }).frameState;
-    return this.sourceCoverageReady && this.sourceCastCount > 0 && this.lastSourceFrame === frame.frameNumber;
+    return this.sourceCoverageReady && this.sourceCastCount > 0 && this.lastSourceFrame === frame.frameNumber
+      && this.sourceDepthCameraRevision === this.cameraRevision;
   }
 
   /** Number of currently shown 3D Tiles targets; hidden datasets stay hidden. */
@@ -449,6 +473,8 @@ export class VideoArModelProjector {
       processing = processing !== null && Number.isFinite(target._statistics?.numberOfTilesProcessing)
         ? processing + target._statistics!.numberOfTilesProcessing : null;
     });
+    const sourceCamera = this.sourceCamera as SourceCameraInternals;
+    const nativeMotionAvailable = typeof sourceCamera._updateCameraChanged === "function";
     const vector = (value: Cartesian3) => ({ x: value.x, y: value.y, z: value.z });
     return {
       enabled: this.enabled, ready: this.ready, status: this.status, destroyed: this.destroyed,
@@ -468,9 +494,19 @@ export class VideoArModelProjector {
         near: this.nearFar.x, far: this.nearFar.y,
         sourceFrameNumber: this.lastSourceFrame < 0 ? null : this.lastSourceFrame,
         currentSceneFrameNumber: sceneFrame,
+        configuredCameraRevision: this.cameraRevision,
+        sourceDepthCameraRevision: this.sourceDepthCameraRevision < 0 ? null : this.sourceDepthCameraRevision,
+        configuredMediaFrame: this.frame?.identity ? { ...this.frame.identity } : null,
+        sourceDepthMediaFrame: this.sourceDepthMediaFrame ? { ...this.sourceDepthMediaFrame } : null,
         sourceTilesetCount: this.sourceTileCount, sourceCommandCount: this.sourceCommands.length,
         castCommandCount: this.sourceCastCount,
         visibleTilesetRequests: { requested, pending, processing }, sourceError: this.sourceError || null,
+        sourceCameraMotion: {
+          nativeBookkeepingAvailable: nativeMotionAvailable,
+          lastUpdatedFrameNumber: this.lastSourceCameraMotionFrame < 0 ? null : this.lastSourceCameraMotionFrame,
+          timeSinceMovedSeconds: nativeMotionAvailable && Number.isFinite(sourceCamera.timeSinceMoved) ? sourceCamera.timeSinceMoved! : null,
+          positionDeltaMeters: nativeMotionAvailable && Number.isFinite(sourceCamera.positionWCDeltaMagnitude) ? sourceCamera.positionWCDeltaMagnitude! : null,
+        },
       },
       // Read the applied uniforms and orthonormal camera basis, not caller-owned frame objects.
       camera: this.frame ? {
@@ -554,8 +590,15 @@ export class VideoArModelProjector {
     this.k3 = distortion.k3 ?? 0;
     this.opacity = Math.min(1, Math.max(0, frame.opacity ?? 1));
     this.frame = frame;
-    this.sourceCoverageReady = false;
+    this.invalidateDepth();
     this.viewer.scene.requestRender();
+  }
+
+  /** Invalidate current depth on camera/model/project changes, without altering any business coordinates. */
+  invalidateDepth(): void {
+    this.cameraRevision++;
+    this.sourceCoverageReady = false;
+    this.sourceCastCount = 0;
   }
 
   setEnabled(enabled: boolean): void {
@@ -600,8 +643,18 @@ export class VideoArModelProjector {
   private updateSourceTiles(state: ShadowFrameState): void {
     this.sourceCommands.length = 0;
     this.sourceTileCount = 0;
-    this.sourceCoverageReady = true;
+    this.sourceCoverageReady = false;
     this.sourceError = "";
+    // Scene maintains motion deltas/timers only for its observer camera. Our
+    // independent camera needs the same native bookkeeping before every source
+    // traversal, including stationary frames. Keep this version-pinned private
+    // API optional; unsupported engines retain the existing conservative path.
+    const sourceCamera = this.sourceCamera as SourceCameraInternals;
+    if (typeof sourceCamera._updateCameraChanged === "function") {
+      sourceCamera._updateCameraChanged();
+      this.lastSourceCameraMotionFrame = state.frameNumber;
+    }
+    this.sourceCoverageReady = true;
     const sourceCulling = this.sourceFrustum.computeCullingVolume(
       this.sourceCamera.positionWC, this.sourceCamera.directionWC, this.sourceCamera.upWC,
     );

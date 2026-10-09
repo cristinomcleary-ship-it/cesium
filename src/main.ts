@@ -1,4 +1,5 @@
 import { SceneLibrary } from "./sceneLibrary";
+import { ModelQualityTracker, type ModelQualityState } from "./modelQualityState";
 import type { SafetyWorkspace } from "./safetyWorkspace";
 import type { ManagementWorkspace } from "./managementWorkspace";
 import "cesium/Build/Cesium/Widgets/widgets.css";
@@ -245,6 +246,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <label>Cesium ion Asset ID<input id="ionAssetId" type="number" min="1" placeholder="需要在 .env.local 配置 Token" /></label>
           <label>显示清晰度<select id="tilesQuality"><option value="high" selected>高清（推荐）</option><option value="ultra">超清（显存占用较高）</option><option value="balanced">流畅</option><option value="custom">自定义</option></select></label>
           <p class="hint">高清会请求更精细的瓦片并按屏幕实际像素渲染；超清适合近距离检查，数据量和显存占用会明显增加。</p>
+          <div id="tilesQualityStatus" class="notice" aria-live="polite">尚未加载倾斜摄影。</div>
           <details>
             <summary>位置校正与显示质量</summary>
             <div class="field-grid details-grid">
@@ -577,6 +579,41 @@ let managementWorkspace: ManagementWorkspace | undefined;
 let managementWorkspaceLoading: Promise<ManagementWorkspace> | undefined;
 let projectLibrary: SceneLibrary | undefined;
 const tilesetSourceIds = new Map<string, string>();
+const modelQualityTrackers = new Map<string, ModelQualityTracker>();
+const modelQualityResources = new Map<Cesium3DTileset, ModelQualityTracker>();
+const modelQualitySubscribers = new Set<() => void>();
+let modelQualityNotifyTimer: ReturnType<typeof setTimeout> | undefined;
+function getModelQualityStates(): ModelQualityState[] { return [...modelQualityTrackers.values()].map(tracker => tracker.getState()); }
+function subscribeModelQuality(listener: () => void): () => void { modelQualitySubscribers.add(listener); return () => { modelQualitySubscribers.delete(listener); }; }
+function updateModelQualityIndicators(): void {
+  const states = getModelQualityStates();
+  const summary = document.querySelector<HTMLElement>("#tilesQualityStatus");
+  if (summary) summary.textContent = states.length ? states.map(state => `${state.name}：${state.label}；目标 SSE ${state.targetScreenSpaceError}，网络 ${state.pendingRequests} / 解析 ${state.processingTiles}${state.failedTileCount ? `；失败 ${state.failedTileCount}` : ""}`).join("\n") : "尚未加载倾斜摄影。";
+  for (const row of document.querySelectorAll<HTMLElement>("#layers .layer-row")) {
+    const status = row.querySelector<HTMLElement>(".layer-quality-status"), state = states.find(entry => entry.modelId === row.dataset.id);
+    if (status && state) { status.textContent = state.label; status.title = `${state.label}；目标 SSE ${state.targetScreenSpaceError}；${state.limitation}`; }
+  }
+  for (const listener of modelQualitySubscribers) listener();
+}
+function scheduleModelQualityIndicators(): void {
+  if (modelQualityNotifyTimer !== undefined) return;
+  modelQualityNotifyTimer = setTimeout(() => { modelQualityNotifyTimer = undefined; updateModelQualityIndicators(); }, 150);
+}
+function trackModelQuality(id: string, name: string, tileset: Cesium3DTileset, initialCoarse = false): ModelQualityTracker {
+  const existing = modelQualityResources.get(tileset); if (existing) return existing;
+  const saved = projectLibrary?.records.get(id)?.settings;
+  const target = initialCoarse ? Math.max(.5, numeric("#tilesSse", 4)) : saved?.tiles?.maximumScreenSpaceError ?? tileset.maximumScreenSpaceError;
+  const quality = saved?.quality ?? (initialCoarse ? selectedTilesQuality() : target === 12 ? "balanced" : target === 4 ? "high" : target === 1 ? "ultra" : "custom");
+  const tracker = new ModelQualityTracker({ modelId: id, name, tileset, scene: viewer.scene, camera: viewer.camera,
+    quality, targetScreenSpaceError: target, initialCoarse, onInitialReady: () => {
+      configureTilesetQuality(tileset); toast("倾斜摄影首屏已加载，正在继续追踪当前视角细节");
+    }, onChange: scheduleModelQualityIndicators });
+  modelQualityTrackers.set(id, tracker); modelQualityResources.set(tileset, tracker); return tracker;
+}
+function disposeModelQuality(id: string, tileset: Cesium3DTileset): void {
+  modelQualityTrackers.get(id)?.dispose(); modelQualityTrackers.delete(id); modelQualityResources.delete(tileset);
+  scheduleModelQualityIndicators();
+}
 let selectedCad: File | null = null;
 let selectedGis: File | null = null;
 let selectedModelFile: File | null = null;
@@ -605,6 +642,7 @@ videoArFusion.onGetProjectionModels = () => imports.filter(item => item.kind ===
   return { id: item.id, name: item.name, visible: item.visible, runtimeVisible: tileset.show,
     modelMatrix: Matrix4.toArray(tileset.modelMatrix), maximumScreenSpaceError: tileset.maximumScreenSpaceError,
     savedRecord: projectLibrary?.projectionModelRecord(item.id) ?? null,
+    quality: modelQualityTrackers.get(item.id)?.getState() ?? null,
     versionEvidence: "local record revision and current transform; model content hash not verified" };
 });
 videoArFusion.onShowProjectionModels = () => {
@@ -618,6 +656,7 @@ function updateModelTools(item: EditableModel | null, mode: EditMode) {
   $("#modelTools").classList.toggle("hidden", !item);
   document.querySelectorAll<HTMLButtonElement>("[data-edit-mode]").forEach((button) => button.classList.toggle("active", button.dataset.editMode === mode));
   if (!item) return;
+  videoArFusion.invalidateProjection("model-transform-changed");
   projectLibrary?.queueUpdate(item.id, { settings: {
     matrix: Matrix4.toArray(item.model.modelMatrix), scale: item.model.scale,
     editor: { baseMatrix: Matrix4.toArray(item.baseMatrix), center: [item.center.x, item.center.y, item.center.z],
@@ -785,6 +824,12 @@ function renderLayers() {
     const name = row.querySelector<HTMLElement>(".layer-name")!;
     name.textContent = item.name;
     name.title = item.name;
+    if (item.kind === "3D Tiles") {
+      const status = document.createElement("small"); status.className = "layer-quality-status";
+      status.style.display = "block"; status.style.fontSize = "12px";
+      status.textContent = modelQualityTrackers.get(item.id)?.getState().label ?? "首屏加载中";
+      name.append(status);
+    }
     row.querySelector(".visibility")?.addEventListener("click", () => setImportVisibility(item, !item.visible));
     row.querySelector(".fly")?.addEventListener("click", () => locateImport(item));
     name.addEventListener("click", () => item.kind === "Model" && item.visible && modelEditor.select(item.id));
@@ -798,7 +843,11 @@ function renderLayers() {
 function setImportVisibility(item: ImportRecord, visible: boolean, options: { silent?: boolean; deferRender?: boolean } = {}) {
   item.visible = visible;
   projectLibrary?.queueUpdate(item.id, { visible });
-  if (item.kind === "3D Tiles") (item.resource as Cesium3DTileset).show = visible;
+  if (item.kind === "3D Tiles") {
+    (item.resource as Cesium3DTileset).show = visible;
+    modelQualityTrackers.get(item.id)?.invalidateView();
+    videoArFusion.invalidateProjection("model-visibility-changed");
+  }
   else if (item.kind === "Model") {
     (item.resource as Model).show = visible;
     if (!visible) modelEditor.select(null);
@@ -813,6 +862,8 @@ function setImportVisibility(item: ImportRecord, visible: boolean, options: { si
 function removeImport(item: ImportRecord) {
   subsurfaceTools.detachImport(item);
   if (item.kind === "3D Tiles") {
+    disposeModelQuality(item.id, item.resource as Cesium3DTileset);
+    videoArFusion.invalidateProjection("model-removed");
     for (const [source, id] of tilesetSourceIds) if (id === item.id) tilesetSourceIds.delete(source);
     viewer.scene.primitives.remove(item.resource as Cesium3DTileset);
   }
@@ -838,6 +889,7 @@ function addImport(
   metadata: Pick<ImportRecord, "representation" | "boundingSphere"> = {},
 ) {
   imports.push({ id, name, kind, resource, visible: true, adjustable: kind === "Model", ...metadata });
+  if (kind === "3D Tiles") { trackModelQuality(id, name, resource as Cesium3DTileset); videoArFusion.invalidateProjection("model-added-or-restored"); }
   subsurfaceTools?.refreshClipping();
   renderLayers();
   return id;
@@ -1859,6 +1911,11 @@ window.addEventListener("beforeunload", () => foundationPitMonitoring.dispose(),
 window.addEventListener("beforeunload", () => markupTools?.dispose(), { once: true });
 window.addEventListener("beforeunload", () => threeDReport?.dispose(), { once: true });
 window.addEventListener("beforeunload", () => videoArFusion.destroy(), { once: true });
+window.addEventListener("beforeunload", () => {
+  for (const tracker of modelQualityTrackers.values()) tracker.dispose();
+  modelQualityTrackers.clear(); modelQualityResources.clear(); modelQualitySubscribers.clear();
+  if (modelQualityNotifyTimer !== undefined) clearTimeout(modelQualityNotifyTimer);
+}, { once: true });
 window.addEventListener("beforeunload", () => modelLoadController?.abort(), { once: true });
 window.addEventListener("beforeunload", () => {
   digitalTwinSyncReady = false;
@@ -1921,6 +1978,7 @@ viewer.scene.renderError.addEventListener((_scene, error) => {
     try { destroyed = Boolean((item.resource as { isDestroyed?: () => boolean }).isDestroyed?.()); }
     catch { destroyed = true; }
     if (!destroyed) continue;
+    if (item.kind === "3D Tiles") { disposeModelQuality(item.id, item.resource as Cesium3DTileset); videoArFusion.invalidateProjection("destroyed-model-pruned"); }
     subsurfaceTools.detachImport(item);
     imports.splice(index, 1);
     prunedLayers += 1;
@@ -2415,6 +2473,8 @@ function configureTilesetQuality(tileset: Cesium3DTileset, initialLoad = false) 
   tileset.progressiveResolutionHeightFraction = 0.3;
   viewer.useBrowserRecommendedResolution = !highDetail;
   viewer.resolutionScale = quality === "ultra" ? 1.15 : 1;
+  if (!initialLoad) modelQualityResources.get(tileset)?.setTarget(quality, targetError);
+  videoArFusion.invalidateProjection("model-quality-changed");
   viewer.scene.requestRender();
 }
 
@@ -2525,7 +2585,6 @@ async function createAndLoadTileset(url: string, assetId: number, localFolderPat
   const highDetail = quality !== "balanced";
   let tileset: Cesium3DTileset | undefined;
   let importId = "";
-  let removeProgressListener: (() => void) | undefined;
   try {
     tileset = await Cesium3DTileset.fromUrl(resource, {
       maximumScreenSpaceError: Math.max(20, options.maximumScreenSpaceError),
@@ -2542,28 +2601,6 @@ async function createAndLoadTileset(url: string, assetId: number, localFolderPat
     });
     configureTilesetQuality(tileset, true);
     viewer.scene.primitives.add(tileset);
-    let lastProgressUpdate = 0;
-    let failedTileCount = 0;
-    tileset.tileFailed.addEventListener((failure) => {
-      failedTileCount += 1;
-      console.error("[3D Tiles tile failed]", failure.url, failure.message);
-      if (failedTileCount === 1) setStatus("个别倾斜摄影瓦片读取失败，正在继续加载其余内容…");
-      if (failedTileCount === 3) toast("部分模型瓦片无法读取，请检查 CC 成果是否完整", true);
-    });
-    removeProgressListener = tileset.loadProgress.addEventListener((pendingRequests, tilesProcessing) => {
-      const now = performance.now();
-      if (now - lastProgressUpdate < 250) return;
-      lastProgressUpdate = now;
-      setStatus(`倾斜摄影加载中：网络 ${pendingRequests}，解析 ${tilesProcessing}`);
-    });
-    const removeInitialLoadedListener = tileset.initialTilesLoaded.addEventListener(() => {
-      removeInitialLoadedListener();
-      removeProgressListener?.();
-      removeProgressListener = undefined;
-      configureTilesetQuality(tileset!);
-      setStatus("Cesium 已就绪");
-      toast("倾斜摄影首屏已加载，正在后台细化清晰度");
-    });
     if (options.longitudeOffset || options.latitudeOffset || options.heightOffset) {
       const center = tileset.boundingSphere.center;
       const cartographic = viewer.scene.globe.ellipsoid.cartesianToCartographic(center);
@@ -2573,6 +2610,7 @@ async function createAndLoadTileset(url: string, assetId: number, localFolderPat
     }
     const label = assetId ? `ion 资产 ${assetId}` : entry?.split(/[\\/]/).pop() || new URL(url, location.href).pathname.split("/").pop() || "倾斜摄影";
     importId = crypto.randomUUID();
+    trackModelQuality(importId, label, tileset, true);
     setStatus(localFolderPath ? "正在保存完整倾斜摄影成果，请稍候…" : "正在保存倾斜摄影图层…");
     await projectLibrary!.save(importId, label, "3D Tiles", {
       url: assetId ? undefined : url, assetId, localPath: localFolderPath, tiles: options, quality,
@@ -2583,7 +2621,7 @@ async function createAndLoadTileset(url: string, assetId: number, localFolderPat
     await viewer.zoomTo(tileset);
     toast("倾斜摄影模型已加载");
   } catch (error) {
-    removeProgressListener?.();
+    if (importId && tileset) disposeModelQuality(importId, tileset);
     if (importId) {
       const failedImport = imports.find((item) => item.id === importId);
       if (failedImport) removeImport(failedImport);
@@ -2677,6 +2715,14 @@ async function openSafetyWorkspace(): Promise<void> {
       safetyWorkspace = new SafetyWorkspace({
         viewer, host: $("#safetyWorkspaceHost"), ready: () => projectLibrary!.ready,
         getImports: () => imports,
+        getModelQualityStates, subscribeModelQuality,
+        getVideoDiagnostics: () => { const diagnostics = videoArFusion.getDiagnostics(); return { ...diagnostics, media: { ...diagnostics.media, recordId: projectLibrary?.activeVideoRecordId || null } }; },
+        setVideoTextureQuality: mode => videoArFusion.setTextureQuality(mode),
+        setModelProjectionPreview: enabled => videoArFusion.setModelPreviewActive(enabled),
+        setVideoProjectionFps: fps => videoArFusion.setProjectionFps(fps),
+        captureVideoTexture: () => { const evidence = videoArFusion.captureTextureEvidence(); if (!evidence) throw new Error("请暂停视频并等待当前帧上传后再导出"); return evidence; },
+        resetVideoPerformance: () => videoArFusion.resetPerformanceMetrics(),
+        invalidateVideoProjection: reason => videoArFusion.invalidateProjection(reason),
         setLayerVisible: (id, visible) => {
           const item = imports.find(record => record.id === id);
           if (item) setImportVisibility(item, visible, { silent: true });
