@@ -359,6 +359,6 @@ export class ManagementWorkspace {
     clearTimeout(this.messageTimer);this.feedback.hidden=false;this.feedback.textContent=text;this.feedback.classList.toggle('is-error',error);
     this.messageTimer=setTimeout(()=>{this.feedback.hidden=true},7000);
   }
-  debugStats() {return{active:this.active,mode:this.mode,selection:this.selection,measurement:!!this.measurement,backViews:this.backViews.length,viewerCount:document.querySelectorAll('#cesiumContainer canvas').length,scene:this.safety.debugStats()};}
+  debugStats() {return{active:this.active,mode:this.mode,selection:this.selection,measurement:!!this.measurement,backViews:this.backViews.length,viewerCount:document.querySelectorAll('#cesiumContainer canvas').length,videoCount:document.querySelectorAll('video').length,listeners:{preRender:this.viewer.scene.preRender.numberOfListeners,postRender:this.viewer.scene.postRender.numberOfListeners,clock:this.viewer.clock.onTick.numberOfListeners,cameraChanged:this.viewer.camera.changed.numberOfListeners},scene:this.safety.debugStats()};}
   dispose():void {this.close();this.events.abort();clearTimeout(this.messageTimer);this.ui.dispose();this.anchorSelector.destroy();this.feedback.remove();this.layersDialog.remove();}
 }

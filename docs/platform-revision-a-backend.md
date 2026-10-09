@@ -4,9 +4,9 @@
 
 ## 验证层级与证据
 
-- `output/platform-revision-20261009/A/backend-http-report.json`：7 组实际 HTTP 服务测试，隔离 SQLite/真实磁盘附件、真实账号 Cookie 和服务端命令入口。业务内容是明确标记的测试夹具，不是生产项目成果。
+- `output/platform-revision-20261009/A/backend-http-report.json`：7 组/202 次实际 HTTP 服务测试，隔离 SQLite/真实磁盘附件、真实账号 Cookie 和服务端命令入口。业务内容是明确标记的测试夹具，不是生产项目成果。
 - `output/platform-revision-20261009/A/backend-http.log`：各组通过结果。
-- `output/platform-revision-20261009/A/backend-http-verified/*.json`：每次 HTTP 路径、方法、状态码及错误码；没有保存账号密码、Cookie 或正式业务正文。
+- `output/platform-revision-20261009/A/backend-http-release/*.json`：每次 HTTP 路径、方法、状态码及错误码；没有保存账号密码、Cookie 或正式业务正文。
 - `output/platform-revision-20261009/A/source-tests.log`、`typecheck.log`：使用项目原有模块加载器的全部 `src/`、`server/` 测试和类型检查。
 - 改前隔离 HTTP 复现：`tmp/a-reliability-before.json`。重复普通检查项替代必检项后返回 satisfied=true；受限 A 账号以错误 revision 操作 B 任务收到 409/current/SECRET B；受限账号的 files 权限被整体去掉。这些现已修复。
 - 此处没有把 HTTP/CPU 验证当作真实模型画面、GPU 性能或工程精度验收。
@@ -38,7 +38,7 @@
 
 ### 统一授权
 
-`server/management/authorization.ts` 统一任务范围与引用目标规则；`managementStore.ts` 在异步预核验前、事务执行前及连带保存时核验。`taskIds: undefined` 表示项目范围；`taskIds: []` 表示无任务授权。修改同时核查原对象和新关联。角色权限继续由服务端 Cookie/成员记录推导，客户端身份字段不生效。
+`server/management/authorization.ts` 统一任务范围与引用目标规则（含准入规则及历史判断内嵌的引用）；`managementStore.ts` 在异步预核验前、事务执行前及连带保存时核验。`taskIds: undefined` 表示项目范围；`taskIds: []` 表示无任务授权。修改同时核查原对象和新关联。角色权限继续由服务端 Cookie/成员记录推导，客户端身份字段不生效。
 
 全项目 3D Tiles 与附件分离：任务受限成员仍没有 models 权限，但 files/media 按成员明确授权保留。管理员上传而未关联任务的附件不会自动对执行人公开；管理员可以上传时附 `?taskId=...`，或通过授权资料版本/业务记录关联。资源台账也需先明确关联到授权任务后，受限资源人员才可引用。原资料目录不可遍历；外部原件仅对已登记且获授权的精确来源地址开放。
 

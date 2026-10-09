@@ -16,14 +16,14 @@ A 批无数据库 schema 升级，不对正式记录批量回填或重写。历�
 
 | 编号 | 修复与验证内容 | 证据 / 结论 |
 |---|---|---|
-| A1 | 目标和关联对象共用授权，先授权后 revision；taskIds 未设与空数组不同；跨任务记录、关联、发布、报告和冲突响应 | [后端报告](platform-revision-a-backend.md)；7组197次实际 HTTP 请求通过 |
+| A1 | 目标和关联对象共用授权，先授权后 revision；taskIds 未设与空数组不同；跨任务记录、关联、发布、报告和冲突响应 | [后端报告](platform-revision-a-backend.md)；7组202次实际 HTTP 请求通过 |
 | A2 | 原清单 ID 完全集合、唯一性、定义不可伪造、版本绑定；已检与通过分开 | 后端 HTTP；实际表单验证独立记录 |
 | A3 | 八类开工/完工条件、事务内重验、数量/里程碑/非计量、具体豁免签认、前端原因及跳转 | 后端 HTTP；条件配置操作录像 |
 | A4 | 新地图事件和管理问题同一 ID/状态，整改复核回合，受控附件；旧事件只读或明确接管 | [事件说明](platform-revision-a-events.md)；`output/reliability-a/a4-before.json` 与 `a4-after.json` |
 | A5 | 当前项目/D/F/筛选绑定统计请求；加载撤旧值、持久失败、重试与拒绝迟到；category 独立且保留中文搜索 | `output/platform-revision-20261009/A/a5-fixed/report.json`，7 项实际主路由检查通过，原行为有独立复现录像 |
 | A6 | 任务附件按关联与明确资源权限开放，原件和预览同权，未绑定上传仅本人；全项目瓦片不因此开放 | 后端 HTTP；附件撤权复测 |
 
-A 批验收：全 src/server 回归 278/278，TypeScript 与 Vite 生产构建通过（既有大分包提示保留）。条件/检查主路由 8 项与统计/筛选 7 项实际浏览器交互通过，均零页面异常；录像在 `output/platform-revision-20261009/A/conditions-ui/a2-a3-actual-conditions-and-checklist.mp4` 与 `A/a5-fixed/a5-fixed-actual-interactions.mp4`。正式库 3,822 个 JSON 的 SHA-256 无变化，SQLite 只读逻辑导出与启动备份完全一致；未执行正式迁移。实际 UI 验收使用隔离业务台账，不计作工程精度验证。
+A 批验收：全 src/server 回归 278/278，TypeScript 与 Vite 生产构建通过（既有大分包提示保留）。条件/检查主路由 8 项、统计/筛选 7 项与成员范围 4 项实际浏览器交互通过，均零页面异常；录像在 `output/platform-revision-20261009/A/conditions-ui/a2-a3-actual-conditions-and-checklist.mp4` 与 `A/a5-fixed/a5-fixed-actual-interactions.mp4`。正式库 3,822 个 JSON 的 SHA-256 无变化，SQLite 只读逻辑导出与启动备份完全一致；未执行正式迁移。实际 UI 验收使用隔离业务台账，不计作工程精度验证。
 
 ### A 批主要接入位置
 
@@ -38,4 +38,4 @@ A 批验收：全 src/server 回归 278/278，TypeScript 与 Vite 生产构建�
 
 ## B / C 验收
 
-在 A 稳定并单独提交后依次实施。每批另记录实际结果和证据；C 的精度缺项不由界面、构建或高播放帧率代替。
+A 提交为 `4a2f4426d28209ef89035745e7c3c6d518eec034`。B 结果详见 [工作台验收](platform-revision-b-workbench.md) 与 [布局验收](platform-revision-b-layout.md)：工点全链28项、甘特/真实照片19项、CPU布局18项通过；源码287项通过。C 在 B 独立提交后实施，其精度缺项不由界面、构建或高播放帧率代替。
