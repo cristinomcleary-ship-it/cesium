@@ -26,9 +26,12 @@ function definitions(value: unknown, label: string): Set<string> {
   for (const raw of value) {
     const item = record(raw, label);
     if (typeof item.key !== 'string' || !/^[a-z][a-z0-9_]*$/.test(item.key) || keys.has(item.key)) fail(`${label}.key`);
-    if (typeof item.label !== 'string' || (item.unit !== 'm' && item.unit !== '×')) fail(`${label}.label/unit`);
-    finite(item.original, `${label}.original`, true);
+    if (typeof item.label !== 'string' || (item.unit !== 'm' && item.unit !== '×' && item.unit !== '°')) fail(`${label}.label/unit`);
+    if (item.unit === '°') {
+      if (item.key !== 'boom_rotation_deg' || item.original !== 0 || item.min !== 0 || item.max !== 360) fail(`${label}.rotation`);
+    } else finite(item.original, `${label}.original`, true);
     if (item.min !== undefined) finite(item.min, `${label}.min`);
+    if (item.max !== undefined) finite(item.max, `${label}.max`);
     if (item.step !== undefined) finite(item.step, `${label}.step`, true);
     keys.add(item.key);
   }
@@ -47,6 +50,17 @@ function parseConfig(value: unknown, type: MachineryModelType): MachineryConfig 
   const anchor = vector(reference.anchor_m, 'anchor');
   if (Math.abs(anchor[1] - (reference.ground_y_m as number)) > 1e-10) fail('anchor must be on original ground');
   if (type === 'crane') {
+    if (!keys.has('boom_rotation_deg') || localKeys.has('boom_rotation_deg')) fail('missing independent boom rotation metadata; reload current machinery assets');
+    const rotation = record(config.rotation, 'rotation');
+    vector(rotation.pivot_m, 'rotation.pivot_m');
+    if (!Array.isArray(rotation.vertex_ranges) || !rotation.vertex_ranges.length || rotation.vertex_ranges.length > 10000) fail('rotation.vertex_ranges');
+    let end = 0;
+    for (const range of rotation.vertex_ranges) {
+      if (!Array.isArray(range) || range.length !== 2) fail('rotation vertex range');
+      const start = integer(range[0], 'rotation start'), count = integer(range[1], 'rotation count', 1);
+      if (start < end) fail('overlapping or unsorted rotation vertex ranges');
+      end = start + count;
+    }
     for (const key of ['boom_length_m', 'outrigger_lateral_m', 'outrigger_longitudinal_m']) if (!localKeys.has(key)) fail(`missing local ${key}`);
     const boom = record(config.boom, 'boom'), axis = vector(boom.axis, 'boom.axis');
     if (Math.abs(Math.hypot(...axis) - 1) > 1e-6) fail('boom axis not unit length');
@@ -65,12 +79,13 @@ function parseConfig(value: unknown, type: MachineryModelType): MachineryConfig 
       if (finite(leg.beam_inner_z_m, 'inner beam') === finite(leg.beam_outer_z_m, 'outer beam')) fail('zero beam length');
     });
   } else if (type === 'pile_rig') {
+    if (keys.has('boom_rotation_deg')) fail('rotation is only supported by crane');
     if (!localKeys.has('total_height_m')) fail('missing pile height');
     for (const key of ['default_total_height_m', 'fixed_bottom_height_m', 'top_head_height_m', 'adjustable_default_span_m']) finite(config[key], key, true);
     finite(config.ground_y_m, 'pile ground'); finite(config.fixed_bottom_upper_y_m, 'pile platform');
     const total = (config.fixed_bottom_height_m as number) + (config.top_head_height_m as number) + (config.adjustable_default_span_m as number);
     if (Math.abs(total - (config.default_total_height_m as number)) > 1e-8) fail('pile height partition');
-  } else if (localKeys.size) fail('excavator has no verified independent joint controls');
+  } else if (localKeys.size || keys.has('boom_rotation_deg')) fail('excavator has no verified independent joint controls');
   return value as MachineryConfig;
 }
 
@@ -116,7 +131,8 @@ export async function loadMachineryAsset(id: MachineryModelId, options: Machiner
   if (typeof fetcher !== 'function') throw new Error('当前环境没有可用的模型加载接口');
   const base = (options.baseUrl ?? '/machinery/').replace(/\/?$/, '/');
   const directory = `${base}${id}/`;
-  const response = await fetcher(`${directory}manifest.json`, { signal: options.signal });
+  // Kinematic metadata can evolve while the immutable v1 source geometry stays identical.
+  const response = await fetcher(`${directory}manifest.json`, { signal: options.signal, cache: 'no-cache' });
   if (!response.ok) throw new Error(`加载${id}模型说明失败（${response.status}）`);
   const manifest = parseManifest(await response.json(), id);
   const chunks = await Promise.all(manifest.chunks.map(async chunk => {
@@ -148,5 +164,19 @@ export async function loadMachineryAsset(id: MachineryModelId, options: Machiner
   for (const value of faceColorIndices) if (value >= manifest.paletteSize) fail('palette index');
   const allowed = manifest.type === 'crane' ? new Set([0, 1, 2, 3, 10, 11, 12, 13, 20, 21, 22, 23]) : new Set(manifest.type === 'pile_rig' ? [0, 1, 2] : [0]);
   for (const value of partIds) if (!allowed.has(value)) fail('invalid part ID');
+  if (manifest.config.type === 'crane') {
+    const rotating = new Uint8Array(manifest.vertexCount);
+    for (const [start, count] of manifest.config.rotation.vertex_ranges) {
+      if (start + count > manifest.vertexCount) fail('rotation range outside vertex array');
+      rotating.fill(1, start, start + count);
+    }
+    for (let i = 0; i < partIds.length; i++) {
+      if (partIds[i] >= 1 && partIds[i] <= 3 && !rotating[i]) fail('rotation excludes boom or rigging');
+      if (partIds[i] >= 10 && rotating[i]) fail('rotation includes outrigger');
+    }
+    for (let i = 0; i < indices.length; i += 3) {
+      if (rotating[indices[i]] !== rotating[indices[i + 1]] || rotating[indices[i]] !== rotating[indices[i + 2]]) fail('rotation splits connected triangle');
+    }
+  }
   return { id, name: manifest.name, type: manifest.type, version: manifest.version, config: manifest.config, sourcePositions, indices, partIds, palette, faceColorIndices };
 }

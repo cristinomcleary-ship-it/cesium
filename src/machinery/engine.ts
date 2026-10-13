@@ -1,5 +1,5 @@
-import { deformCraneSource, deformPileSource } from './deformation';
-import type { LoadedMachineryAsset, MachineryBounds, MachineryGeometry, MachineryParameters, MachineryResolveOptions, Vec3 } from './types';
+import { deformCraneSource, deformPileSource, rotateCraneSource } from './deformation';
+import type { LoadedMachineryAsset, MachineryBounds, MachineryGeometry, MachineryParameters, MachineryParameterDefinition, MachineryResolveOptions, Vec3 } from './types';
 
 function positive(raw: unknown, label: string): number {
   if ((typeof raw !== 'number' && typeof raw !== 'string') || (typeof raw === 'string' && !raw.trim())) {
@@ -8,6 +8,16 @@ function positive(raw: unknown, label: string): number {
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) throw new RangeError(`${label}必须是大于 0 的有限数值`);
   return value;
+}
+
+function parameterValue(raw: unknown, definition: MachineryParameterDefinition): number {
+  if (definition.unit !== '°') return positive(raw, definition.label);
+  if ((typeof raw !== 'number' && typeof raw !== 'string') || (typeof raw === 'string' && !raw.trim())) {
+    throw new RangeError(`${definition.label}必须是 0 至 360 度的有限数值`);
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0 || value > 360) throw new RangeError(`${definition.label}必须是 0 至 360 度的有限数值`);
+  return value === 360 || Object.is(value, -0) ? 0 : value;
 }
 
 export function defaultMachineryParameters(asset: LoadedMachineryAsset): MachineryParameters {
@@ -20,7 +30,7 @@ function parametersWithDefaults(asset: LoadedMachineryAsset, parameters: Readonl
   for (const [key, raw] of Object.entries(parameters)) {
     const definition = definitions.get(key);
     if (!definition) throw new RangeError(`此模型不支持参数：${key}`);
-    result[key] = positive(raw, definition.label);
+    result[key] = parameterValue(raw, definition);
   }
   return result;
 }
@@ -41,6 +51,7 @@ export function computeMachinerySourcePositions(asset: LoadedMachineryAsset, par
     if (config.type === 'crane') local = deformCraneSource(local, asset.partIds, config, localParameters);
     else if (config.type === 'pile_rig') local = deformPileSource(local, asset.partIds, config, localParameters);
   }
+  if (config.type === 'crane') local = rotateCraneSource(local, config, values.boom_rotation_deg);
   const output = new Float64Array(local.length), anchor = config.reference_dimensions.anchor_m;
   if (scale === 1) output.set(local);
   else for (let i = 0; i < local.length; i++) output[i] = anchor[i % 3] + scale * (local[i] - anchor[i % 3]);
@@ -83,7 +94,7 @@ function synchronize(asset: LoadedMachineryAsset, parameters: MachineryParameter
 
 function multiply(asset: LoadedMachineryAsset, current: MachineryParameters, factor: number): MachineryParameters {
   const next: MachineryParameters = {};
-  for (const definition of asset.config.parameters) next[definition.key] = current[definition.key] * factor;
+  for (const definition of asset.config.parameters) next[definition.key] = definition.unit === '°' ? current[definition.key] : current[definition.key] * factor;
   return synchronize(asset, next);
 }
 
@@ -104,7 +115,7 @@ export function resolveMachineryParameters(
   const entries = Object.entries(changes).map(([key, raw]) => {
     const definition = definitions.get(key);
     if (!definition) throw new RangeError(`此模型不支持参数：${key}`);
-    return [key, positive(raw, definition.label)] as const;
+    return [key, parameterValue(raw, definition)] as const;
   });
   if (!entries.length) {
     const geometry = computeMachineryGeometry(asset, result);
@@ -120,9 +131,12 @@ export function resolveMachineryParameters(
     return result;
   }
   if (options.proportional !== false) {
-    const [key, value] = entries[entries.length - 1];
+    const dimensions = entries.filter(([key]) => definitions.get(key)!.unit !== '°');
+    for (const [key, value] of entries) if (definitions.get(key)!.unit === '°') result[key] = value;
+    if (!dimensions.length) return synchronize(asset, result);
+    const [key, value] = dimensions[dimensions.length - 1];
     const scale = value / original[key];
-    result = Object.fromEntries(Object.entries(original).map(([name, baseline]) => [name, baseline * scale]));
+    result = Object.fromEntries(Object.entries(original).map(([name, baseline]) => [name, definitions.get(name)!.unit === '°' ? result[name] : baseline * scale]));
     return synchronize(asset, result);
   }
   for (const [key, value] of entries) {
@@ -138,6 +152,7 @@ export function resolveMachineryParameters(
 export function originalMachineryProportionsMaintained(asset: LoadedMachineryAsset, parameters: Readonly<MachineryParameters>): boolean {
   const current = parametersWithDefaults(asset, parameters), scale = current.overall_scale;
   return asset.config.parameters.every(definition => {
+    if (definition.unit === '°') return true;
     const expected = definition.original * scale;
     return Math.abs(current[definition.key] - expected) <= Math.max(1, Math.abs(expected)) * 1e-9;
   });

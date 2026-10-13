@@ -19,7 +19,9 @@ export type MachineryMetadata = {
   assetVersion: typeof MACHINERY_ASSET_VERSION;
   /** Editing policy for the next change; switching policy preserves the current shape. */
   proportional: boolean;
-  /** Complete resolved parameter set. Distances are metres; overall_scale is a multiplier. */
+  /** Complete resolved parameter set. Distances are metres; overall_scale is a multiplier.
+   * Crane boom_rotation_deg is clockwise degrees relative to the source boom pose in [0, 360),
+   * independent of the chassis placement.heading and overall_scale. Legacy omission means 0. */
   parameters: Record<string, number>;
   placement: MachineryPlacement;
   visible: boolean;

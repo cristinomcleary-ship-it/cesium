@@ -80,6 +80,45 @@ test('real independent shapes survive mode changes and service validation, inclu
   }
 });
 
+test('legacy crane reads normalize only the missing rotation angle without changing the source record or geometry', async () => {
+  const model = await asset('crane'), legacy = state('crane');
+  delete legacy.parameters.boom_rotation_deg;
+  const before = structuredClone(legacy), normalized = readMachineryState(legacy)!;
+  assert.ok(normalized, 'pre-rotation saved cranes remain readable');
+  assert.equal(normalized.parameters.boom_rotation_deg, 0);
+  assert.deepEqual(legacy, before, 'normalization never mutates saved records');
+  assert.notEqual(normalized.parameters, legacy.parameters);
+  assert.deepEqual(normalized.placement, legacy.placement);
+  assert.deepEqual(computeMachineryGeometry(model, normalized.parameters).positions, computeMachineryGeometry(model, defaultMachineryParameters(model)).positions);
+  const missingDimension = structuredClone(legacy); delete missingDimension.parameters.boom_length_m;
+  assert.equal(readMachineryState(missingDimension), undefined, 'legacy compatibility does not permit missing dimensions');
+  const extraParameter = structuredClone(legacy); extraParameter.parameters.unrecognized_angle = 90;
+  assert.equal(readMachineryState(extraParameter), undefined, 'legacy compatibility keeps strict allowed keys');
+});
+
+test('crane rotation survives service validation and proportional size edits without scaling the angle or changing placement', async () => {
+  const model = await asset('crane'), defaults = defaultMachineryParameters(model);
+  for (const proportional of [true, false]) {
+    for (const angle of [0, 90, 180, 270, 359.999]) {
+      const parameters = resolveMachineryParameters(model, defaults, { boom_rotation_deg: angle }, { proportional });
+      const metadata = { ...state('crane', parameters), proportional };
+      metadata.placement.heading = 35;
+      const restored = validateMachineryMetadata(metadata);
+      assert.equal(restored.parameters.boom_rotation_deg, angle);
+      assert.deepEqual(restored.placement, metadata.placement);
+      const scaled = resolveMachineryParameters(model, restored.parameters, { overall_scale: 2 }, { proportional });
+      assert.equal(scaled.boom_rotation_deg, angle, 'a dimensionless angle is never multiplied by the overall scale');
+      assert.equal(validateMachineryMetadata({ ...metadata, parameters: scaled }).parameters.boom_rotation_deg, angle);
+      assert.deepEqual(resolveMachineryParameters(model, restored.parameters, {}, { proportional }), restored.parameters, 'saved angle is stable on reload');
+    }
+  }
+  for (const id of ['pile', 'excavator'] as const) {
+    const unchanged = state(id);
+    assert.deepEqual(validateMachineryMetadata(unchanged), unchanged);
+    assert.equal(Object.hasOwn(unchanged.parameters, 'boom_rotation_deg'), false, 'other assets retain their exact parameter contracts');
+  }
+});
+
 test('scene rejects unsupported asset versions and incomplete metadata instead of silently rendering another geometry', () => {
   assert.equal(readMachineryState({ ...state('pile'), assetVersion: 'unavailable-v0' }), undefined);
   assert.equal(readMachineryState({ ...state('pile'), parameters: {} }), undefined);

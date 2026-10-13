@@ -5,6 +5,7 @@ import { createServer, type Server } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { createManagementStore } from "../managementStore.ts";
 import { MACHINERY_ASSET_VERSION, type MachineryAssetId, type MachineryMetadata } from "../../src/machineryTypes.ts";
 import { MACHINERY_PARAMETER_DEFAULTS, MachineryValidationError, validateMachineryMetadata } from "../../src/machineryValidation.ts";
@@ -13,7 +14,7 @@ import type { ManagementCommandType } from "../../src/managementTypes.ts";
 const projectId = "safety:project", password = `Machinery-${randomUUID()}!`;
 function model(assetId: MachineryAssetId = "crane", scale = 1): MachineryMetadata {
   return { schemaVersion: 1, assetId, assetVersion: MACHINERY_ASSET_VERSION, proportional: true,
-    parameters: Object.fromEntries(Object.entries(MACHINERY_PARAMETER_DEFAULTS[assetId]).map(([k, v]) => [k, v * scale])),
+    parameters: Object.fromEntries(Object.entries(MACHINERY_PARAMETER_DEFAULTS[assetId]).map(([k, v]) => [k, k === "boom_rotation_deg" ? v : v * scale])),
     placement: { longitude: 116.397, latitude: 39.908, height: 47.25, heading: 120 }, visible: true };
 }
 async function fixture() {
@@ -45,13 +46,21 @@ async function fixture() {
   await start();
   await ok("member.save", { username: "owner", displayName: "Owner", password, roles: ["owner"] });
   const ownerId = (await state()).session.userId;
-  return { request, command, ok, record, state, login, ownerId, async restart() { await stop(); await start(); }, async close() { await stop(); rmSync(root, { recursive: true, force: true }); } };
+  return { request, command, ok, record, state, login, ownerId, async restart(editFixture?: (database: DatabaseSync) => void) {
+    await stop();
+    if (editFixture) {
+      const database = new DatabaseSync(join(root, "management.sqlite"));
+      try { editFixture(database); } finally { database.close(); }
+    }
+    await start();
+  }, async close() { await stop(); rmSync(root, { recursive: true, force: true }); } };
 }
 
 test("machinery HTTP persists in the equipment resource across SQLite restart; revisions, receipts and audit remain authoritative", async () => {
   const f = await fixture(); try {
     await f.ok("resource.create", { name: "隔离设备", kind: "equipment", specification: "未核验厂家规格", quantity: 1, unit: "台", ownerId: f.ownerId, locationDescription: "原台账站位说明", availability: "disabled", validUntil: "2099-01-01" }, "machine");
     const original = (await f.record("machine")).data, metadata = model("crane", 2);
+    metadata.parameters.boom_rotation_deg = 90;
     const saved = await f.ok("machinery.save", { machinery: metadata, reason: "保存显示模型" }, "machine", 1, { key: "save-once" });
     const attached = saved.collections.resources.find((r: any) => r.id === "machine");
     assert.equal(attached.revision, 2); assert.deepEqual(attached.machinery, metadata);
@@ -66,8 +75,10 @@ test("machinery HTTP persists in the equipment resource across SQLite restart; r
     assert.equal(stale.status, 409); assert.equal(stale.data.code, "REVISION_CONFLICT"); assert.equal(stale.data.current.revision, 2);
     await f.restart();
     assert.deepEqual((await f.record("machine")).data, attached, "persisted metadata survives closing and reopening the real SQLite database");
-    const moved = { ...metadata, visible: false, placement: { longitude: -180, latitude: 90, height: -10, heading: 0 } };
+    const moved = { ...metadata, parameters: { ...metadata.parameters, boom_rotation_deg: 0 }, visible: false, placement: { longitude: -180, latitude: 90, height: -10, heading: 0 } };
     await f.ok("machinery.save", { machinery: moved }, "machine", 2);
+    await f.restart();
+    assert.deepEqual((await f.record("machine")).data.machinery, moved, "zero rotation is a persisted angle, not a missing or invalid dimension");
     const removed = await f.ok("machinery.remove", { reason: "解除显示模型" }, "machine", 3);
     assert.equal(removed.collections.resources.length, 1);
     const remaining = removed.collections.resources[0]; assert.equal(remaining.revision, 4); assert.equal(remaining.machinery, undefined);
@@ -75,6 +86,37 @@ test("machinery HTTP persists in the equipment resource across SQLite restart; r
     const audits = removed.audit.filter((a: any) => a.command.startsWith("machinery."));
     assert.deepEqual(audits.map((a: any) => [a.command, a.beforeRevision, a.afterRevision, a.actorId]).sort((a: any, b: any) => a[1] - b[1]), [["machinery.save", 1, 2, f.ownerId], ["machinery.save", 2, 3, f.ownerId], ["machinery.remove", 3, 4, f.ownerId]]);
     await f.restart(); assert.equal((await f.record("machine")).data.machinery, undefined);
+  } finally { await f.close(); }
+});
+
+test("legacy crane SQLite records default rotation only in detached reads and preserve IDs, placement and history when saved", async () => {
+  const f = await fixture(); try {
+    await f.ok("resource.create", { name: "旧版吊机", kind: "equipment", locationDescription: "保留原站位" }, "legacy-crane");
+    const legacy = model(); delete legacy.parameters.boom_rotation_deg;
+    await f.ok("machinery.save", { machinery: legacy }, "legacy-crane", 1);
+    assert.equal((await f.record("legacy-crane")).data.machinery.parameters.boom_rotation_deg, 0, "old clients can still save their complete pre-rotation parameter set");
+    // Represent an existing pre-upgrade database inside this test's isolated temporary directory.
+    await f.restart(database => {
+      const row = database.prepare("SELECT data FROM records WHERE project_id=? AND collection='resources' AND id=?").get(projectId, "legacy-crane")!;
+      const record = JSON.parse(String(row.data)); delete record.machinery.parameters.boom_rotation_deg;
+      database.prepare("UPDATE records SET data=? WHERE project_id=? AND collection='resources' AND id=?").run(JSON.stringify(record), projectId, "legacy-crane");
+    });
+    const before = (await f.record("legacy-crane")).data;
+    const beforeState = await f.state();
+    assert.equal(Object.hasOwn(before.machinery.parameters, "boom_rotation_deg"), false);
+    const restored = validateMachineryMetadata(before.machinery);
+    assert.equal(restored.parameters.boom_rotation_deg, 0);
+    assert.deepEqual((await f.record("legacy-crane")).data, before, "loading does not migrate or revise the stored equipment");
+    restored.parameters.boom_rotation_deg = 359.999;
+    await f.ok("machinery.save", { machinery: restored }, "legacy-crane", before.revision);
+    await f.restart();
+    const saved = (await f.record("legacy-crane")).data;
+    for (const [key, value] of Object.entries(before)) if (!["machinery", "revision", "updatedAt"].includes(key)) assert.deepEqual(saved[key], value, `legacy resource ${key} is retained`);
+    assert.deepEqual(saved.machinery, restored);
+    assert.deepEqual(saved.machinery.placement, before.machinery.placement);
+    assert.equal(saved.revision, before.revision + 1);
+    const savedState = await f.state();
+    for (const previousAudit of beforeState.audit) assert.deepEqual(savedState.audit.find((entry: any) => entry.id === previousAudit.id), previousAudit, "existing audit entries are not rewritten");
   } finally { await f.close(); }
 });
 
@@ -89,6 +131,9 @@ test("machinery HTTP validates complete versioned parameters and placement atomi
       ["numeric string", m => m.parameters.boom_length_m = "3"], ["null", m => m.parameters.boom_length_m = null],
       ["overflow", m => m.parameters.boom_length_m = 1e100], ["underflow", m => m.parameters.overall_scale = 1e-200],
       ["body mismatch", m => m.parameters.body_height_m *= 2], ["local minimum", m => m.parameters.boom_length_m = 0.1],
+      ["negative rotation", m => m.parameters.boom_rotation_deg = -0.01], ["full turn", m => m.parameters.boom_rotation_deg = 360],
+      ["rotation string", m => m.parameters.boom_rotation_deg = "90"], ["rotation null", m => m.parameters.boom_rotation_deg = null],
+      ["rotation overflow", m => m.parameters.boom_rotation_deg = 1e100],
       ["longitude", m => m.placement.longitude = 180.01], ["latitude", m => m.placement.latitude = -90.01],
       ["height", m => m.placement.height = 100001], ["heading", m => m.placement.heading = 360],
       ["mode", m => m.proportional = "true"], ["visibility", m => m.visible = 1],
@@ -103,7 +148,11 @@ test("machinery HTTP validates complete versioned parameters and placement atomi
     for (const value of [NaN, Infinity, -Infinity]) {
       const metadata = model(); metadata.parameters.overall_scale = value;
       assert.throws(() => validateMachineryMetadata(metadata), MachineryValidationError, "non-JSON numeric values also fail the shared validator");
+      const rotated = model(); rotated.parameters.boom_rotation_deg = value;
+      assert.throws(() => validateMachineryMetadata(rotated), MachineryValidationError, "rotation must be finite before JSON encoding");
     }
+    const wrongAsset = model("pile"); wrongAsset.parameters.boom_rotation_deg = 90;
+    assert.equal((await f.command("machinery.save", { machinery: wrongAsset }, "machine", 1)).status, 400, "rotation is not an allowed pile parameter");
     assert.equal((await f.command("machinery.save", { machinery: source, availability: "ready" }, "machine", 1)).data.code, "INVALID_MACHINERY_PAYLOAD");
     assert.equal((await f.state()).audit.filter((a: any) => a.command.startsWith("machinery.")).length, 0);
   } finally { await f.close(); }

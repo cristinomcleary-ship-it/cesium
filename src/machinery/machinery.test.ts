@@ -61,6 +61,7 @@ for (const entry of MACHINERY_CATALOG) {
     assert.deepEqual(computeMachinerySourcePositions(asset, defaults), sourceCopy);
     near(computeMachineryGeometry(asset, defaults).bounds.min[1], 0, 1e-12);
     for (const definition of asset.config.parameters) {
+      if (definition.unit === '°') continue;
       const changed = resolveMachineryParameters(asset, defaults, { [definition.key]: definition.original * 2 });
       near(changed.overall_scale, 2);
       for (const parameter of asset.config.parameters) near(changed[parameter.key], parameter.original * 2);
@@ -94,6 +95,88 @@ test('crane independent extension after 2x global scale preserves body and does 
   assert.ok(changedCount > 100);
   assert.equal(originalMachineryProportionsMaintained(asset, changed), false);
   assert.throws(() => resolveMachineryParameters(asset, doubled, { boom_length_m: 0.8 }, { proportional: false }), /几何最小值/);
+});
+
+test('crane slew rotates complete upperworks clockwise around measured bearing while chassis stays exact', async () => {
+  const asset = await model('crane'), defaults = defaultMachineryParameters(asset);
+  assert.equal(asset.config.type, 'crane'); if (asset.config.type !== 'crane') return;
+  const moving = new Uint8Array(asset.partIds.length);
+  for (const [start, count] of asset.config.rotation.vertex_ranges) moving.fill(1, start, start + count);
+  assert.equal(moving.reduce((sum, value) => sum + value, 0), 19873);
+  const [cx, , cz] = asset.config.rotation.pivot_m;
+  for (const angle of [90, 180, 270, 37.5]) {
+    const params = resolveMachineryParameters(asset, defaults, { boom_rotation_deg: angle });
+    const after = computeMachinerySourcePositions(asset, params), before = asset.sourcePositions;
+    const cosine = Math.cos(angle * Math.PI / 180), sine = Math.sin(angle * Math.PI / 180);
+    assert.equal(params.overall_scale, 1);
+    assert.equal(originalMachineryProportionsMaintained(asset, params), true);
+    for (let vertex = 0; vertex < moving.length; vertex++) {
+      const n = vertex * 3;
+      assert.equal(after[n + 1], before[n + 1]);
+      if (!moving[vertex]) for (let axis = 0; axis < 3; axis++) assert.equal(after[n + axis], before[n + axis]);
+      else {
+        const dx = before[n] - cx, dz = before[n + 2] - cz;
+        near(after[n], cx + dx * cosine - dz * sine, 1e-12);
+        near(after[n + 2], cz + dx * sine + dz * cosine, 1e-12);
+        near(Math.hypot(after[n] - cx, after[n + 2] - cz), Math.hypot(dx, dz), 1e-12);
+      }
+    }
+    // Every face lies entirely within one rigid group: no tearing at classification boundaries.
+    for (let i = 0; i < asset.indices.length; i += 3) {
+      const [a, b, c] = asset.indices.subarray(i, i + 3);
+      assert.equal(moving[a], moving[b]); assert.equal(moving[a], moving[c]);
+    }
+  }
+  for (const part of [1, 2, 3]) assert.ok(asset.partIds.every((value, i) => value !== part || moving[i] === 1));
+  assert.ok(asset.partIds.every((value, i) => value < 10 || moving[i] === 0));
+});
+
+test('crane slew composes with independent extension and scaled pivot; angle never scales', async () => {
+  const asset = await model('crane'), defaults = defaultMachineryParameters(asset);
+  assert.equal(asset.config.type, 'crane'); if (asset.config.type !== 'crane') return;
+  const [cx, , cz] = asset.config.rotation.pivot_m, anchor = asset.config.reference_dimensions.anchor_m;
+  const edited = resolveMachineryParameters(asset, defaults, { boom_length_m: defaults.boom_length_m + 1, outrigger_lateral_m: 1 }, { proportional: false });
+  const before = computeMachinerySourcePositions(asset, edited);
+  for (const proportional of [true, false]) {
+    const rotated = resolveMachineryParameters(asset, edited, { boom_rotation_deg: 90 }, { proportional });
+    for (const key of Object.keys(edited)) if (key !== 'boom_rotation_deg') near(rotated[key], edited[key]);
+    const scaled = resolveMachineryParameters(asset, rotated, { overall_scale: 2 }, { proportional: false });
+    assert.equal(scaled.boom_rotation_deg, 90); near(scaled.boom_length_m, edited.boom_length_m * 2);
+    const positions = computeMachinerySourcePositions(asset, scaled);
+    for (const [start, count] of asset.config.rotation.vertex_ranges) for (let vertex = start; vertex < start + count; vertex++) {
+      const n = vertex * 3;
+      near(positions[n], anchor[0] + 2 * (cx - (before[n + 2] - cz) - anchor[0]), 1e-12);
+      near(positions[n + 1], anchor[1] + 2 * (before[n + 1] - anchor[1]), 1e-12);
+      near(positions[n + 2], anchor[2] + 2 * (cz + (before[n] - cx) - anchor[2]), 1e-12);
+    }
+    const resized = resolveMachineryParameters(asset, rotated, { boom_length_m: defaults.boom_length_m * 3 }, { proportional: true });
+    assert.equal(resized.boom_rotation_deg, 90); near(resized.overall_scale, 3);
+    const patch = resolveMachineryParameters(asset, defaults, { boom_rotation_deg: 45, overall_scale: 2 }, { proportional });
+    assert.equal(patch.boom_rotation_deg, 45); assert.equal(patch.overall_scale, 2);
+  }
+});
+
+test('crane rotation wraps360to0, keeps legacy0 exact, rejects invalid angles and resets without drift', async () => {
+  const asset = await model('crane'), defaults = defaultMachineryParameters(asset);
+  const legacy = { ...defaults }; delete legacy.boom_rotation_deg;
+  assert.deepEqual(resolveMachineryParameters(asset, legacy, {}), defaults);
+  assert.deepEqual(computeMachinerySourcePositions(asset, legacy), asset.sourcePositions);
+  for (const value of [360, -0, '360']) {
+    const parameters = resolveMachineryParameters(asset, defaults, { boom_rotation_deg: value });
+    assert.equal(parameters.boom_rotation_deg, 0);
+    assert.deepEqual(computeMachinerySourcePositions(asset, parameters), asset.sourcePositions);
+  }
+  for (const value of [-1, 361, NaN, Infinity, null, '', ' ', true, [], {}]) {
+    assert.throws(() => resolveMachineryParameters(asset, defaults, { boom_rotation_deg: value }), /0 至 360/);
+  }
+  let parameters = defaults;
+  for (const angle of [90, 180, 270, 12.25, 359.999, 360, 0]) {
+    parameters = resolveMachineryParameters(asset, parameters, { boom_rotation_deg: angle });
+    assert.deepEqual(computeMachinerySourcePositions(asset, parameters), computeMachinerySourcePositions(asset, { ...defaults, boom_rotation_deg: parameters.boom_rotation_deg }));
+  }
+  assert.deepEqual(computeMachinerySourcePositions(asset, parameters), asset.sourcePositions);
+  const { document } = parseGlb(createMachineryGlb(asset, { ...defaults, boom_rotation_deg: 90 }));
+  assert.equal((document.extras.parameters as Record<string, number>).boom_rotation_deg, 90);
 });
 
 test('crane independent foot spacings keep feet dimensions and other parameters', async () => {
@@ -181,4 +264,19 @@ test('malformed manifest, truncated chunk and corrupt RGB are rejected', async (
   await assert.rejects(loadMachineryAsset('crane', { fetcher: truncated }), /truncated chunk/);
   const asset = await model('crane'), palette = asset.palette.slice(); palette[0] = NaN;
   assert.throws(() => createMachineryGlb({ ...asset, palette }, defaultMachineryParameters(asset)), /颜色无效/);
+});
+
+test('crane stale or torn slew metadata is rejected before using an invalid articulation', async () => {
+  const manifestUrl = new URL('crane/manifest.json', publicBase), original = JSON.parse(await readFile(manifestUrl, 'utf8'));
+  const corruptions: Array<(manifest: typeof original) => void> = [
+    manifest => { delete manifest.config.rotation; },
+    manifest => { manifest.config.rotation.vertex_ranges = [[0, manifest.vertexCount + 1]]; },
+    manifest => { manifest.config.rotation.vertex_ranges = [[22, 1]]; },
+    manifest => { manifest.config.rotation.vertex_ranges = [[0, manifest.vertexCount]]; },
+  ];
+  for (const corrupt of corruptions) {
+    const modified = structuredClone(original); corrupt(modified);
+    const fetcher: typeof fetch = async (input, options) => String(input).endsWith('manifest.json') ? new Response(JSON.stringify(modified)) : fileFetch(input, options);
+    await assert.rejects(loadMachineryAsset('crane', { baseUrl: publicBase.href, fetcher }), /rotation|boom|outrigger/);
+  }
 });

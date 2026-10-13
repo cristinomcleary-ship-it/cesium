@@ -1,0 +1,217 @@
+{
+  "classification": "actual-original-workbench-crane-rotation-with-isolated-test-data",
+  "renderer": "Real Chromium WebGL2; software renderer when supplied launch options select SwiftShader",
+  "startedAt": "2026-10-13T05:09:22.208Z",
+  "dataDir": "isolated tmp/crane-rotation-*; no production project data",
+  "checks": [
+    {
+      "id": "root-crane",
+      "title": "Create a crane through the original workbench machinery module",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:09:22.808Z",
+      "evidence": {
+        "url": "http://127.0.0.1:5173/",
+        "recordId": "equipment:d235ede6-9379-4c50-9ed6-39899456b74b",
+        "geometry": {
+          "positionsHash": "6067315aa1eec839507df0659146d3c99ea9785661b369c7d2da8155a11e8962",
+          "positionValues": 515898,
+          "parameters": {
+            "overall_scale": 5,
+            "overall_height_m": 16.18057562479438,
+            "body_height_m": 1.7198410515103113,
+            "boom_length_m": 15.329502801881226,
+            "outrigger_lateral_m": 2.8999999999999613,
+            "outrigger_longitudinal_m": 2.376000125408171,
+            "boom_rotation_deg": 0
+          },
+          "placement": [
+            -2177728.9822633746,
+            4388737.413722875,
+            4070069.9083933877
+          ],
+          "orientation": [
+            0.21611162306610093,
+            -0.3640385824779608,
+            -0.9034089939285802,
+            -0.06799901861146883
+          ],
+          "maxExportError": 0,
+          "mappedPositionValues": 515898,
+          "exportedVertices": 40595
+        }
+      },
+      "finishedAt": "2026-10-13T05:09:41.062Z"
+    },
+    {
+      "id": "rotation-preview",
+      "title": "0° to 90° changes actual model vertices while chassis, outriggers and placement stay fixed",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:09:41.062Z",
+      "evidence": {
+        "positionsHash": "befdf4bc440d041aaa671e4004aaf57d2c0fb9904f75536fbdad0b8b4bd67b52",
+        "positionValues": 515862,
+        "parameters": {
+          "overall_scale": 5,
+          "overall_height_m": 16.18057562479438,
+          "body_height_m": 1.7198410515103113,
+          "boom_length_m": 15.329502801881226,
+          "outrigger_lateral_m": 2.8999999999999613,
+          "outrigger_longitudinal_m": 2.376000125408171,
+          "boom_rotation_deg": 90
+        },
+        "placement": [
+          -2177728.9822633746,
+          4388737.413722875,
+          4070069.9083933877
+        ],
+        "orientation": [
+          0.21611162306610093,
+          -0.3640385824779608,
+          -0.9034089939285802,
+          -0.06799901861146883
+        ],
+        "maxExportError": 0,
+        "mappedPositionValues": 515862,
+        "exportedVertices": 40594,
+        "comparison": {
+          "fixedCompared": 20724,
+          "movingCompared": 19870,
+          "fixedMaxDelta": 0,
+          "movingMaxDelta": 7.0658234784320095
+        }
+      },
+      "finishedAt": "2026-10-13T05:09:46.812Z"
+    },
+    {
+      "id": "save-reload",
+      "title": "Saved angle and exact model geometry survive reloading the original root route",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:09:46.812Z",
+      "evidence": {
+        "persistedState": {
+          "schemaVersion": 1,
+          "assetId": "crane",
+          "assetVersion": "2026-10-13-v1",
+          "proportional": true,
+          "parameters": {
+            "overall_scale": 5,
+            "overall_height_m": 16.18057562479438,
+            "body_height_m": 1.7198410515103113,
+            "boom_length_m": 15.329502801881226,
+            "boom_rotation_deg": 90,
+            "outrigger_lateral_m": 2.8999999999999613,
+            "outrigger_longitudinal_m": 2.376000125408171
+          },
+          "placement": {
+            "longitude": 116.391,
+            "latitude": 39.907,
+            "height": 0,
+            "heading": 35
+          },
+          "visible": true
+        },
+        "geometryHashAfterReload": "befdf4bc440d041aaa671e4004aaf57d2c0fb9904f75536fbdad0b8b4bd67b52"
+      },
+      "finishedAt": "2026-10-13T05:09:58.880Z"
+    },
+    {
+      "id": "cancel",
+      "title": "Cancelling an angle draft restores saved geometry",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:09:58.880Z",
+      "evidence": {
+        "rejectedAngle": 180,
+        "restoredAngle": 90,
+        "restoredHash": "befdf4bc440d041aaa671e4004aaf57d2c0fb9904f75536fbdad0b8b4bd67b52",
+        "immediateCancelDraftAngle": 270,
+        "immediateCancelRestoredHash": "befdf4bc440d041aaa671e4004aaf57d2c0fb9904f75536fbdad0b8b4bd67b52"
+      },
+      "finishedAt": "2026-10-13T05:10:01.593Z"
+    },
+    {
+      "id": "dimensions",
+      "title": "Independent boom length and linked whole-machine scale preserve angle",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:10:01.593Z",
+      "evidence": {
+        "originalLength": 15.329502801881226,
+        "editedLength": 22.074484034708966,
+        "scale": 6,
+        "angle": 90,
+        "rotationAtChangedDimensions": {
+          "fixedCompared": 20721,
+          "movingCompared": 19871,
+          "fixedMaxDelta": 0,
+          "movingMaxDelta": 10.274948440343678
+        }
+      },
+      "finishedAt": "2026-10-13T05:10:14.951Z"
+    },
+    {
+      "id": "rapid-slider",
+      "title": "Rapid actual slider keyboard input renders the final angle and handles 360° wrap",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:10:14.951Z",
+      "evidence": {
+        "keyboardEvents": 19,
+        "finalSliderAngle": 18,
+        "actualGeometryAngle": 18,
+        "wrappedAngle": 0
+      },
+      "finishedAt": "2026-10-13T05:10:17.761Z"
+    },
+    {
+      "id": "reset",
+      "title": "Angle reset preserves dimensions; original-dimension reset preserves angle",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:10:17.761Z",
+      "evidence": {
+        "angleResetPreservesDimensions": true,
+        "originalDimensionResetPreservesAngle": 75,
+        "cancelledDraftRestoresSavedScale": 6
+      },
+      "finishedAt": "2026-10-13T05:10:22.475Z"
+    },
+    {
+      "id": "single-runtime",
+      "title": "One original Cesium Viewer renders without uncaught errors",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:10:22.475Z",
+      "evidence": {
+        "sameViewer": true,
+        "safetySameViewer": true,
+        "sourceCount": 1,
+        "renderLoop": true,
+        "recordCount": 1
+      },
+      "finishedAt": "2026-10-13T05:10:22.493Z"
+    }
+  ],
+  "screenshots": [
+    "01-crane-rotation-0.png",
+    "02-crane-rotation-90.png"
+  ],
+  "videos": [
+    "crane-rotation-actual-operation.mp4"
+  ],
+  "pageErrors": [],
+  "consoleErrors": [],
+  "origin": "http://127.0.0.1:5173",
+  "resourceId": "equipment:d235ede6-9379-4c50-9ed6-39899456b74b",
+  "result": "passed",
+  "finishedAt": "2026-10-13T05:10:25.648Z",
+  "videoExport": {
+    "source": "Playwright recordVideo from the actual acceptance session",
+    "encoding": "H.264 MP4,1280×800,25fps,CRF28,faststart",
+    "durationSeconds": 61.12,
+    "byteLength": 625799,
+    "transformation": "Full recording transcoded/resized only; no inserted frames or reconstructed scenes"
+  },
+  "nodeVerification": {
+    "passed": 61,
+    "geometryFinalRun": 18,
+    "otherTestsCombinedRun": 43,
+    "coverage": "source geometry, GLB, scene transforms, legacy metadata, SQLite persistence, permissions, revision/idempotency and existing records"
+  },
+  "productionBuild": "TypeScript and Vite production build passed"
+}

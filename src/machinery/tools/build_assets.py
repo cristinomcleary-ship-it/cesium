@@ -36,6 +36,17 @@ def decode(model: dict, key: str, item_bytes: int) -> bytes:
 def compact_config(model: dict) -> dict:
     config = copy.deepcopy(model["config"])
     config["type"] = model["type"]
+    if model["id"] == "crane":
+        # Source FBX is flat-root. A reviewed whole-component mapping supplies
+        # articulation without changing the original source arrays or part IDs.
+        overlay = json.loads(Path(__file__).with_name("crane_slew_mapping.json").read_text(encoding="utf-8"))
+        rotation = overlay["rotation"]
+        for key, field in (("source_vertices", "source_positions_sha256"), ("source_indices", "source_indices_sha256"), ("source_part_ids", "source_part_ids_sha256")):
+            if sha256(base64.b64decode(model[key], validate=True)) != rotation[field]:
+                raise ValueError("Crane slew mapping does not match this source geometry")
+        config["parameters"] = [parameter for parameter in config["parameters"] if parameter["key"] != "boom_rotation_deg"] + [overlay["parameter"]]
+        config["rotation"] = rotation
+        config["limits"][2] = "支持上车与吊臂水平回转；保持原仰角和吊钩垂距，不提供变幅或吊重控制。"
     # All inputs already use world Y-up metres. These reference planes are
     # derived from the reviewed anchor/body measurement, never a unit conversion.
     reference = config["reference_dimensions"]

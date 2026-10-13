@@ -6,9 +6,10 @@ export type MachineryParameters = Record<string, number>;
 export interface MachineryParameterDefinition {
   readonly key: string;
   readonly label: string;
-  readonly unit: 'm' | '×';
+  readonly unit: 'm' | '×' | '°';
   readonly original: number;
   readonly min?: number;
+  readonly max?: number;
   readonly min_exclusive?: boolean;
   readonly step?: number;
   readonly description?: string;
@@ -40,6 +41,12 @@ export interface CraneLeg {
 }
 export interface CraneConfig extends CommonConfig {
   readonly type: 'crane';
+  readonly rotation: {
+    /** Measured source slew-bearing centre, Y-up metres. */
+    readonly pivot_m: Vec3;
+    /** Whole upperworks components as [first vertex, count], sorted and disjoint. */
+    readonly vertex_ranges: readonly (readonly [number, number])[];
+  };
   readonly boom: {
     readonly axis: Vec3;
     readonly root_projection_m: number;

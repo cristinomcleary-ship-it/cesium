@@ -40,6 +40,22 @@ export function deformCraneSource(source: Float64Array, parts: Uint8Array, confi
   return out;
 }
 
+/** Slew after extension, before the common scale. Never rotate chassis or outriggers. */
+export function rotateCraneSource(source: Float64Array, config: CraneConfig, degrees: number): Float64Array {
+  if (degrees === 0) return source;
+  const output = source.slice(), [cx, , cz] = config.rotation.pivot_m;
+  const radians = degrees * Math.PI / 180, cosine = Math.cos(radians), sine = Math.sin(radians);
+  for (const [start, count] of config.rotation.vertex_ranges) {
+    for (let vertex = start; vertex < start + count; vertex++) {
+      const n = vertex * 3, dx = source[n] - cx, dz = source[n + 2] - cz;
+      // +X maps to north and +Z maps to east in the platform. Positive is clockwise.
+      output[n] = cx + dx * cosine - dz * sine;
+      output[n + 2] = cz + dx * sine + dz * cosine;
+    }
+  }
+  return output;
+}
+
 export function deformPileSource(source: Float64Array, parts: Uint8Array, config: PileConfig, parameters: MachineryParameters): Float64Array {
   validateLocal(parameters, config.local_parameters);
   const height = parameters.total_height_m;
