@@ -1,4 +1,4 @@
-import { deformCraneSource, deformPileSource, rotateCraneSource } from './deformation';
+import { deformCraneSource, deformPileSource, elevateCraneSource, rotateCraneSource } from './deformation';
 import type { LoadedMachineryAsset, MachineryBounds, MachineryGeometry, MachineryParameters, MachineryParameterDefinition, MachineryResolveOptions, Vec3 } from './types';
 
 function positive(raw: unknown, label: string): number {
@@ -12,12 +12,13 @@ function positive(raw: unknown, label: string): number {
 
 function parameterValue(raw: unknown, definition: MachineryParameterDefinition): number {
   if (definition.unit !== '°') return positive(raw, definition.label);
+  const maximum = definition.max ?? 360;
   if ((typeof raw !== 'number' && typeof raw !== 'string') || (typeof raw === 'string' && !raw.trim())) {
-    throw new RangeError(`${definition.label}必须是 0 至 360 度的有限数值`);
+    throw new RangeError(`${definition.label}必须是 0 至 ${maximum} 度的有限数值`);
   }
   const value = Number(raw);
-  if (!Number.isFinite(value) || value < 0 || value > 360) throw new RangeError(`${definition.label}必须是 0 至 360 度的有限数值`);
-  return value === 360 || Object.is(value, -0) ? 0 : value;
+  if (!Number.isFinite(value) || value < 0 || value > maximum) throw new RangeError(`${definition.label}必须是 0 至 ${maximum} 度的有限数值`);
+  return (definition.key === 'boom_rotation_deg' && value === 360) || Object.is(value, -0) ? 0 : value;
 }
 
 export function defaultMachineryParameters(asset: LoadedMachineryAsset): MachineryParameters {
@@ -51,7 +52,10 @@ export function computeMachinerySourcePositions(asset: LoadedMachineryAsset, par
     if (config.type === 'crane') local = deformCraneSource(local, asset.partIds, config, localParameters);
     else if (config.type === 'pile_rig') local = deformPileSource(local, asset.partIds, config, localParameters);
   }
-  if (config.type === 'crane') local = rotateCraneSource(local, config, values.boom_rotation_deg);
+  if (config.type === 'crane') {
+    local = elevateCraneSource(local, config, values.boom_elevation_deg, localParameters.boom_length_m);
+    local = rotateCraneSource(local, config, values.boom_rotation_deg);
+  }
   const output = new Float64Array(local.length), anchor = config.reference_dimensions.anchor_m;
   if (scale === 1) output.set(local);
   else for (let i = 0; i < local.length; i++) output[i] = anchor[i % 3] + scale * (local[i] - anchor[i % 3]);
@@ -135,7 +139,10 @@ export function resolveMachineryParameters(
     for (const [key, value] of entries) if (definitions.get(key)!.unit === '°') result[key] = value;
     if (!dimensions.length) return synchronize(asset, result);
     const [key, value] = dimensions[dimensions.length - 1];
-    const scale = value / original[key];
+    const posedOriginal = { ...original };
+    for (const definition of definitions.values()) if (definition.unit === '°') posedOriginal[definition.key] = result[definition.key];
+    const baseline = key === 'overall_height_m' ? computeMachineryGeometry(asset, posedOriginal).bounds.size[1] : original[key];
+    const scale = value / baseline;
     result = Object.fromEntries(Object.entries(original).map(([name, baseline]) => [name, definitions.get(name)!.unit === '°' ? result[name] : baseline * scale]));
     return synchronize(asset, result);
   }
@@ -153,6 +160,8 @@ export function originalMachineryProportionsMaintained(asset: LoadedMachineryAss
   const current = parametersWithDefaults(asset, parameters), scale = current.overall_scale;
   return asset.config.parameters.every(definition => {
     if (definition.unit === '°') return true;
+    // A posed crane's total height is derived from elevation, not a source-shape dimension.
+    if (asset.type === 'crane' && definition.key === 'overall_height_m') return true;
     const expected = definition.original * scale;
     return Math.abs(current[definition.key] - expected) <= Math.max(1, Math.abs(expected)) * 1e-9;
   });

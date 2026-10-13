@@ -132,8 +132,12 @@ export class MachineryScene {
     if (!entry || !entry.entity.show || this.disposed || !this.enabled || !this.canView) return false;
     const state = this.draft?.recordId === recordId ? this.draft.state : this.saved.get(recordId)?.state;
     const height = state?.parameters.overall_height_m ?? state?.parameters.total_height_m ?? 1;
-    // Leave space for the platform header and editing panels instead of fitting to the full canvas edges.
-    const range = Math.max(4, height * 4);
+    // A lowered boom can be much longer than the model is tall. Include its
+    // length and outrigger spans so locating it does not crop a horizontal pose.
+    // Leave room for the platform header and editing panels.
+    const extent = Math.max(height, state?.parameters.boom_length_m ?? 0,
+      state?.parameters.outrigger_lateral_m ?? 0, state?.parameters.outrigger_longitudinal_m ?? 0);
+    const range = Math.max(4, extent * 4);
     try { return await this.viewer.flyTo(entry.entity, { duration: 0.8, offset: new HeadingPitchRange(0, -0.45, range) }); }
     catch { return false; }
   }

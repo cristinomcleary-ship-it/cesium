@@ -80,20 +80,81 @@ test('real independent shapes survive mode changes and service validation, inclu
   }
 });
 
-test('legacy crane reads normalize only the missing rotation angle without changing the source record or geometry', async () => {
-  const model = await asset('crane'), legacy = state('crane');
-  delete legacy.parameters.boom_rotation_deg;
-  const before = structuredClone(legacy), normalized = readMachineryState(legacy)!;
-  assert.ok(normalized, 'pre-rotation saved cranes remain readable');
-  assert.equal(normalized.parameters.boom_rotation_deg, 0);
-  assert.deepEqual(legacy, before, 'normalization never mutates saved records');
-  assert.notEqual(normalized.parameters, legacy.parameters);
-  assert.deepEqual(normalized.placement, legacy.placement);
-  assert.deepEqual(computeMachineryGeometry(model, normalized.parameters).positions, computeMachineryGeometry(model, defaultMachineryParameters(model)).positions);
+test('legacy crane reads normalize only missing angles without changing the source record or original elevation geometry', async () => {
+  const model = await asset('crane');
+  assert.equal(model.config.type, 'crane');
+  if (model.config.type !== 'crane') throw new Error('expected crane config');
+  const originalElevation = Math.asin(model.config.boom.axis[1]) * 180 / Math.PI;
+  assert.equal(MACHINERY_PARAMETER_DEFAULTS.crane.boom_elevation_deg, originalElevation, 'default comes from the extracted source axis rather than an assumed upright or horizontal pose');
+  for (const missing of [['boom_rotation_deg'], ['boom_elevation_deg'], ['boom_rotation_deg', 'boom_elevation_deg']]) {
+    const legacy = state('crane');
+    for (const key of missing) delete legacy.parameters[key];
+    const before = structuredClone(legacy), normalized = readMachineryState(legacy)!;
+    assert.ok(normalized, 'pre-angle saved cranes remain readable');
+    assert.equal(normalized.parameters.boom_rotation_deg, 0);
+    assert.equal(normalized.parameters.boom_elevation_deg, originalElevation);
+    assert.deepEqual(legacy, before, 'normalization never mutates saved records');
+    assert.notEqual(normalized.parameters, legacy.parameters);
+    assert.deepEqual(normalized.placement, legacy.placement);
+    assert.deepEqual(computeMachineryGeometry(model, normalized.parameters).positions, computeMachineryGeometry(model, defaultMachineryParameters(model)).positions);
+  }
+  const legacy = state('crane'); delete legacy.parameters.boom_elevation_deg;
+  legacy.parameters.boom_rotation_deg = 270;
+  assert.equal(readMachineryState(legacy)!.parameters.boom_rotation_deg, 270, 'elevation migration does not reset an existing slew pose');
   const missingDimension = structuredClone(legacy); delete missingDimension.parameters.boom_length_m;
   assert.equal(readMachineryState(missingDimension), undefined, 'legacy compatibility does not permit missing dimensions');
   const extraParameter = structuredClone(legacy); extraParameter.parameters.unrecognized_angle = 90;
   assert.equal(readMachineryState(extraParameter), undefined, 'legacy compatibility keeps strict allowed keys');
+});
+
+test('crane elevation and slew persist independently through real geometry validation, scaling and reload', async () => {
+  const model = await asset('crane'), defaults = defaultMachineryParameters(model);
+  const extended = resolveMachineryParameters(model, defaults, { boom_length_m: defaults.boom_length_m * 1.4 }, { proportional: false });
+  for (const proportional of [true, false]) {
+    for (const angle of [0, 30, 45.25, defaults.boom_elevation_deg, 90]) {
+      const parameters = resolveMachineryParameters(model, extended, { boom_elevation_deg: angle, boom_rotation_deg: 270 }, { proportional });
+      const metadata = { ...state('crane', parameters), proportional };
+      metadata.placement.heading = 35;
+      const restored = validateMachineryMetadata(metadata);
+      assert.equal(restored.parameters.boom_elevation_deg, angle);
+      assert.equal(restored.parameters.boom_rotation_deg, 270);
+      assert.equal(restored.parameters.boom_length_m, extended.boom_length_m);
+      assert.deepEqual(restored.placement, metadata.placement);
+      const geometry = computeMachineryGeometry(model, restored.parameters);
+      near(restored.parameters.overall_height_m, geometry.bounds.size[1]);
+      assert.deepEqual(geometry.sourceAnchor, model.config.reference_dimensions.anchor_m, 'lowering the boom cannot recenter the foundation');
+      assert.deepEqual(resolveMachineryParameters(model, restored.parameters, {}, { proportional }), restored.parameters);
+      const scaled = resolveMachineryParameters(model, restored.parameters, { overall_scale: 2 }, { proportional });
+      assert.equal(scaled.boom_elevation_deg, angle);
+      assert.equal(scaled.boom_rotation_deg, 270);
+      const persisted = validateMachineryMetadata({ ...metadata, parameters: scaled });
+      assert.deepEqual(resolveMachineryParameters(model, persisted.parameters, {}, { proportional }), persisted.parameters, 'derived bounds and both angles survive save/reload');
+    }
+  }
+});
+
+test('locating a lowered long boom uses its horizontal extent in the existing viewer and keeps the same equipment entity', async () => {
+  const model = await asset('crane'), fixture = viewerFixture(), scene = new MachineryScene(fixture.viewer);
+  const flights: Array<{ target: unknown; offset: Cesium.HeadingPitchRange | undefined }> = [];
+  fixture.viewer.flyTo = async (target, options) => { flights.push({ target, offset: options?.offset }); return true; };
+  scene.setContext({ projectId: 'safety:project', records: [], canView: true, active: true });
+  try {
+    const raised = resolveMachineryParameters(model, defaultMachineryParameters(model), { boom_length_m: 20, boom_elevation_deg: 90 }, { proportional: false });
+    await scene.preview('long-boom', state('crane', raised), model);
+    const entity = fixture.source().entities.getById('machinery:long-boom')!;
+    const position = entity.position!.getValue(JulianDate.now())!;
+    const lowered = resolveMachineryParameters(model, raised, { boom_elevation_deg: 0 }, { proportional: false });
+    await scene.preview('long-boom', state('crane', lowered), model);
+    assert.equal(fixture.source().entities.values.length, 1);
+    assert.equal(fixture.source().entities.getById(entity.id), entity, 'pose updates reuse the equipment entity');
+    assert.deepEqual(entity.position!.getValue(JulianDate.now()), position, 'lowering does not move its station');
+    assert.equal(await scene.flyTo('long-boom'), true);
+    assert.equal(flights.length, 1, 'the original host viewer performs the locate operation');
+    assert.equal(flights[0].target, entity);
+    assert.ok(lowered.boom_length_m > lowered.overall_height_m, 'fixture represents the horizontal long-boom regression');
+    assert.ok(flights[0].offset!.range >= lowered.boom_length_m * 4, 'locating leaves room for the horizontal boom, not just its low height');
+    assert.ok(flights[0].offset!.range > lowered.overall_height_m * 4);
+  } finally { scene.destroy(); }
 });
 
 test('crane rotation survives service validation and proportional size edits without scaling the angle or changing placement', async () => {
@@ -116,6 +177,7 @@ test('crane rotation survives service validation and proportional size edits wit
     const unchanged = state(id);
     assert.deepEqual(validateMachineryMetadata(unchanged), unchanged);
     assert.equal(Object.hasOwn(unchanged.parameters, 'boom_rotation_deg'), false, 'other assets retain their exact parameter contracts');
+    assert.equal(Object.hasOwn(unchanged.parameters, 'boom_elevation_deg'), false);
   }
 });
 

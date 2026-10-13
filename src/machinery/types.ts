@@ -41,6 +41,25 @@ export interface CraneLeg {
 }
 export interface CraneConfig extends CommonConfig {
   readonly type: 'crane';
+  readonly elevation: {
+    readonly original_degrees: number;
+    readonly hinge_m: Vec3;
+    readonly axis: Vec3;
+    readonly boom_vertex_ranges: readonly (readonly [number, number])[];
+    readonly hanging_vertex_ranges: readonly (readonly [number, number])[];
+    readonly hanging_attachment_m: Vec3;
+    readonly rope_upper_vertex_indices: readonly number[];
+    readonly rope_lower_vertex_indices: readonly number[];
+    readonly rigging_vertex_ranges: readonly (readonly [number, number])[];
+    readonly rigging_fixed_vertex_indices: readonly number[];
+    readonly rigging_extension_fixed_vertex_indices: readonly number[];
+    readonly hydraulics: readonly {
+      readonly base_m: Vec3;
+      readonly attachment_m: Vec3;
+      readonly barrel_vertex_ranges: readonly (readonly [number, number])[];
+      readonly rod_vertex_ranges: readonly (readonly [number, number])[];
+    }[];
+  };
   readonly rotation: {
     /** Measured source slew-bearing centre, Y-up metres. */
     readonly pivot_m: Vec3;

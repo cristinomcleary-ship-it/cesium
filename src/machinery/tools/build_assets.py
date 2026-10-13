@@ -46,7 +46,14 @@ def compact_config(model: dict) -> dict:
                 raise ValueError("Crane slew mapping does not match this source geometry")
         config["parameters"] = [parameter for parameter in config["parameters"] if parameter["key"] != "boom_rotation_deg"] + [overlay["parameter"]]
         config["rotation"] = rotation
-        config["limits"][2] = "支持上车与吊臂水平回转；保持原仰角和吊钩垂距，不提供变幅或吊重控制。"
+        elevation_overlay = json.loads(Path(__file__).with_name("crane_elevation_mapping.json").read_text(encoding="utf-8"))
+        elevation = elevation_overlay["elevation"]
+        for key, field in (("source_vertices", "source_positions_sha256"), ("source_indices", "source_indices_sha256")):
+            if sha256(base64.b64decode(model[key], validate=True)) != elevation[field]:
+                raise ValueError("Crane elevation mapping does not match this source geometry")
+        config["parameters"] = [parameter for parameter in config["parameters"] if parameter["key"] != "boom_elevation_deg"] + [elevation_overlay["parameter"]]
+        config["elevation"] = elevation
+        config["limits"][2] = "支持上车水平回转与吊臂仰角几何调整；吊钩保持竖向姿态，未提供吊重和独立吊钩升降控制。"
     # All inputs already use world Y-up metres. These reference planes are
     # derived from the reviewed anchor/body measurement, never a unit conversion.
     reference = config["reference_dimensions"]

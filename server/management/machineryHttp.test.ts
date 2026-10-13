@@ -14,7 +14,7 @@ import type { ManagementCommandType } from "../../src/managementTypes.ts";
 const projectId = "safety:project", password = `Machinery-${randomUUID()}!`;
 function model(assetId: MachineryAssetId = "crane", scale = 1): MachineryMetadata {
   return { schemaVersion: 1, assetId, assetVersion: MACHINERY_ASSET_VERSION, proportional: true,
-    parameters: Object.fromEntries(Object.entries(MACHINERY_PARAMETER_DEFAULTS[assetId]).map(([k, v]) => [k, k === "boom_rotation_deg" ? v : v * scale])),
+    parameters: Object.fromEntries(Object.entries(MACHINERY_PARAMETER_DEFAULTS[assetId]).map(([k, v]) => [k, k === "boom_rotation_deg" || k === "boom_elevation_deg" ? v : v * scale])),
     placement: { longitude: 116.397, latitude: 39.908, height: 47.25, heading: 120 }, visible: true };
 }
 async function fixture() {
@@ -120,6 +120,40 @@ test("legacy crane SQLite records default rotation only in detached reads and pr
   } finally { await f.close(); }
 });
 
+test("crane elevation accepts both endpoints and persists through SQLite restart; legacy reads keep source elevation and existing slew", async () => {
+  const f = await fixture(); try {
+    await f.ok("resource.create", { name: "俯仰吊机", kind: "equipment" }, "elevation-crane");
+    const original = model(); original.parameters.boom_rotation_deg = 270;
+    await f.ok("machinery.save", { machinery: original }, "elevation-crane", 1);
+    await f.restart(database => {
+      const row = database.prepare("SELECT data FROM records WHERE project_id=? AND collection='resources' AND id=?").get(projectId, "elevation-crane")!;
+      const record = JSON.parse(String(row.data)); delete record.machinery.parameters.boom_elevation_deg;
+      database.prepare("UPDATE records SET data=? WHERE project_id=? AND collection='resources' AND id=?").run(JSON.stringify(record), projectId, "elevation-crane");
+    });
+    const legacy = (await f.record("elevation-crane")).data;
+    const restored = validateMachineryMetadata(legacy.machinery);
+    assert.equal(restored.parameters.boom_elevation_deg, MACHINERY_PARAMETER_DEFAULTS.crane.boom_elevation_deg);
+    assert.equal(restored.parameters.boom_rotation_deg, 270);
+    assert.deepEqual((await f.record("elevation-crane")).data, legacy, "reading legacy elevation does not rewrite or revise the resource");
+    const preAngles = structuredClone(legacy.machinery); delete preAngles.parameters.boom_rotation_deg;
+    const noAngles = validateMachineryMetadata(preAngles);
+    assert.equal(noAngles.parameters.boom_rotation_deg, 0);
+    assert.equal(noAngles.parameters.boom_elevation_deg, MACHINERY_PARAMETER_DEFAULTS.crane.boom_elevation_deg);
+    await f.ok("machinery.save", { machinery: preAngles }, "elevation-crane", 2);
+    let revision = 3;
+    for (const angle of [0, 45.25, 90, MACHINERY_PARAMETER_DEFAULTS.crane.boom_elevation_deg]) {
+      const expected = { ...restored, parameters: { ...restored.parameters, boom_elevation_deg: angle } };
+      await f.ok("machinery.save", { machinery: expected }, "elevation-crane", revision++);
+      await f.restart();
+      const saved = (await f.record("elevation-crane")).data;
+      assert.deepEqual(saved.machinery, expected);
+      assert.equal(saved.id, legacy.id);
+      assert.equal(saved.revision, revision);
+      assert.deepEqual(saved.machinery.placement, legacy.machinery.placement);
+    }
+  } finally { await f.close(); }
+});
+
 test("machinery HTTP validates complete versioned parameters and placement atomically before any write", async () => {
   const f = await fixture(); try {
     await f.ok("resource.create", { name: "验证设备", kind: "equipment" }, "machine");
@@ -134,6 +168,8 @@ test("machinery HTTP validates complete versioned parameters and placement atomi
       ["negative rotation", m => m.parameters.boom_rotation_deg = -0.01], ["full turn", m => m.parameters.boom_rotation_deg = 360],
       ["rotation string", m => m.parameters.boom_rotation_deg = "90"], ["rotation null", m => m.parameters.boom_rotation_deg = null],
       ["rotation overflow", m => m.parameters.boom_rotation_deg = 1e100],
+      ["negative elevation", m => m.parameters.boom_elevation_deg = -0.01], ["elevation above vertical", m => m.parameters.boom_elevation_deg = 90.01],
+      ["elevation string", m => m.parameters.boom_elevation_deg = "45"], ["elevation null", m => m.parameters.boom_elevation_deg = null],
       ["longitude", m => m.placement.longitude = 180.01], ["latitude", m => m.placement.latitude = -90.01],
       ["height", m => m.placement.height = 100001], ["heading", m => m.placement.heading = 360],
       ["mode", m => m.proportional = "true"], ["visibility", m => m.visible = 1],
@@ -150,9 +186,15 @@ test("machinery HTTP validates complete versioned parameters and placement atomi
       assert.throws(() => validateMachineryMetadata(metadata), MachineryValidationError, "non-JSON numeric values also fail the shared validator");
       const rotated = model(); rotated.parameters.boom_rotation_deg = value;
       assert.throws(() => validateMachineryMetadata(rotated), MachineryValidationError, "rotation must be finite before JSON encoding");
+      const elevated = model(); elevated.parameters.boom_elevation_deg = value;
+      assert.throws(() => validateMachineryMetadata(elevated), MachineryValidationError, "elevation must be finite before JSON encoding");
     }
     const wrongAsset = model("pile"); wrongAsset.parameters.boom_rotation_deg = 90;
     assert.equal((await f.command("machinery.save", { machinery: wrongAsset }, "machine", 1)).status, 400, "rotation is not an allowed pile parameter");
+    for (const assetId of ["pile", "excavator"] as const) {
+      const unexpectedElevation = model(assetId); unexpectedElevation.parameters.boom_elevation_deg = 45;
+      assert.equal((await f.command("machinery.save", { machinery: unexpectedElevation }, "machine", 1)).status, 400, "elevation is only a crane parameter");
+    }
     assert.equal((await f.command("machinery.save", { machinery: source, availability: "ready" }, "machine", 1)).data.code, "INVALID_MACHINERY_PAYLOAD");
     assert.equal((await f.state()).audit.filter((a: any) => a.command.startsWith("machinery.")).length, 0);
   } finally { await f.close(); }

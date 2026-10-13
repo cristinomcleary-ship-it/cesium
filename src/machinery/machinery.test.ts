@@ -64,7 +64,7 @@ for (const entry of MACHINERY_CATALOG) {
       if (definition.unit === '°') continue;
       const changed = resolveMachineryParameters(asset, defaults, { [definition.key]: definition.original * 2 });
       near(changed.overall_scale, 2);
-      for (const parameter of asset.config.parameters) near(changed[parameter.key], parameter.original * 2);
+      for (const parameter of asset.config.parameters) near(changed[parameter.key], parameter.original * (parameter.unit === '°' ? 1 : 2));
       const source = computeMachinerySourcePositions(asset, changed), anchor = asset.config.reference_dimensions.anchor_m;
       for (let i = 0; i < source.length; i++) near(source[i], anchor[i % 3] + 2 * (sourceCopy[i] - anchor[i % 3]), 1e-12);
       assert.deepEqual(resolveMachineryParameters(asset, changed, { [definition.key]: definition.original * 2 }), changed);
@@ -278,5 +278,122 @@ test('crane stale or torn slew metadata is rejected before using an invalid arti
     const modified = structuredClone(original); corrupt(modified);
     const fetcher: typeof fetch = async (input, options) => String(input).endsWith('manifest.json') ? new Response(JSON.stringify(modified)) : fileFetch(input, options);
     await assert.rejects(loadMachineryAsset('crane', { baseUrl: publicBase.href, fetcher }), /rotation|boom|outrigger/);
+  }
+});
+
+test('crane elevation uses the measured hinge and preserves fixed cab and chassis vertices', async () => {
+  const asset = await model('crane'), defaults = defaultMachineryParameters(asset);
+  assert.equal(asset.config.type, 'crane'); if (asset.config.type !== 'crane') return;
+  const elevation = asset.config.elevation, source = asset.sourcePositions, moving = new Set<number>();
+  const addRanges = (ranges: readonly (readonly [number, number])[]) => { for (const [start, count] of ranges) for (let i = start; i < start + count; i++) moving.add(i); };
+  for (const ranges of [elevation.boom_vertex_ranges, elevation.hanging_vertex_ranges, elevation.rigging_vertex_ranges]) addRanges(ranges);
+  for (const index of [...elevation.rope_upper_vertex_indices, ...elevation.rope_lower_vertex_indices]) moving.add(index);
+  for (const cylinder of elevation.hydraulics) { addRanges(cylinder.barrel_vertex_ranges); addRanges(cylinder.rod_vertex_ranges); }
+  for (const angle of [0, 30, 60, 90]) {
+    const params = resolveMachineryParameters(asset, defaults, { boom_elevation_deg: angle });
+    const after = computeMachinerySourcePositions(asset, params);
+    // Source vertices37347→40508 form a long telescopic-section edge parallel to its centreline.
+    const edge = [0, 1, 2].map(axis => after[40508 * 3 + axis] - after[37347 * 3 + axis]);
+    near(Math.atan2(edge[1], Math.hypot(edge[0], edge[2])) * 180 / Math.PI, angle, 1e-6);
+    for (let vertex = 0; vertex < asset.partIds.length; vertex++) if (!moving.has(vertex)) for (let axis = 0; axis < 3; axis++) assert.equal(after[vertex * 3 + axis], source[vertex * 3 + axis]);
+    for (const [start, count] of elevation.boom_vertex_ranges) for (let vertex = start; vertex < start + count; vertex++) {
+      const beforeRadius = Math.hypot(...[0, 1, 2].map(axis => source[vertex * 3 + axis] - elevation.hinge_m[axis]));
+      near(Math.hypot(...[0, 1, 2].map(axis => after[vertex * 3 + axis] - elevation.hinge_m[axis])), beforeRadius, 1e-12);
+    }
+    const geometry = computeMachineryGeometry(asset, params);
+    near(params.overall_height_m, geometry.bounds.size[1]); assert.equal(originalMachineryProportionsMaintained(asset, params), true);
+    assert.deepEqual(geometry.sourceAnchor, asset.config.reference_dimensions.anchor_m);
+    if (angle === 0) assert.ok(geometry.bounds.min[1] < -0.19, 'low hanging hook is reported below the unchanged ground anchor');
+  }
+});
+
+test('crane hanging block stays upright and rope bundle suspension direction is preserved after elevation', async () => {
+  const asset = await model('crane'), defaults = defaultMachineryParameters(asset);
+  assert.equal(asset.config.type, 'crane'); if (asset.config.type !== 'crane') return;
+  const elevation = asset.config.elevation;
+  const base = resolveMachineryParameters(asset, defaults, { boom_length_m: defaults.boom_length_m + 1 }, { proportional: false });
+  const before = computeMachinerySourcePositions(asset, base);
+  const mean = (positions: Float64Array, indices: readonly number[], axis: number) => indices.reduce((sum, index) => sum + positions[index * 3 + axis], 0) / indices.length;
+  for (const angle of [0, 30, 60, 90]) {
+    const after = computeMachinerySourcePositions(asset, resolveMachineryParameters(asset, base, { boom_elevation_deg: angle }, { proportional: false }));
+    const first = elevation.hanging_vertex_ranges[0][0], delta = [0, 1, 2].map(axis => after[first * 3 + axis] - before[first * 3 + axis]);
+    for (const [start, count] of elevation.hanging_vertex_ranges) for (let vertex = start; vertex < start + count; vertex++) for (let axis = 0; axis < 3; axis++) near(after[vertex * 3 + axis] - before[vertex * 3 + axis], delta[axis], 1e-12);
+    for (let axis = 0; axis < 3; axis++) {
+      const sourceDirection = mean(before, elevation.rope_upper_vertex_indices, axis) - mean(before, elevation.rope_lower_vertex_indices, axis);
+      const posedDirection = mean(after, elevation.rope_upper_vertex_indices, axis) - mean(after, elevation.rope_lower_vertex_indices, axis);
+      near(posedDirection, sourceDirection, 1e-12);
+    }
+  }
+});
+
+test('crane hydraulic barrels remain rigid at fixed pins and rods remain rigid at moving boom pins', async () => {
+  const asset = await model('crane'), defaults = defaultMachineryParameters(asset);
+  assert.equal(asset.config.type, 'crane'); if (asset.config.type !== 'crane') return;
+  const elevation = asset.config.elevation, source = asset.sourcePositions;
+  const pitch = (point: readonly number[], degrees: number) => {
+    const h = elevation.hinge_m, [kx, ky, kz] = elevation.axis, [x, y, z] = point.map((value, i) => value - h[i]);
+    const angle = (degrees - defaults.boom_elevation_deg) * Math.PI / 180, c = Math.cos(angle), s = Math.sin(angle), dot = x * kx + y * ky + z * kz;
+    return [h[0] + x * c + (ky * z - kz * y) * s + kx * dot * (1 - c), h[1] + y * c + (kz * x - kx * z) * s + ky * dot * (1 - c), h[2] + z * c + (kx * y - ky * x) * s + kz * dot * (1 - c)];
+  };
+  for (const angle of [0, 30, 60, 90]) {
+    const after = computeMachinerySourcePositions(asset, resolveMachineryParameters(asset, defaults, { boom_elevation_deg: angle }));
+    for (const cylinder of elevation.hydraulics) {
+      const attachment = pitch(cylinder.attachment_m, angle);
+      for (const [ranges, oldPin, newPin] of [[cylinder.barrel_vertex_ranges, cylinder.base_m, cylinder.base_m], [cylinder.rod_vertex_ranges, cylinder.attachment_m, attachment]] as const) {
+        const first = ranges[0][0];
+        for (const [start, count] of ranges) for (let vertex = start; vertex < start + count; vertex++) {
+          near(Math.hypot(...[0, 1, 2].map(axis => after[vertex * 3 + axis] - newPin[axis])), Math.hypot(...[0, 1, 2].map(axis => source[vertex * 3 + axis] - oldPin[axis])), 1e-12);
+          near(Math.hypot(...[0, 1, 2].map(axis => after[vertex * 3 + axis] - after[first * 3 + axis])), Math.hypot(...[0, 1, 2].map(axis => source[vertex * 3 + axis] - source[first * 3 + axis])), 1e-12);
+        }
+      }
+    }
+  }
+});
+
+test('crane extension fixes winch and base-boom cable guide while elevation composes with slew and scale', async () => {
+  const asset = await model('crane'), defaults = defaultMachineryParameters(asset);
+  assert.equal(asset.config.type, 'crane'); if (asset.config.type !== 'crane') return;
+  const elevation = asset.config.elevation;
+  const extended = resolveMachineryParameters(asset, defaults, { boom_length_m: 5 }, { proportional: false });
+  const extensionGeometry = computeMachinerySourcePositions(asset, extended);
+  for (const vertex of elevation.rigging_extension_fixed_vertex_indices) for (let axis = 0; axis < 3; axis++) assert.equal(extensionGeometry[vertex * 3 + axis], asset.sourcePositions[vertex * 3 + axis]);
+  const pitched = resolveMachineryParameters(asset, extended, { boom_elevation_deg: 30 }, { proportional: false });
+  const before = computeMachinerySourcePositions(asset, pitched);
+  for (const vertex of elevation.rigging_fixed_vertex_indices) for (let axis = 0; axis < 3; axis++) assert.equal(before[vertex * 3 + axis], asset.sourcePositions[vertex * 3 + axis]);
+  const combined = resolveMachineryParameters(asset, pitched, { boom_rotation_deg: 90, overall_scale: 2 }, { proportional: false });
+  const after = computeMachinerySourcePositions(asset, combined), anchor = asset.config.reference_dimensions.anchor_m, [cx, , cz] = asset.config.rotation.pivot_m;
+  assert.equal(combined.boom_elevation_deg, 30); assert.equal(combined.boom_rotation_deg, 90); assert.equal(combined.boom_length_m, 10);
+  for (const [start, count] of asset.config.rotation.vertex_ranges) for (let vertex = start; vertex < start + count; vertex++) {
+    near(after[vertex * 3], anchor[0] + 2 * (cx - (before[vertex * 3 + 2] - cz) - anchor[0]), 1e-12);
+    near(after[vertex * 3 + 1], anchor[1] + 2 * (before[vertex * 3 + 1] - anchor[1]), 1e-12);
+    near(after[vertex * 3 + 2], anchor[2] + 2 * (cz + (before[vertex * 3] - cx) - anchor[2]), 1e-12);
+  }
+});
+
+test('crane posed total-height edits reach requested height and legacy elevation restores exact source', async () => {
+  const asset = await model('crane'), defaults = defaultMachineryParameters(asset), legacy = { ...defaults }; delete legacy.boom_elevation_deg;
+  assert.deepEqual(resolveMachineryParameters(asset, legacy, {}), defaults);
+  assert.deepEqual(computeMachinerySourcePositions(asset, legacy), asset.sourcePositions);
+  for (const angle of [0, 30, 60, 90]) for (const proportional of [true, false]) {
+    const posed = resolveMachineryParameters(asset, defaults, { boom_elevation_deg: angle, boom_rotation_deg: 137 });
+    const resized = resolveMachineryParameters(asset, posed, { overall_height_m: 7 }, { proportional });
+    assert.equal(resized.boom_elevation_deg, angle); assert.equal(resized.boom_rotation_deg, 137);
+    near(resized.overall_height_m, 7); near(computeMachineryGeometry(asset, resized).bounds.size[1], 7);
+    assert.equal(originalMachineryProportionsMaintained(asset, resized), true);
+  }
+  for (const value of [-1, 90.001, 360, NaN, Infinity, null, '', true, [], {}]) assert.throws(() => resolveMachineryParameters(asset, defaults, { boom_elevation_deg: value }), /0 至 90/);
+  assert.deepEqual(computeMachinerySourcePositions(asset, defaultMachineryParameters(asset)), asset.sourcePositions);
+});
+
+test('invalid elevation baseline, group overlap and fixed cable anchor are rejected by the asset loader', async () => {
+  const original = JSON.parse(await readFile(new URL('crane/manifest.json', publicBase), 'utf8'));
+  for (const corrupt of [
+    (manifest: typeof original) => { manifest.config.elevation.original_degrees = 0; },
+    (manifest: typeof original) => { manifest.config.elevation.boom_vertex_ranges = manifest.config.elevation.hanging_vertex_ranges; },
+    (manifest: typeof original) => { manifest.config.elevation.rigging_fixed_vertex_indices = [0]; },
+  ]) {
+    const modified = structuredClone(original); corrupt(modified);
+    const fetcher: typeof fetch = async (input, options) => String(input).endsWith('manifest.json') ? new Response(JSON.stringify(modified)) : fileFetch(input, options);
+    await assert.rejects(loadMachineryAsset('crane', { baseUrl: publicBase.href, fetcher }), /elevation|anchor/);
   }
 });

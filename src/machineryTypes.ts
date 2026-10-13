@@ -21,7 +21,9 @@ export type MachineryMetadata = {
   proportional: boolean;
   /** Complete resolved parameter set. Distances are metres; overall_scale is a multiplier.
    * Crane boom_rotation_deg is clockwise degrees relative to the source boom pose in [0, 360),
-   * independent of the chassis placement.heading and overall_scale. Legacy omission means 0. */
+   * independent of the chassis placement.heading and overall_scale. Legacy omission means 0.
+   * Crane boom_elevation_deg is the boom centreline angle above horizontal in [0, 90];
+   * legacy omission preserves the source angle. These are visual pose controls, not rated limits. */
   parameters: Record<string, number>;
   placement: MachineryPlacement;
   visible: boolean;

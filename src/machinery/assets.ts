@@ -28,7 +28,7 @@ function definitions(value: unknown, label: string): Set<string> {
     if (typeof item.key !== 'string' || !/^[a-z][a-z0-9_]*$/.test(item.key) || keys.has(item.key)) fail(`${label}.key`);
     if (typeof item.label !== 'string' || (item.unit !== 'm' && item.unit !== '×' && item.unit !== '°')) fail(`${label}.label/unit`);
     if (item.unit === '°') {
-      if (item.key !== 'boom_rotation_deg' || item.original !== 0 || item.min !== 0 || item.max !== 360) fail(`${label}.rotation`);
+      if (item.min !== 0 || (item.key === 'boom_rotation_deg' ? item.original !== 0 || item.max !== 360 : item.key !== 'boom_elevation_deg' || item.max !== 90 || finite(item.original, `${label}.elevation`) < 0 || (item.original as number) > 90)) fail(`${label}.angle`);
     } else finite(item.original, `${label}.original`, true);
     if (item.min !== undefined) finite(item.min, `${label}.min`);
     if (item.max !== undefined) finite(item.max, `${label}.max`);
@@ -51,6 +51,7 @@ function parseConfig(value: unknown, type: MachineryModelType): MachineryConfig 
   if (Math.abs(anchor[1] - (reference.ground_y_m as number)) > 1e-10) fail('anchor must be on original ground');
   if (type === 'crane') {
     if (!keys.has('boom_rotation_deg') || localKeys.has('boom_rotation_deg')) fail('missing independent boom rotation metadata; reload current machinery assets');
+    if (!keys.has('boom_elevation_deg') || localKeys.has('boom_elevation_deg')) fail('missing independent boom elevation metadata; reload current machinery assets');
     const rotation = record(config.rotation, 'rotation');
     vector(rotation.pivot_m, 'rotation.pivot_m');
     if (!Array.isArray(rotation.vertex_ranges) || !rotation.vertex_ranges.length || rotation.vertex_ranges.length > 10000) fail('rotation.vertex_ranges');
@@ -68,6 +69,34 @@ function parseConfig(value: unknown, type: MachineryModelType): MachineryConfig 
     const start = finite(boom.extension_anchor_projection_m, 'boom extension anchor');
     if (!(root < start && start < tip)) fail('boom projection order');
     finite(boom.original_length_m, 'boom length', true);
+    const elevation = record(config.elevation, 'elevation'), elevationAxis = vector(elevation.axis, 'elevation.axis');
+    vector(elevation.hinge_m, 'elevation.hinge_m'); vector(elevation.hanging_attachment_m, 'elevation.hanging_attachment_m');
+    const originalElevation = finite(elevation.original_degrees, 'original elevation');
+    const angleDefinition = (config.parameters as Array<Record<string, unknown>>).find(item => item.key === 'boom_elevation_deg')!;
+    if (Math.abs(originalElevation - Math.asin(axis[1]) * 180 / Math.PI) > 1e-10 || originalElevation !== angleDefinition.original) fail('elevation baseline differs from source boom axis');
+    if (Math.abs(Math.hypot(...elevationAxis) - 1) > 1e-8 || Math.abs(elevationAxis[1]) > 1e-8 || Math.abs(elevationAxis.reduce((sum, value, i) => sum + value * axis[i], 0)) > 1e-8) fail('invalid elevation hinge axis');
+    const checkRanges = (value: unknown) => {
+      if (!Array.isArray(value) || !value.length || value.length > 10000) fail('elevation vertex ranges');
+      let end = 0;
+      for (const range of value) {
+        if (!Array.isArray(range) || range.length !== 2) fail('elevation vertex range');
+        const start = integer(range[0], 'elevation start'), count = integer(range[1], 'elevation count', 1);
+        if (start < end) fail('elevation overlapping vertex ranges');
+        end = start + count;
+      }
+    };
+    for (const key of ['boom_vertex_ranges', 'hanging_vertex_ranges', 'rigging_vertex_ranges']) checkRanges(elevation[key]);
+    for (const key of ['rope_upper_vertex_indices', 'rope_lower_vertex_indices', 'rigging_fixed_vertex_indices', 'rigging_extension_fixed_vertex_indices']) {
+      const indices = elevation[key];
+      if (!Array.isArray(indices) || !indices.length || indices.length > 10000 || new Set(indices).size !== indices.length) fail(`elevation.${key}`);
+      indices.forEach(index => integer(index, `elevation.${key}`));
+    }
+    if (!Array.isArray(elevation.hydraulics) || elevation.hydraulics.length !== 2) fail('elevation requires two hydraulic cylinders');
+    for (const raw of elevation.hydraulics) {
+      const cylinder = record(raw, 'elevation cylinder'), base = vector(cylinder.base_m, 'cylinder base'), attachment = vector(cylinder.attachment_m, 'cylinder attachment');
+      if (Math.hypot(...base.map((value, i) => value - attachment[i])) < 1e-9) fail('zero cylinder length');
+      checkRanges(cylinder.barrel_vertex_ranges); checkRanges(cylinder.rod_vertex_ranges);
+    }
     const outriggers = record(config.outriggers, 'outriggers');
     finite(outriggers.original_lateral_m, 'lateral spacing', true); finite(outriggers.original_longitudinal_m, 'longitudinal spacing', true);
     if (!Array.isArray(outriggers.legs) || outriggers.legs.length !== 4) fail('four outriggers required');
@@ -79,13 +108,13 @@ function parseConfig(value: unknown, type: MachineryModelType): MachineryConfig 
       if (finite(leg.beam_inner_z_m, 'inner beam') === finite(leg.beam_outer_z_m, 'outer beam')) fail('zero beam length');
     });
   } else if (type === 'pile_rig') {
-    if (keys.has('boom_rotation_deg')) fail('rotation is only supported by crane');
+    if (keys.has('boom_rotation_deg') || keys.has('boom_elevation_deg')) fail('crane angles are only supported by crane');
     if (!localKeys.has('total_height_m')) fail('missing pile height');
     for (const key of ['default_total_height_m', 'fixed_bottom_height_m', 'top_head_height_m', 'adjustable_default_span_m']) finite(config[key], key, true);
     finite(config.ground_y_m, 'pile ground'); finite(config.fixed_bottom_upper_y_m, 'pile platform');
     const total = (config.fixed_bottom_height_m as number) + (config.top_head_height_m as number) + (config.adjustable_default_span_m as number);
     if (Math.abs(total - (config.default_total_height_m as number)) > 1e-8) fail('pile height partition');
-  } else if (localKeys.size || keys.has('boom_rotation_deg')) fail('excavator has no verified independent joint controls');
+  } else if (localKeys.size || keys.has('boom_rotation_deg') || keys.has('boom_elevation_deg')) fail('excavator has no verified independent joint controls');
   return value as MachineryConfig;
 }
 
@@ -177,6 +206,27 @@ export async function loadMachineryAsset(id: MachineryModelId, options: Machiner
     for (let i = 0; i < indices.length; i += 3) {
       if (rotating[indices[i]] !== rotating[indices[i + 1]] || rotating[indices[i]] !== rotating[indices[i + 2]]) fail('rotation splits connected triangle');
     }
+    const elevation = manifest.config.elevation, groups = new Uint8Array(manifest.vertexCount);
+    const mark = (index: number, group: number) => {
+      if (index >= manifest.vertexCount || groups[index] || !rotating[index]) fail('elevation group overlaps, leaves upperworks or exceeds vertex array');
+      groups[index] = group;
+    };
+    const markRanges = (ranges: readonly (readonly [number, number])[], group: number) => {
+      for (const [start, count] of ranges) {
+        if (start + count > manifest.vertexCount) fail('elevation vertex range outside array');
+        for (let index = start; index < start + count; index++) mark(index, group);
+      }
+    };
+    markRanges(elevation.boom_vertex_ranges, 1); markRanges(elevation.hanging_vertex_ranges, 2);
+    elevation.rope_upper_vertex_indices.forEach(index => mark(index, 3)); elevation.rope_lower_vertex_indices.forEach(index => mark(index, 3));
+    markRanges(elevation.rigging_vertex_ranges, 4);
+    for (const index of elevation.rigging_fixed_vertex_indices) if (groups[index] !== 4) fail('fixed cable anchor outside rigging');
+    for (const index of elevation.rigging_extension_fixed_vertex_indices) if (groups[index] !== 4) fail('fixed cable extension anchor outside rigging');
+    elevation.hydraulics.forEach((cylinder, i) => { markRanges(cylinder.barrel_vertex_ranges, 5 + i * 2); markRanges(cylinder.rod_vertex_ranges, 6 + i * 2); });
+    for (let i = 0; i < indices.length; i += 3) {
+      if (groups[indices[i]] !== groups[indices[i + 1]] || groups[indices[i]] !== groups[indices[i + 2]]) fail('elevation splits connected rigid triangle');
+    }
+    for (let i = 0; i < partIds.length; i++) if (partIds[i] > 0 && partIds[i] < 4 && !groups[i]) fail('elevation omits boom, hook or rigging');
   }
   return { id, name: manifest.name, type: manifest.type, version: manifest.version, config: manifest.config, sourcePositions, indices, partIds, palette, faceColorIndices };
 }

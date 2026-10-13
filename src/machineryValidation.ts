@@ -2,7 +2,7 @@ import { MACHINERY_ASSET_IDS, MACHINERY_ASSET_VERSION, type MachineryAssetId, ty
 
 /** Source geometry measurements for this asset version, not manufacturer specifications. */
 export const MACHINERY_PARAMETER_DEFAULTS: Readonly<Record<MachineryAssetId, Readonly<Record<string, number>>>> = {
-  crane: { overall_scale: 1, overall_height_m: 3.236115124958876, body_height_m: 0.34396821030206226, boom_length_m: 3.065900560376245, boom_rotation_deg: 0, outrigger_lateral_m: 0.5799999999999923, outrigger_longitudinal_m: 0.47520002508163417 },
+  crane: { overall_scale: 1, overall_height_m: 3.236115124958876, body_height_m: 0.34396821030206226, boom_length_m: 3.065900560376245, boom_rotation_deg: 0, boom_elevation_deg: 69.80598827502023, outrigger_lateral_m: 0.5799999999999923, outrigger_longitudinal_m: 0.47520002508163417 },
   pile: { overall_scale: 1, body_height_m: 0.3334010813725085, total_height_m: 1.9759868909710676 },
   excavator: { overall_scale: 1, overall_height_m: 5.40582724161427, body_height_m: 3.04186663301146 },
 };
@@ -35,7 +35,8 @@ function matching(actual: number, expected: number, field: string) {
 }
 
 /** Pure shared schema validation; returns a detached value without coercing coordinates or sizes.
- * Legacy crane records may omit the new rotation angle; only that missing field defaults to zero.
+ * Legacy crane records may omit either angle: rotation defaults to zero and elevation to the
+ * source boom's asin(axis.y), preserving the original model pose rather than making it horizontal.
  * Reading such records never rewrites the stored equipment record or its history.
  * proportional changes future editing, so a saved independent pose remains legal in either mode.
  * Crane's displayed total height is a derived mesh measurement; full bounds are recomputed by
@@ -50,13 +51,17 @@ export function validateMachineryMetadata(value: unknown): MachineryMetadata {
   requireValue(typeof v.proportional === "boolean", "proportional", "联动模式必须为布尔值");
   requireValue(typeof v.visible === "boolean", "visible", "可见状态必须为布尔值");
   const incoming = object(v.parameters, "parameters"), defaults = MACHINERY_PARAMETER_DEFAULTS[assetId];
-  const legacyCrane = assetId === "crane" && !Object.hasOwn(incoming, "boom_rotation_deg");
-  exactKeys(incoming, Object.keys(defaults).filter(key => !legacyCrane || key !== "boom_rotation_deg"), "parameters");
+  const legacyAngles = new Set(assetId === "crane" ? ["boom_rotation_deg", "boom_elevation_deg"].filter(key => !Object.hasOwn(incoming, key)) : []);
+  exactKeys(incoming, Object.keys(defaults).filter(key => !legacyAngles.has(key)), "parameters");
   const parameters: Record<string, number> = {};
   for (const key of Object.keys(defaults)) {
     if (key === "boom_rotation_deg") {
-      parameters[key] = numeric(legacyCrane ? 0 : incoming[key], `parameters.${key}`, 0, 360);
+      parameters[key] = numeric(legacyAngles.has(key) ? defaults[key] : incoming[key], `parameters.${key}`, 0, 360);
       requireValue(parameters[key] < 360, `parameters.${key}`, "吊臂回转角须为 0（含）至 360（不含）的度数");
+      continue;
+    }
+    if (key === "boom_elevation_deg") {
+      parameters[key] = numeric(legacyAngles.has(key) ? defaults[key] : incoming[key], `parameters.${key}`, 0, 90);
       continue;
     }
     const limits = key === "overall_scale" ? MACHINERY_NUMERIC_LIMITS.scale : MACHINERY_NUMERIC_LIMITS.dimension;

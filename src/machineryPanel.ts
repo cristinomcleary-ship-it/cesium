@@ -3,7 +3,7 @@ import type { ManagementRecord } from "./managementTypes";
 import { MACHINERY_ASSET_VERSION } from "./machineryTypes";
 import {
   MACHINERY_CATALOG, loadMachineryAsset, defaultMachineryParameters,
-  resolveMachineryParameters,
+  resolveMachineryParameters, computeMachineryGeometry,
 } from "./machinery/index";
 import { MachineryScene, readMachineryState, type MachineryState, type MachineryPlacementPick } from "./machineryScene";
 import "./machineryPanel.css";
@@ -11,6 +11,7 @@ import "./machineryPanel.css";
 type Asset = Awaited<ReturnType<typeof loadMachineryAsset>>;
 type Placement = MachineryState["placement"];
 type Draft = Omit<MachineryState, "placement"> & { placement?: Placement };
+type BoomAngle = "boom_rotation_deg" | "boom_elevation_deg";
 
 export type MachineryPanelContext = {
   projectId: string;
@@ -81,7 +82,9 @@ export class MachineryPanel {
         <p class="mp-help" data-role="empty">先从机械资源台账中选择一条记录。</p>
         <fieldset data-role="editor"><legend>模型与参数</legend>
           <label class="mp-label">模型类型<select data-role="asset"></select></label>
-          <div class="mp-boom-rotation" data-role="boom-rotation" hidden></div>
+          <div class="mp-boom-rotation mp-boom-angle" data-role="boom-rotation" hidden></div>
+          <div class="mp-boom-elevation mp-boom-angle" data-role="boom-elevation" hidden></div>
+          <p class="mp-clearance-warning" data-role="boom-clearance-warning" role="status" hidden></p>
           <div class="mp-mode"><label><input type="checkbox" data-role="proportional" checked>保持原比例联动</label><p data-role="mode-note">最后修改的尺寸决定整机比例，其他尺寸同步更新。</p></div>
           <div class="mp-parameters" data-role="parameters"></div>
           <button type="button" data-action="reset">恢复原尺寸</button>
@@ -119,10 +122,10 @@ export class MachineryPanel {
     this.root.addEventListener("input", event => {
       const input = event.target as HTMLInputElement;
       if (!this.editable || this.busy || this.loading) return;
-      if (input.dataset.role === "boom-rotation-slider") {
-        this.setBoomRotationInput(numberValue(input));
+      if (input.dataset.role === "boom-rotation-slider" || input.dataset.role === "boom-elevation-slider") {
+        this.setBoomAngleInput(input.dataset.role === "boom-rotation-slider" ? "boom_rotation_deg" : "boom_elevation_deg", numberValue(input));
       } else if (input.dataset.parameter) {
-        if (input.dataset.parameter === "boom_rotation_deg") this.syncBoomRotationSlider(numberValue(input));
+        if (input.dataset.parameter === "boom_rotation_deg" || input.dataset.parameter === "boom_elevation_deg") this.syncBoomAngleSlider(input.dataset.parameter, numberValue(input));
         this.editOrder = this.editOrder.filter(key => key !== input.dataset.parameter);
         this.editOrder.push(input.dataset.parameter);
         this.dirty = true; this.queuePreview();
@@ -276,14 +279,15 @@ export class MachineryPanel {
   private renderMode() {
     this.find<HTMLInputElement>('[data-role="proportional"]').checked = this.draft?.proportional ?? true;
     this.find<HTMLElement>('[data-role="mode-note"]').textContent = this.draft?.proportional
-      ? "联动：最后修改的尺寸决定整机原比例，其他尺寸同步更新。" + (this.draft.assetId === "crane" ? "吊臂回转角独立调整。" : "")
+      ? "联动：最后修改的尺寸决定整机原比例，其他尺寸同步更新。" + (this.draft.assetId === "crane" ? "吊臂回转角与仰角独立调整。" : "")
       : "独立调整：按各项定义修改部件或整机。";
   }
   private renderEditor() {
     const list = this.find<HTMLElement>('[data-role="parameters"]'); list.replaceChildren();
     const rotation = this.find<HTMLElement>('[data-role="boom-rotation"]'); rotation.replaceChildren(); rotation.hidden = true;
+    const elevation = this.find<HTMLElement>('[data-role="boom-elevation"]'); elevation.replaceChildren(); elevation.hidden = true;
     this.find<HTMLSelectElement>('[data-role="asset"]').value = this.draft?.assetId || MACHINERY_CATALOG[0].id;
-    this.find<HTMLElement>('[data-role="dimensions-help"]').textContent = "切换模式保留当前外形，后续编辑按所选规则调整。尺寸按模型原始米制数据输入。" + (this.draft?.assetId === "crane" ? "恢复原尺寸保留吊臂回转角。" : "");
+    this.find<HTMLElement>('[data-role="dimensions-help"]').textContent = "切换模式保留当前外形，后续编辑按所选规则调整。尺寸按模型原始米制数据输入。" + (this.draft?.assetId === "crane" ? "恢复原尺寸保留吊臂回转角与仰角，整机高度随当前姿态更新。" : "");
     if (this.asset && this.draft) for (const definition of this.asset.config.parameters) {
       const label = document.createElement("label"); label.className = "mp-label";
       const title = document.createElement("span"); title.textContent = definition.label + "（" + definition.unit + "）";
@@ -292,19 +296,26 @@ export class MachineryPanel {
       if (definition.min !== undefined) input.min = String(definition.min);
       const note = document.createElement("small"); note.textContent = "原始值 " + definition.original + " " + definition.unit + (definition.description ? " · " + definition.description : "");
       label.append(title, input, note);
-      if (definition.key === "boom_rotation_deg") {
-        rotation.hidden = false; input.min = "0"; input.max = "360";
-        title.textContent = "吊臂回转角（°）";
-        note.textContent = "0° 为原模型方向，俯视顺时针为正；底盘与支腿不转。";
-        const slider = document.createElement("input"); slider.type = "range"; slider.min = "0"; slider.max = "360"; slider.step = "1";
-        slider.dataset.role = "boom-rotation-slider"; slider.value = input.value; slider.setAttribute("aria-label", "吊臂回转角滑块");
+      if (definition.key === "boom_rotation_deg" || definition.key === "boom_elevation_deg") {
+        const isRotation = definition.key === "boom_rotation_deg", container = isRotation ? rotation : elevation;
+        const maximum = isRotation ? "360" : "90";
+        container.hidden = false; input.min = "0"; input.max = maximum;
+        title.textContent = isRotation ? "吊臂回转角（°）" : "吊臂仰角（°）";
+        note.textContent = isRotation ? "0° 为原模型方向，俯视顺时针为正；底盘与支腿不转。"
+          : "0° 水平，90° 竖直；底盘与支腿不动。原仰角 " + Number(definition.original.toFixed(2)) + "°。";
+        const slider = document.createElement("input"); slider.type = "range"; slider.min = "0"; slider.max = maximum; slider.step = isRotation ? "1" : "0.1";
+        slider.dataset.role = isRotation ? "boom-rotation-slider" : "boom-elevation-slider";
+        slider.value = input.value; slider.setAttribute("aria-label", isRotation ? "吊臂回转角滑块" : "吊臂仰角滑块");
         const ticks = document.createElement("div"); ticks.className = "mp-angle-ticks"; ticks.setAttribute("aria-hidden", "true");
-        for (const tick of ["0°", "180°", "360°"]) { const text = document.createElement("span"); text.textContent = tick; ticks.append(text); }
+        for (const tick of isRotation ? ["0°", "180°", "360°"] : ["0° 水平", "45°", "90° 竖直"]) { const text = document.createElement("span"); text.textContent = tick; ticks.append(text); }
         const actions = document.createElement("div"); actions.className = "mp-actions mp-angle-actions";
-        for (const [action, text] of [["rotate-boom-left", "逆时针 15°"], ["rotate-boom-right", "顺时针 15°"], ["reset-boom-rotation", "吊臂回正"]]) {
+        const controls = isRotation
+          ? [["rotate-boom-left", "逆时针 15°"], ["rotate-boom-right", "顺时针 15°"], ["reset-boom-rotation", "吊臂回正"]]
+          : [["lower-boom", "降低 5°"], ["raise-boom", "抬高 5°"], ["reset-boom-elevation", "恢复原仰角"]];
+        for (const [action, text] of controls) {
           const button = document.createElement("button"); button.type = "button"; button.dataset.action = action; button.textContent = text; actions.append(button);
         }
-        rotation.append(label, slider, ticks, actions);
+        container.append(label, slider, ticks, actions);
       } else list.append(label);
     }
     for (const input of this.root.querySelectorAll<HTMLInputElement>("[data-placement]")) {
@@ -313,7 +324,7 @@ export class MachineryPanel {
     }
     this.find<HTMLInputElement>('[data-role="visible"]').checked = this.draft?.visible ?? true;
     this.find<HTMLElement>('[data-role="position-source"]').textContent = this.positionSource;
-    this.renderMode(); this.updateControls();
+    this.updateBoomClearance(); this.renderMode(); this.updateControls();
   }
   private updateControls() {
     const available = !!this.asset && !!this.draft;
@@ -341,10 +352,11 @@ export class MachineryPanel {
     for (const definition of this.asset.config.parameters) {
       const input = Array.from(this.root.querySelectorAll<HTMLInputElement>("[data-parameter]")).find(item => item.dataset.parameter === definition.key)!;
       const value = numberValue(input);
-      const isRotation = definition.key === "boom_rotation_deg";
-      const valid = Number.isFinite(value) && (isRotation ? value >= 0 && value <= 360 : value > 0 && (definition.min === undefined || (definition.min_exclusive ? value > definition.min : value >= definition.min)));
+      const isAngle = definition.key === "boom_rotation_deg" || definition.key === "boom_elevation_deg";
+      const angleMaximum = definition.key === "boom_rotation_deg" ? 360 : 90;
+      const valid = Number.isFinite(value) && (isAngle ? value >= 0 && value <= angleMaximum : value > 0 && (definition.min === undefined || (definition.min_exclusive ? value > definition.min : value >= definition.min)));
       input.setAttribute("aria-invalid", String(!valid));
-      if (!valid && isRotation) { this.message("吊臂回转角请输入 0 至 360° 的有效角度。", true); return false; }
+      if (!valid && isAngle) { this.message(definition.label + "请输入 0 至 " + angleMaximum + "° 的有效角度。", true); return false; }
       if (!valid) { this.message(definition.label + "请输入有效正数" + (definition.min === undefined ? "。" : "，必须" + (definition.min_exclusive ? "大于 " : "不小于 ") + definition.min + " " + definition.unit + "。"), true); return false; }
       values[definition.key] = value;
     }
@@ -354,7 +366,9 @@ export class MachineryPanel {
       if (Object.keys(changes).length) {
         this.draft.parameters = resolveMachineryParameters(this.asset, this.draft.parameters, changes, { proportional: this.draft.proportional });
         for (const input of this.root.querySelectorAll<HTMLInputElement>("[data-parameter]")) input.value = String(this.draft.parameters[input.dataset.parameter!]);
-        this.syncBoomRotationSlider(this.draft.parameters.boom_rotation_deg);
+        this.syncBoomAngleSlider("boom_rotation_deg", this.draft.parameters.boom_rotation_deg);
+        this.syncBoomAngleSlider("boom_elevation_deg", this.draft.parameters.boom_elevation_deg);
+        this.updateBoomClearance();
       }
       this.editOrder = [];
     } catch (error) { this.message(errorText(error), true); return false; }
@@ -376,16 +390,27 @@ export class MachineryPanel {
     this.find<HTMLElement>('[data-role="position-source"]').textContent = this.positionSource;
     return true;
   }
-  private syncBoomRotationSlider(value: number) {
-    const slider = this.root.querySelector<HTMLInputElement>('[data-role="boom-rotation-slider"]');
-    if (slider && Number.isFinite(value) && value >= 0 && value <= 360) slider.value = String(value);
+  private updateBoomClearance() {
+    const note = this.find<HTMLElement>('[data-role="boom-clearance-warning"]');
+    note.hidden = true; note.textContent = "";
+    if (!this.asset || !this.draft || this.draft.assetId !== "crane") return;
+    const lowest = computeMachineryGeometry(this.asset, this.draft.parameters).bounds.min[1];
+    if (lowest < -0.005) {
+      note.hidden = false;
+      note.textContent = "模型部件低于站位基准 " + (-lowest).toFixed(2) + " m，请核对吊臂姿态。此提示仅对比站位基准，不代表已检测实际地形。";
+    }
   }
-  private setBoomRotationInput(value: number) {
+  private syncBoomAngleSlider(key: BoomAngle, value: number) {
+    const isRotation = key === "boom_rotation_deg";
+    const slider = this.root.querySelector<HTMLInputElement>(isRotation ? '[data-role="boom-rotation-slider"]' : '[data-role="boom-elevation-slider"]');
+    if (slider && Number.isFinite(value) && value >= 0 && value <= (isRotation ? 360 : 90)) slider.value = String(value);
+  }
+  private setBoomAngleInput(key: BoomAngle, value: number) {
     if (!this.editable || this.busy || this.loading || this.draft?.assetId !== "crane") return;
-    const input = this.root.querySelector<HTMLInputElement>('[data-parameter="boom_rotation_deg"]');
+    const input = this.root.querySelector<HTMLInputElement>('[data-parameter="' + key + '"]');
     if (!input) return;
-    input.value = String(value); this.syncBoomRotationSlider(value);
-    this.editOrder = this.editOrder.filter(key => key !== "boom_rotation_deg"); this.editOrder.push("boom_rotation_deg");
+    input.value = String(value); this.syncBoomAngleSlider(key, value);
+    this.editOrder = this.editOrder.filter(item => item !== key); this.editOrder.push(key);
     this.dirty = true; this.queuePreview();
   }
   private queuePreview() {
@@ -476,13 +501,29 @@ export class MachineryPanel {
       if (!input) return;
       const current = numberValue(input);
       if (action !== "reset-boom-rotation" && (!Number.isFinite(current) || current < 0 || current > 360)) { this.message("请先输入 0 至 360° 的有效吊臂回转角。", true); input.focus(); return; }
-      this.setBoomRotationInput(action === "reset-boom-rotation" ? 0 : ((current + (action === "rotate-boom-left" ? -15 : 15)) % 360 + 360) % 360);
+      this.setBoomAngleInput("boom_rotation_deg", action === "reset-boom-rotation" ? 0 : ((current + (action === "rotate-boom-left" ? -15 : 15)) % 360 + 360) % 360);
+    } else if (["lower-boom", "raise-boom", "reset-boom-elevation"].includes(action) && this.asset && this.draft?.assetId === "crane" && this.editable && !this.busy && !this.loading) {
+      const input = this.root.querySelector<HTMLInputElement>('[data-parameter="boom_elevation_deg"]');
+      if (!input) return;
+      const current = numberValue(input);
+      if (action !== "reset-boom-elevation" && (!Number.isFinite(current) || current < 0 || current > 90)) { this.message("请先输入 0 至 90° 的有效吊臂仰角。", true); input.focus(); return; }
+      const original = defaultMachineryParameters(this.asset).boom_elevation_deg;
+      this.setBoomAngleInput("boom_elevation_deg", action === "reset-boom-elevation" ? original : Math.max(0, Math.min(90, current + (action === "lower-boom" ? -5 : 5))));
     } else if (action === "reset" && this.asset && this.draft && this.editable) {
-      const rotationInput = this.root.querySelector<HTMLInputElement>('[data-parameter="boom_rotation_deg"]');
-      const rotationValue = rotationInput ? numberValue(rotationInput) : 0;
-      if (rotationInput && (!Number.isFinite(rotationValue) || rotationValue < 0 || rotationValue > 360)) { this.message("请先输入 0 至 360° 的有效吊臂回转角；恢复原尺寸会保留该角度。", true); rotationInput.focus(); return; }
-      this.draft.parameters = defaultMachineryParameters(this.asset);
-      if (this.draft.assetId === "crane") this.draft.parameters.boom_rotation_deg = rotationValue % 360;
+      const preservedAngles: Partial<Record<BoomAngle, number>> = {};
+      for (const [key, maximum] of [["boom_rotation_deg", 360], ["boom_elevation_deg", 90]] as const) {
+        const input = this.root.querySelector<HTMLInputElement>('[data-parameter="' + key + '"]');
+        if (!input) continue;
+        const value = numberValue(input);
+        if (!Number.isFinite(value) || value < 0 || value > maximum) { this.message("请先输入有效的吊臂角度；恢复原尺寸会保留当前回转角与仰角。", true); input.focus(); return; }
+        preservedAngles[key] = value;
+      }
+      try {
+        const defaults = defaultMachineryParameters(this.asset);
+        this.draft.parameters = this.draft.assetId === "crane"
+          ? resolveMachineryParameters(this.asset, defaults, preservedAngles, { proportional: false })
+          : defaults;
+      } catch (error) { this.message(errorText(error), true); return; }
       this.draft.proportional = true; this.editOrder = []; this.dirty = true;
       this.renderEditor(); void this.preview();
     } else if (action === "pick") this.startPicking();
