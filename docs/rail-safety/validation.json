@@ -1,0 +1,636 @@
+{
+  "classification": "actual-original-workbench-rail-safety-ui-with-isolated-data",
+  "renderer": "Real Chromium WebGL2, with SwiftShader when selected by supplied launch options",
+  "startedAt": "2026-10-13T08:34:15.621Z",
+  "dataDir": "/workspace/scratch/9597ccec8aac/cesium-integration/tmp/rail-safety-browser-UmDUSh",
+  "productionDataReadOrModified": false,
+  "fixtureClassification": {
+    "api": "Equipment resources, model poses, authorization accounts and an explicitly simulated concurrent editor update",
+    "ui": "Rail-safety guards, independent stations, responsibility areas, limits and machine associations",
+    "limitations": [
+      "Synthetic WGS84 test worksite; no production data",
+      "No surveyed terrain or independent engineering control points",
+      "Geometric functionality only; field accuracy and tipping probability are not certified"
+    ]
+  },
+  "checks": [
+    {
+      "id": "root-entry",
+      "title": "Original workbench opens the rail-safety module using the existing Viewer",
+      "status": "passed",
+      "startedAt": "2026-10-13T08:34:36.856Z",
+      "evidence": {
+        "path": "/",
+        "singleCanvas": true,
+        "workerActive": true,
+        "machineCount": 1,
+        "noSelectedLimitStatus": [
+          "unknown"
+        ]
+      },
+      "finishedAt": "2026-10-13T08:34:40.323Z"
+    },
+    {
+      "id": "guard-authoring",
+      "title": "User creates a named guard, independent station, responsibility polygon and machine assignment",
+      "status": "passed",
+      "startedAt": "2026-10-13T08:34:40.323Z",
+      "evidence": {
+        "id": "4396fe99-8449-4f02-af71-2353eee9f953",
+        "actualScenePickedStation": {
+          "longitude": 116.39087999685547,
+          "latitude": 39.907030002304346,
+          "height": -0.0002866549888671058
+        },
+        "userEnteredStation": {
+          "longitude": 116.39085,
+          "latitude": 39.907,
+          "height": 0
+        },
+        "vertexCount": 4,
+        "resourceIds": [
+          "rail-browser-crane",
+          "rail-browser-pile"
+        ]
+      },
+      "finishedAt": "2026-10-13T08:35:04.699Z"
+    },
+    {
+      "id": "limit-authoring",
+      "title": "User creates railway safety polygons with product authoring controls",
+      "status": "passed",
+      "startedAt": "2026-10-13T08:35:04.700Z",
+      "evidence": {
+        "sceneDrawnLimit": {
+          "name": "铁路设备安全限界 · 近侧",
+          "definition": {
+            "schemaVersion": 1,
+            "kind": "limit",
+            "polygon": [
+              {
+                "longitude": 116.39105999750157,
+                "latitude": 39.906750001235615,
+                "height": -0.0002877426483544133
+              },
+              {
+                "longitude": 116.391159997926,
+                "latitude": 39.906750001235615,
+                "height": -0.000290520140852278
+              },
+              {
+                "longitude": 116.39115999586487,
+                "latitude": 39.90725000625243,
+                "height": -0.0005713890516069505
+              },
+              {
+                "longitude": 116.391059995041,
+                "latitude": 39.90725000631875,
+                "height": -0.0005784366015942347
+              }
+            ]
+          },
+          "id": "63fece38-5c2b-42e4-944e-26e9fa20e0f2",
+          "projectId": "safety:project",
+          "revision": 1,
+          "status": "active",
+          "createdAt": "2026-10-13T08:35:26.001Z",
+          "updatedAt": "2026-10-13T08:35:26.001Z",
+          "createdBy": "local-owner"
+        },
+        "coordinateEnteredLimit": {
+          "name": "信号设备保护范围 · 远侧",
+          "definition": {
+            "schemaVersion": 1,
+            "kind": "limit",
+            "polygon": [
+              {
+                "longitude": 116.39166,
+                "latitude": 39.90685,
+                "height": 0
+              },
+              {
+                "longitude": 116.39173000000001,
+                "latitude": 39.90685,
+                "height": 0
+              },
+              {
+                "longitude": 116.39173000000001,
+                "latitude": 39.907149999999994,
+                "height": 0
+              },
+              {
+                "longitude": 116.39166,
+                "latitude": 39.907149999999994,
+                "height": 0
+              }
+            ]
+          },
+          "id": "b16e8c11-1b11-463b-806f-ab179c0a5fb7",
+          "projectId": "safety:project",
+          "revision": 1,
+          "status": "active",
+          "createdAt": "2026-10-13T08:35:32.226Z",
+          "updatedAt": "2026-10-13T08:35:32.226Z",
+          "createdBy": "local-owner"
+        }
+      },
+      "finishedAt": "2026-10-13T08:35:37.572Z"
+    },
+    {
+      "id": "machine-association",
+      "title": "User selects multiple limits for an existing machine and saves the configuration",
+      "status": "passed",
+      "startedAt": "2026-10-13T08:35:37.572Z",
+      "evidence": {
+        "name": "吊机 01",
+        "definition": {
+          "schemaVersion": 1,
+          "kind": "machine",
+          "resourceId": "rail-browser-crane",
+          "selectedLimitIds": [
+            "63fece38-5c2b-42e4-944e-26e9fa20e0f2",
+            "b16e8c11-1b11-463b-806f-ab179c0a5fb7"
+          ],
+          "inspectionStatus": "unreported"
+        },
+        "id": "f6475c0f-7463-4f59-8f67-56aff503c404",
+        "projectId": "safety:project",
+        "revision": 1,
+        "status": "active",
+        "createdAt": "2026-10-13T08:35:41.331Z",
+        "updatedAt": "2026-10-13T08:35:41.331Z",
+        "createdBy": "local-owner"
+      },
+      "finishedAt": "2026-10-13T08:35:42.056Z"
+    },
+    {
+      "id": "potential-intrusion",
+      "title": "The actual scene renders a collapse envelope and red geometric intersections",
+      "status": "passed",
+      "startedAt": "2026-10-13T08:35:42.056Z",
+      "evidence": {
+        "result": {
+          "resourceId": "rail-browser-crane",
+          "resourceName": "吊机 01",
+          "recordId": "f6475c0f-7463-4f59-8f67-56aff503c404",
+          "status": "overlap",
+          "label": "平面潜在侵限",
+          "message": "倾覆几何外包与用户定义限界存在平面重叠",
+          "draft": false,
+          "warnings": [
+            "支承来自当前模型支脚底面，需核对实际支腿落地情况与模型尺寸。",
+            "模型几何推算，未包含首次接触停止、吊载和地基变化，不作为机械稳定性或作业许可结论。",
+            "仅进行平面几何筛查；不代表三维碰撞判定或施工安全批准"
+          ],
+          "limits": [
+            {
+              "id": "63fece38-5c2b-42e4-944e-26e9fa20e0f2",
+              "name": "铁路设备安全限界 · 近侧",
+              "status": "overlap",
+              "distanceMeters": 0
+            },
+            {
+              "id": "b16e8c11-1b11-463b-806f-ab179c0a5fb7",
+              "name": "信号设备保护范围 · 远侧",
+              "status": "clear",
+              "distanceMeters": 41.244970073236885
+            }
+          ],
+          "guards": [
+            {
+              "id": "4396fe99-8449-4f02-af71-2353eee9f953",
+              "name": "张师傅 · 东侧防护",
+              "known": true,
+              "containsStation": true,
+              "message": "仅判断机械站位；不代表全部作业范围已有防护"
+            }
+          ],
+          "signature": "05225691",
+          "maxDistanceMeters": 15.634929813083833,
+          "supportSource": "model-outriggers",
+          "nearestDistanceMeters": 0
+        },
+        "redIntersectionEntities": [
+          "rail-safety:machine:rail-browser-crane:intersection:63fece38-5c2b-42e4-944e-26e9fa20e0f2:0"
+        ],
+        "actualEntityColors": [
+          [
+            1,
+            0.23529411764705882,
+            0.3137254901960784,
+            0.5
+          ]
+        ]
+      },
+      "finishedAt": "2026-10-13T08:35:48.186Z"
+    },
+    {
+      "id": "boundary-contact",
+      "title": "A user-entered limit tangent to the current envelope produces the contact state",
+      "status": "passed",
+      "startedAt": "2026-10-13T08:35:48.186Z",
+      "evidence": {
+        "tangentFixtureSource": "Current rendered envelope, entered through coordinate fields",
+        "result": {
+          "resourceId": "rail-browser-crane",
+          "resourceName": "吊机 01",
+          "recordId": "f6475c0f-7463-4f59-8f67-56aff503c404",
+          "status": "touching",
+          "label": "接触限界边界",
+          "message": "倾覆几何外包接触用户定义限界边界",
+          "draft": false,
+          "warnings": [
+            "支承来自当前模型支脚底面，需核对实际支腿落地情况与模型尺寸。",
+            "模型几何推算，未包含首次接触停止、吊载和地基变化，不作为机械稳定性或作业许可结论。",
+            "仅进行平面几何筛查；不代表三维碰撞判定或施工安全批准"
+          ],
+          "limits": [
+            {
+              "id": "3cae333d-ae06-4469-9837-69d10b30612f",
+              "name": "边界接触验收区域",
+              "status": "touching",
+              "distanceMeters": 0
+            }
+          ],
+          "guards": [
+            {
+              "id": "4396fe99-8449-4f02-af71-2353eee9f953",
+              "name": "张师傅 · 东侧防护",
+              "known": true,
+              "containsStation": true,
+              "message": "仅判断机械站位；不代表全部作业范围已有防护"
+            }
+          ],
+          "signature": "27238fed",
+          "maxDistanceMeters": 15.634929813083833,
+          "supportSource": "model-outriggers",
+          "nearestDistanceMeters": 0
+        },
+        "originalSelectedLimitsRestored": true
+      },
+      "finishedAt": "2026-10-13T08:36:09.528Z"
+    },
+    {
+      "id": "hidden-layer",
+      "title": "Hiding a limit changes rendering without clearing its risk evaluation",
+      "status": "passed",
+      "startedAt": "2026-10-13T08:36:09.528Z",
+      "evidence": {
+        "hiddenLimitNotRendered": true,
+        "resultUnchanged": true,
+        "selectedLimits": [
+          "63fece38-5c2b-42e4-944e-26e9fa20e0f2",
+          "b16e8c11-1b11-463b-806f-ab179c0a5fb7"
+        ]
+      },
+      "finishedAt": "2026-10-13T08:36:11.800Z"
+    },
+    {
+      "id": "pose-preview-cancel",
+      "title": "Actual machinery controls update collapse results before save and cancellation restores the saved result",
+      "status": "passed",
+      "startedAt": "2026-10-13T08:36:11.800Z",
+      "evidence": {
+        "before": {
+          "resourceId": "rail-browser-crane",
+          "resourceName": "吊机 01",
+          "recordId": "f6475c0f-7463-4f59-8f67-56aff503c404",
+          "status": "overlap",
+          "label": "平面潜在侵限",
+          "message": "倾覆几何外包与用户定义限界存在平面重叠",
+          "draft": false,
+          "warnings": [
+            "支承来自当前模型支脚底面，需核对实际支腿落地情况与模型尺寸。",
+            "模型几何推算，未包含首次接触停止、吊载和地基变化，不作为机械稳定性或作业许可结论。",
+            "仅进行平面几何筛查；不代表三维碰撞判定或施工安全批准"
+          ],
+          "limits": [
+            {
+              "id": "63fece38-5c2b-42e4-944e-26e9fa20e0f2",
+              "name": "铁路设备安全限界 · 近侧",
+              "status": "overlap",
+              "distanceMeters": 0
+            },
+            {
+              "id": "b16e8c11-1b11-463b-806f-ab179c0a5fb7",
+              "name": "信号设备保护范围 · 远侧",
+              "status": "clear",
+              "distanceMeters": 41.244970073236885
+            }
+          ],
+          "guards": [
+            {
+              "id": "4396fe99-8449-4f02-af71-2353eee9f953",
+              "name": "张师傅 · 东侧防护",
+              "known": true,
+              "containsStation": true,
+              "message": "仅判断机械站位；不代表全部作业范围已有防护"
+            }
+          ],
+          "signature": "9e4340ce",
+          "maxDistanceMeters": 15.634929813083833,
+          "supportSource": "model-outriggers",
+          "nearestDistanceMeters": 0
+        },
+        "preview": {
+          "resourceId": "rail-browser-crane",
+          "resourceName": "吊机 01",
+          "recordId": "f6475c0f-7463-4f59-8f67-56aff503c404",
+          "status": "overlap",
+          "label": "平面潜在侵限",
+          "message": "倾覆几何外包与用户定义限界存在平面重叠",
+          "draft": true,
+          "warnings": [
+            "支承来自当前模型支脚底面，需核对实际支腿落地情况与模型尺寸。",
+            "模型几何推算，未包含首次接触停止、吊载和地基变化，不作为机械稳定性或作业许可结论。",
+            "仅进行平面几何筛查；不代表三维碰撞判定或施工安全批准"
+          ],
+          "limits": [
+            {
+              "id": "63fece38-5c2b-42e4-944e-26e9fa20e0f2",
+              "name": "铁路设备安全限界 · 近侧",
+              "status": "overlap",
+              "distanceMeters": 0
+            },
+            {
+              "id": "b16e8c11-1b11-463b-806f-ab179c0a5fb7",
+              "name": "信号设备保护范围 · 远侧",
+              "status": "clear",
+              "distanceMeters": 36.16026334263361
+            }
+          ],
+          "guards": [
+            {
+              "id": "4396fe99-8449-4f02-af71-2353eee9f953",
+              "name": "张师傅 · 东侧防护",
+              "known": true,
+              "containsStation": true,
+              "message": "仅判断机械站位；不代表全部作业范围已有防护"
+            }
+          ],
+          "signature": "9fd28609",
+          "maxDistanceMeters": 20.66866178998591,
+          "supportSource": "model-outriggers",
+          "nearestDistanceMeters": 0
+        },
+        "restored": {
+          "resourceId": "rail-browser-crane",
+          "resourceName": "吊机 01",
+          "recordId": "f6475c0f-7463-4f59-8f67-56aff503c404",
+          "status": "overlap",
+          "label": "平面潜在侵限",
+          "message": "倾覆几何外包与用户定义限界存在平面重叠",
+          "draft": false,
+          "warnings": [
+            "支承来自当前模型支脚底面，需核对实际支腿落地情况与模型尺寸。",
+            "模型几何推算，未包含首次接触停止、吊载和地基变化，不作为机械稳定性或作业许可结论。",
+            "仅进行平面几何筛查；不代表三维碰撞判定或施工安全批准"
+          ],
+          "limits": [
+            {
+              "id": "63fece38-5c2b-42e4-944e-26e9fa20e0f2",
+              "name": "铁路设备安全限界 · 近侧",
+              "status": "overlap",
+              "distanceMeters": 0
+            },
+            {
+              "id": "b16e8c11-1b11-463b-806f-ab179c0a5fb7",
+              "name": "信号设备保护范围 · 远侧",
+              "status": "clear",
+              "distanceMeters": 41.244970073236885
+            }
+          ],
+          "guards": [
+            {
+              "id": "4396fe99-8449-4f02-af71-2353eee9f953",
+              "name": "张师傅 · 东侧防护",
+              "known": true,
+              "containsStation": true,
+              "message": "仅判断机械站位；不代表全部作业范围已有防护"
+            }
+          ],
+          "signature": "9e4340ce",
+          "maxDistanceMeters": 15.634929813083833,
+          "supportSource": "model-outriggers",
+          "nearestDistanceMeters": 0
+        },
+        "resourceNotSaved": true,
+        "animationFramesDuringPreview": {
+          "active": false,
+          "frames": 10,
+          "pendingFrames": 2
+        }
+      },
+      "finishedAt": "2026-10-13T08:36:28.230Z"
+    },
+    {
+      "id": "draft-navigation",
+      "title": "An unfinished protection draft blocks navigation until the user cancels it",
+      "status": "passed",
+      "startedAt": "2026-10-13T08:36:28.231Z",
+      "evidence": {
+        "navigationBlockedWithDraft": true,
+        "storedNameUnchanged": true,
+        "cancellationRestoresOriginalName": true
+      },
+      "finishedAt": "2026-10-13T08:36:31.810Z"
+    },
+    {
+      "id": "save-reload",
+      "title": "User-authored guard, limits and machine selections survive workbench reload",
+      "status": "passed",
+      "startedAt": "2026-10-13T08:36:31.811Z",
+      "evidence": {
+        "retainedRecordIds": [
+          "3cae333d-ae06-4469-9837-69d10b30612f",
+          "4396fe99-8449-4f02-af71-2353eee9f953",
+          "63fece38-5c2b-42e4-944e-26e9fa20e0f2",
+          "b16e8c11-1b11-463b-806f-ab179c0a5fb7",
+          "f6475c0f-7463-4f59-8f67-56aff503c404"
+        ],
+        "result": {
+          "resourceId": "rail-browser-crane",
+          "resourceName": "吊机 01",
+          "recordId": "f6475c0f-7463-4f59-8f67-56aff503c404",
+          "status": "overlap",
+          "label": "平面潜在侵限",
+          "message": "倾覆几何外包与用户定义限界存在平面重叠",
+          "draft": false,
+          "warnings": [
+            "支承来自当前模型支脚底面，需核对实际支腿落地情况与模型尺寸。",
+            "模型几何推算，未包含首次接触停止、吊载和地基变化，不作为机械稳定性或作业许可结论。",
+            "仅进行平面几何筛查；不代表三维碰撞判定或施工安全批准"
+          ],
+          "limits": [
+            {
+              "id": "63fece38-5c2b-42e4-944e-26e9fa20e0f2",
+              "name": "铁路设备安全限界 · 近侧",
+              "status": "overlap",
+              "distanceMeters": 0
+            },
+            {
+              "id": "b16e8c11-1b11-463b-806f-ab179c0a5fb7",
+              "name": "信号设备保护范围 · 远侧",
+              "status": "clear",
+              "distanceMeters": 41.244970073236885
+            }
+          ],
+          "guards": [
+            {
+              "id": "4396fe99-8449-4f02-af71-2353eee9f953",
+              "name": "张师傅 · 东侧防护",
+              "known": true,
+              "containsStation": true,
+              "message": "仅判断机械站位；不代表全部作业范围已有防护"
+            }
+          ],
+          "signature": "9e4340ce",
+          "maxDistanceMeters": 15.634929813083833,
+          "supportSource": "model-outriggers",
+          "nearestDistanceMeters": 0
+        }
+      },
+      "finishedAt": "2026-10-13T08:36:53.235Z"
+    },
+    {
+      "id": "concurrent-drawing",
+      "title": "A real concurrent limit update cannot silently overwrite an in-progress user polygon",
+      "status": "passed",
+      "startedAt": "2026-10-13T08:36:53.235Z",
+      "evidence": {
+        "startingRevision": 1,
+        "concurrentRevision": 2,
+        "uiSaveStatus": 409,
+        "originalDraftRetainedOnConflict": true,
+        "explicitCancellationLoadsCurrentRecord": true
+      },
+      "finishedAt": "2026-10-13T08:37:17.221Z"
+    },
+    {
+      "id": "read-only",
+      "title": "A real viewer account can read the module while server and controls reject mutations",
+      "status": "passed",
+      "startedAt": "2026-10-13T08:37:17.221Z",
+      "evidence": {
+        "role": "viewer with models read access",
+        "serverMutationStatus": 403,
+        "writeControlsDisabled": true
+      },
+      "finishedAt": "2026-10-13T08:37:33.183Z"
+    },
+    {
+      "id": "single-runtime",
+      "title": "One original Viewer and one rail-safety source remain without uncaught browser errors",
+      "status": "passed",
+      "startedAt": "2026-10-13T08:37:33.183Z",
+      "evidence": {
+        "sameViewer": true,
+        "safetySameViewer": true,
+        "railSources": 1,
+        "machineSources": 1,
+        "renderLoop": true
+      },
+      "finishedAt": "2026-10-13T08:37:33.213Z"
+    }
+  ],
+  "screenshots": [
+    "02-guard-station-and-responsibility.png",
+    "03-user-defined-railway-limit.png",
+    "01-overview-potential-intrusion.png",
+    "06-boundary-contact.png",
+    "04-machine-pose-live-preview.png",
+    "05-persisted-configuration.png"
+  ],
+  "videos": [
+    "rail-safety-actual-operation.mp4"
+  ],
+  "pageErrors": [],
+  "consoleErrors": [
+    {
+      "check": "concurrent-drawing",
+      "message": "Failed to load resource: the server responded with a status of 409 (Conflict)"
+    }
+  ],
+  "workerUrls": [
+    "/cesiumStatic/Workers/createVerticesFromHeightmap.js",
+    "/cesiumStatic/Workers/transferTypedArrayTest.js",
+    "/cesiumStatic/Workers/createGeometry.js",
+    "/cesiumStatic/Workers/incrementallyBuildTerrainPicker.js",
+    "/cesiumStatic/Workers/combineGeometry.js",
+    "/src/railSafetyWorker.ts?worker_file&type=module"
+  ],
+  "origin": "http://127.0.0.1:5173",
+  "expectedConsoleErrors": [
+    {
+      "check": "concurrent-drawing",
+      "message": "Failed to load resource: the server responded with a status of 409 (Conflict)"
+    }
+  ],
+  "result": "passed",
+  "finishedAt": "2026-10-13T08:37:40.094Z",
+  "unexpectedConsoleErrors": [],
+  "runtimeSources": {
+    "src/railSafetyPanel.ts": {
+      "sha256": "d51d437cebdd0f46b889e6656eee9903adb0a031cc7ed6b5dbaddb342286def7"
+    },
+    "src/railSafetyPanel.css": {
+      "sha256": "179f5c94215accbdd1869ee551f9da595fda1d33941e7cc967692dc5b21ebbab"
+    },
+    "src/railSafetyScene.ts": {
+      "sha256": "56e7bbd79c30a9450da8b3404c642db28df4169760b5b5bc0816b69714dc4394"
+    },
+    "src/railSafetyGeometry.ts": {
+      "sha256": "48608bfad58fdddd139d9a13e6244838dc290b9b56ede841cf3847aa24fdeb00"
+    },
+    "src/railSafetyComputation.ts": {
+      "sha256": "ff848a99cda2a8deb6bea276f1581af959666284764495917c08bb716c19b76c"
+    },
+    "src/railSafetyWorker.ts": {
+      "sha256": "0a18d0776265ac7862d3abc52e508feb10cd844c4670d57719c45b3cbc7805a0"
+    },
+    "src/railSafetyTypes.ts": {
+      "sha256": "db38df61aa55edd41bc848a65343c333cfa946717c3cb2a12a52790acc84b62f"
+    },
+    "src/railSafetyValidation.ts": {
+      "sha256": "c187c009374d6dcee0fe2761aa3c7fce4236725855f0e20c656ecfcea72360af"
+    },
+    "src/managementWorkspace.ts": {
+      "sha256": "9434703f7eb55c26e6743828e1e781cf04e2ba61d572b0cfe01f77ef26ab7aac"
+    },
+    "src/machineryPanel.ts": {
+      "sha256": "c0c1ffbf63e89679340fdf4e2f799513d892a6c0cc30b72b6e86952128051a42"
+    },
+    "src/main.ts": {
+      "sha256": "8183da08f091512047f5b483f0bbbf4053eed4520cffc0c3284e0f47275536b7"
+    },
+    "server/management/domain.ts": {
+      "sha256": "599ca4d3c27f7f9f6831317ced96c900763d40d1c6352281b2f69905e8660267"
+    },
+    "server/management/authorization.ts": {
+      "sha256": "b06e8725edacd8e6f0eaf0a8b8ac970351b184aacffde27fd45e39047342b9e8"
+    },
+    "server/managementStore.ts": {
+      "sha256": "c87f9667613c23625ac8ec173915c5daeeda7a4578e33182ea9200c7d5f1c3c6"
+    }
+  },
+  "measurementScope": "The RAF counter verifies frames can advance while the Worker is pending. It is not an FPS benchmark or a field accuracy measurement.",
+  "videoExport": {
+    "source": "Full Playwright recordVideo from the same passing 13-check original-workbench run",
+    "codec": "H.264",
+    "width": 1600,
+    "height": 1000,
+    "framesPerSecond": 25,
+    "durationSeconds": 197.84,
+    "byteLength": 3338612,
+    "transformation": "Full recording transcoded only; original 1600×1000 resolution retained; no inserted or removed frames, generated imagery or reconstructed scenes"
+  },
+  "artifactSha256": {
+    "02-guard-station-and-responsibility.png": "6afe720a6917ee7ed25359b3f88e9978bf78f4e8ba37453ce532a531567e1fb9",
+    "03-user-defined-railway-limit.png": "3d1cad72d7226a30d7862c12b92c8f8da18a54445f795d6104f0bd9cf305522e",
+    "01-overview-potential-intrusion.png": "01b6aae5e49032ce46de826e9076d9c358a60c3955eb4b8f424b8b2841d15068",
+    "06-boundary-contact.png": "57d4da6117dc3b75b9a6ee0535f41681974ae1de7ff59eda3a75d9405416eef5",
+    "04-machine-pose-live-preview.png": "1c5d58c991d8aa58192c703444f239307f0cf4ee629bf786ebe3748668239da0",
+    "05-persisted-configuration.png": "e5aa7efa0de86ab82c85a4c024c548846cf5120e8e3b61b4db6e82b9e34bf0f8",
+    "rail-safety-actual-operation.mp4": "6c2dfabcc25144a687d092acc01477cf249c424bab064816d9d298a9d2450b1d"
+  }
+}
