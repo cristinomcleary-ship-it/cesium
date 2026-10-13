@@ -1,6 +1,8 @@
 import { newCheckItems,recordCheckItems,confirmCheckIntegrity,checklistVersion } from "./checkIntegrity.ts";
 import { configureTaskConditions,enforceTaskConditions } from "./taskConditions.ts";
 import { MachineryValidationError,validateMachineryMetadata } from "../../src/machineryValidation.ts";
+import { RailSafetyValidationError,validateRailSafetyDefinition } from "../../src/railSafetyValidation.ts";
+import type { RailSafetyDefinition } from "../../src/railSafetyTypes.ts";
 import { randomUUID } from "node:crypto";
 import type { ManagementCollection, ManagementCommand, ManagementRecord, ManagementRole, ManagementPermission, ProgressEntry, ProgressRevision, ManagementCheckItem } from "../../src/managementTypes.ts";
 
@@ -71,7 +73,7 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
    for(const dep of ids(v.predecessorIds)){ensure(map.has(dep),"DEPENDENCY_MISSING","前置任务不存在");const prior=map.get(dep)!;ensure(!v.planStart||!prior.planEnd||String(prior.planEnd)<=String(v.planStart),"DEPENDENCY_DATE_CONFLICT","前置任务完成晚于后续开始",{taskId:key,predecessorId:dep});visit(dep);}open.delete(key);seen.add(key);};all.forEach(v=>visit(v.id));
  };
  const permission=m.type.startsWith("task.")||m.type.startsWith("wbs.")||m.type.startsWith("baseline.")||m.type.startsWith("commitment.")?"plan"
-  :m.type.startsWith("resource.")||m.type.startsWith("machinery.")||m.type.startsWith("need.")||m.type.startsWith("allocation.")||m.type.startsWith("usage.")||m.type.startsWith("batch.")||m.type.startsWith("test.")||m.type.startsWith("material.")?"resource"
+  :m.type.startsWith("railSafety.")||m.type.startsWith("resource.")||m.type.startsWith("machinery.")||m.type.startsWith("need.")||m.type.startsWith("allocation.")||m.type.startsWith("usage.")||m.type.startsWith("batch.")||m.type.startsWith("test.")||m.type.startsWith("material.")?"resource"
   :m.type.startsWith("document.")||m.type.startsWith("technical.")||m.type.startsWith("meeting.")||m.type.startsWith("action.")||m.type.startsWith("change.")||m.type.startsWith("link.")?"document"
   :m.type.startsWith("anchor.")?"document":m.type.startsWith("inspection.")||m.type.startsWith("monitoring.")?"inspect"
   :m.type.startsWith("report.")?"confirm":m.type.startsWith("bookmark.")?"read":"field";
@@ -79,6 +81,29 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
  else if(["check.confirm","issue.assign","issue.review","issue.dismiss"].includes(m.type))allow(actor,"review");
  else if(["document.publish","document.void","technical.publish"].includes(m.type))allow(actor,"publish");else if(["task.start","task.request-completion","technical.create","technical.comment","action.complete","document.create","document.version","document.submit","anchor.create","anchor.update"].includes(m.type)){if(!actor.permissions.includes(permission))allow(actor,"field");}else allow(actor,permission);
  switch(m.type){
+ case "railSafety.save":{
+  allow(actor,"models");
+  ensure(Object.keys(p).every(key=>["name","taskId","definition","reason"].includes(key)),"INVALID_RAIL_SAFETY_PAYLOAD","管控命令只允许修改名称、关联任务和定义");
+  const name=str(p.name,"管控对象名称",200);if(p.reason!==undefined)str(p.reason,"修改原因",4000);
+  const taskId=p.taskId===undefined?undefined:taskAccess(c,p.taskId).id;
+  if(actor.taskIds!==undefined&&!taskId)throw new ManagementError(403,"TASK_SCOPE_REQUIRED","受限账号须将管控对象关联到已授权任务");
+  let definition:RailSafetyDefinition;
+  try{definition=validateRailSafetyDefinition(p.definition);}catch(error){if(error instanceof RailSafetyValidationError)throw new ManagementError(400,error.code,error.message,{field:error.field});throw error;}
+  const resourceIds=definition.kind==="machine"?[definition.resourceId]:definition.kind==="guard"?definition.resourceIds:[];
+  for(const key of resourceIds){const resource=c.get("resources",key);ensure(resource.kind==="equipment","RAIL_SAFETY_RESOURCE_KIND","只能关联机械设备资源");}
+  if(definition.kind==="machine"){
+   for(const key of definition.selectedLimitIds){const limit=c.get("railSafety",key);ensure(limit.status==="active"&&(limit.definition as RailSafetyDefinition)?.kind==="limit","RAIL_SAFETY_LIMIT_INVALID","所选限界不存在或已停用");ensure(!limit.taskId||limit.taskId===taskId,"RAIL_SAFETY_TASK_MISMATCH","所选限界属于不同任务");}
+   ensure(!c.list("railSafety").some(v=>v.id!==m.id&&v.status==="active"&&(v.definition as RailSafetyDefinition)?.kind==="machine"&&(v.definition as {resourceId?:string}).resourceId===definition.resourceId),"RAIL_SAFETY_MACHINE_EXISTS","该机械已有管控配置，请编辑现有配置");
+  }
+  const old=m.id?c.list("railSafety").find(v=>v.id===m.id):undefined;
+  if(old){load("railSafety");requiredState(r!,["active"]);ensure((r!.definition as RailSafetyDefinition)?.kind===definition.kind,"RAIL_SAFETY_KIND_IMMUTABLE","不能改变已有管控对象类别");if(definition.kind==="machine")ensure((r!.definition as {resourceId:string}).resourceId===definition.resourceId,"RAIL_SAFETY_RESOURCE_IMMUTABLE","不能更换已有配置的机械编号");if(definition.kind==="limit")for(const other of c.list("railSafety")){const d=other.definition as RailSafetyDefinition;if(other.status==="active"&&d?.kind==="machine"&&d.selectedLimitIds.includes(r!.id))ensure(!taskId||other.taskId===taskId,"RAIL_SAFETY_TASK_MISMATCH","此限界已被其他任务或全局机械引用，请先解除引用");}Object.assign(r!,{name,definition});if(taskId)r!.taskId=taskId;else delete r!.taskId;
+  }else create("railSafety",{name,...(taskId?{taskId}:{}),definition},"active");
+  break;
+ }
+ case "railSafety.remove":{
+  allow(actor,"models");ensure(Object.keys(p).every(key=>key==="reason"),"INVALID_RAIL_SAFETY_PAYLOAD","移除操作只允许填写原因");if(p.reason!==undefined)str(p.reason,"移除原因",4000);
+  load("railSafety");requiredState(r!,["active"]);r!.status="deleted";r!.deletedAt=now;r!.deletedBy=actor.id;break;
+ }
  case "wbs.create":case "wbs.update":{
   const f=pick(p,["name","parentId","areaIds","description"]);str(f.name,"工作包名称",200);if(f.parentId)c.get("wbs",id(f.parentId));validateLinks(c,f);
   if(m.type.endsWith("create"))create("wbs",f,"active");else Object.assign(load("wbs"),f);
@@ -140,7 +165,7 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
  case "resource.create":case "resource.update":{
   const fields=pick(p,["name","kind","specification","unit","quantity","ownerId","locationDescription","qualificationEvidenceIds","validUntil","availability"]);
   str(fields.name,"资源名称",200);ensure(["crew","equipment","material","auxiliary","test"].includes(String(fields.kind)),"INVALID_KIND","资源类别无效");if(fields.quantity!==undefined)num(fields.quantity,"资源数量");if(fields.validUntil)date(fields.validUntil);fields.qualificationEvidenceIds=evidence(fields.qualificationEvidenceIds);
-  if(m.type==="resource.create")create("resources",fields,"active");else{reason();load("resources");ensure(!r!.machinery||fields.kind==="equipment","MACHINERY_RESOURCE_KIND","请先解除三维机械模型，再变更设备资源类别");Object.assign(r!,fields);recheckNeeds(n=>n.resourceId===r!.id,"资源状态或资格发生变化，请重新核对");}break;}
+  if(m.type==="resource.create")create("resources",fields,"active");else{reason();load("resources");ensure(!r!.machinery||fields.kind==="equipment","MACHINERY_RESOURCE_KIND","请先解除三维机械模型，再变更设备资源类别");ensure(fields.kind==="equipment"||!c.list("railSafety").some(v=>{const d=v.definition as RailSafetyDefinition;return v.status==="active"&&(d?.kind==="machine"&&d.resourceId===r!.id||d?.kind==="guard"&&d.resourceIds.includes(r!.id));}),"RAIL_SAFETY_RESOURCE_KIND","请先解除机械管控和防护关联，再变更设备类别");Object.assign(r!,fields);recheckNeeds(n=>n.resourceId===r!.id,"资源状态或资格发生变化，请重新核对");}break;}
  case "machinery.save":case "machinery.remove":{
   allow(actor,"models");load("resources");
   ensure(r!.kind==="equipment","MACHINERY_RESOURCE_KIND","三维机械模型只能关联已有设备资源");

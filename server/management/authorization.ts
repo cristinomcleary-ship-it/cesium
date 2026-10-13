@@ -11,6 +11,12 @@ export function recordReferences(record:Record<string,unknown>,kind?:ManagementC
  for(const [key,collection] of Object.entries(arrayFields))if(Array.isArray(record[key]))for(const value of record[key] as unknown[])if(typeof value==="string")result.push({kind:collection,id:value});
  if(typeof record.targetKind==="string"&&typeof record.targetId==="string")result.push({kind:record.targetKind as ManagementCollection,id:record.targetId});
  if(kind==="checks"&&typeof record.sourceId==="string")result.push({kind:"checks",id:record.sourceId});
+ if(kind==="railSafety"&&record.definition&&typeof record.definition==="object"){
+  const definition=record.definition as Record<string,unknown>;
+  if(typeof definition.resourceId==="string")result.push({kind:"resources",id:definition.resourceId});
+  if(Array.isArray(definition.resourceIds))for(const key of definition.resourceIds)if(typeof key==="string")result.push({kind:"resources",id:key});
+  if(Array.isArray(definition.selectedLimitIds))for(const key of definition.selectedLimitIds)if(typeof key==="string")result.push({kind:"railSafety",id:key});
+ }
  const policy=record.conditionPolicy as {rules?:Record<string,unknown>[]} | undefined;
  const conditionCollections:Record<string,ManagementCollection>={predecessors:"tasks","preconstruction-checks":"checks",resources:"resourceNeeds",documents:"documentRequirements",acceptance:"checks","blocking-issues":"issues"};
  for(const rule of policy?.rules||[]){const collection=conditionCollections[String(rule.kind)];if(collection&&Array.isArray(rule.referenceIds))for(const key of rule.referenceIds as unknown[])if(typeof key==="string")result.push({kind:collection,id:key});result.push(...recordReferences(rule));}
@@ -22,6 +28,7 @@ export function recordReferences(record:Record<string,unknown>,kind?:ManagementC
 function directTasks(record:ManagementRecord,kind:ManagementCollection){return [...new Set([...(kind==="tasks"?[record.id]:[]),...(typeof record.taskId==="string"?[record.taskId]:[]),...(Array.isArray(record.taskIds)?record.taskIds:[])])];}
 /** Undefined taskIds means project-wide. [] means no task access. No inferred wildcard. */
 export function canAccessRecord(actor:Actor,kind:ManagementCollection,record:ManagementRecord,source:RecordSource,write=false):boolean{
+ if(kind==="railSafety"&&(!actor.permissions.includes("models")||(actor.taskIds!==undefined&&!record.taskId)))return false;
  if(actor.taskIds===undefined)return true;
  const allowed=new Set(actor.taskIds),visited=new Set<string>();
  const scope=(collection:ManagementCollection,value:ManagementRecord):Set<string>=>{
@@ -30,7 +37,7 @@ export function canAccessRecord(actor:Actor,kind:ManagementCollection,record:Man
   for(const ref of recordReferences(value,collection)){try{for(const t of scope(ref.kind,source.get(ref.kind,ref.id)))tasks.add(t);}catch{/* Broken references do not manufacture authorization. */}}
   if(collection==="reports"&&Array.isArray(value.sourceRevisions))for(const ref of value.sourceRevisions as {kind:ManagementCollection;data:ManagementRecord}[])for(const t of scope(ref.kind,ref.data))tasks.add(t);
   // A controlled upload may predate its task association. Derive current scope from its consumers.
-  if(["evidence","resources","batches"].includes(collection))for(const otherKind of ["documentVersions","documents","checks","progress","dailyLogs","issues","inspections","resourceNeeds","allocations","resourceUsage","tests","materialTransactions","technicalQueries","changes","meetings","actions","links","monitoring"] as ManagementCollection[])for(const other of source.list(otherKind))if(recordReferences(other,otherKind).some(ref=>ref.kind===collection&&ref.id===value.id))for(const t of scope(otherKind,other))tasks.add(t);
+  if(["evidence","resources","batches"].includes(collection))for(const otherKind of ["documentVersions","documents","checks","progress","dailyLogs","issues","inspections","resourceNeeds","allocations","resourceUsage","tests","materialTransactions","technicalQueries","changes","meetings","actions","links","monitoring","railSafety"] as ManagementCollection[])for(const other of source.list(otherKind))if(recordReferences(other,otherKind).some(ref=>ref.kind===collection&&ref.id===value.id))for(const t of scope(otherKind,other))tasks.add(t);
   return tasks;
  };
  const tasks=scope(kind,record);if(tasks.size)return [...tasks].every(t=>allowed.has(t));
@@ -40,6 +47,7 @@ export function canAccessRecord(actor:Actor,kind:ManagementCollection,record:Man
 }
 export function authorizeRecord(actor:Actor,kind:ManagementCollection,record:ManagementRecord,source:RecordSource,write=false){if(!canAccessRecord(actor,kind,record,source,write))throw new ManagementError(403,"RECORD_FORBIDDEN","记录或关联对象不在当前任务授权范围");}
 export function commandCollection(type:string):ManagementCollection|undefined{
+ if(type==="railSafety.save"||type==="railSafety.remove")return "railSafety";
  if(type==="machinery.save"||type==="machinery.remove")return "resources";
  const map:Record<string,ManagementCollection>={wbs:"wbs",task:"tasks",baseline:"baselines",commitment:"commitments",progress:"progress",dailyLog:"dailyLogs",check:"checks",issue:"issues",inspection:"inspections",resource:"resources",need:"resourceNeeds",allocation:"allocations",usage:"resourceUsage",batch:"batches",test:"tests",material:"materialTransactions",document:"documentVersions",link:"links",technical:"technicalQueries",change:"changes",meeting:"meetings",action:"actions",anchor:"anchors",bookmark:"bookmarks",monitoring:"monitoring",report:"reports",evidence:"evidence"};
  if(type==="document.create")return "documents";if(type==="document.requirement"||type==="document.fulfill")return "documentRequirements";return map[type.split(".")[0]];
@@ -47,6 +55,7 @@ export function commandCollection(type:string):ManagementCollection|undefined{
 export function authorizeCommand(actor:Actor,m:ManagementCommand,source:RecordSource){
  // Check live capabilities before receipt replay or revision responses as well as in the domain.
  if(m.type==="machinery.save"||m.type==="machinery.remove"){allow(actor,"resource");allow(actor,"models");}
+ if(m.type==="railSafety.save"||m.type==="railSafety.remove"){allow(actor,"resource");allow(actor,"models");}
  if(actor.taskIds===undefined)return;
  const kind=commandCollection(m.type);
  if(kind&&m.id){try{authorizeRecord(actor,kind,source.get(kind,m.id),source,true);}catch(e){if(!(e instanceof ManagementError&&e.status===404))throw e;}}

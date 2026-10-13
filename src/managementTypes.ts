@@ -6,7 +6,7 @@ export type ManagementPermission = "read" | "plan" | "confirm" | "field" | "revi
 export type ManagementSession = { userId: string; displayName: string; roles: ManagementRole[]; authMode: "local-owner" | "local-account"; permissions: ManagementPermission[]; expiresAt?: string };
 export type ManagementProject = { id: string; name: string; revision: number; timezone: string; calendar: { workingDays: number[] }; horizontalCrs: string; verticalDatum: string; units: string; isTest: boolean; createdAt: string; updatedAt: string };
 export type ManagementMember = { id: string; projectId: string; revision: number; username: string; displayName: string; roles: ManagementRole[]; active: boolean; resourceAccess: { models: boolean; files: boolean; media: boolean }; taskIds?: string[]; createdAt: string; updatedAt: string };
-export const MANAGEMENT_COLLECTIONS = ["wbs","tasks","baselines","commitments","progress","dailyLogs","checks","issues","inspections","resources","resourceNeeds","allocations","resourceUsage","batches","materialTransactions","tests","documents","documentVersions","documentRequirements","links","technicalQueries","changes","meetings","actions","evidence","anchors","bookmarks","monitoring","reports"] as const;
+export const MANAGEMENT_COLLECTIONS = ["wbs","tasks","baselines","commitments","progress","dailyLogs","checks","issues","inspections","resources","resourceNeeds","allocations","resourceUsage","batches","materialTransactions","tests","documents","documentVersions","documentRequirements","links","technicalQueries","changes","meetings","actions","evidence","anchors","bookmarks","monitoring","reports","railSafety"] as const;
 export type ManagementCollection = typeof MANAGEMENT_COLLECTIONS[number];
 export type ManagementRecord = { id: string; projectId: string; revision: number; name: string; status: string; createdAt: string; updatedAt: string; createdBy: string; taskId?: string; taskIds?: string[]; ownerId?: string; dueDate?: string; evidenceIds?: string[]; machinery?: MachineryMetadata; [key: string]: unknown };
 export type PlanTask = ManagementRecord & { status: "draft" | "published" | "in-progress" | "pending-completion" | "completed" | "cancelled"; wbsId?: string; areaIds: string[]; predecessorIds: string[]; planStart?: string; planEnd?: string; forecastEnd?: string; forecastReason?: string; targetQuantity?: number; unit?: string; weight?: number; milestone?: boolean; planVersion: number; completionConfirmedAt?: string; qualityAcceptedAt?: string };
@@ -31,6 +31,7 @@ export type ManagementCommandType =
  | "inspection.create" | "inspection.record" | "inspection.confirm"
  | "resource.create" | "resource.update" | "need.create" | "need.update" | "need.confirm" | "allocation.create" | "allocation.cancel" | "usage.create" | "usage.confirm"
  | "machinery.save" | "machinery.remove"
+ | "railSafety.save" | "railSafety.remove"
  | "batch.create" | "batch.receive" | "batch.accept" | "test.create" | "test.confirm" | "material.issue" | "material.return" | "material.correct"
  | "document.create" | "document.version" | "document.submit" | "document.return" | "document.publish" | "document.void" | "document.requirement" | "document.fulfill" | "link.create" | "link.remove"
  | "technical.create" | "technical.comment" | "technical.answer" | "technical.publish" | "change.create" | "change.confirm"

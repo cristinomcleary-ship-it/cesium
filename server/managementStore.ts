@@ -31,7 +31,7 @@ function output(res:ServerResponse,status:number,value:unknown){if(res.destroyed
  * Return a detached public projection; domain reads and persisted resources retain the full value. */
 function withoutUnauthorizedMachinery<T>(value:T,actor?:Actor):T{
  if(actor?.permissions.includes("models"))return value;
- const redact=(v:unknown):unknown=>Array.isArray(v)?v.map(redact):v&&typeof v==="object"?Object.fromEntries(Object.entries(v).filter(([key])=>key!=="machinery").map(([key,item])=>[key,redact(item)])):v;
+ const redact=(v:unknown):unknown=>Array.isArray(v)?v.filter(item=>!(item&&typeof item==="object"&&(item as {kind?:unknown}).kind==="railSafety")).map(redact):v&&typeof v==="object"?Object.fromEntries(Object.entries(v).filter(([key])=>key!=="machinery"&&key!=="definition").map(([key,item])=>[key,redact(item)])):v;
  return redact(value) as T;
 }
 function publicError(error:unknown,actor?:Actor){return error instanceof ManagementError?new ManagementError(error.status,error.code,error.message,withoutUnauthorizedMachinery(error.details,actor),withoutUnauthorizedMachinery(error.current,actor)):error;}
