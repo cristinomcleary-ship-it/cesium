@@ -90,6 +90,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <button class="tab" data-tab="sandtable" data-label="电子沙盘" data-menu-icon="◈">电子沙盘</button>
         <button class="tab active" data-tab="cad" data-label="CAD 图纸" data-menu-icon="⌁" aria-current="page">CAD 图纸</button>
         <button class="tab" data-tab="models" data-label="工程模型" data-menu-icon="◆">工程模型</button>
+        <button class="tab" data-tab="machinery" data-label="施工机械" data-menu-icon="⚙">施工机械</button>
         <button class="tab" data-tab="tiles" data-label="倾斜摄影" data-menu-icon="▦">倾斜摄影</button>
         <button class="tab" data-tab="gis" data-label="GIS 数据" data-menu-icon="◎">GIS 数据</button>
         <button class="tab" data-tab="videoar" data-label="视频 AR" data-menu-icon="◉">视频 AR</button>
@@ -108,6 +109,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <button id="clearAll" class="text-button" title="删除全部保存资料，退出软件不需要清空">删除全部资料</button>
         </div>
         <div id="layers" class="layers-empty">尚未加载工程数据</div>
+        <section class="workbench-machinery-objects" aria-label="施工机械对象"><div class="section-title"><strong>施工机械</strong><button type="button" id="openWorkbenchMachinery" class="text-button">添加 / 编辑</button></div><div id="workbenchMachineryObjects" aria-live="polite">正在读取施工机械…</div><button type="button" id="machineryAccountEntry" class="text-button" hidden>统一账号与项目权限</button></section>
         <details class="saved-library">
           <summary>本机资料库 <span id="libraryStatus">正在读取资料…</span></summary>
           <div id="savedLibrary"></div>
@@ -154,6 +156,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <button class="secondary" id="exportDigitalTwinCatalog">导出数据目录</button>
           <p class="hint" id="digitalTwinStorageStatus">数据目录元数据保存在本机浏览器；模型、视频和照片不会重复写入目录。</p>
         </section>
+        <section class="panel" data-panel="machinery"><h2>施工机械</h2><p>在当前 Cesium 场景放置吊机、桩机与挖机。右侧面板编辑尺寸与位置，保存到同一工程资源台账。</p><p>关闭编辑面板或切换功能后，已保存的机械仍显示在场景中。可在“图层与标绘”区域定位和管理机械。</p></section>
         <section class="panel active" data-panel="cad">
           <div class="dropzone" id="cadDropzone">
             <input id="cadFile" type="file" accept=".dwg,.cadimport" hidden />
@@ -2236,7 +2239,32 @@ $("#loadModel").addEventListener("click", async () => {
   }
 });
 
-document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => tab.addEventListener("click", () => {
+// Capture before older modules' tab handlers: neither module may discard the other's draft.
+let workbenchNavigationGeneration = 0;
+let requestedMachineryRecord: string | undefined;
+document.addEventListener('click', event => {
+  const target = (event.target as Element).closest<HTMLElement>('.tab,#openSafetyWorkspace,#openMarkupWorkspace,#openWorkbenchMachinery,[data-machinery-action="edit"]');
+  if (!target || managementWorkspace?.isOpen) return;
+  const machineryEntry = target.dataset.tab === 'machinery' || target.id === 'openWorkbenchMachinery' || target.dataset.machineryAction === 'edit';
+  const markupDraft = document.querySelector<HTMLButtonElement>('#markupCancelDrawing');
+  if (machineryEntry && markupDraft && !markupDraft.disabled) {
+    event.preventDefault(); event.stopImmediatePropagation(); toast('请先完成或取消当前标绘，再打开施工机械。', true); return;
+  }
+  if (!machineryEntry && managementWorkspace && !managementWorkspace.prepareWorkbenchNavigation()) {
+    event.preventDefault(); event.stopImmediatePropagation(); return;
+  }
+  ++workbenchNavigationGeneration;
+}, true);
+
+document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => tab.addEventListener("click", async () => {
+  if (tab.dataset.tab === 'machinery') {
+    const navigation = workbenchNavigationGeneration, recordId = requestedMachineryRecord; requestedMachineryRecord = undefined;
+    try {
+      const workspace = await ensureManagementWorkspace();
+      if (navigation !== workbenchNavigationGeneration || !await workspace.openWorkbenchMachinery(recordId, () => navigation === workbenchNavigationGeneration)) return;
+      if (navigation !== workbenchNavigationGeneration) return;
+    } catch (error) { toast(error instanceof Error ? error.message : String(error), true); return; }
+  } else if (managementWorkspace && !managementWorkspace.prepareWorkbenchNavigation()) return;
   const previousTab = document.querySelector<HTMLButtonElement>(".tab.active")?.dataset.tab;
   const leavingSandTable = previousTab === "sandtable"
     && tab.dataset.tab !== "sandtable";
@@ -2709,8 +2737,7 @@ pointer.setInputAction((movement: { endPosition: Cartesian2 }) => {
   $("#coords").textContent = `经度 ${CesiumMath.toDegrees(position.longitude).toFixed(6)} · 纬度 ${CesiumMath.toDegrees(position.latitude).toFixed(6)} · 高程 ${position.height.toFixed(1)}m`;
 }, ScreenSpaceEventType.MOUSE_MOVE);
 
-async function openSafetyWorkspace(): Promise<void> {
-  try {
+async function ensureManagementWorkspace(): Promise<ManagementWorkspace> {
     safetyWorkspaceLoading ??= import("./safetyWorkspace").then(({ SafetyWorkspace }) => {
       safetyWorkspace = new SafetyWorkspace({
         viewer, host: $("#safetyWorkspaceHost"), ready: () => projectLibrary!.ready,
@@ -2761,20 +2788,97 @@ async function openSafetyWorkspace(): Promise<void> {
       return safetyWorkspace;
     }).catch(error => { safetyWorkspaceLoading = undefined; throw error; });
     const sceneWorkspace = await safetyWorkspaceLoading;
-    if (new URLSearchParams(window.location.search).get("interface") === "legacy") await sceneWorkspace.open();
-    else {
-      managementWorkspaceLoading ??= import("./managementWorkspace").then(({ ManagementWorkspace }) => {
-        managementWorkspace = new ManagementWorkspace(sceneWorkspace, $("#safetyWorkspaceHost"));
-        if (import.meta.env.DEV) Object.assign(window, { __managementWorkspace: managementWorkspace });
-        return managementWorkspace;
-      }).catch(error => { managementWorkspaceLoading = undefined; throw error; });
-      await (await managementWorkspaceLoading).open();
+    managementWorkspaceLoading ??= import("./managementWorkspace").then(({ ManagementWorkspace }) => {
+      managementWorkspace = new ManagementWorkspace(sceneWorkspace, $("#safetyWorkspaceHost"), {
+        onChange: renderWorkbenchMachinery,
+        onPanelChange: setWorkbenchMachineryPanelOpen,
+        pickPosition: pixel => {
+          const picked = viewer.scene.pick(pixel);
+          const imported = imports.find(item => item.visible && (item.kind === '3D Tiles' || item.kind === 'Model') &&
+            (picked?.primitive === item.resource || picked?.primitive?.tileset === item.resource || picked?.tileset === item.resource));
+          if (!imported || !viewer.scene.pickPositionSupported) return undefined;
+          const point = viewer.scene.pickPosition(pixel);
+          if (!point || ![point.x, point.y, point.z].every(Number.isFinite)) return undefined;
+          const position = Cartographic.fromCartesian(point);
+          return { longitude: CesiumMath.toDegrees(position.longitude), latitude: CesiumMath.toDegrees(position.latitude), height: position.height, source: 'model' as const };
+        },
+      });
+      if (import.meta.env.DEV) Object.assign(window, { __managementWorkspace: managementWorkspace });
+      return managementWorkspace;
+    }).catch(error => { managementWorkspaceLoading = undefined; throw error; });
+    return managementWorkspaceLoading;
+}
+
+let resumeWorkbenchMachineryInteractions: (() => void) | undefined;
+function setWorkbenchMachineryPanelOpen(open: boolean): void {
+  if (!open) {
+    resumeWorkbenchMachineryInteractions?.(); resumeWorkbenchMachineryInteractions = undefined;
+    document.body.classList.remove('workbench-machinery-open'); return;
+  }
+  if (resumeWorkbenchMachineryInteractions) return;
+  const cancelMarkup = document.querySelector<HTMLButtonElement>('#markupCancelDrawing');
+  if (cancelMarkup && !cancelMarkup.disabled) throw new Error('请先完成或取消当前标绘，再打开施工机械。');
+  digitalTwinOverview.close(); electronicSandTable?.stopTour();
+  sandTablePresentation?.deactivate(); sandTableFacilities?.deactivate();
+  viewer.camera.cancelFlight(); videoArFusion.setPanelActive(false);
+  const restores: Array<() => void> = [];
+  try { restores.push(modelEditor.suspendInteractions(), subsurfaceTools.suspendInteractions(), foundationPitMonitoring.suspendInteractions()); }
+  catch (error) { for (const restore of restores.reverse()) restore(); throw error; }
+  resumeWorkbenchMachineryInteractions = () => { for (const restore of restores.reverse()) restore(); };
+  document.body.classList.add('workbench-machinery-open');
+}
+
+function renderWorkbenchMachinery(): void {
+  const root = document.getElementById('workbenchMachineryObjects'); if (!root) return;
+  const state = managementWorkspace?.getWorkbenchMachineryState();
+  const account = document.getElementById('machineryAccountEntry');
+  if (account) account.hidden = !!state?.canView;
+  root.replaceChildren();
+  if (!state?.canView || !state.records.length) {
+    root.textContent = state?.status || (state?.canView ? '尚无已放置的机械。点击“添加 / 编辑”创建或选择设备。' : '正在读取施工机械…'); return;
+  }
+  for (const record of state.records) {
+    const row = document.createElement('div'); row.className = 'workbench-machinery-row'; row.dataset.machineryRecord = record.id;
+    const name = document.createElement('span'); name.className = 'workbench-machinery-name'; name.textContent = record.name; name.title = record.name;
+    const visible = record.machinery?.visible !== false;
+    const status = document.createElement('small'); status.textContent = visible ? '显示中' : '已隐藏';
+    name.append(status); row.append(name);
+    for (const [action, label] of [['visibility', visible ? '隐藏' : '显示'], ['locate', '定位'], ['edit', state.canEdit ? '编辑' : '查看']] as const) {
+      const button = document.createElement('button'); button.type = 'button'; button.dataset.machineryAction = action; button.textContent = label;
+      button.disabled = action === 'visibility' && !state.canEdit;
+      if (action === 'visibility') { button.setAttribute('aria-pressed', String(visible)); button.title = state.canEdit ? '保存机械显示状态' : '仅有查看权限，不能修改显示状态'; }
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          const workspace = await ensureManagementWorkspace();
+          if (action === 'visibility') await workspace.setWorkbenchMachineryVisibility(record.id, !visible);
+          else if (action === 'locate') await workspace.locateWorkbenchMachinery(record.id);
+          else {
+            requestedMachineryRecord = record.id; document.querySelector<HTMLButtonElement>('.tab[data-tab="machinery"]')?.click();
+          }
+        } catch (error) { toast(error instanceof Error ? error.message : String(error), true); }
+        finally { renderWorkbenchMachinery(); }
+      });
+      row.append(button);
     }
+    root.append(row);
+  }
+}
+
+async function openSafetyWorkspace(): Promise<void> {
+  try {
+    const workspace = await ensureManagementWorkspace();
+    if (!workspace.prepareWorkbenchNavigation()) return;
+    if (new URLSearchParams(window.location.search).get('interface') === 'legacy') await safetyWorkspace!.open();
+    else await workspace.open();
   } catch (error) { toast(`项目统筹平台打开失败：${error instanceof Error ? error.message : String(error)}`, true); }
 }
+$('#openWorkbenchMachinery').addEventListener('click', () => document.querySelector<HTMLButtonElement>('.tab[data-tab="machinery"]')?.click());
+$('#machineryAccountEntry').addEventListener('click', () => void openSafetyWorkspace());
 $("#openSafetyWorkspace").addEventListener("click", () => void openSafetyWorkspace());
 void projectLibrary.start().then(() => {
   renderLayers(); viewer.scene.requestRender();
+  void ensureManagementWorkspace().then(() => renderWorkbenchMachinery()).catch(error => { const list = document.getElementById('workbenchMachineryObjects'); if (list) list.textContent = '施工机械初始化失败：' + (error instanceof Error ? error.message : String(error)); });
   if (["safety", "management"].includes(new URLSearchParams(window.location.search).get("screen") || "")) void openSafetyWorkspace();
 });
 $("#basemap").addEventListener("change", () => projectLibrary?.saveView());

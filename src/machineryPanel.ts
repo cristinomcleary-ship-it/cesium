@@ -28,6 +28,7 @@ export type MachineryPanelOptions = {
   remove: (recordId: string, expectedRevision: number) => Promise<void>;
   createResource?: (name: string) => Promise<{ id: string } | void>;
   onPickingChange?: (picking: boolean) => void;
+  onOpenChange?: (open: boolean) => void;
   pickPosition?: (position: Cartesian2) => MachineryPlacementPick | undefined;
 };
 
@@ -142,6 +143,9 @@ export class MachineryPanel {
   get isOpen() { return this.opened; }
   get hasDraft() { return this.dirty; }
   get isPicking() { return this.picking; }
+  get isBusy() { return this.busy; }
+  setPresentation(mode: 'workbench' | 'management') { this.root.dataset.presentation = mode; }
+  locate(recordId: string) { return this.scene.flyTo(recordId); }
   private get editable() { return this.context.canEdit && this.context.canView && this.context.active && this.opened && !this.destroyed; }
   private find<T extends Element>(selector: string): T {
     const element = this.root.querySelector<T>(selector);
@@ -180,7 +184,7 @@ export class MachineryPanel {
     const reset = previous.projectId !== context.projectId || previous.actorId !== context.actorId || (previous.canView && !context.canView)
       || (previous.canEdit && !context.canEdit) || (previous.active && !context.active);
     this.context = context;
-    if (reset) { this.clearDraft(); this.selectedId = ""; this.opened = false; this.busy = false; }
+    if (reset) { this.clearDraft(); this.selectedId = ""; this.opened = false; this.busy = false; this.options.onOpenChange?.(false); }
     const records = context.canView ? this.records() : [];
     this.scene.setContext({ projectId: context.projectId, records: records.map(record => ({ id: record.id, machinery: savedState(record) })), canView: context.canView, active: context.active });
     this.renderResources();
@@ -198,6 +202,7 @@ export class MachineryPanel {
 
   open() {
     if (this.destroyed || !this.context.canView || !this.context.active) return;
+    if (!this.opened) this.options.onOpenChange?.(true);
     this.opened = true; this.root.hidden = false; this.renderResources();
     const id = this.record()?.id || this.records()[0]?.id;
     if (id && !this.asset) void this.selectResource(id);
@@ -209,7 +214,7 @@ export class MachineryPanel {
     if (!this.requestDiscard(() => this.closeNow(), "关闭编辑面板会放弃未保存修改，已保存模型仍留在场景中。")) return false;
     return true;
   }
-  private closeNow() { this.clearDraft(); this.opened = false; this.root.hidden = true; this.updateControls(); }
+  private closeNow() { this.clearDraft(); this.opened = false; this.root.hidden = true; this.updateControls(); this.options.onOpenChange?.(false); }
   private requestDiscard(action: () => void, text: string): boolean {
     if (!this.dirty) { action(); return true; }
     this.cancelPicking(); this.pendingAction = () => { this.clearDraft(); this.renderEditor(); action(); };
@@ -449,7 +454,7 @@ export class MachineryPanel {
   }
   destroy() {
     if (this.destroyed) return;
-    this.clearDraft(); this.destroyed = true; this.events.abort(); this.scene.destroy(); this.root.remove();
+    this.clearDraft(); this.destroyed = true; this.events.abort(); this.scene.destroy(); this.root.remove(); this.options.onOpenChange?.(false);
   }
   dispose() { this.destroy(); }
 }

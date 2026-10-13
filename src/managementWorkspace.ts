@@ -1,6 +1,7 @@
 import { VideoDiagnostics } from './management/videoDiagnostics';
 import { Cartesian2, Cartesian3, Color, ConstantPositionProperty, ConstantProperty, Entity, HeadingPitchRange, ScreenSpaceEventHandler, ScreenSpaceEventType, type Viewer } from 'cesium';
 import { ManagementStudio } from './managementStudio';
+import { readMachineryState, type MachineryPlacementPick } from './machineryScene';
 import { MachineryPanel } from './machineryPanel';
 import type { MachineryMetadata } from './machineryTypes';
 import { MANAGEMENT_API, type ManagementCommandType } from './managementTypes';
@@ -9,6 +10,12 @@ import type { ManagementSceneContext } from './managementSceneTypes';
 import type { SafetyWorkspace } from './safetyWorkspace';
 import { strictModelSurfacePick, type SurfacePickResult } from './safetyModelSurfacePicker';
 import './managementWorkspace.css';
+
+export type WorkbenchMachineryOptions = {
+  onChange?: () => void;
+  onPanelChange?: (open: boolean) => void;
+  pickPosition?: (pixel: Cartesian2) => MachineryPlacementPick | undefined;
+};
 
 type Selection = { kind: string; id: string; areaIds?: string[]; spatialObjectId?: string };
 type CameraState = { position: number[]; direction: number[]; up: number[]; models: Array<{ assetId: string; assetVersion: string; coordinateTransformVersion: string }> };
@@ -26,6 +33,13 @@ export class ManagementWorkspace {
   private readonly videoDiagnostics: VideoDiagnostics;
   private readonly machinery: MachineryPanel;
   private machineryReceipt?: { signature: string; key: string };
+  private readonly machineryRefreshTimer: ReturnType<typeof setInterval>;
+  private sessionExpiryTimer?: ReturnType<typeof setTimeout>;
+  private machineryRefresh?: Promise<void>;
+  private machineryMutationCount = 0;
+  private disposed = false;
+  private machineryStatus = '正在读取施工机械…';
+  private machineryContextGeneration = 0;
   private machineryCreation?: { signature: string; id: string };
   private active = false;
   private openedScene = false;
@@ -48,7 +62,7 @@ export class ManagementWorkspace {
   private topicSignature = "";
   private nativeDoubleClick?: ReturnType<ScreenSpaceEventHandler['getInputAction']>;
 
-  constructor(private readonly safety: SafetyWorkspace, host: HTMLElement) {
+  constructor(private readonly safety: SafetyWorkspace, host: HTMLElement, private readonly workbench: WorkbenchMachineryOptions = {}) {
     this.viewer = safety.getManagementViewer();
     this.videoDiagnostics = new VideoDiagnostics({ read: () => safety.getManagementVideoDiagnostics(), quality: mode => safety.managementVideoQuality(mode), reset: () => safety.managementVideoPerformanceReset(), capture: () => safety.managementCaptureVideoTexture(), fps: value => safety.managementProjectionFps(value), preview: enabled => { if(enabled && (this.measurement || this.anchorPicking)) throw new Error("请先结束测量或资料取点，再开始融合试算"); if(!this.session?.permissions.includes("media") || !this.session.permissions.includes("models")) throw new Error("当前账户无模型融合试算权限"); safety.managementSetProjectionPreview(enabled); }, calibration: () => this.exitToWorkbench("videoar") });
     this.ui = new ManagementStudio(host, {
@@ -58,7 +72,8 @@ export class ManagementWorkspace {
       onLocate: selection => this.locate(selection),
       onSceneAction: (action, args) => this.sceneAction(action, args).catch(e => {this.message(e instanceof Error ? e.message : String(e), true);return false;}),
       onSessionChange: session => this.sessionChanged(session),
-      onSnapshot: data => { const changed = this.data && this.data.projectId !== data.projectId; this.data = data; if (changed) { this.selection = null; this.backViews = []; this.videoDiagnostics.close(); this.safety.managementInvalidateProjection("project-change"); this.safety.managementPause(); this.applyMode("management"); } this.safety.setManagementIssues(data.collections.issues, data.revision, !Array.isArray(data.members.find(member=>member.id===data.session.userId)?.taskIds)); this.refreshAnchors(); this.updateContext(this.safety.getManagementContext()); },
+      onSnapshot: data => this.acceptSharedSnapshot(data),
+      onContextInvalidated: () => { this.data = undefined; this.machineryContextGeneration++; this.machineryStatus = '请通过“项目统筹平台”登录或核对当前项目权限。'; this.syncMachinery(); },
       onExit: () => { this.exitToWorkbench(); },
       getCameraSnapshot: () => this.cameraSnapshot(),
     });
@@ -73,13 +88,15 @@ export class ManagementWorkspace {
         this.machineryCreation = undefined;
         return { id };
       },
+      onOpenChange: open => { if (!this.active) this.workbench.onPanelChange?.(open); },
       pickPosition: pixel => {
+        if (!this.active) return this.workbench.pickPosition?.(pixel);
         const hit = strictModelSurfacePick(this.viewer, pixel, this.safety.getManagementModels(), () => this.safety.effects.suspendOverlaysForPicking(), this.data?.projectId);
         return hit.ok ? { ...hit.position, source: 'model' as const } : undefined;
       },
       onPickingChange: picking => {
-        if (picking) { this.safety.managementPause(); this.safety.managementSetProjectionPreview(false); this.viewer.camera.cancelFlight(); }
-        this.safety.effects.setPickingEnabled(!picking); this.safety.effects.setAuthoring(picking);
+        if (picking) { if (this.active) { this.safety.managementPause(); this.safety.managementSetProjectionPreview(false); } this.viewer.camera.cancelFlight(); }
+        if (this.active) { this.safety.effects.setPickingEnabled(!picking); this.safety.effects.setAuthoring(picking); }
       },
     });
     this.feedback.className = 'management-scene-feedback'; this.feedback.hidden = true; this.feedback.setAttribute('role','status');
@@ -97,7 +114,7 @@ export class ManagementWorkspace {
       const input = e.target as HTMLInputElement;
       if (input.dataset.layerId) this.safety.managementLayer(input.dataset.layerId, input.checked);
     }, { signal: this.events.signal });
-    this.viewer.canvas.addEventListener('pointerdown', () => this.viewer.camera.cancelFlight(), { signal: this.events.signal });
+    this.viewer.canvas.addEventListener('pointerdown', () => { if (this.active) this.viewer.camera.cancelFlight(); }, { signal: this.events.signal });
     document.addEventListener('keydown', e => { if (e.key === 'Escape') { if(this.measurement)this.endMeasurement(); if(this.anchorPicking)this.endAnchorPick(); } }, { signal: this.events.signal });
     this.anchorSelector = new ScreenSpaceEventHandler(this.viewer.canvas);
     this.anchorSelector.setInputAction(({position}: {position:Cartesian2})=>{
@@ -106,12 +123,94 @@ export class ManagementWorkspace {
       const id=entity instanceof Entity ? entity.properties?.managementAnchorId?.getValue() : undefined;
       if(id&&this.anchorEntities.get(id)===entity){const selected={kind:'anchors',id};this.select(selected);this.ui.setExternalSelection(selected);}
     },ScreenSpaceEventType.LEFT_CLICK);
-    this.viewer.canvas.addEventListener('wheel',()=>this.viewer.camera.cancelFlight(),{signal:this.events.signal,passive:true});
+    this.viewer.canvas.addEventListener('wheel',()=>{if(this.active)this.viewer.camera.cancelFlight();},{signal:this.events.signal,passive:true});
     this.ui.setVisible(false);
+    this.machinery.setPresentation('workbench');
+    this.machineryRefreshTimer = setInterval(() => { if (!document.hidden && !this.machineryMutationCount) void this.refreshMachineryContext(); }, 10000);
+    window.addEventListener('focus', () => { void this.refreshMachineryContext(); }, { signal: this.events.signal });
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) void this.refreshMachineryContext();
+    }, { signal: this.events.signal });
+    window.addEventListener('beforeunload', () => this.dispose(), { signal: this.events.signal, once: true });
+  }
+
+  get isOpen(): boolean { return this.active; }
+
+  /** Both entrances use the same session, records and renderer; no second project store exists. */
+  private acceptSharedSnapshot(data: ManagementSnapshot): void {
+    if (this.disposed) return;
+    if (this.data?.projectId === data.projectId && this.data.session.userId === data.session.userId && this.data.revision > data.revision) return;
+    const changed = this.data && this.data.projectId !== data.projectId;
+    if (changed) this.machineryContextGeneration++;
+    this.data = data;
+    if (JSON.stringify(this.session) !== JSON.stringify(data.session)) this.sessionChanged(data.session);
+    this.machineryStatus = data.projectId !== 'safety:project' ? '当前项目尚未接入机械三维场景。' : !data.session.permissions.includes('models') ? '当前账号没有模型查看权限。' : '';
+    this.syncMachinery();
+    if (!this.active) return;
+    if (changed) { this.selection = null; this.backViews = []; this.videoDiagnostics.close(); this.safety.managementInvalidateProjection('project-change'); this.safety.managementPause(); this.applyMode('management'); }
+    this.safety.setManagementIssues(data.collections.issues, data.revision, !Array.isArray(data.members.find(member => member.id === data.session.userId)?.taskIds));
+    this.refreshAnchors(); this.updateContext(this.safety.getManagementContext());
+  }
+
+  async refreshMachineryContext(): Promise<void> {
+    if (this.disposed) return;
+    if (this.machineryRefresh) return this.machineryRefresh;
+    this.machineryRefresh = this.ui.refresh().finally(() => { this.machineryRefresh = undefined; });
+    return this.machineryRefresh;
+  }
+
+  getWorkbenchMachineryState() {
+    const canView = !!this.session?.permissions.includes('models') && this.data?.projectId === 'safety:project';
+    return { projectId: this.data?.projectId, canView, canEdit: canView && !!this.session?.permissions.includes('resource'),
+      records: canView ? (this.data?.collections.resources ?? []).filter(record => record.projectId === this.data?.projectId && (record.kind === 'equipment' || record.category === 'equipment') && readMachineryState(record.machinery)) : [],
+      status: this.machineryStatus, panelOpen: this.machinery.isOpen, hasDraft: this.machinery.hasDraft, picking: this.machinery.isPicking };
+  }
+
+  /** Root workbench navigation must not abandon an unsaved mechanical placement. */
+  prepareWorkbenchNavigation(): boolean {
+    if (this.active) return true;
+    if (this.machinery.hasDraft || this.machinery.isPicking || this.machinery.isBusy) {
+      this.machinery.open(); this.message('请先保存、取消机械草稿或结束位置点选。'); return false;
+    }
+    return this.machinery.close();
+  }
+
+  async openWorkbenchMachinery(recordId?: string, isCurrent: () => boolean = () => true): Promise<boolean> {
+    if (this.active) return false;
+    await this.refreshMachineryContext();
+    if (this.disposed || this.active || !isCurrent()) return false;
+    if (!this.getWorkbenchMachineryState().canView) {
+      this.message(this.machineryStatus || '请通过“项目统筹平台”登录或核对当前项目模型权限。', true); return false;
+    }
+    this.machinery.setPresentation('workbench'); this.syncMachinery(); this.machinery.open();
+    if (recordId) await this.machinery.selectResource(recordId);
+    return this.machinery.isOpen;
+  }
+
+  async locateWorkbenchMachinery(recordId: string): Promise<void> {
+    await this.refreshMachineryContext();
+    const state = this.getWorkbenchMachineryState();
+    const record = state.records.find(item => item.id === recordId);
+    if (!state.canView || !record) throw new Error('当前账号无权定位此机械，或记录已移除。');
+    if (this.machinery.hasDraft || this.machinery.isPicking) throw new Error('请先保存或取消当前机械草稿。');
+    if (await this.machinery.locate(recordId)) return;
+    const saved = readMachineryState(record.machinery)!;
+    const height = saved.parameters.overall_height_m ?? saved.parameters.total_height_m ?? 10;
+    this.viewer.camera.flyTo({ destination: Cartesian3.fromDegrees(saved.placement.longitude, saved.placement.latitude, saved.placement.height + Math.max(30, height * 6)), orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 }, duration: .8 });
+  }
+
+  async setWorkbenchMachineryVisibility(recordId: string, visible: boolean): Promise<void> {
+    if (this.machinery.hasDraft || this.machinery.isPicking || this.machinery.isBusy) throw new Error('请先保存或取消当前机械草稿。');
+    await this.refreshMachineryContext();
+    const state = this.getWorkbenchMachineryState(), record = state.records.find(item => item.id === recordId);
+    if (!state.canEdit || !record) throw new Error('当前账号没有此机械的编辑权限。');
+    const machinery = readMachineryState(record.machinery)!;
+    await this.mutateMachinery('machinery.save', recordId, record.revision, { machinery: { ...machinery, visible } });
   }
 
   async open(): Promise<void> {
-    if (this.active) return;
+    if (this.active || !this.prepareWorkbenchNavigation()) return;
+    this.workbench.onPanelChange?.(false); this.machinery.setPresentation('management');
     this.active = true; this.mode = 'management'; this.ui.setVisible(true);
     this.safety.attachManagementHost({ videoHost: this.ui.videoHost,
       onContext: context => this.updateContext(context), onSpatialSelected: id => this.spatialSelected(id),
@@ -134,15 +233,22 @@ export class ManagementWorkspace {
 
   close(): void {
     if (!this.active) return;
-    this.active = false; this.endMeasurement(); this.endAnchorPick(); this.layersDialog.close(); this.videoDiagnostics.close(); this.feedback.hidden = true;
+    this.machinery.close(); this.active = false; this.machinery.setPresentation('workbench'); this.endMeasurement(); this.endAnchorPick(); this.layersDialog.close(); this.videoDiagnostics.close(); this.feedback.hidden = true;
     this.safety.spatial.setManagementSelection(undefined); this.safety.spatial.setManagementTopic(undefined); this.topicSignature=""; this.clearAnchors(); this.safety.attachManagementHost(undefined);
-    this.safety.setManagementResourceAccess({models:true,files:true,media:true});
+    this.safety.setManagementResourceAccess({models:!!this.session?.permissions.includes('models'),files:!!this.session?.permissions.includes('files'),media:!!this.session?.permissions.includes('media')});
     this.safety.close(); this.ui.setVisible(false); this.syncMachinery();
     if (this.nativeDoubleClick) this.viewer.screenSpaceEventHandler.setInputAction(this.nativeDoubleClick, ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
   }
 
   private sessionChanged(session: ManagementSession | null): void {
     const actorChanged=this.session?.userId!==session?.userId;
+    if (JSON.stringify(this.session) !== JSON.stringify(session)) this.machineryContextGeneration++;
+    this.session = session;
+    clearTimeout(this.sessionExpiryTimer);
+    if (session?.expiresAt) this.sessionExpiryTimer = setTimeout(() => this.ui.invalidateAccess(), Math.max(0, Date.parse(session.expiresAt) - Date.now()));
+    if (!session) { this.data = undefined; this.machineryStatus = '会话已失效，请通过“项目统筹平台”重新登录。'; }
+    this.syncMachinery();
+    if (!this.active) return;
     if (actorChanged || !session) this.safety.clearManagementEvents();
     this.videoDiagnostics.close();
     if (actorChanged || !session?.permissions.includes("media") || !session.permissions.includes("models")) this.safety.managementSetProjectionPreview(false);
@@ -159,7 +265,7 @@ export class ManagementWorkspace {
     if (this.ui) this.updateContext(this.safety.getManagementContext());
   }
   private updateContext(context: ManagementSceneContext): void {
-    if (!this.ui) return;
+    if (!this.ui || !this.active) return;
     this.refreshAnchors(); this.syncMachinery();
     if(this.mode==='scene'&&!this.openedScene&&context.models.length&&this.safety.debugStats().data){this.openedScene=true;this.safety.managementHome();}
     const sceneProject = !this.data || this.data.projectId === "safety:project";
@@ -182,28 +288,33 @@ export class ManagementWorkspace {
       projectId: this.data?.projectId ?? 'safety:project', actorId: this.session?.userId,
       records: this.data?.collections.resources ?? [],
       canView: !!this.session?.permissions.includes('models') && this.data?.projectId === 'safety:project',
-      canEdit: !!this.session?.permissions.includes('models') && !!this.session?.permissions.includes('resource'),
-      active: this.active && this.mode === 'scene',
+      canEdit: this.data?.projectId === 'safety:project' && !!this.session?.permissions.includes('models') && !!this.session?.permissions.includes('resource'),
+      active: !this.disposed && (!this.active || this.mode === 'scene'),
     });
+    this.workbench.onChange?.();
   }
   private async mutateMachinery(type: ManagementCommandType, id: string, revision: number | undefined, payload: { machinery?: MachineryMetadata; [key: string]: unknown }): Promise<void> {
     const projectId = this.data?.projectId, actorId = this.session?.userId;
-    if (!this.active || projectId !== 'safety:project' || !this.session?.permissions.includes('models') || !this.session.permissions.includes('resource')) throw new Error('当前项目或账号没有机械布置权限');
+    if (this.disposed || projectId !== 'safety:project' || !this.session?.permissions.includes('models') || !this.session.permissions.includes('resource')) throw new Error('当前项目或账号没有机械布置权限');
     const signature = JSON.stringify([projectId, actorId, type, id, revision, payload]);
     if (this.machineryReceipt?.signature !== signature) this.machineryReceipt = { signature, key: crypto.randomUUID() };
-    const key = this.machineryReceipt.key;
+    const key = this.machineryReceipt.key, generation = this.machineryContextGeneration;
+    this.machineryMutationCount++;
+    try {
     const response = await fetch(`${MANAGEMENT_API}/commands`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Cesium-Library': '1' }, signal: this.events.signal,
       body: JSON.stringify({ projectId, type, id, expectedRevision: revision, payload, idempotencyKey: key }),
     });
     const result = await response.json();
+    if (this.disposed || generation !== this.machineryContextGeneration || this.data?.projectId !== projectId || this.session?.userId !== actorId) return;
     if (!response.ok) {
-      if (response.status === 401 && this.session?.userId === actorId) this.sessionChanged(null);
+      if ([401,403].includes(response.status) && this.session?.userId === actorId) this.ui.invalidateAccess();
       throw Object.assign(new Error(result.error || '机械保存失败，输入已保留'), { status: response.status, current: result.current });
     }
     if (this.machineryReceipt?.key === key) this.machineryReceipt = undefined;
-    if (!this.active || this.data?.projectId !== projectId || this.session?.userId !== actorId) return;
+    if (this.disposed || generation !== this.machineryContextGeneration || this.data?.projectId !== projectId || this.session?.userId !== actorId) return;
     this.ui.acceptExternalSnapshot(result as ManagementSnapshot);
+    } finally { this.machineryMutationCount--; }
   }
   private guardNavigation(): boolean {
     if (this.machinery?.hasDraft || this.machinery?.isPicking) { this.machinery.open(); this.message('请先保存或取消机械布置草稿。'); return false; }
@@ -277,6 +388,7 @@ export class ManagementWorkspace {
     this.viewer.camera.flyTo({destination:cartesian(view.position),orientation:{direction:cartesian(view.direction),up:cartesian(view.up)},duration:1});
   }
   private async sceneAction(action: string, args: Record<string, unknown> = {}): Promise<void | boolean> {
+    if (!this.active) return false;
     if (action === 'machinery') {
       if (!this.changeMode('scene')) return false;
       this.safety.spatial.requestClose(() => {
@@ -435,5 +547,5 @@ export class ManagementWorkspace {
     this.messageTimer=setTimeout(()=>{this.feedback.hidden=true},7000);
   }
   debugStats() {return{active:this.active,mode:this.mode,selection:this.selection,measurement:!!this.measurement,backViews:this.backViews.length,viewerCount:document.querySelectorAll('#cesiumContainer canvas').length,videoCount:document.querySelectorAll('video').length,listeners:{preRender:this.viewer.scene.preRender.numberOfListeners,postRender:this.viewer.scene.postRender.numberOfListeners,clock:this.viewer.clock.onTick.numberOfListeners,cameraChanged:this.viewer.camera.changed.numberOfListeners},scene:this.safety.debugStats()};}
-  dispose():void {this.close();this.events.abort();clearTimeout(this.messageTimer);this.ui.dispose();this.anchorSelector.destroy();this.feedback.remove();this.layersDialog.remove();this.videoDiagnostics.dispose();this.machinery.dispose();}
+  dispose():void {if(this.disposed)return;this.disposed=true;this.close();clearInterval(this.machineryRefreshTimer);clearTimeout(this.sessionExpiryTimer);this.events.abort();clearTimeout(this.messageTimer);this.ui.dispose();this.anchorSelector.destroy();this.feedback.remove();this.layersDialog.remove();this.videoDiagnostics.dispose();this.machinery.dispose();}
 }

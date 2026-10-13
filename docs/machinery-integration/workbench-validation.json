@@ -1,0 +1,596 @@
+{
+  "classification": "actual-original-workbench-ui-with-isolated-data",
+  "startedAt": "2026-10-13T03:02:44.797Z",
+  "dataDir": "isolated tmp/machinery-workbench-*; no production project data used",
+  "checks": [
+    {
+      "id": "root-entry",
+      "title": "Open the original workbench at / without a fullscreen management redirect",
+      "status": "passed",
+      "startedAt": "2026-10-13T03:02:45.367Z",
+      "finishedAt": "2026-10-13T03:02:50.814Z",
+      "evidence": {
+        "url": "http://127.0.0.1:5173/",
+        "canvasCount": 1,
+        "editorActivation": {
+          "sourceChanges": [
+            {
+              "name": "video-ar-fusion",
+              "before": true,
+              "after": false,
+              "stillPresent": true,
+              "entityCount": 0
+            }
+          ],
+          "syntheticProjectSourcePreserved": true
+        },
+        "fixtureNote": "The project-content sentinel is a synthetic real Cesium CustomDataSource; no production imports or videos are used."
+      }
+    },
+    {
+      "id": "create-crane",
+      "title": "Create, place and save a crane from the original machinery menu",
+      "status": "passed",
+      "startedAt": "2026-10-13T03:02:50.814Z",
+      "finishedAt": "2026-10-13T03:02:54.700Z",
+      "evidence": {
+        "recordId": "equipment:542ed57d-9b5a-4139-bf39-a550cf501d17",
+        "machinery": {
+          "schemaVersion": 1,
+          "assetId": "crane",
+          "assetVersion": "2026-10-13-v1",
+          "proportional": true,
+          "parameters": {
+            "overall_scale": 4,
+            "overall_height_m": 12.944460499835504,
+            "body_height_m": 1.375872841208249,
+            "boom_length_m": 12.26360224150498,
+            "outrigger_lateral_m": 2.319999999999969,
+            "outrigger_longitudinal_m": 1.9008001003265367
+          },
+          "placement": {
+            "longitude": 116.391,
+            "latitude": 39.907,
+            "height": 0,
+            "heading": 0
+          },
+          "visible": true
+        }
+      }
+    },
+    {
+      "id": "create-pile",
+      "title": "Create, place and save a piling rig from the original machinery menu",
+      "status": "passed",
+      "startedAt": "2026-10-13T03:02:54.701Z",
+      "finishedAt": "2026-10-13T03:03:02.847Z",
+      "evidence": {
+        "recordId": "equipment:952c4f20-a646-455f-9615-fc09b12ceb4b",
+        "machinery": {
+          "schemaVersion": 1,
+          "assetId": "pile",
+          "assetVersion": "2026-10-13-v1",
+          "proportional": true,
+          "parameters": {
+            "overall_scale": 4,
+            "body_height_m": 1.333604325490034,
+            "total_height_m": 7.9039475638842704
+          },
+          "placement": {
+            "longitude": 116.39115000000001,
+            "latitude": 39.907,
+            "height": 0,
+            "heading": 90
+          },
+          "visible": true
+        }
+      }
+    },
+    {
+      "id": "create-excavator",
+      "title": "Create, place and save an excavator from the original machinery menu",
+      "status": "passed",
+      "startedAt": "2026-10-13T03:03:02.847Z",
+      "finishedAt": "2026-10-13T03:03:11.380Z",
+      "evidence": {
+        "recordId": "equipment:1c65ac8c-d70d-4ac8-ace8-45b8c2737b4e",
+        "machinery": {
+          "schemaVersion": 1,
+          "assetId": "excavator",
+          "assetVersion": "2026-10-13-v1",
+          "proportional": true,
+          "parameters": {
+            "overall_scale": 1,
+            "overall_height_m": 5.40582724161427,
+            "body_height_m": 3.04186663301146
+          },
+          "placement": {
+            "longitude": 116.3913,
+            "latitude": 39.907,
+            "height": 0,
+            "heading": 180
+          },
+          "visible": true
+        }
+      }
+    },
+    {
+      "id": "background-isolation",
+      "title": "Hidden management refresh and machinery saves preserve the original scene camera and render loop",
+      "status": "passed",
+      "startedAt": "2026-10-13T03:03:11.380Z",
+      "evidence": {
+        "renderLoopUnchanged": true,
+        "cameraUnchanged": true,
+        "primitivesUnchanged": true,
+        "sourcesUnchanged": true,
+        "imageryUnchanged": true,
+        "originalCounts": {
+          "primitives": 2,
+          "sources": 11,
+          "imagery": 1
+        },
+        "sourceDetails": [
+          {
+            "name": "video-ar-fusion",
+            "stillPresent": true,
+            "before": false,
+            "after": false,
+            "entityCount": 0
+          },
+          {
+            "name": "地下工程工具",
+            "stillPresent": true,
+            "before": true,
+            "after": true,
+            "entityCount": 0
+          },
+          {
+            "name": "基坑监测与模型",
+            "stillPresent": true,
+            "before": true,
+            "after": true,
+            "entityCount": 0
+          },
+          {
+            "name": "全局标绘",
+            "stillPresent": true,
+            "before": true,
+            "after": true,
+            "entityCount": 0
+          },
+          {
+            "name": "3维汇报空间标注",
+            "stillPresent": true,
+            "before": false,
+            "after": false,
+            "entityCount": 0
+          },
+          {
+            "name": "电子沙盘施工场布",
+            "stillPresent": true,
+            "before": false,
+            "after": false,
+            "entityCount": 0
+          },
+          {
+            "name": "电子沙盘贴地范围",
+            "stillPresent": true,
+            "before": false,
+            "after": false,
+            "entityCount": 0
+          },
+          {
+            "name": "施工安全大屏 · 展示覆盖层",
+            "stillPresent": true,
+            "before": false,
+            "after": false,
+            "entityCount": 2
+          },
+          {
+            "name": "人工空间对象",
+            "stillPresent": true,
+            "before": false,
+            "after": false,
+            "entityCount": 0
+          },
+          {
+            "name": "空间标绘草稿",
+            "stillPresent": true,
+            "before": false,
+            "after": false,
+            "entityCount": 0
+          },
+          {
+            "name": "验收哨兵 · 模拟工程内容",
+            "stillPresent": true,
+            "before": true,
+            "after": true,
+            "entityCount": 1
+          }
+        ],
+        "syntheticProjectSourcePreserved": true,
+        "cameraBefore": {
+          "position": [
+            -5169952.778399037,
+            19294526.44171708,
+            13962242.763696924
+          ],
+          "direction": [
+            0.21166515012732942,
+            -0.7899450944668871,
+            -0.5754864133489825
+          ],
+          "up": [
+            0.14894684397245797,
+            -0.5558771893322487,
+            0.8178113401333609
+          ]
+        },
+        "cameraAfter": {
+          "position": [
+            -5169952.778399037,
+            19294526.44171708,
+            13962242.763696924
+          ],
+          "direction": [
+            0.21166515012732942,
+            -0.7899450944668871,
+            -0.5754864133489825
+          ],
+          "up": [
+            0.14894684397245797,
+            -0.5558771893322487,
+            0.8178113401333609
+          ]
+        }
+      },
+      "finishedAt": "2026-10-13T03:03:11.400Z"
+    },
+    {
+      "id": "cross-tabs",
+      "title": "Saved machinery remains visible when switching to CAD and photogrammetry",
+      "status": "passed",
+      "startedAt": "2026-10-13T03:03:11.400Z",
+      "finishedAt": "2026-10-13T03:03:14.945Z",
+      "evidence": {
+        "renderedIds": [
+          "equipment:542ed57d-9b5a-4139-bf39-a550cf501d17",
+          "equipment:952c4f20-a646-455f-9615-fc09b12ceb4b",
+          "equipment:1c65ac8c-d70d-4ac8-ace8-45b8c2737b4e"
+        ],
+        "visibleIds": [
+          "equipment:542ed57d-9b5a-4139-bf39-a550cf501d17",
+          "equipment:952c4f20-a646-455f-9615-fc09b12ceb4b",
+          "equipment:1c65ac8c-d70d-4ac8-ace8-45b8c2737b4e"
+        ],
+        "sceneVisible": true,
+        "workbench": {
+          "projectId": "safety:project",
+          "canView": true,
+          "canEdit": true,
+          "records": [
+            {
+              "name": "工作台验收-excavator-1791860582847",
+              "kind": "equipment",
+              "unit": "台",
+              "availability": "available",
+              "qualificationEvidenceIds": [],
+              "id": "equipment:1c65ac8c-d70d-4ac8-ace8-45b8c2737b4e",
+              "projectId": "safety:project",
+              "revision": 2,
+              "status": "active",
+              "createdAt": "2026-10-13T03:03:03.685Z",
+              "updatedAt": "2026-10-13T03:03:11.301Z",
+              "createdBy": "local-owner",
+              "machinery": {
+                "schemaVersion": 1,
+                "assetId": "excavator",
+                "assetVersion": "2026-10-13-v1",
+                "proportional": true,
+                "parameters": {
+                  "overall_scale": 1,
+                  "overall_height_m": 5.40582724161427,
+                  "body_height_m": 3.04186663301146
+                },
+                "placement": {
+                  "longitude": 116.3913,
+                  "latitude": 39.907,
+                  "height": 0,
+                  "heading": 180
+                },
+                "visible": true
+              }
+            },
+            {
+              "name": "工作台验收-crane-1791860570814",
+              "kind": "equipment",
+              "unit": "台",
+              "availability": "available",
+              "qualificationEvidenceIds": [],
+              "id": "equipment:542ed57d-9b5a-4139-bf39-a550cf501d17",
+              "projectId": "safety:project",
+              "revision": 2,
+              "status": "active",
+              "createdAt": "2026-10-13T03:02:51.763Z",
+              "updatedAt": "2026-10-13T03:02:53.984Z",
+              "createdBy": "local-owner",
+              "machinery": {
+                "schemaVersion": 1,
+                "assetId": "crane",
+                "assetVersion": "2026-10-13-v1",
+                "proportional": true,
+                "parameters": {
+                  "overall_scale": 4,
+                  "overall_height_m": 12.944460499835504,
+                  "body_height_m": 1.375872841208249,
+                  "boom_length_m": 12.26360224150498,
+                  "outrigger_lateral_m": 2.319999999999969,
+                  "outrigger_longitudinal_m": 1.9008001003265367
+                },
+                "placement": {
+                  "longitude": 116.391,
+                  "latitude": 39.907,
+                  "height": 0,
+                  "heading": 0
+                },
+                "visible": true
+              }
+            },
+            {
+              "name": "工作台验收-pile-1791860574701",
+              "kind": "equipment",
+              "unit": "台",
+              "availability": "available",
+              "qualificationEvidenceIds": [],
+              "id": "equipment:952c4f20-a646-455f-9615-fc09b12ceb4b",
+              "projectId": "safety:project",
+              "revision": 2,
+              "status": "active",
+              "createdAt": "2026-10-13T03:03:02.458Z",
+              "updatedAt": "2026-10-13T03:03:02.786Z",
+              "createdBy": "local-owner",
+              "machinery": {
+                "schemaVersion": 1,
+                "assetId": "pile",
+                "assetVersion": "2026-10-13-v1",
+                "proportional": true,
+                "parameters": {
+                  "overall_scale": 4,
+                  "body_height_m": 1.333604325490034,
+                  "total_height_m": 7.9039475638842704
+                },
+                "placement": {
+                  "longitude": 116.39115000000001,
+                  "latitude": 39.907,
+                  "height": 0,
+                  "heading": 90
+                },
+                "visible": true
+              }
+            }
+          ],
+          "status": "",
+          "panelOpen": false,
+          "hasDraft": false,
+          "picking": false
+        },
+        "useDefaultRenderLoop": true
+      }
+    },
+    {
+      "id": "object-visibility",
+      "title": "The original object list changes visibility of the same persisted instance",
+      "status": "passed",
+      "startedAt": "2026-10-13T03:03:14.946Z",
+      "finishedAt": "2026-10-13T03:03:15.184Z",
+      "evidence": {
+        "recordId": "equipment:542ed57d-9b5a-4139-bf39-a550cf501d17",
+        "visible": true
+      }
+    },
+    {
+      "id": "object-locate",
+      "title": "The original object list locates the same existing instance",
+      "status": "passed",
+      "startedAt": "2026-10-13T03:03:15.184Z",
+      "finishedAt": "2026-10-13T03:03:17.859Z",
+      "evidence": {
+        "cameraPosition": [
+          -2220495.254969067,
+          4492651.809357503,
+          4158018.36723989
+        ]
+      }
+    },
+    {
+      "id": "object-edit",
+      "title": "The original object list edits its existing resource without duplication",
+      "status": "passed",
+      "startedAt": "2026-10-13T03:03:17.859Z",
+      "finishedAt": "2026-10-13T03:03:37.832Z",
+      "evidence": {
+        "recordId": "equipment:542ed57d-9b5a-4139-bf39-a550cf501d17",
+        "resourceCount": 3,
+        "overallScale": 5
+      }
+    },
+    {
+      "id": "draft-navigation",
+      "title": "A machinery draft blocks a workbench tab change until discarded",
+      "status": "passed",
+      "startedAt": "2026-10-13T03:03:37.832Z",
+      "finishedAt": "2026-10-13T03:03:40.375Z",
+      "evidence": {
+        "savedScale": 5,
+        "rejectedDraftScale": 6,
+        "rejectedTabs": [
+          "cad",
+          "markup"
+        ],
+        "selectedResourcePreserved": "equipment:542ed57d-9b5a-4139-bf39-a550cf501d17"
+      }
+    },
+    {
+      "id": "management-roundtrip",
+      "title": "Management scene edits are reflected in the original workbench",
+      "status": "passed",
+      "startedAt": "2026-10-13T03:03:40.375Z",
+      "finishedAt": "2026-10-13T03:04:02.790Z",
+      "evidence": {
+        "recordId": "equipment:542ed57d-9b5a-4139-bf39-a550cf501d17",
+        "overallScale": 7
+      }
+    },
+    {
+      "id": "single-runtime",
+      "title": "The workbench and management share one Viewer, panel and machinery scene",
+      "status": "passed",
+      "startedAt": "2026-10-13T03:04:02.790Z",
+      "finishedAt": "2026-10-13T03:04:02.820Z",
+      "evidence": {
+        "sameViewer": true,
+        "samePanel": true,
+        "safetySameViewer": true,
+        "sourceCount": 1
+      }
+    },
+    {
+      "id": "markup-draft-navigation",
+      "title": "A one-point markup draft survives a rejected switch to machinery",
+      "status": "passed",
+      "startedAt": "2026-10-13T03:04:02.820Z",
+      "evidence": {
+        "preservedDraftEntityIds": [
+          "markup-draft-ac86c933-a22a-4b15-bac3-e024e6184457",
+          "markup-draft-vertex-7f0c59a8-3437-4e13-8455-80a61efa8c9e"
+        ],
+        "pointCount": 1,
+        "renderLoopActive": true
+      },
+      "finishedAt": "2026-10-13T03:04:14.017Z"
+    },
+    {
+      "id": "root-reload",
+      "title": "Reloading / restores exact saved dimensions, placements and visibility",
+      "status": "passed",
+      "startedAt": "2026-10-13T03:04:14.017Z",
+      "finishedAt": "2026-10-13T03:04:30.913Z",
+      "evidence": [
+        {
+          "id": "equipment:1c65ac8c-d70d-4ac8-ace8-45b8c2737b4e",
+          "revision": 2,
+          "machinery": {
+            "schemaVersion": 1,
+            "assetId": "excavator",
+            "assetVersion": "2026-10-13-v1",
+            "proportional": true,
+            "parameters": {
+              "overall_scale": 1,
+              "overall_height_m": 5.40582724161427,
+              "body_height_m": 3.04186663301146
+            },
+            "placement": {
+              "longitude": 116.3913,
+              "latitude": 39.907,
+              "height": 0,
+              "heading": 180
+            },
+            "visible": true
+          }
+        },
+        {
+          "id": "equipment:542ed57d-9b5a-4139-bf39-a550cf501d17",
+          "revision": 6,
+          "machinery": {
+            "schemaVersion": 1,
+            "assetId": "crane",
+            "assetVersion": "2026-10-13-v1",
+            "proportional": true,
+            "parameters": {
+              "overall_scale": 7,
+              "overall_height_m": 22.652805874712133,
+              "body_height_m": 2.407777472114436,
+              "boom_length_m": 21.461303922633714,
+              "outrigger_lateral_m": 4.059999999999946,
+              "outrigger_longitudinal_m": 3.326400175571439
+            },
+            "placement": {
+              "longitude": 116.391,
+              "latitude": 39.907,
+              "height": 0,
+              "heading": 0
+            },
+            "visible": true
+          }
+        },
+        {
+          "id": "equipment:952c4f20-a646-455f-9615-fc09b12ceb4b",
+          "revision": 2,
+          "machinery": {
+            "schemaVersion": 1,
+            "assetId": "pile",
+            "assetVersion": "2026-10-13-v1",
+            "proportional": true,
+            "parameters": {
+              "overall_scale": 4,
+              "body_height_m": 1.333604325490034,
+              "total_height_m": 7.9039475638842704
+            },
+            "placement": {
+              "longitude": 116.39115000000001,
+              "latitude": 39.907,
+              "height": 0,
+              "heading": 90
+            },
+            "visible": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "invalid-session",
+      "title": "A revoked authenticated session clears instances, picking and drafts",
+      "status": "passed",
+      "startedAt": "2026-10-13T03:04:30.918Z",
+      "finishedAt": "2026-10-13T03:04:35.602Z",
+      "evidence": {
+        "sessionHttpStatus": 401,
+        "state": {
+          "renderedIds": [],
+          "visibleIds": [],
+          "sceneVisible": false,
+          "workbench": {
+            "canView": false,
+            "canEdit": false,
+            "records": [],
+            "status": "请通过“项目统筹平台”登录或核对当前项目权限。",
+            "panelOpen": false,
+            "hasDraft": false,
+            "picking": false
+          },
+          "useDefaultRenderLoop": true
+        }
+      }
+    }
+  ],
+  "screenshots": [
+    "workbench-module.png"
+  ],
+  "screenshotErrors": [],
+  "pageErrors": [],
+  "consoleErrors": [
+    {
+      "check": "invalid-session",
+      "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    },
+    {
+      "check": "invalid-session",
+      "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    }
+  ],
+  "origin": "http://127.0.0.1:5173",
+  "result": "passed",
+  "finishedAt": "2026-10-13T03:04:35.602Z",
+  "renderer": "Chromium with SwiftShader WebGL2; not a field GPU performance measurement"
+}
