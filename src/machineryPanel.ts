@@ -30,6 +30,8 @@ export type MachineryPanelOptions = {
   createResource?: (name: string) => Promise<{ id: string } | void>;
   onPickingChange?: (picking: boolean) => void;
   onOpenChange?: (open: boolean) => void;
+  /** Shares the current displayed draft with dependent spatial assessments. */
+  onPreviewChange?: (recordId: string, state?: MachineryState) => void;
   pickPosition?: (position: Cartesian2) => MachineryPlacementPick | undefined;
 };
 
@@ -189,6 +191,7 @@ export class MachineryPanel {
   }
   private clearDraft() {
     this.clearAsync(); this.scene.clearPreview(); this.dirty = false;
+    if (this.selectedId) this.options.onPreviewChange?.(this.selectedId);
     this.asset = undefined; this.draft = undefined; this.editOrder = [];
     this.pendingAction = undefined; this.find<HTMLElement>('[data-role="confirm"]').hidden = true;
   }
@@ -464,7 +467,10 @@ export class MachineryPanel {
     const token = ++this.previewGeneration, generation = this.generation;
     try {
       await this.scene.preview(this.selectedId, this.draft as MachineryState, this.asset);
-      if (token === this.previewGeneration && generation === this.generation && !this.destroyed) this.message("正在显示未保存预览。点击“保存到资源”保留修改。");
+      if (token === this.previewGeneration && generation === this.generation && !this.destroyed) {
+        this.options.onPreviewChange?.(this.selectedId, copy(this.draft as MachineryState));
+        this.message("正在显示未保存预览。点击“保存到资源”保留修改。");
+      }
     } catch (error) { if (token === this.previewGeneration && generation === this.generation) this.message("预览未更新：" + errorText(error), true); }
     this.updateControls();
   }
@@ -494,6 +500,7 @@ export class MachineryPanel {
       await this.options.save(id, state, revision);
       if (this.destroyed || generation !== this.generation) return;
       this.dirty = false; this.scene.clearPreview();
+      this.options.onPreviewChange?.(id);
       this.message("机械实例已保存到资源台账。");
       const latest = this.record();
       if (latest) this.selectedRevision = latest.revision;

@@ -91,6 +91,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <button class="tab active" data-tab="cad" data-label="CAD 图纸" data-menu-icon="⌁" aria-current="page">CAD 图纸</button>
         <button class="tab" data-tab="models" data-label="工程模型" data-menu-icon="◆">工程模型</button>
         <button class="tab" data-tab="machinery" data-label="施工机械" data-menu-icon="⚙">施工机械</button>
+        <button class="tab" data-tab="rail-safety" data-label="邻近营业线管控" data-menu-icon="◇">邻近营业线管控</button>
         <button class="tab" data-tab="tiles" data-label="倾斜摄影" data-menu-icon="▦">倾斜摄影</button>
         <button class="tab" data-tab="gis" data-label="GIS 数据" data-menu-icon="◎">GIS 数据</button>
         <button class="tab" data-tab="videoar" data-label="视频 AR" data-menu-icon="◉">视频 AR</button>
@@ -157,6 +158,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <p class="hint" id="digitalTwinStorageStatus">数据目录元数据保存在本机浏览器；模型、视频和照片不会重复写入目录。</p>
         </section>
         <section class="panel" data-panel="machinery"><h2>施工机械</h2><p>在当前 Cesium 场景放置吊机、桩机与挖机。右侧面板编辑尺寸与位置，保存到同一工程资源台账。</p><p>关闭编辑面板或切换功能后，已保存的机械仍显示在场景中。可在“图层与标绘”区域定位和管理机械。</p></section>
+        <section class="panel" data-panel="rail-safety"><h2>邻近营业线管控</h2><p>定义防护人员站位与责任区、铁路设备安全限界，并选择机械检查假设倾覆的地面影响范围。</p><p>尺寸单位 m。范围与人员位置由用户定义；相交结果为当前参数下的平面几何筛查。</p><button type="button" id="reopenRailSafety" class="text-button">打开管控面板</button></section>
         <section class="panel active" data-panel="cad">
           <div class="dropzone" id="cadDropzone">
             <input id="cadFile" type="file" accept=".dwg,.cadimport" hidden />
@@ -2245,7 +2247,7 @@ let requestedMachineryRecord: string | undefined;
 document.addEventListener('click', event => {
   const target = (event.target as Element).closest<HTMLElement>('.tab,#openSafetyWorkspace,#openMarkupWorkspace,#openWorkbenchMachinery,[data-machinery-action="edit"]');
   if (!target || managementWorkspace?.isOpen) return;
-  const machineryEntry = target.dataset.tab === 'machinery' || target.id === 'openWorkbenchMachinery' || target.dataset.machineryAction === 'edit';
+  const machineryEntry = ['machinery', 'rail-safety'].includes(target.dataset.tab || '') || target.id === 'openWorkbenchMachinery' || target.dataset.machineryAction === 'edit';
   const markupDraft = document.querySelector<HTMLButtonElement>('#markupCancelDrawing');
   if (machineryEntry && markupDraft && !markupDraft.disabled) {
     event.preventDefault(); event.stopImmediatePropagation(); toast('请先完成或取消当前标绘，再打开施工机械。', true); return;
@@ -2263,6 +2265,12 @@ document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => tab.addEve
       const workspace = await ensureManagementWorkspace();
       if (navigation !== workbenchNavigationGeneration || !await workspace.openWorkbenchMachinery(recordId, () => navigation === workbenchNavigationGeneration)) return;
       if (navigation !== workbenchNavigationGeneration) return;
+    } catch (error) { toast(error instanceof Error ? error.message : String(error), true); return; }
+  } else if (tab.dataset.tab === 'rail-safety') {
+    const navigation = workbenchNavigationGeneration;
+    try {
+      const workspace = await ensureManagementWorkspace();
+      if (navigation !== workbenchNavigationGeneration || !await workspace.openWorkbenchRailSafety(() => navigation === workbenchNavigationGeneration)) return;
     } catch (error) { toast(error instanceof Error ? error.message : String(error), true); return; }
   } else if (managementWorkspace && !managementWorkspace.prepareWorkbenchNavigation()) return;
   const previousTab = document.querySelector<HTMLButtonElement>(".tab.active")?.dataset.tab;
@@ -2793,14 +2801,25 @@ async function ensureManagementWorkspace(): Promise<ManagementWorkspace> {
         onChange: renderWorkbenchMachinery,
         onPanelChange: setWorkbenchMachineryPanelOpen,
         pickPosition: pixel => {
-          const picked = viewer.scene.pick(pixel);
-          const imported = imports.find(item => item.visible && (item.kind === '3D Tiles' || item.kind === 'Model') &&
-            (picked?.primitive === item.resource || picked?.primitive?.tileset === item.resource || picked?.tileset === item.resource));
-          if (!imported || !viewer.scene.pickPositionSupported) return undefined;
-          const point = viewer.scene.pickPosition(pixel);
-          if (!point || ![point.x, point.y, point.z].every(Number.isFinite)) return undefined;
-          const position = Cartographic.fromCartesian(point);
-          return { longitude: CesiumMath.toDegrees(position.longitude), latitude: CesiumMath.toDegrees(position.latitude), height: position.height, source: 'model' as const };
+          // Imported engineering meshes are primitives; transient entity overlays must
+          // not become a ground position, including a previously rendered depth frame.
+          const sources = Array.from({ length: viewer.dataSources.length }, (_, i) => viewer.dataSources.get(i));
+          const visibility = sources.map(source => source.show), entitiesVisible = viewer.entities.show;
+          try {
+            for (const source of sources) source.show = false;
+            viewer.entities.show = false; viewer.render();
+            const picked = viewer.scene.pick(pixel);
+            const imported = imports.find(item => item.visible && (item.kind === '3D Tiles' || item.kind === 'Model') &&
+              (picked?.primitive === item.resource || picked?.primitive?.tileset === item.resource || picked?.tileset === item.resource));
+            if (!imported || !viewer.scene.pickPositionSupported) return undefined;
+            const point = viewer.scene.pickPosition(pixel);
+            if (!point || ![point.x, point.y, point.z].every(Number.isFinite)) return undefined;
+            const position = Cartographic.fromCartesian(point);
+            return { longitude: CesiumMath.toDegrees(position.longitude), latitude: CesiumMath.toDegrees(position.latitude), height: position.height, source: 'model' as const };
+          } finally {
+            sources.forEach((source, index) => { source.show = visibility[index]; });
+            viewer.entities.show = entitiesVisible; viewer.scene.requestRender();
+          }
         },
       });
       if (import.meta.env.DEV) Object.assign(window, { __managementWorkspace: managementWorkspace });
@@ -2874,6 +2893,7 @@ async function openSafetyWorkspace(): Promise<void> {
   } catch (error) { toast(`项目统筹平台打开失败：${error instanceof Error ? error.message : String(error)}`, true); }
 }
 $('#openWorkbenchMachinery').addEventListener('click', () => document.querySelector<HTMLButtonElement>('.tab[data-tab="machinery"]')?.click());
+$('#reopenRailSafety').addEventListener('click', () => document.querySelector<HTMLButtonElement>('.tab[data-tab="rail-safety"]')?.click());
 $('#machineryAccountEntry').addEventListener('click', () => void openSafetyWorkspace());
 $("#openSafetyWorkspace").addEventListener("click", () => void openSafetyWorkspace());
 void projectLibrary.start().then(() => {

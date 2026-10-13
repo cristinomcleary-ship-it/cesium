@@ -3,6 +3,7 @@ import { Cartesian2, Cartesian3, Color, ConstantPositionProperty, ConstantProper
 import { ManagementStudio } from './managementStudio';
 import { readMachineryState, type MachineryPlacementPick } from './machineryScene';
 import { MachineryPanel } from './machineryPanel';
+import { RailSafetyPanel } from './railSafetyPanel';
 import type { MachineryMetadata } from './machineryTypes';
 import { MANAGEMENT_API, type ManagementCommandType } from './managementTypes';
 import type { ManagementSession, ManagementSnapshot } from './managementTypes';
@@ -32,6 +33,7 @@ export class ManagementWorkspace {
   private readonly layersDialog = document.createElement('dialog');
   private readonly videoDiagnostics: VideoDiagnostics;
   private readonly machinery: MachineryPanel;
+  private readonly railSafety: RailSafetyPanel;
   private machineryReceipt?: { signature: string; key: string };
   private readonly machineryRefreshTimer: ReturnType<typeof setInterval>;
   private sessionExpiryTimer?: ReturnType<typeof setTimeout>;
@@ -89,6 +91,7 @@ export class ManagementWorkspace {
         return { id };
       },
       onOpenChange: open => { if (!this.active) this.workbench.onPanelChange?.(open); },
+      onPreviewChange: (id, state) => this.railSafety?.setMachineryPreview(id, state),
       pickPosition: pixel => {
         if (!this.active) return this.workbench.pickPosition?.(pixel);
         const hit = strictModelSurfacePick(this.viewer, pixel, this.safety.getManagementModels(), () => this.safety.effects.suspendOverlaysForPicking(), this.data?.projectId);
@@ -96,6 +99,24 @@ export class ManagementWorkspace {
       },
       onPickingChange: picking => {
         if (picking) { if (this.active) { this.safety.managementPause(); this.safety.managementSetProjectionPreview(false); } this.viewer.camera.cancelFlight(); }
+        if (this.active) { this.safety.effects.setPickingEnabled(!picking); this.safety.effects.setAuthoring(picking); }
+      },
+    });
+    this.railSafety = new RailSafetyPanel({ viewer: this.viewer, host,
+      save: (id, name, definition, revision, taskId) => this.mutateMachinery('railSafety.save', id, revision, { name, definition, taskId, reason: '用户编辑邻近营业线管控定义' }),
+      remove: (id, revision) => this.mutateMachinery('railSafety.remove', id, revision, { reason: '用户移除管控定义，历史记录保留' }),
+      editMachinery: id => {
+        if (!this.railSafety.close()) return;
+        this.machinery.open(); void this.machinery.selectResource(id);
+      },
+      pickPosition: pixel => {
+        if (!this.active) return this.workbench.pickPosition?.(pixel);
+        const hit = strictModelSurfacePick(this.viewer, pixel, this.safety.getManagementModels(), () => this.safety.effects.suspendOverlaysForPicking(), this.data?.projectId);
+        return hit.ok ? { ...hit.position, source: 'model' as const } : undefined;
+      },
+      onOpenChange: open => { if (!this.active) this.workbench.onPanelChange?.(open); },
+      onPickingChange: picking => {
+        if (picking) { this.viewer.camera.cancelFlight(); if (this.active) { this.safety.managementPause(); this.safety.managementSetProjectionPreview(false); } }
         if (this.active) { this.safety.effects.setPickingEnabled(!picking); this.safety.effects.setAuthoring(picking); }
       },
     });
@@ -118,7 +139,7 @@ export class ManagementWorkspace {
     document.addEventListener('keydown', e => { if (e.key === 'Escape') { if(this.measurement)this.endMeasurement(); if(this.anchorPicking)this.endAnchorPick(); } }, { signal: this.events.signal });
     this.anchorSelector = new ScreenSpaceEventHandler(this.viewer.canvas);
     this.anchorSelector.setInputAction(({position}: {position:Cartesian2})=>{
-      if(!this.active||this.mode!=='scene'||this.measurement||this.anchorPicking||this.machinery?.isPicking||this.safety.spatial.debugStats().visible)return;
+      if(!this.active||this.mode!=='scene'||this.measurement||this.anchorPicking||this.machinery?.isPicking||this.railSafety?.isPicking||this.safety.spatial.debugStats().visible)return;
       const hit=this.viewer.scene.pick(position),entity=hit?.id;
       const id=entity instanceof Entity ? entity.properties?.managementAnchorId?.getValue() : undefined;
       if(id&&this.anchorEntities.get(id)===entity){const selected={kind:'anchors',id};this.select(selected);this.ui.setExternalSelection(selected);}
@@ -126,6 +147,7 @@ export class ManagementWorkspace {
     this.viewer.canvas.addEventListener('wheel',()=>{if(this.active)this.viewer.camera.cancelFlight();},{signal:this.events.signal,passive:true});
     this.ui.setVisible(false);
     this.machinery.setPresentation('workbench');
+    this.railSafety.setPresentation('workbench');
     this.machineryRefreshTimer = setInterval(() => { if (!document.hidden && !this.machineryMutationCount) void this.refreshMachineryContext(); }, 10000);
     window.addEventListener('focus', () => { void this.refreshMachineryContext(); }, { signal: this.events.signal });
     document.addEventListener('visibilitychange', () => {
@@ -169,6 +191,10 @@ export class ManagementWorkspace {
   /** Root workbench navigation must not abandon an unsaved mechanical placement. */
   prepareWorkbenchNavigation(): boolean {
     if (this.active) return true;
+    if (this.railSafety.hasDraft || this.railSafety.isPicking || this.railSafety.isBusy) {
+      this.railSafety.open(); this.message('请先保存或取消管控草稿，或结束范围绘制。'); return false;
+    }
+    if (!this.railSafety.close()) return false;
     if (this.machinery.hasDraft || this.machinery.isPicking || this.machinery.isBusy) {
       this.machinery.open(); this.message('请先保存、取消机械草稿或结束位置点选。'); return false;
     }
@@ -177,6 +203,8 @@ export class ManagementWorkspace {
 
   async openWorkbenchMachinery(recordId?: string, isCurrent: () => boolean = () => true): Promise<boolean> {
     if (this.active) return false;
+    if (this.railSafety.hasDraft || this.railSafety.isPicking || this.railSafety.isBusy) { this.message('请先保存或取消管控草稿。'); return false; }
+    if (!this.railSafety.close()) return false;
     await this.refreshMachineryContext();
     if (this.disposed || this.active || !isCurrent()) return false;
     if (!this.getWorkbenchMachineryState().canView) {
@@ -185,6 +213,17 @@ export class ManagementWorkspace {
     this.machinery.setPresentation('workbench'); this.syncMachinery(); this.machinery.open();
     if (recordId) await this.machinery.selectResource(recordId);
     return this.machinery.isOpen;
+  }
+
+  async openWorkbenchRailSafety(isCurrent: () => boolean = () => true): Promise<boolean> {
+    if (this.active || !this.prepareWorkbenchNavigation()) return false;
+    await this.refreshMachineryContext();
+    if (this.disposed || this.active || !isCurrent()) return false;
+    if (!this.getWorkbenchMachineryState().canView) {
+      this.message(this.machineryStatus || '请先登录并核对模型查看权限。', true); return false;
+    }
+    this.railSafety.setPresentation('workbench'); this.syncMachinery(); this.railSafety.open();
+    return this.railSafety.isOpen;
   }
 
   async locateWorkbenchMachinery(recordId: string): Promise<void> {
@@ -210,7 +249,7 @@ export class ManagementWorkspace {
 
   async open(): Promise<void> {
     if (this.active || !this.prepareWorkbenchNavigation()) return;
-    this.workbench.onPanelChange?.(false); this.machinery.setPresentation('management');
+    this.workbench.onPanelChange?.(false); this.machinery.setPresentation('management'); this.railSafety.setPresentation('management');
     this.active = true; this.mode = 'management'; this.ui.setVisible(true);
     this.safety.attachManagementHost({ videoHost: this.ui.videoHost,
       onContext: context => this.updateContext(context), onSpatialSelected: id => this.spatialSelected(id),
@@ -233,7 +272,7 @@ export class ManagementWorkspace {
 
   close(): void {
     if (!this.active) return;
-    this.machinery.close(); this.active = false; this.machinery.setPresentation('workbench'); this.endMeasurement(); this.endAnchorPick(); this.layersDialog.close(); this.videoDiagnostics.close(); this.feedback.hidden = true;
+    this.machinery.close(); this.railSafety.close(); this.active = false; this.machinery.setPresentation('workbench'); this.railSafety.setPresentation('workbench'); this.endMeasurement(); this.endAnchorPick(); this.layersDialog.close(); this.videoDiagnostics.close(); this.feedback.hidden = true;
     this.safety.spatial.setManagementSelection(undefined); this.safety.spatial.setManagementTopic(undefined); this.topicSignature=""; this.clearAnchors(); this.safety.attachManagementHost(undefined);
     this.safety.setManagementResourceAccess({models:!!this.session?.permissions.includes('models'),files:!!this.session?.permissions.includes('files'),media:!!this.session?.permissions.includes('media')});
     this.safety.close(); this.ui.setVisible(false); this.syncMachinery();
@@ -291,6 +330,13 @@ export class ManagementWorkspace {
       canEdit: this.data?.projectId === 'safety:project' && !!this.session?.permissions.includes('models') && !!this.session?.permissions.includes('resource'),
       active: !this.disposed && (!this.active || this.mode === 'scene'),
     });
+    this.railSafety?.setContext({
+      projectId: this.data?.projectId ?? 'safety:project', actorId: this.session?.userId,
+      records: this.data?.collections.railSafety ?? [], resources: this.data?.collections.resources ?? [], tasks: this.data?.collections.tasks ?? [],
+      canView: !!this.session?.permissions.includes('models') && this.data?.projectId === 'safety:project',
+      canEdit: this.data?.projectId === 'safety:project' && !!this.session?.permissions.includes('models') && !!this.session?.permissions.includes('resource'),
+      active: !this.disposed && (!this.active || this.mode === 'scene'),
+    });
     this.workbench.onChange?.();
   }
   private async mutateMachinery(type: ManagementCommandType, id: string, revision: number | undefined, payload: { machinery?: MachineryMetadata; [key: string]: unknown }): Promise<void> {
@@ -317,6 +363,7 @@ export class ManagementWorkspace {
     } finally { this.machineryMutationCount--; }
   }
   private guardNavigation(): boolean {
+    if (this.railSafety?.hasDraft || this.railSafety?.isPicking || this.railSafety?.isBusy) { this.railSafety.open(); this.message('请先保存或取消邻近营业线管控草稿。'); return false; }
     if (this.machinery?.hasDraft || this.machinery?.isPicking) { this.machinery.open(); this.message('请先保存或取消机械布置草稿。'); return false; }
     if (this.measurement || this.anchorPicking) { this.message('请先结束当前取点或测量（Esc）。'); return false; }
     if (this.safety.spatial.debugStats().dirty) { this.message('请先完成、保存或取消当前几何草稿。'); return false; }
@@ -333,7 +380,7 @@ export class ManagementWorkspace {
   private applyMode(mode: 'management'|'scene'): void {
     this.mode = mode; this.ui.setViewMode(mode); this.safety.setManagementSceneVisible(mode === 'scene');
     if (mode === 'scene' && !this.openedScene && this.safety.debugStats().data && this.safety.getManagementContext().models.length) { this.openedScene = true; this.safety.managementHome(); if (this.selection) this.select(this.selection); }
-    if (mode !== 'scene') { this.safety.optimization.close(); this.machinery?.close(); }
+    if (mode !== 'scene') { this.safety.optimization.close(); this.machinery?.close(); this.railSafety?.close(); }
     for(const entity of this.anchorEntities.values())entity.show=mode==='scene'&&!!this.session?.permissions.includes('models');
     this.updateContext(this.safety.getManagementContext());
   }
@@ -389,16 +436,24 @@ export class ManagementWorkspace {
   }
   private async sceneAction(action: string, args: Record<string, unknown> = {}): Promise<void | boolean> {
     if (!this.active) return false;
+    if (action === 'rail-safety') {
+      if (!this.changeMode('scene') || !this.guardNavigation() || !this.machinery.close()) return false;
+      this.safety.spatial.requestClose(() => {
+        this.endMeasurement(); this.endAnchorPick(); this.safety.optimization.close(); this.videoDiagnostics.close();
+        this.safety.managementPause(); this.safety.managementSetProjectionPreview(false); this.syncMachinery(); this.railSafety.open();
+      });
+      return;
+    }
     if (action === 'machinery') {
-      if (!this.changeMode('scene')) return false;
+      if (!this.changeMode('scene') || !this.guardNavigation() || !this.railSafety.close()) return false;
       this.safety.spatial.requestClose(() => {
         this.endMeasurement(); this.endAnchorPick(); this.safety.optimization.close(); this.videoDiagnostics.close();
         this.safety.managementPause(); this.safety.managementSetProjectionPreview(false); this.syncMachinery(); this.machinery.open();
       });
       return;
     }
-    if (['home','return','restore-view','draw','edit-spatial','define-anchor','quality','measure','play-media','play','follow','import-media','source-settings','calibration','model-settings','import-model','video-diagnostics'].includes(action) && this.machinery?.isOpen) {
-      if (!this.guardNavigation() || !this.machinery.close()) return false;
+    if (['home','return','restore-view','draw','edit-spatial','define-anchor','quality','measure','play-media','play','follow','import-media','source-settings','calibration','model-settings','import-model','video-diagnostics'].includes(action) && (this.machinery?.isOpen || this.railSafety?.isOpen)) {
+      if (!this.guardNavigation() || !this.machinery.close() || !this.railSafety.close()) return false;
     }
     if(action==='topic'||action==='theme'){this.topic=String(args.topic||args.theme||'overview');this.topicTaskIds=Array.isArray(args.taskIds)?args.taskIds.filter((v):v is string=>typeof v==='string'):undefined;this.topicProgress=Array.isArray(args.taskProgress)?args.taskProgress as typeof this.topicProgress:[];this.applyTopic(this.safety.getManagementContext());return;}
     if (['play-media','play','follow','seek'].includes(action)&&(this.measurement||this.anchorPicking||this.safety.spatial.debugStats().visible))throw new Error('请先结束绘制、资料取点或测量，再播放或恢复跟随');
@@ -547,5 +602,5 @@ export class ManagementWorkspace {
     this.messageTimer=setTimeout(()=>{this.feedback.hidden=true},7000);
   }
   debugStats() {return{active:this.active,mode:this.mode,selection:this.selection,measurement:!!this.measurement,backViews:this.backViews.length,viewerCount:document.querySelectorAll('#cesiumContainer canvas').length,videoCount:document.querySelectorAll('video').length,listeners:{preRender:this.viewer.scene.preRender.numberOfListeners,postRender:this.viewer.scene.postRender.numberOfListeners,clock:this.viewer.clock.onTick.numberOfListeners,cameraChanged:this.viewer.camera.changed.numberOfListeners},scene:this.safety.debugStats()};}
-  dispose():void {if(this.disposed)return;this.disposed=true;this.close();clearInterval(this.machineryRefreshTimer);clearTimeout(this.sessionExpiryTimer);this.events.abort();clearTimeout(this.messageTimer);this.ui.dispose();this.anchorSelector.destroy();this.feedback.remove();this.layersDialog.remove();this.videoDiagnostics.dispose();this.machinery.dispose();}
+  dispose():void {if(this.disposed)return;this.disposed=true;this.close();clearInterval(this.machineryRefreshTimer);clearTimeout(this.sessionExpiryTimer);this.events.abort();clearTimeout(this.messageTimer);this.ui.dispose();this.anchorSelector.destroy();this.feedback.remove();this.layersDialog.remove();this.videoDiagnostics.dispose();this.machinery.dispose();this.railSafety.dispose();}
 }
