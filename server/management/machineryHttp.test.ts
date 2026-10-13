@@ -154,6 +154,32 @@ test("crane elevation accepts both endpoints and persists through SQLite restart
   } finally { await f.close(); }
 });
 
+test("whole-machine headings persist for all assets without altering station, articulation, stable IDs or existing history", async () => {
+  const f = await fixture(); try {
+    for (const assetId of ["crane", "pile", "excavator"] as const) {
+      const id = `heading-${assetId}`, original = model(assetId, 2);
+      if (assetId === "crane") { original.parameters.boom_rotation_deg = 75; original.parameters.boom_elevation_deg = 30; }
+      await f.ok("resource.create", { name: `整机旋转-${assetId}`, kind: "equipment", availability: "disabled", locationDescription: "既有工点" }, id);
+      await f.ok("machinery.save", { machinery: original }, id, 1);
+      const before = (await f.record(id)).data;
+      let revision = 2;
+      for (const heading of [0, 90, 359.999]) {
+        const rotated = structuredClone(original); rotated.placement.heading = heading;
+        await f.ok("machinery.save", { machinery: rotated }, id, revision++);
+        await f.restart();
+        const saved = (await f.record(id)).data;
+        assert.deepEqual(saved.machinery, rotated, "the complete pose survives a real SQLite close/reopen");
+        assert.deepEqual(saved.machinery.parameters, before.machinery.parameters, "global heading does not change boom angles or dimensions");
+        for (const key of ["longitude", "latitude", "height"] as const) assert.equal(saved.machinery.placement[key], before.machinery.placement[key]);
+        for (const [key, value] of Object.entries(before)) if (!["revision", "updatedAt", "machinery"].includes(key)) assert.deepEqual(saved[key], value, `heading preserves ${key}`);
+        assert.equal(saved.revision, revision);
+      }
+    }
+    const audits = (await f.state()).audit.filter((entry: any) => entry.command === "machinery.save");
+    assert.equal(audits.length, 12, "each of the three attachments and nine heading edits retains its own history entry");
+  } finally { await f.close(); }
+});
+
 test("machinery HTTP validates complete versioned parameters and placement atomically before any write", async () => {
   const f = await fixture(); try {
     await f.ok("resource.create", { name: "验证设备", kind: "equipment" }, "machine");
@@ -172,6 +198,8 @@ test("machinery HTTP validates complete versioned parameters and placement atomi
       ["elevation string", m => m.parameters.boom_elevation_deg = "45"], ["elevation null", m => m.parameters.boom_elevation_deg = null],
       ["longitude", m => m.placement.longitude = 180.01], ["latitude", m => m.placement.latitude = -90.01],
       ["height", m => m.placement.height = 100001], ["heading", m => m.placement.heading = 360],
+      ["negative heading", m => m.placement.heading = -0.001], ["heading overflow", m => m.placement.heading = 1e100],
+      ["heading string", m => m.placement.heading = "90"], ["heading null", m => m.placement.heading = null],
       ["mode", m => m.proportional = "true"], ["visibility", m => m.visible = 1],
       ["injected qualification", m => m.qualified = true], ["placement extra", m => m.placement.modelMatrix = []],
     ];
@@ -188,6 +216,8 @@ test("machinery HTTP validates complete versioned parameters and placement atomi
       assert.throws(() => validateMachineryMetadata(rotated), MachineryValidationError, "rotation must be finite before JSON encoding");
       const elevated = model(); elevated.parameters.boom_elevation_deg = value;
       assert.throws(() => validateMachineryMetadata(elevated), MachineryValidationError, "elevation must be finite before JSON encoding");
+      const heading = model(); heading.placement.heading = value;
+      assert.throws(() => validateMachineryMetadata(heading), MachineryValidationError, "whole-machine heading must be finite before JSON encoding");
     }
     const wrongAsset = model("pile"); wrongAsset.parameters.boom_rotation_deg = 90;
     assert.equal((await f.command("machinery.save", { machinery: wrongAsset }, "machine", 1)).status, 400, "rotation is not an allowed pile parameter");

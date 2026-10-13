@@ -1,0 +1,2064 @@
+{
+  "classification": "actual-original-workbench-machinery-appearance-and-heading-with-isolated-data",
+  "renderer": "Real Chromium WebGL2; software renderer when configured launch options select SwiftShader",
+  "startedAt": "2026-10-13T06:58:20.533Z",
+  "dataDir": "isolated tmp/machinery-appearance-heading-*; no production project data",
+  "productionDataReadOrModified": false,
+  "checks": [
+    {
+      "id": "crane-appearance-heading",
+      "title": "Crane uses differentiated vivid colors and rotates its full actual model at the fixed station",
+      "status": "passed",
+      "startedAt": "2026-10-13T06:58:25.603Z",
+      "evidence": {
+        "recordId": "equipment:31a82dfb-1cb4-461a-9ced-b5f330c84eae",
+        "before": {
+          "modelId": "crane",
+          "url": "blob:http://127.0.0.1:5173/7e836813-9d72-4ef1-869a-d752f1072a51",
+          "geometryKey": "[\"crane\",\"2026-10-13-v1\",true,[[\"body_height_m\",1.375872841208249],[\"boom_elevation_deg\",69.80598827502023],[\"boom_length_m\",12.26360224150498],[\"boom_rotation_deg\",0],[\"outrigger_lateral_m\",2.319999999999969],[\"outrigger_longitudinal_m\",1.9008001003265367],[\"overall_height_m\",12.944460499835504],[\"overall_scale\",4]]]",
+          "positionHash": "aabef7cf622cb86fe517d6a14b8db8dd7fc18b92f6d6c5cdd21e2799ecc43247",
+          "colorHash": "4ad3507d9940807f5727c1fbf97644c69b43ea44e4ab3e4d01687e37f7ffde90",
+          "vertexCount": 172035,
+          "sourcePositionHash": "faa6500848b256792371c6d9cb2370812ea53a69d448761899569b495ad3c838",
+          "parameters": {
+            "overall_scale": 4,
+            "overall_height_m": 12.944460499835504,
+            "body_height_m": 1.375872841208249,
+            "boom_length_m": 12.26360224150498,
+            "outrigger_lateral_m": 2.319999999999969,
+            "outrigger_longitudinal_m": 1.9008001003265367,
+            "boom_rotation_deg": 0,
+            "boom_elevation_deg": 69.80598827502023
+          },
+          "placement": [
+            -2177728.9822633746,
+            4388737.413722875,
+            4070069.9083933877
+          ],
+          "orientation": [
+            0.09664080517741451,
+            -0.41217578523184567,
+            -0.8820441702251567,
+            0.20680850711464271
+          ],
+          "measuredHeadingDeg": 0,
+          "modelUpEnu": [
+            0,
+            -1.1102230246251565e-16,
+            1
+          ],
+          "modelForwardEnu": [
+            0,
+            1,
+            5.551115123125783e-17
+          ],
+          "material": {
+            "name": "Construction vivid colors with source material regions",
+            "doubleSided": true,
+            "pbrMetallicRoughness": {
+              "baseColorFactor": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "metallicFactor": 0,
+              "roughnessFactor": 0.7
+            }
+          },
+          "appearance": {
+            "profile": "construction-vivid/v1",
+            "inputColorSpace": "sRGB display swatches",
+            "vertexColorSpace": "linear RGB",
+            "sourceMaterialBoundaries": "preserved; reviewed crane extension and outrigger paint regions contrasted",
+            "matchedSourceColors": 21,
+            "sourcePaletteSize": 21,
+            "sourceArraysModified": false,
+            "texturesRestored": false,
+            "description": "Enhanced construction paint colors; original source RGB remains in immutable assets; no texture or V-Ray shader baking"
+          },
+          "colors": {
+            "vividVertices": 73557,
+            "darkVertices": 45681,
+            "paleVertices": 7572,
+            "distinct": 22,
+            "histogram": [
+              {
+                "rgb": [
+                  0.89627,
+                  0.03434,
+                  0.04817
+                ],
+                "vertices": 52923
+              },
+              {
+                "rgb": [
+                  0.18116,
+                  0.22697,
+                  0.26636
+                ],
+                "vertices": 38094
+              },
+              {
+                "rgb": [
+                  0.04667,
+                  0.07036,
+                  0.09531
+                ],
+                "vertices": 26748
+              },
+              {
+                "rgb": [
+                  1,
+                  0.65837,
+                  0.04374
+                ],
+                "vertices": 18615
+              },
+              {
+                "rgb": [
+                  0.0185,
+                  0.02624,
+                  0.03689
+                ],
+                "vertices": 10080
+              },
+              {
+                "rgb": [
+                  0.62396,
+                  0.69387,
+                  0.76052
+                ],
+                "vertices": 6885
+              },
+              {
+                "rgb": [
+                  0.02217,
+                  0.0356,
+                  0.05127
+                ],
+                "vertices": 4515
+              },
+              {
+                "rgb": [
+                  0.02956,
+                  0.04374,
+                  0.0648
+                ],
+                "vertices": 3072
+              },
+              {
+                "rgb": [
+                  0.08438,
+                  0.11954,
+                  0.15293
+                ],
+                "vertices": 2781
+              },
+              {
+                "rgb": [
+                  0.0999,
+                  0.14126,
+                  0.17789
+                ],
+                "vertices": 2718
+              },
+              {
+                "rgb": [
+                  1,
+                  0.58408,
+                  0.02122
+                ],
+                "vertices": 1635
+              },
+              {
+                "rgb": [
+                  0.05127,
+                  0.0865,
+                  0.12214
+                ],
+                "vertices": 1044
+              },
+              {
+                "rgb": [
+                  0.47932,
+                  0.29614,
+                  0.17789
+                ],
+                "vertices": 972
+              },
+              {
+                "rgb": [
+                  0.50289,
+                  0.72306,
+                  0.81485
+                ],
+                "vertices": 648
+              },
+              {
+                "rgb": [
+                  0.39676,
+                  0.48515,
+                  0.56471
+                ],
+                "vertices": 576
+              },
+              {
+                "rgb": [
+                  0.03434,
+                  0.05286,
+                  0.07421
+                ],
+                "vertices": 198
+              },
+              {
+                "rgb": [
+                  0.58408,
+                  0.00802,
+                  0.02217
+                ],
+                "vertices": 144
+              },
+              {
+                "rgb": [
+                  1,
+                  0.29614,
+                  0.0319
+                ],
+                "vertices": 132
+              },
+              {
+                "rgb": [
+                  0.48515,
+                  0.55201,
+                  0.61721
+                ],
+                "vertices": 111
+              },
+              {
+                "rgb": [
+                  1,
+                  0.04519,
+                  0.05951
+                ],
+                "vertices": 108
+              },
+              {
+                "rgb": [
+                  0.00857,
+                  0.01229,
+                  0.01764
+                ],
+                "vertices": 24
+              },
+              {
+                "rgb": [
+                  0.16203,
+                  0.20864,
+                  0.25016
+                ],
+                "vertices": 12
+              }
+            ]
+          },
+          "camera": [
+            [
+              -2177753.9771948876,
+              4388746.361003109,
+              4070068.320150488
+            ],
+            [
+              0.837340161429807,
+              -0.39507659919653587,
+              0.3778570296077664
+            ],
+            [
+              -0.08171497776902817,
+              0.5929658599607606,
+              0.8010706281778174
+            ]
+          ]
+        },
+        "after": {
+          "modelId": "crane",
+          "url": "blob:http://127.0.0.1:5173/7e836813-9d72-4ef1-869a-d752f1072a51",
+          "geometryKey": "[\"crane\",\"2026-10-13-v1\",true,[[\"body_height_m\",1.375872841208249],[\"boom_elevation_deg\",69.80598827502023],[\"boom_length_m\",12.26360224150498],[\"boom_rotation_deg\",0],[\"outrigger_lateral_m\",2.319999999999969],[\"outrigger_longitudinal_m\",1.9008001003265367],[\"overall_height_m\",12.944460499835504],[\"overall_scale\",4]]]",
+          "positionHash": "aabef7cf622cb86fe517d6a14b8db8dd7fc18b92f6d6c5cdd21e2799ecc43247",
+          "colorHash": "4ad3507d9940807f5727c1fbf97644c69b43ea44e4ab3e4d01687e37f7ffde90",
+          "vertexCount": 172035,
+          "sourcePositionHash": "faa6500848b256792371c6d9cb2370812ea53a69d448761899569b495ad3c838",
+          "parameters": {
+            "overall_scale": 4,
+            "overall_height_m": 12.944460499835504,
+            "body_height_m": 1.375872841208249,
+            "boom_length_m": 12.26360224150498,
+            "outrigger_lateral_m": 2.319999999999969,
+            "outrigger_longitudinal_m": 1.9008001003265367,
+            "boom_rotation_deg": 0,
+            "boom_elevation_deg": 69.80598827502023
+          },
+          "placement": [
+            -2177728.9822633746,
+            4388737.413722875,
+            4070069.9083933877
+          ],
+          "orientation": [
+            0.35978766145860586,
+            -0.22311692409805037,
+            -0.7699351118601,
+            -0.47746371628443945
+          ],
+          "measuredHeadingDeg": 90,
+          "modelUpEnu": [
+            -5.551115123125783e-17,
+            -2.220446049250313e-16,
+            0.9999999999999999
+          ],
+          "modelForwardEnu": [
+            0.9999999999999998,
+            1.703274806161054e-16,
+            1.9796239174282192e-16
+          ],
+          "material": {
+            "name": "Construction vivid colors with source material regions",
+            "doubleSided": true,
+            "pbrMetallicRoughness": {
+              "baseColorFactor": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "metallicFactor": 0,
+              "roughnessFactor": 0.7
+            }
+          },
+          "appearance": {
+            "profile": "construction-vivid/v1",
+            "inputColorSpace": "sRGB display swatches",
+            "vertexColorSpace": "linear RGB",
+            "sourceMaterialBoundaries": "preserved; reviewed crane extension and outrigger paint regions contrasted",
+            "matchedSourceColors": 21,
+            "sourcePaletteSize": 21,
+            "sourceArraysModified": false,
+            "texturesRestored": false,
+            "description": "Enhanced construction paint colors; original source RGB remains in immutable assets; no texture or V-Ray shader baking"
+          },
+          "colors": {
+            "vividVertices": 73557,
+            "darkVertices": 45681,
+            "paleVertices": 7572,
+            "distinct": 22,
+            "histogram": [
+              {
+                "rgb": [
+                  0.89627,
+                  0.03434,
+                  0.04817
+                ],
+                "vertices": 52923
+              },
+              {
+                "rgb": [
+                  0.18116,
+                  0.22697,
+                  0.26636
+                ],
+                "vertices": 38094
+              },
+              {
+                "rgb": [
+                  0.04667,
+                  0.07036,
+                  0.09531
+                ],
+                "vertices": 26748
+              },
+              {
+                "rgb": [
+                  1,
+                  0.65837,
+                  0.04374
+                ],
+                "vertices": 18615
+              },
+              {
+                "rgb": [
+                  0.0185,
+                  0.02624,
+                  0.03689
+                ],
+                "vertices": 10080
+              },
+              {
+                "rgb": [
+                  0.62396,
+                  0.69387,
+                  0.76052
+                ],
+                "vertices": 6885
+              },
+              {
+                "rgb": [
+                  0.02217,
+                  0.0356,
+                  0.05127
+                ],
+                "vertices": 4515
+              },
+              {
+                "rgb": [
+                  0.02956,
+                  0.04374,
+                  0.0648
+                ],
+                "vertices": 3072
+              },
+              {
+                "rgb": [
+                  0.08438,
+                  0.11954,
+                  0.15293
+                ],
+                "vertices": 2781
+              },
+              {
+                "rgb": [
+                  0.0999,
+                  0.14126,
+                  0.17789
+                ],
+                "vertices": 2718
+              },
+              {
+                "rgb": [
+                  1,
+                  0.58408,
+                  0.02122
+                ],
+                "vertices": 1635
+              },
+              {
+                "rgb": [
+                  0.05127,
+                  0.0865,
+                  0.12214
+                ],
+                "vertices": 1044
+              },
+              {
+                "rgb": [
+                  0.47932,
+                  0.29614,
+                  0.17789
+                ],
+                "vertices": 972
+              },
+              {
+                "rgb": [
+                  0.50289,
+                  0.72306,
+                  0.81485
+                ],
+                "vertices": 648
+              },
+              {
+                "rgb": [
+                  0.39676,
+                  0.48515,
+                  0.56471
+                ],
+                "vertices": 576
+              },
+              {
+                "rgb": [
+                  0.03434,
+                  0.05286,
+                  0.07421
+                ],
+                "vertices": 198
+              },
+              {
+                "rgb": [
+                  0.58408,
+                  0.00802,
+                  0.02217
+                ],
+                "vertices": 144
+              },
+              {
+                "rgb": [
+                  1,
+                  0.29614,
+                  0.0319
+                ],
+                "vertices": 132
+              },
+              {
+                "rgb": [
+                  0.48515,
+                  0.55201,
+                  0.61721
+                ],
+                "vertices": 111
+              },
+              {
+                "rgb": [
+                  1,
+                  0.04519,
+                  0.05951
+                ],
+                "vertices": 108
+              },
+              {
+                "rgb": [
+                  0.00857,
+                  0.01229,
+                  0.01764
+                ],
+                "vertices": 24
+              },
+              {
+                "rgb": [
+                  0.16203,
+                  0.20864,
+                  0.25016
+                ],
+                "vertices": 12
+              }
+            ]
+          },
+          "camera": [
+            [
+              -2177753.9771948876,
+              4388746.361003109,
+              4070068.320150488
+            ],
+            [
+              0.837340161429807,
+              -0.39507659919653587,
+              0.3778570296077664
+            ],
+            [
+              -0.08171497776902897,
+              0.5929658599607602,
+              0.8010706281778175
+            ]
+          ]
+        },
+        "persistedHeading": 90,
+        "sameCamera": true
+      },
+      "finishedAt": "2026-10-13T06:58:48.054Z"
+    },
+    {
+      "id": "pile-appearance-heading",
+      "title": "Piling rig uses differentiated vivid colors and rotates its full actual model at the fixed station",
+      "status": "passed",
+      "startedAt": "2026-10-13T06:58:48.055Z",
+      "evidence": {
+        "recordId": "equipment:910c2a1d-39da-4df5-bec1-d296fc2f980a",
+        "before": {
+          "modelId": "pile",
+          "url": "blob:http://127.0.0.1:5173/8d3d89c7-a241-4256-a195-1c90e04af2a9",
+          "geometryKey": "[\"pile\",\"2026-10-13-v1\",true,[[\"body_height_m\",1.333604325490034],[\"overall_scale\",4],[\"total_height_m\",7.9039475638842704]]]",
+          "positionHash": "44fd5122a5638d13a8060a5b12dc6a6a70264a72f11b6c974013d81aa6b3fe26",
+          "colorHash": "365294ad2f2737471ab16f4aa2e972886e7cef54f2d9c909f833f81aded6aa52",
+          "vertexCount": 14775,
+          "sourcePositionHash": "6d96a7f34d72f8348cc97d4e7eec6dda00b52c6bdd2c90201077f9cc7b7f0b2f",
+          "parameters": {
+            "overall_scale": 4,
+            "body_height_m": 1.333604325490034,
+            "total_height_m": 7.9039475638842704
+          },
+          "placement": [
+            -2177755.7914939993,
+            4388724.110651655,
+            4070069.9083933877
+          ],
+          "orientation": [
+            0.09664206409625987,
+            -0.41217549005738074,
+            -0.8820435385604026,
+            0.2068112011642889
+          ],
+          "measuredHeadingDeg": 0,
+          "modelUpEnu": [
+            0,
+            -1.1102230246251565e-16,
+            1
+          ],
+          "modelForwardEnu": [
+            -1.1102230246251565e-16,
+            1.0000000000000002,
+            1.6653345369377348e-16
+          ],
+          "material": {
+            "name": "Construction vivid colors with source material regions",
+            "doubleSided": true,
+            "pbrMetallicRoughness": {
+              "baseColorFactor": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "metallicFactor": 0,
+              "roughnessFactor": 0.7
+            }
+          },
+          "appearance": {
+            "profile": "construction-vivid/v1",
+            "inputColorSpace": "sRGB display swatches",
+            "vertexColorSpace": "linear RGB",
+            "sourceMaterialBoundaries": "preserved; reviewed crane extension and outrigger paint regions contrasted",
+            "matchedSourceColors": 8,
+            "sourcePaletteSize": 8,
+            "sourceArraysModified": false,
+            "texturesRestored": false,
+            "description": "Enhanced construction paint colors; original source RGB remains in immutable assets; no texture or V-Ray shader baking"
+          },
+          "colors": {
+            "vividVertices": 5598,
+            "darkVertices": 2220,
+            "paleVertices": 144,
+            "distinct": 8,
+            "histogram": [
+              {
+                "rgb": [
+                  0.89627,
+                  0.03434,
+                  0.04817
+                ],
+                "vertices": 5598
+              },
+              {
+                "rgb": [
+                  0.00802,
+                  0.41789,
+                  0.4452
+                ],
+                "vertices": 5415
+              },
+              {
+                "rgb": [
+                  0.06125,
+                  0.09306,
+                  0.12477
+                ],
+                "vertices": 2178
+              },
+              {
+                "rgb": [
+                  0.21586,
+                  0.28744,
+                  0.34191
+                ],
+                "vertices": 684
+              },
+              {
+                "rgb": [
+                  0.14126,
+                  0.17789,
+                  0.21586
+                ],
+                "vertices": 678
+              },
+              {
+                "rgb": [
+                  0.62396,
+                  0.69387,
+                  0.76052
+                ],
+                "vertices": 144
+              },
+              {
+                "rgb": [
+                  0.0356,
+                  0.05613,
+                  0.07819
+                ],
+                "vertices": 42
+              },
+              {
+                "rgb": [
+                  0.12744,
+                  0.17144,
+                  0.22697
+                ],
+                "vertices": 36
+              }
+            ]
+          },
+          "camera": [
+            [
+              -2177770.8816905585,
+              4388730.068578689,
+              4070068.531509527
+            ],
+            [
+              0.8373424858441664,
+              -0.395071591605012,
+              0.3778571144056899
+            ],
+            [
+              -0.08171853750094477,
+              0.5929654589277102,
+              0.8010705619028555
+            ]
+          ]
+        },
+        "after": {
+          "modelId": "pile",
+          "url": "blob:http://127.0.0.1:5173/8d3d89c7-a241-4256-a195-1c90e04af2a9",
+          "geometryKey": "[\"pile\",\"2026-10-13-v1\",true,[[\"body_height_m\",1.333604325490034],[\"overall_scale\",4],[\"total_height_m\",7.9039475638842704]]]",
+          "positionHash": "44fd5122a5638d13a8060a5b12dc6a6a70264a72f11b6c974013d81aa6b3fe26",
+          "colorHash": "365294ad2f2737471ab16f4aa2e972886e7cef54f2d9c909f833f81aded6aa52",
+          "vertexCount": 14775,
+          "sourcePositionHash": "6d96a7f34d72f8348cc97d4e7eec6dda00b52c6bdd2c90201077f9cc7b7f0b2f",
+          "parameters": {
+            "overall_scale": 4,
+            "body_height_m": 1.333604325490034,
+            "total_height_m": 7.9039475638842704
+          },
+          "placement": [
+            -2177755.7914939993,
+            4388724.110651655,
+            4070069.9083933877
+          ],
+          "orientation": [
+            0.35978834292879264,
+            -0.223115825188132,
+            -0.7699365701864427,
+            -0.4774613646492348
+          ],
+          "measuredHeadingDeg": 90,
+          "modelUpEnu": [
+            5.551115123125783e-17,
+            -5.551115123125783e-17,
+            1.0000000000000002
+          ],
+          "modelForwardEnu": [
+            1,
+            2.516971940018262e-16,
+            -1.5081898466924925e-16
+          ],
+          "material": {
+            "name": "Construction vivid colors with source material regions",
+            "doubleSided": true,
+            "pbrMetallicRoughness": {
+              "baseColorFactor": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "metallicFactor": 0,
+              "roughnessFactor": 0.7
+            }
+          },
+          "appearance": {
+            "profile": "construction-vivid/v1",
+            "inputColorSpace": "sRGB display swatches",
+            "vertexColorSpace": "linear RGB",
+            "sourceMaterialBoundaries": "preserved; reviewed crane extension and outrigger paint regions contrasted",
+            "matchedSourceColors": 8,
+            "sourcePaletteSize": 8,
+            "sourceArraysModified": false,
+            "texturesRestored": false,
+            "description": "Enhanced construction paint colors; original source RGB remains in immutable assets; no texture or V-Ray shader baking"
+          },
+          "colors": {
+            "vividVertices": 5598,
+            "darkVertices": 2220,
+            "paleVertices": 144,
+            "distinct": 8,
+            "histogram": [
+              {
+                "rgb": [
+                  0.89627,
+                  0.03434,
+                  0.04817
+                ],
+                "vertices": 5598
+              },
+              {
+                "rgb": [
+                  0.00802,
+                  0.41789,
+                  0.4452
+                ],
+                "vertices": 5415
+              },
+              {
+                "rgb": [
+                  0.06125,
+                  0.09306,
+                  0.12477
+                ],
+                "vertices": 2178
+              },
+              {
+                "rgb": [
+                  0.21586,
+                  0.28744,
+                  0.34191
+                ],
+                "vertices": 684
+              },
+              {
+                "rgb": [
+                  0.14126,
+                  0.17789,
+                  0.21586
+                ],
+                "vertices": 678
+              },
+              {
+                "rgb": [
+                  0.62396,
+                  0.69387,
+                  0.76052
+                ],
+                "vertices": 144
+              },
+              {
+                "rgb": [
+                  0.0356,
+                  0.05613,
+                  0.07819
+                ],
+                "vertices": 42
+              },
+              {
+                "rgb": [
+                  0.12744,
+                  0.17144,
+                  0.22697
+                ],
+                "vertices": 36
+              }
+            ]
+          },
+          "camera": [
+            [
+              -2177770.8816905585,
+              4388730.068578689,
+              4070068.531509527
+            ],
+            [
+              0.8373424858441663,
+              -0.3950715916050122,
+              0.37785711440569003
+            ],
+            [
+              -0.0817185375009449,
+              0.5929654589277102,
+              0.8010705619028555
+            ]
+          ]
+        },
+        "persistedHeading": 90,
+        "sameCamera": true
+      },
+      "finishedAt": "2026-10-13T06:59:02.668Z"
+    },
+    {
+      "id": "excavator-appearance-heading",
+      "title": "Excavator uses differentiated vivid colors and rotates its full actual model at the fixed station",
+      "status": "passed",
+      "startedAt": "2026-10-13T06:59:02.668Z",
+      "evidence": {
+        "recordId": "equipment:d4a9feaa-a005-4b17-8d03-072919dc7cf5",
+        "before": {
+          "modelId": "excavator",
+          "url": "blob:http://127.0.0.1:5173/a17fbcae-104e-45d0-8e04-479651896681",
+          "geometryKey": "[\"excavator\",\"2026-10-13-v1\",true,[[\"body_height_m\",4.56279994951719],[\"overall_height_m\",8.108740862421406],[\"overall_scale\",1.5]]]",
+          "positionHash": "9bce269d4469fdd4ce89609a6c70b1f4492d402930d3007f1046741867e1f127",
+          "colorHash": "722749fb7130977f78bbe96c7fd07a4d55a96e5a2ecf46e8131c39c559a90826",
+          "vertexCount": 334884,
+          "sourcePositionHash": "9db95175252175bdf214d99309bb58bace75d1d985504615f5d24fe604113e4b",
+          "parameters": {
+            "overall_scale": 1.5,
+            "overall_height_m": 8.108740862421406,
+            "body_height_m": 4.56279994951719
+          },
+          "placement": [
+            -2177782.600643358,
+            4388710.807416668,
+            4070069.9083933877
+          ],
+          "orientation": [
+            0.09664332301420361,
+            -0.4121751948790706,
+            -0.88204290688742,
+            0.20681389521200552
+          ],
+          "measuredHeadingDeg": 0,
+          "modelUpEnu": [
+            5.551115123125783e-17,
+            -1.6653345369377348e-16,
+            0.9999999999999998
+          ],
+          "modelForwardEnu": [
+            0,
+            0.9999999999999998,
+            1.1102230246251565e-16
+          ],
+          "material": {
+            "name": "Construction vivid colors with source material regions",
+            "doubleSided": true,
+            "pbrMetallicRoughness": {
+              "baseColorFactor": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "metallicFactor": 0,
+              "roughnessFactor": 0.7
+            }
+          },
+          "appearance": {
+            "profile": "construction-vivid/v1",
+            "inputColorSpace": "sRGB display swatches",
+            "vertexColorSpace": "linear RGB",
+            "sourceMaterialBoundaries": "preserved; reviewed crane extension and outrigger paint regions contrasted",
+            "matchedSourceColors": 14,
+            "sourcePaletteSize": 14,
+            "sourceArraysModified": false,
+            "texturesRestored": false,
+            "description": "Enhanced construction paint colors; original source RGB remains in immutable assets; no texture or V-Ray shader baking"
+          },
+          "colors": {
+            "vividVertices": 179343,
+            "darkVertices": 141231,
+            "paleVertices": 1404,
+            "distinct": 14,
+            "histogram": [
+              {
+                "rgb": [
+                  0.05286,
+                  0.07227,
+                  0.0999
+                ],
+                "vertices": 120075
+              },
+              {
+                "rgb": [
+                  1,
+                  0.55834,
+                  0.02416
+                ],
+                "vertices": 108018
+              },
+              {
+                "rgb": [
+                  0.80695,
+                  0.09084,
+                  0.03071
+                ],
+                "vertices": 37566
+              },
+              {
+                "rgb": [
+                  1,
+                  0.66539,
+                  0.05286
+                ],
+                "vertices": 23268
+              },
+              {
+                "rgb": [
+                  0.03434,
+                  0.04817,
+                  0.06663
+                ],
+                "vertices": 21156
+              },
+              {
+                "rgb": [
+                  0.13563,
+                  0.18447,
+                  0.23455
+                ],
+                "vertices": 10812
+              },
+              {
+                "rgb": [
+                  0.90466,
+                  0.41254,
+                  0.00972
+                ],
+                "vertices": 10152
+              },
+              {
+                "rgb": [
+                  0.85499,
+                  0.90466,
+                  0.93869
+                ],
+                "vertices": 1404
+              },
+              {
+                "rgb": [
+                  0.18782,
+                  0.25016,
+                  0.30947
+                ],
+                "vertices": 1152
+              },
+              {
+                "rgb": [
+                  0.01938,
+                  0.20508,
+                  0.40724
+                ],
+                "vertices": 816
+              },
+              {
+                "rgb": [
+                  0.76052,
+                  0.37626,
+                  0.08438
+                ],
+                "vertices": 201
+              },
+              {
+                "rgb": [
+                  0.21953,
+                  0.27889,
+                  0.33716
+                ],
+                "vertices": 126
+              },
+              {
+                "rgb": [
+                  1,
+                  0.08022,
+                  0.06301
+                ],
+                "vertices": 78
+              },
+              {
+                "rgb": [
+                  0.13014,
+                  0.33245,
+                  0.61721
+                ],
+                "vertices": 60
+              }
+            ]
+          },
+          "camera": [
+            [
+              -2177808.755902366,
+              4388718.20583911,
+              4070066.062897965
+            ],
+            [
+              0.8373450533657815,
+              -0.39506616647037146,
+              0.3778570969483854
+            ],
+            [
+              -0.08172237651305661,
+              0.5929649114155903,
+              0.8010705755468488
+            ]
+          ]
+        },
+        "after": {
+          "modelId": "excavator",
+          "url": "blob:http://127.0.0.1:5173/a17fbcae-104e-45d0-8e04-479651896681",
+          "geometryKey": "[\"excavator\",\"2026-10-13-v1\",true,[[\"body_height_m\",4.56279994951719],[\"overall_height_m\",8.108740862421406],[\"overall_scale\",1.5]]]",
+          "positionHash": "9bce269d4469fdd4ce89609a6c70b1f4492d402930d3007f1046741867e1f127",
+          "colorHash": "722749fb7130977f78bbe96c7fd07a4d55a96e5a2ecf46e8131c39c559a90826",
+          "vertexCount": 334884,
+          "sourcePositionHash": "9db95175252175bdf214d99309bb58bace75d1d985504615f5d24fe604113e4b",
+          "parameters": {
+            "overall_scale": 1.5,
+            "overall_height_m": 8.108740862421406,
+            "body_height_m": 4.56279994951719
+          },
+          "placement": [
+            -2177782.600643358,
+            4388710.807416668,
+            4070069.9083933877
+          ],
+          "orientation": [
+            0.3597890243956228,
+            -0.22311472627613227,
+            -0.7699380285056024,
+            -0.47745901300957605
+          ],
+          "measuredHeadingDeg": 90,
+          "modelUpEnu": [
+            -5.551115123125783e-17,
+            -1.6653345369377348e-16,
+            0.9999999999999998
+          ],
+          "modelForwardEnu": [
+            0.9999999999999998,
+            8.516374030805268e-17,
+            7.122562025578205e-17
+          ],
+          "material": {
+            "name": "Construction vivid colors with source material regions",
+            "doubleSided": true,
+            "pbrMetallicRoughness": {
+              "baseColorFactor": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "metallicFactor": 0,
+              "roughnessFactor": 0.7
+            }
+          },
+          "appearance": {
+            "profile": "construction-vivid/v1",
+            "inputColorSpace": "sRGB display swatches",
+            "vertexColorSpace": "linear RGB",
+            "sourceMaterialBoundaries": "preserved; reviewed crane extension and outrigger paint regions contrasted",
+            "matchedSourceColors": 14,
+            "sourcePaletteSize": 14,
+            "sourceArraysModified": false,
+            "texturesRestored": false,
+            "description": "Enhanced construction paint colors; original source RGB remains in immutable assets; no texture or V-Ray shader baking"
+          },
+          "colors": {
+            "vividVertices": 179343,
+            "darkVertices": 141231,
+            "paleVertices": 1404,
+            "distinct": 14,
+            "histogram": [
+              {
+                "rgb": [
+                  0.05286,
+                  0.07227,
+                  0.0999
+                ],
+                "vertices": 120075
+              },
+              {
+                "rgb": [
+                  1,
+                  0.55834,
+                  0.02416
+                ],
+                "vertices": 108018
+              },
+              {
+                "rgb": [
+                  0.80695,
+                  0.09084,
+                  0.03071
+                ],
+                "vertices": 37566
+              },
+              {
+                "rgb": [
+                  1,
+                  0.66539,
+                  0.05286
+                ],
+                "vertices": 23268
+              },
+              {
+                "rgb": [
+                  0.03434,
+                  0.04817,
+                  0.06663
+                ],
+                "vertices": 21156
+              },
+              {
+                "rgb": [
+                  0.13563,
+                  0.18447,
+                  0.23455
+                ],
+                "vertices": 10812
+              },
+              {
+                "rgb": [
+                  0.90466,
+                  0.41254,
+                  0.00972
+                ],
+                "vertices": 10152
+              },
+              {
+                "rgb": [
+                  0.85499,
+                  0.90466,
+                  0.93869
+                ],
+                "vertices": 1404
+              },
+              {
+                "rgb": [
+                  0.18782,
+                  0.25016,
+                  0.30947
+                ],
+                "vertices": 1152
+              },
+              {
+                "rgb": [
+                  0.01938,
+                  0.20508,
+                  0.40724
+                ],
+                "vertices": 816
+              },
+              {
+                "rgb": [
+                  0.76052,
+                  0.37626,
+                  0.08438
+                ],
+                "vertices": 201
+              },
+              {
+                "rgb": [
+                  0.21953,
+                  0.27889,
+                  0.33716
+                ],
+                "vertices": 126
+              },
+              {
+                "rgb": [
+                  1,
+                  0.08022,
+                  0.06301
+                ],
+                "vertices": 78
+              },
+              {
+                "rgb": [
+                  0.13014,
+                  0.33245,
+                  0.61721
+                ],
+                "vertices": 60
+              }
+            ]
+          },
+          "camera": [
+            [
+              -2177808.755902366,
+              4388718.20583911,
+              4070066.062897965
+            ],
+            [
+              0.8373450533657814,
+              -0.3950661664703715,
+              0.3778570969483855
+            ],
+            [
+              -0.08172237651305678,
+              0.5929649114155903,
+              0.8010705755468488
+            ]
+          ]
+        },
+        "persistedHeading": 90,
+        "sameCamera": true
+      },
+      "finishedAt": "2026-10-13T06:59:22.165Z"
+    },
+    {
+      "id": "three-model-overview",
+      "title": "All three colored models remain together in the same original Viewer",
+      "status": "passed",
+      "startedAt": "2026-10-13T06:59:22.166Z",
+      "evidence": {
+        "models": [
+          "equipment:31a82dfb-1cb4-461a-9ced-b5f330c84eae",
+          "equipment:910c2a1d-39da-4df5-bec1-d296fc2f980a",
+          "equipment:d4a9feaa-a005-4b17-8d03-072919dc7cf5"
+        ],
+        "sources": 1
+      },
+      "finishedAt": "2026-10-13T06:59:29.028Z"
+    },
+    {
+      "id": "asset-switch-heading",
+      "title": "Switching model type preserves pending whole-machine heading at the same station",
+      "status": "passed",
+      "startedAt": "2026-10-13T06:59:29.028Z",
+      "evidence": {
+        "unsavedHeadingRetained": 47,
+        "stationUnchanged": true,
+        "cancelledAssetType": "pile",
+        "restoredAssetType": "crane",
+        "restoredHeading": 90
+      },
+      "finishedAt": "2026-10-13T06:59:41.523Z"
+    },
+    {
+      "id": "combined-crane-pose",
+      "title": "Whole-machine rotation preserves independent boom slew, elevation, extension and geometry",
+      "status": "passed",
+      "startedAt": "2026-10-13T06:59:41.524Z",
+      "evidence": {
+        "before": {
+          "modelId": "crane",
+          "url": "blob:http://127.0.0.1:5173/356234fe-7e36-4479-95b1-a9dee0c9bacd",
+          "geometryKey": "[\"crane\",\"2026-10-13-v1\",false,[[\"body_height_m\",1.375872841208249],[\"boom_elevation_deg\",30],[\"boom_length_m\",14.716322689805976],[\"boom_rotation_deg\",75],[\"outrigger_lateral_m\",2.319999999999969],[\"outrigger_longitudinal_m\",1.9008001003265367],[\"overall_height_m\",8.743960993400083],[\"overall_scale\",4]]]",
+          "positionHash": "00c5e9336d021826768738c18275a6115b7c9f94e816afe4a263d90107748680",
+          "colorHash": "bb943dd989997769acb420bc4111832693d11a589c473e2eaaab0ef1dc5fcb6f",
+          "vertexCount": 172044,
+          "sourcePositionHash": "faa6500848b256792371c6d9cb2370812ea53a69d448761899569b495ad3c838",
+          "parameters": {
+            "overall_scale": 4,
+            "overall_height_m": 8.743960993400083,
+            "body_height_m": 1.375872841208249,
+            "boom_length_m": 14.716322689805976,
+            "outrigger_lateral_m": 2.319999999999969,
+            "outrigger_longitudinal_m": 1.9008001003265367,
+            "boom_rotation_deg": 75,
+            "boom_elevation_deg": 30
+          },
+          "placement": [
+            -2177728.9822633746,
+            4388737.413722875,
+            4070069.9083933877
+          ],
+          "orientation": [
+            0.35978766145860586,
+            -0.22311692409805037,
+            -0.7699351118601,
+            -0.47746371628443945
+          ],
+          "measuredHeadingDeg": 90,
+          "modelUpEnu": [
+            -5.551115123125783e-17,
+            -2.220446049250313e-16,
+            0.9999999999999999
+          ],
+          "modelForwardEnu": [
+            0.9999999999999998,
+            1.703274806161054e-16,
+            1.9796239174282192e-16
+          ],
+          "material": {
+            "name": "Construction vivid colors with source material regions",
+            "doubleSided": true,
+            "pbrMetallicRoughness": {
+              "baseColorFactor": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "metallicFactor": 0,
+              "roughnessFactor": 0.7
+            }
+          },
+          "appearance": {
+            "profile": "construction-vivid/v1",
+            "inputColorSpace": "sRGB display swatches",
+            "vertexColorSpace": "linear RGB",
+            "sourceMaterialBoundaries": "preserved; reviewed crane extension and outrigger paint regions contrasted",
+            "matchedSourceColors": 21,
+            "sourcePaletteSize": 21,
+            "sourceArraysModified": false,
+            "texturesRestored": false,
+            "description": "Enhanced construction paint colors; original source RGB remains in immutable assets; no texture or V-Ray shader baking"
+          },
+          "colors": {
+            "vividVertices": 73560,
+            "darkVertices": 45681,
+            "paleVertices": 7572,
+            "distinct": 22,
+            "histogram": [
+              {
+                "rgb": [
+                  0.89627,
+                  0.03434,
+                  0.04817
+                ],
+                "vertices": 52926
+              },
+              {
+                "rgb": [
+                  0.18116,
+                  0.22697,
+                  0.26636
+                ],
+                "vertices": 38100
+              },
+              {
+                "rgb": [
+                  0.04667,
+                  0.07036,
+                  0.09531
+                ],
+                "vertices": 26748
+              },
+              {
+                "rgb": [
+                  1,
+                  0.65837,
+                  0.04374
+                ],
+                "vertices": 18615
+              },
+              {
+                "rgb": [
+                  0.0185,
+                  0.02624,
+                  0.03689
+                ],
+                "vertices": 10080
+              },
+              {
+                "rgb": [
+                  0.62396,
+                  0.69387,
+                  0.76052
+                ],
+                "vertices": 6885
+              },
+              {
+                "rgb": [
+                  0.02217,
+                  0.0356,
+                  0.05127
+                ],
+                "vertices": 4515
+              },
+              {
+                "rgb": [
+                  0.02956,
+                  0.04374,
+                  0.0648
+                ],
+                "vertices": 3072
+              },
+              {
+                "rgb": [
+                  0.08438,
+                  0.11954,
+                  0.15293
+                ],
+                "vertices": 2781
+              },
+              {
+                "rgb": [
+                  0.0999,
+                  0.14126,
+                  0.17789
+                ],
+                "vertices": 2718
+              },
+              {
+                "rgb": [
+                  1,
+                  0.58408,
+                  0.02122
+                ],
+                "vertices": 1635
+              },
+              {
+                "rgb": [
+                  0.05127,
+                  0.0865,
+                  0.12214
+                ],
+                "vertices": 1044
+              },
+              {
+                "rgb": [
+                  0.47932,
+                  0.29614,
+                  0.17789
+                ],
+                "vertices": 972
+              },
+              {
+                "rgb": [
+                  0.50289,
+                  0.72306,
+                  0.81485
+                ],
+                "vertices": 648
+              },
+              {
+                "rgb": [
+                  0.39676,
+                  0.48515,
+                  0.56471
+                ],
+                "vertices": 576
+              },
+              {
+                "rgb": [
+                  0.03434,
+                  0.05286,
+                  0.07421
+                ],
+                "vertices": 198
+              },
+              {
+                "rgb": [
+                  0.58408,
+                  0.00802,
+                  0.02217
+                ],
+                "vertices": 144
+              },
+              {
+                "rgb": [
+                  1,
+                  0.29614,
+                  0.0319
+                ],
+                "vertices": 132
+              },
+              {
+                "rgb": [
+                  0.48515,
+                  0.55201,
+                  0.61721
+                ],
+                "vertices": 111
+              },
+              {
+                "rgb": [
+                  1,
+                  0.04519,
+                  0.05951
+                ],
+                "vertices": 108
+              },
+              {
+                "rgb": [
+                  0.00857,
+                  0.01229,
+                  0.01764
+                ],
+                "vertices": 24
+              },
+              {
+                "rgb": [
+                  0.16203,
+                  0.20864,
+                  0.25016
+                ],
+                "vertices": 12
+              }
+            ]
+          },
+          "camera": [
+            [
+              -2177786.855020075,
+              4388786.711447568,
+              4070040.6682631723
+            ],
+            [
+              0.40134656682058645,
+              -0.8088139916387995,
+              0.4298149139230054
+            ],
+            [
+              -0.19105270673187047,
+              0.3850191209291648,
+              0.9029170171003309
+            ]
+          ]
+        },
+        "after": {
+          "modelId": "crane",
+          "url": "blob:http://127.0.0.1:5173/356234fe-7e36-4479-95b1-a9dee0c9bacd",
+          "geometryKey": "[\"crane\",\"2026-10-13-v1\",false,[[\"body_height_m\",1.375872841208249],[\"boom_elevation_deg\",30],[\"boom_length_m\",14.716322689805976],[\"boom_rotation_deg\",75],[\"outrigger_lateral_m\",2.319999999999969],[\"outrigger_longitudinal_m\",1.9008001003265367],[\"overall_height_m\",8.743960993400083],[\"overall_scale\",4]]]",
+          "positionHash": "00c5e9336d021826768738c18275a6115b7c9f94e816afe4a263d90107748680",
+          "colorHash": "bb943dd989997769acb420bc4111832693d11a589c473e2eaaab0ef1dc5fcb6f",
+          "vertexCount": 172044,
+          "sourcePositionHash": "faa6500848b256792371c6d9cb2370812ea53a69d448761899569b495ad3c838",
+          "parameters": {
+            "overall_scale": 4,
+            "overall_height_m": 8.743960993400083,
+            "body_height_m": 1.375872841208249,
+            "boom_length_m": 14.716322689805976,
+            "outrigger_lateral_m": 2.319999999999969,
+            "outrigger_longitudinal_m": 1.9008001003265367,
+            "boom_rotation_deg": 75,
+            "boom_elevation_deg": 30
+          },
+          "placement": [
+            -2177728.9822633746,
+            4388737.413722875,
+            4070069.9083933877
+          ],
+          "orientation": [
+            -0.37311875501245895,
+            -0.200026792742323,
+            -0.02852815175760049,
+            0.9055152242786799
+          ],
+          "measuredHeadingDeg": 209.99999999999997,
+          "modelUpEnu": [
+            0,
+            0,
+            1.0000000000000002
+          ],
+          "modelForwardEnu": [
+            -0.5000000000000002,
+            -0.8660254037844388,
+            -5.551115123125783e-17
+          ],
+          "material": {
+            "name": "Construction vivid colors with source material regions",
+            "doubleSided": true,
+            "pbrMetallicRoughness": {
+              "baseColorFactor": [
+                1,
+                1,
+                1,
+                1
+              ],
+              "metallicFactor": 0,
+              "roughnessFactor": 0.7
+            }
+          },
+          "appearance": {
+            "profile": "construction-vivid/v1",
+            "inputColorSpace": "sRGB display swatches",
+            "vertexColorSpace": "linear RGB",
+            "sourceMaterialBoundaries": "preserved; reviewed crane extension and outrigger paint regions contrasted",
+            "matchedSourceColors": 21,
+            "sourcePaletteSize": 21,
+            "sourceArraysModified": false,
+            "texturesRestored": false,
+            "description": "Enhanced construction paint colors; original source RGB remains in immutable assets; no texture or V-Ray shader baking"
+          },
+          "colors": {
+            "vividVertices": 73560,
+            "darkVertices": 45681,
+            "paleVertices": 7572,
+            "distinct": 22,
+            "histogram": [
+              {
+                "rgb": [
+                  0.89627,
+                  0.03434,
+                  0.04817
+                ],
+                "vertices": 52926
+              },
+              {
+                "rgb": [
+                  0.18116,
+                  0.22697,
+                  0.26636
+                ],
+                "vertices": 38100
+              },
+              {
+                "rgb": [
+                  0.04667,
+                  0.07036,
+                  0.09531
+                ],
+                "vertices": 26748
+              },
+              {
+                "rgb": [
+                  1,
+                  0.65837,
+                  0.04374
+                ],
+                "vertices": 18615
+              },
+              {
+                "rgb": [
+                  0.0185,
+                  0.02624,
+                  0.03689
+                ],
+                "vertices": 10080
+              },
+              {
+                "rgb": [
+                  0.62396,
+                  0.69387,
+                  0.76052
+                ],
+                "vertices": 6885
+              },
+              {
+                "rgb": [
+                  0.02217,
+                  0.0356,
+                  0.05127
+                ],
+                "vertices": 4515
+              },
+              {
+                "rgb": [
+                  0.02956,
+                  0.04374,
+                  0.0648
+                ],
+                "vertices": 3072
+              },
+              {
+                "rgb": [
+                  0.08438,
+                  0.11954,
+                  0.15293
+                ],
+                "vertices": 2781
+              },
+              {
+                "rgb": [
+                  0.0999,
+                  0.14126,
+                  0.17789
+                ],
+                "vertices": 2718
+              },
+              {
+                "rgb": [
+                  1,
+                  0.58408,
+                  0.02122
+                ],
+                "vertices": 1635
+              },
+              {
+                "rgb": [
+                  0.05127,
+                  0.0865,
+                  0.12214
+                ],
+                "vertices": 1044
+              },
+              {
+                "rgb": [
+                  0.47932,
+                  0.29614,
+                  0.17789
+                ],
+                "vertices": 972
+              },
+              {
+                "rgb": [
+                  0.50289,
+                  0.72306,
+                  0.81485
+                ],
+                "vertices": 648
+              },
+              {
+                "rgb": [
+                  0.39676,
+                  0.48515,
+                  0.56471
+                ],
+                "vertices": 576
+              },
+              {
+                "rgb": [
+                  0.03434,
+                  0.05286,
+                  0.07421
+                ],
+                "vertices": 198
+              },
+              {
+                "rgb": [
+                  0.58408,
+                  0.00802,
+                  0.02217
+                ],
+                "vertices": 144
+              },
+              {
+                "rgb": [
+                  1,
+                  0.29614,
+                  0.0319
+                ],
+                "vertices": 132
+              },
+              {
+                "rgb": [
+                  0.48515,
+                  0.55201,
+                  0.61721
+                ],
+                "vertices": 111
+              },
+              {
+                "rgb": [
+                  1,
+                  0.04519,
+                  0.05951
+                ],
+                "vertices": 108
+              },
+              {
+                "rgb": [
+                  0.00857,
+                  0.01229,
+                  0.01764
+                ],
+                "vertices": 24
+              },
+              {
+                "rgb": [
+                  0.16203,
+                  0.20864,
+                  0.25016
+                ],
+                "vertices": 12
+              }
+            ]
+          },
+          "camera": [
+            [
+              -2177786.855020075,
+              4388786.711447568,
+              4070040.6682631723
+            ],
+            [
+              0.40134656682058645,
+              -0.8088139916387995,
+              0.4298149139230054
+            ],
+            [
+              -0.19105270673187047,
+              0.3850191209291648,
+              0.9029170171003309
+            ]
+          ]
+        }
+      },
+      "finishedAt": "2026-10-13T07:00:06.778Z"
+    },
+    {
+      "id": "rotation-controls",
+      "title": "Numeric entry, slider, ±15° wrap and reset update the actual rendered heading",
+      "status": "passed",
+      "startedAt": "2026-10-13T07:00:06.779Z",
+      "evidence": {
+        "steps": [
+          {
+            "name": "350 + 15 wraps to 5",
+            "expected": 5,
+            "measured": 5
+          },
+          {
+            "name": "5 - 15 wraps to 350",
+            "expected": 350,
+            "measured": 350
+          },
+          {
+            "name": "360 normalizes to 0",
+            "expected": 0,
+            "measured": 0
+          },
+          {
+            "name": "rapid real slider keyboard input",
+            "expected": 27,
+            "measured": 27
+          },
+          {
+            "name": "slider endpoint normalizes 360 to 0",
+            "expected": 0,
+            "measured": 0
+          },
+          {
+            "name": "zero counterclockwise wraps to 345",
+            "expected": 345,
+            "measured": 345
+          },
+          {
+            "name": "reset model reference direction",
+            "expected": 0,
+            "measured": 0
+          },
+          {
+            "name": "fractional numeric heading",
+            "expected": 123.5,
+            "measured": 123.5
+          }
+        ],
+        "storedHeading": 123.5
+      },
+      "finishedAt": "2026-10-13T07:00:21.199Z"
+    },
+    {
+      "id": "save-reload",
+      "title": "Saved heading and exact local geometry survive original-workbench reload",
+      "status": "passed",
+      "startedAt": "2026-10-13T07:00:21.199Z",
+      "evidence": {
+        "savedState": {
+          "schemaVersion": 1,
+          "assetId": "crane",
+          "assetVersion": "2026-10-13-v1",
+          "proportional": false,
+          "parameters": {
+            "overall_scale": 4,
+            "overall_height_m": 8.743960993400083,
+            "body_height_m": 1.375872841208249,
+            "boom_length_m": 14.716322689805976,
+            "boom_rotation_deg": 75,
+            "boom_elevation_deg": 30,
+            "outrigger_lateral_m": 2.319999999999969,
+            "outrigger_longitudinal_m": 1.9008001003265367
+          },
+          "placement": {
+            "longitude": 116.391,
+            "latitude": 39.907,
+            "height": 0,
+            "heading": 123.5
+          },
+          "visible": true
+        },
+        "positionHash": "00c5e9336d021826768738c18275a6115b7c9f94e816afe4a263d90107748680",
+        "colorHash": "bb943dd989997769acb420bc4111832693d11a589c473e2eaaab0ef1dc5fcb6f",
+        "otherMachinesUnchanged": true
+      },
+      "finishedAt": "2026-10-13T07:00:33.752Z"
+    },
+    {
+      "id": "cancel",
+      "title": "Normal and immediate cancellation restore saved heading without modifying the resource",
+      "status": "passed",
+      "startedAt": "2026-10-13T07:00:33.752Z",
+      "evidence": {
+        "previewCancelled": 280,
+        "immediateDraftCancelled": 42,
+        "restoredMeasuredHeading": 123.5,
+        "sourceStateUnchanged": true
+      },
+      "finishedAt": "2026-10-13T07:00:37.321Z"
+    },
+    {
+      "id": "dimension-reset",
+      "title": "Dimension reset preserves pending whole-machine heading and both boom angles",
+      "status": "passed",
+      "startedAt": "2026-10-13T07:00:37.321Z",
+      "evidence": {
+        "pendingHeadingRetained": 215,
+        "parametersAfterDimensionReset": {
+          "overall_scale": 1,
+          "overall_height_m": 1.8794001923123969,
+          "body_height_m": 0.34396821030206226,
+          "boom_length_m": 3.065900560376245,
+          "outrigger_lateral_m": 0.5799999999999923,
+          "outrigger_longitudinal_m": 0.47520002508163417,
+          "boom_rotation_deg": 75,
+          "boom_elevation_deg": 30
+        },
+        "storedStateUnchanged": true
+      },
+      "finishedAt": "2026-10-13T07:00:40.586Z"
+    },
+    {
+      "id": "read-only",
+      "title": "A real viewer account can see machines but cannot change heading or save resources",
+      "status": "passed",
+      "startedAt": "2026-10-13T07:00:40.586Z",
+      "evidence": {
+        "accountRole": "viewer with model read permission",
+        "disabledControls": [
+          "numeric",
+          "slider",
+          "left",
+          "right",
+          "reset",
+          "save"
+        ],
+        "rejectedSaveStatus": 403,
+        "heading": 123.5
+      },
+      "finishedAt": "2026-10-13T07:00:53.979Z"
+    },
+    {
+      "id": "single-runtime",
+      "title": "Original workbench retains one Viewer, panel and machinery source without browser errors",
+      "status": "passed",
+      "startedAt": "2026-10-13T07:00:53.979Z",
+      "evidence": {
+        "sameViewer": true,
+        "safetySameViewer": true,
+        "sources": 1,
+        "renderLoop": true,
+        "models": 3
+      },
+      "finishedAt": "2026-10-13T07:00:54.013Z"
+    }
+  ],
+  "screenshots": [
+    "01-crane-heading-0.png",
+    "02-crane-heading-90.png",
+    "03-pile-heading-0.png",
+    "04-pile-heading-90.png",
+    "05-excavator-heading-0.png",
+    "06-excavator-heading-90.png",
+    "07-three-machines-overview.png",
+    "08-crane-combined-pose.png",
+    "09-crane-body-detail.png"
+  ],
+  "videos": [
+    "machinery-appearance-heading-actual-operation.mp4"
+  ],
+  "pageErrors": [],
+  "consoleErrors": [],
+  "origin": "http://127.0.0.1:5173",
+  "result": "passed",
+  "finishedAt": "2026-10-13T07:00:58.028Z",
+  "videoExport": {
+    "source": "Playwright recordVideo from the same passing 12-check original-workbench run",
+    "codec": "H.264",
+    "width": 1280,
+    "height": 800,
+    "framesPerSecond": 25,
+    "durationSeconds": 153.88,
+    "byteLength": 1534571,
+    "transformation": "Full recording transcoded and resized only; no inserted frames, generated imagery or reconstructed scenes"
+  },
+  "supplementaryCameraCapture": {
+    "classification": "Additional real-browser close-up of crane body and outriggers; boom tip intentionally outside body-detail framing",
+    "image": "09-crane-body-detail.png",
+    "fixture": "New isolated original-workbench resource with the same combined pose; no production data",
+    "startedAt": "2026-10-13T07:01:39.158Z",
+    "finishedAt": "2026-10-13T07:02:54.151Z",
+    "parameters": {
+      "overall_scale": 4,
+      "overall_height_m": 8.743960993400083,
+      "body_height_m": 1.375872841208249,
+      "boom_length_m": 14.716322689805976,
+      "outrigger_lateral_m": 2.319999999999969,
+      "outrigger_longitudinal_m": 1.9008001003265367,
+      "boom_rotation_deg": 75,
+      "boom_elevation_deg": 30
+    },
+    "measuredHeadingDeg": 209.99999999999997,
+    "pageErrors": [],
+    "consoleErrors": [],
+    "functionalAcceptanceCountUnchanged": 12,
+    "notIncludedInMainOperationVideo": true
+  },
+  "nodeVerification": {
+    "passed": 73,
+    "geometryAndAppearance": 25,
+    "integration": 11,
+    "server": 37
+  },
+  "productionBuild": {
+    "typescript": "passed",
+    "vite": "passed"
+  },
+  "sourceAssetsAndGeometryEngineUnchanged": true
+}

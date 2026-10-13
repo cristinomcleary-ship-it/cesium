@@ -31,6 +31,7 @@ interface GltfDocument {
   buffers: { byteLength: number }[];
   bufferViews: { byteOffset: number; byteLength: number }[];
   accessors: { count: number; type: string; componentType: number; min?: number[]; max?: number[] }[];
+  materials: { pbrMetallicRoughness: { baseColorFactor: number[]; metallicFactor: number; roughnessFactor: number }; extensions?: Record<string, unknown> }[];
   extras: Record<string, unknown>;
 }
 function parseGlb(buffer: ArrayBuffer) {
@@ -235,22 +236,75 @@ test('restored snapshots and GLB metadata cannot claim a height different from a
 });
 
 for (const entry of MACHINERY_CATALOG) {
-  test(`${entry.id}: GLB is metre Y-up at ground anchor, with finite unit normals and source palette colors`, async () => {
+  test(`${entry.id}: GLB is metre Y-up at ground anchor, with finite unit normals and linear display colors`, async () => {
     const asset = await model(entry.id), params = defaultMachineryParameters(asset);
     const { document, arrays: [positions, normals, colors] } = parseGlb(createMachineryGlb(asset, params));
     assert.equal(document.extras.units, 'm'); assert.equal(document.extras.coordinateSystem, 'Y-up');
     assert.deepEqual(document.extras.placementAnchor, [0, 0, 0]); assert.equal(document.extras.assetVersion, MACHINERY_ASSET_VERSION);
     near(document.accessors[0].min![1], 0, 1e-8);
     assert.equal(positions.length, normals.length); assert.equal(positions.length, colors.length);
-    const palette = new Set<string>(); for (let i = 0; i < asset.palette.length; i += 3) palette.add(Array.from(asset.palette.subarray(i, i + 3)).join(','));
+    const appearance = document.extras.appearance as Record<string, unknown>;
+    assert.equal(appearance.profile, 'construction-vivid/v1');
+    assert.equal(appearance.vertexColorSpace, 'linear RGB');
+    assert.equal(appearance.matchedSourceColors, asset.palette.length / 3);
+    assert.equal(appearance.sourceArraysModified, false); assert.equal(appearance.texturesRestored, false);
+    const displayedColors = new Set<string>();
     for (let i = 0; i < positions.length; i += 3) {
       assert.ok(Number.isFinite(positions[i]) && Number.isFinite(positions[i + 1]) && Number.isFinite(positions[i + 2]));
       near(Math.hypot(normals[i], normals[i + 1], normals[i + 2]), 1, 1e-6);
-      assert.ok(palette.has(Array.from(colors.subarray(i, i + 3)).join(',')));
+      for (let axis = 0; axis < 3; axis++) assert.ok(Number.isFinite(colors[i + axis]) && colors[i + axis] >= 0 && colors[i + axis] <= 1);
+      displayedColors.add(Array.from(colors.subarray(i, i + 3)).join(','));
     }
+    assert.ok(displayedColors.size >= asset.palette.length / 3 - 1, 'paint, metal, rubber and glass remain visually separate');
+    assert.deepEqual(document.materials[0].pbrMetallicRoughness.baseColorFactor, [1, 1, 1, 1]);
+    assert.equal(document.materials[0].pbrMetallicRoughness.metallicFactor, 0);
+    assert.ok(document.materials[0].pbrMetallicRoughness.roughnessFactor > 0.5);
+    assert.equal(document.materials[0].extensions?.KHR_materials_unlit, undefined, 'surface normals continue to shade the machinery');
     assert.equal(positions.length / 9 + Number(document.extras.removedDegenerateTriangles), asset.indices.length / 3);
   });
 }
+
+test('crane display contrasts red body/base boom, charcoal extension and yellow outrigger paint without changing source geometry', async () => {
+  const asset = await model('crane'), params = defaultMachineryParameters(asset);
+  const source = { positions: asset.sourcePositions.slice(), indices: asset.indices.slice(), colors: asset.faceColorIndices.slice(), palette: asset.palette.slice(), parts: asset.partIds.slice() };
+  const { arrays: [positions, , colors] } = parseGlb(createMachineryGlb(asset, params));
+  // Independent expected linear values for authored sRGB #F3343E, #303B48,
+  // #FFD43B and #76838D. A direct byte/255 export would fail these assertions.
+  const red = [0.8962693533742664, 0.03433980680868217, 0.04817182422688942];
+  const charcoal = [0.0295568344378088, 0.043735029256973465, 0.06480326669290577];
+  const yellow = [1, 0.6583748172794485, 0.043735029256973465];
+  const steel = [0.18116424424986022, 0.22696587351009836, 0.26635560480286247];
+  const counts = { red: 0, charcoal: 0, yellow: 0, steel: 0 };
+  const anchor = asset.config.reference_dimensions.anchor_m;
+  let emitted = 0;
+  for (let face = 0; face < asset.faceColorIndices.length; face++) {
+    const vertices = Array.from(asset.indices.subarray(face * 3, face * 3 + 3));
+    const points = vertices.map(vertex => [0, 1, 2].map(axis => Math.fround(asset.sourcePositions[vertex * 3 + axis] - anchor[axis])));
+    const ab = points[1].map((value, axis) => value - points[0][axis]), ac = points[2].map((value, axis) => value - points[0][axis]);
+    if (Math.hypot(ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0]) === 0) continue;
+    const part = asset.partIds[vertices[0]], originalColor = asset.faceColorIndices[face];
+    let expected: number[] | undefined;
+    if (originalColor === 9) {
+      const region = part === 1 ? 'charcoal' : (part >= 10 && part <= 13) || (part >= 20 && part <= 23) ? 'yellow' : 'red';
+      expected = { red, charcoal, yellow }[region]; counts[region]++;
+    } else if (originalColor === 2) { expected = steel; counts.steel++; }
+    for (let corner = 0; corner < 3; corner++) for (let axis = 0; axis < 3; axis++) {
+      const index = emitted * 9 + corner * 3 + axis;
+      assert.equal(positions[index], points[corner][axis]);
+      if (expected) near(colors[index], expected[axis], 1e-6);
+    }
+    emitted++;
+  }
+  assert.equal(emitted * 9, positions.length);
+  for (const [region, count] of Object.entries(counts)) assert.ok(count > 500, `${region} covers its real source surfaces`);
+  // Export again at a combined articulation; no source array may inherit the
+  // display colors or transform, and resetting must recover the identical GLB.
+  const articulated = resolveMachineryParameters(asset, params, { boom_elevation_deg: 30, boom_rotation_deg: 90, boom_length_m: 5 }, { proportional: false });
+  createMachineryGlb(asset, articulated, { proportional: false });
+  assert.deepEqual(asset.sourcePositions, source.positions); assert.deepEqual(asset.indices, source.indices);
+  assert.deepEqual(asset.faceColorIndices, source.colors); assert.deepEqual(asset.palette, source.palette); assert.deepEqual(asset.partIds, source.parts);
+  assert.deepEqual(parseGlb(createMachineryGlb(asset, params)).arrays[2], colors);
+});
 
 test('malformed manifest, truncated chunk and corrupt RGB are rejected', async () => {
   const manifestUrl = new URL('crane/manifest.json', publicBase), original = JSON.parse(await readFile(manifestUrl, 'utf8'));

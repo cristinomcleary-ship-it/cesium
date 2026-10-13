@@ -187,30 +187,91 @@ test('scene rejects unsupported asset versions and incomplete metadata instead o
   assert.equal(readMachineryState({ ...state('pile'), placement: { ...state('pile').placement, heading: 361 } }), undefined);
 });
 
-test('actual entity orientation plus Cesium glTF correction preserves up and clockwise reference heading', async () => {
+test('all three machines rotate actual entity orientation clockwise without moving the station or regenerating local geometry', async () => {
   // ModelUtility is Cesium's actual renderer helper, exposed at runtime but omitted from public TS declarations.
   const utility = (Cesium as unknown as { ModelUtility: { getAxisCorrectionMatrix(up: number, forward: number, result: Cesium.Matrix4): Cesium.Matrix4 } }).ModelUtility;
   const correction = utility.getAxisCorrectionMatrix(Axis.Y, Axis.Z, new Matrix4());
-  const model = await asset('pile'), fixture = viewerFixture(), scene = new MachineryScene(fixture.viewer);
-  scene.setContext({ projectId: 'safety:project', records: [], canView: true, active: true });
-  try {
-    for (const heading of [0, 90, 180, 270]) {
-      const metadata = state('pile'); metadata.placement.heading = heading;
+  for (const id of MACHINERY_ASSET_IDS) {
+    const model = await asset(id), fixture = viewerFixture(), scene = new MachineryScene(fixture.viewer);
+    const parameters = resolveMachineryParameters(model, defaultMachineryParameters(model),
+      id === 'crane' ? { overall_scale: 2, boom_rotation_deg: 75, boom_elevation_deg: 30 } : { overall_scale: 2 });
+    const metadata = state(id, parameters), original = structuredClone(metadata);
+    scene.setContext({ projectId: 'safety:project', records: [], canView: true, active: true });
+    try {
       await scene.preview('equipment-1', metadata, model);
-      const entity = fixture.source().entities.getById('machinery:equipment-1')!;
-      const position = entity.position!.getValue(JulianDate.now())!;
-      const orientation = entity.orientation!.getValue(JulianDate.now())!;
-      const world = Matrix4.fromRotationTranslation(Matrix3.fromQuaternion(orientation), position);
-      const inverseEnu = Matrix4.inverseTransformation(Transforms.eastNorthUpToFixedFrame(position), new Matrix4());
-      const local = Matrix4.multiply(inverseEnu, Matrix4.multiply(world, correction, new Matrix4()), new Matrix4());
-      const up = Matrix4.multiplyByPointAsVector(local, Cartesian3.UNIT_Y, new Cartesian3());
-      near(up.x, 0); near(up.y, 0); near(up.z, 1);
-      const forward = Matrix4.multiplyByPointAsVector(local, Cartesian3.UNIT_X, new Cartesian3());
-      near(forward.x, Math.sin(heading * Math.PI / 180)); near(forward.y, Math.cos(heading * Math.PI / 180)); near(forward.z, 0);
-      near(Cartographic.fromCartesian(position).height, metadata.placement.height, 1e-6);
-      assert.equal(entity.model!.scale!.getValue(JulianDate.now()), 1, 'geometry already contains the requested scale');
+      const entity = fixture.source().entities.getById('machinery:equipment-1')!, initialPosition = entity.position!.getValue(JulianDate.now())!;
+      const glb = entity.model!.uri!.getValue(JulianDate.now());
+      for (const heading of [0, 90, 180, 270, 359.999]) {
+        const rotated = structuredClone(metadata); rotated.placement.heading = heading;
+        await scene.preview('equipment-1', rotated, model);
+        assert.equal(fixture.source().entities.values.length, 1, 'rotation retains the single equipment entity in the host viewer');
+        assert.equal(fixture.source().entities.getById(entity.id), entity);
+        assert.equal(entity.model!.uri!.getValue(JulianDate.now()), glb, 'heading changes reuse the same immutable GLB, including crane slew/elevation and dimensions');
+        const position = entity.position!.getValue(JulianDate.now())!;
+        assert.deepEqual(position, initialPosition, 'every source vertex rotates around the unchanged placement anchor');
+        const orientation = entity.orientation!.getValue(JulianDate.now())!;
+        const world = Matrix4.fromRotationTranslation(Matrix3.fromQuaternion(orientation), position);
+        const inverseEnu = Matrix4.inverseTransformation(Transforms.eastNorthUpToFixedFrame(position), new Matrix4());
+        const local = Matrix4.multiply(inverseEnu, Matrix4.multiply(world, correction, new Matrix4()), new Matrix4());
+        const up = Matrix4.multiplyByPointAsVector(local, Cartesian3.UNIT_Y, new Cartesian3());
+        near(up.x, 0); near(up.y, 0); near(up.z, 1);
+        const forward = Matrix4.multiplyByPointAsVector(local, Cartesian3.UNIT_X, new Cartesian3());
+        near(forward.x, Math.sin(heading * Math.PI / 180)); near(forward.y, Math.cos(heading * Math.PI / 180)); near(forward.z, 0);
+        near(Cartographic.fromCartesian(position).height, metadata.placement.height, 1e-6);
+        assert.equal(entity.model!.scale!.getValue(JulianDate.now()), 1, 'geometry already contains the requested scale');
+        assert.deepEqual(rotated.parameters, original.parameters, 'heading cannot rewrite internal articulation or dimensions');
+      }
+      assert.deepEqual(metadata, original, 'preview leaves its source record unchanged');
+    } finally { scene.destroy(); }
+  }
+});
+
+test('whole-machine heading cancels to the saved pose and reloads through the original scene lifecycle for every asset', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fileFetcher;
+  try {
+    for (const id of MACHINERY_ASSET_IDS) {
+      const model = await asset(id), fixture = viewerFixture(), scene = new MachineryScene(fixture.viewer);
+      const parameters = resolveMachineryParameters(model, defaultMachineryParameters(model),
+        id === 'crane' ? { boom_rotation_deg: 270, boom_elevation_deg: 45, boom_length_m: 4 } : {});
+      const saved = state(id, parameters); saved.placement.heading = 35;
+      const record = { id: `heading-${id}`, name: id, machinery: saved, projectId: 'safety:project' };
+      let persisted!: MachineryMetadata, savedPosition!: Cesium.Cartesian3, savedOrientation!: Cesium.Quaternion;
+      try {
+        scene.setContext({ projectId: record.projectId, records: [record], canView: true, active: true });
+        assert.equal(await scene.flyTo(record.id), true, 'saved records load using the original asset path');
+        const entity = fixture.source().entities.getById(`machinery:${record.id}`)!;
+        const initialOrientation = entity.orientation!.getValue(JulianDate.now())!;
+        savedPosition = entity.position!.getValue(JulianDate.now())!;
+        const glb = entity.model!.uri!.getValue(JulianDate.now());
+        const draft = structuredClone(saved); draft.placement.heading = 185;
+        await scene.preview(record.id, draft, model);
+        assert.notDeepEqual(entity.orientation!.getValue(JulianDate.now()), initialOrientation, 'the preview visibly changes orientation');
+        scene.clearPreview();
+        assert.deepEqual(entity.orientation!.getValue(JulianDate.now()), initialOrientation, 'cancel immediately restores the committed heading');
+        assert.equal(record.machinery.placement.heading, 35, 'cancel does not mutate the saved resource');
+        assert.equal(entity.model!.uri!.getValue(JulianDate.now()), glb);
+        draft.placement.heading = 359.999;
+        await scene.preview(record.id, draft, model);
+        persisted = validateMachineryMetadata(JSON.parse(JSON.stringify(draft)));
+        scene.sync([{ ...record, machinery: persisted }]);
+        scene.clearPreview();
+        savedOrientation = entity.orientation!.getValue(JulianDate.now())!;
+        assert.deepEqual(entity.position!.getValue(JulianDate.now()), savedPosition);
+        assert.equal(entity.model!.uri!.getValue(JulianDate.now()), glb);
+        assert.deepEqual(persisted.parameters, saved.parameters);
+      } finally { scene.destroy(); }
+      const reloadedFixture = viewerFixture(), reloadedScene = new MachineryScene(reloadedFixture.viewer);
+      try {
+        reloadedScene.setContext({ projectId: record.projectId, records: [{ ...record, machinery: persisted }], canView: true, active: true });
+        assert.equal(await reloadedScene.flyTo(record.id), true);
+        const entity = reloadedFixture.source().entities.getById(`machinery:${record.id}`)!;
+        assert.deepEqual(entity.orientation!.getValue(JulianDate.now()), savedOrientation, 'a new scene restores the persisted quaternion without a parallel model store');
+        assert.deepEqual(entity.position!.getValue(JulianDate.now()), savedPosition);
+        assert.equal(reloadedFixture.source().entities.values.length, 1);
+      } finally { reloadedScene.destroy(); }
     }
-  } finally { scene.destroy(); }
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test('latest preview placement wins a pending load; replace/remove release every object URL', async () => {
@@ -221,13 +282,17 @@ test('latest preview placement wins a pending load; replace/remove release every
   URL.revokeObjectURL = url => { revoked.push(url); revoke(url); };
   scene.setContext({ projectId: 'safety:project', records: [], canView: true, active: true });
   try {
-    const first = state('pile'), latest = state('pile'); latest.placement.longitude = 122; latest.placement.height = 345;
+    const first = state('pile'), latest = state('pile'); latest.placement.longitude = 122; latest.placement.height = 345; latest.placement.heading = 90;
     const a = scene.preview('equipment-1', first, model), b = scene.preview('equipment-1', latest, model);
     fixture.release(); await Promise.all([a, b]);
     assert.equal(fixture.source().entities.values.length, 1);
     const entity = fixture.source().entities.values[0];
     const position = Cartographic.fromCartesian(entity.position!.getValue(JulianDate.now())!);
     near(position.longitude * 180 / Math.PI, 122); near(position.height, 345, 1e-6);
+    const worldRotation = Matrix3.fromQuaternion(entity.orientation!.getValue(JulianDate.now())!);
+    const inverseEnu = Matrix4.inverseTransformation(Transforms.eastNorthUpToFixedFrame(entity.position!.getValue(JulianDate.now())!), new Matrix4());
+    const localX = Matrix4.multiplyByPointAsVector(inverseEnu, Matrix3.multiplyByVector(worldRotation, Cartesian3.UNIT_X, new Cartesian3()), new Cartesian3());
+    near(localX.x, 0); near(localX.y, -1); near(localX.z, 0);
     const changed = state('pile', resolveMachineryParameters(model, latest.parameters, { total_height_m: 10 }, { proportional: false }));
     await scene.preview('equipment-1', changed, model);
     assert.equal(fixture.source().entities.values[0], entity, 'same equipment keeps one entity');
