@@ -1,5 +1,5 @@
 import type { ManagementCollection, ManagementCommand, ManagementRecord } from "../../src/managementTypes.ts";
-import { ManagementError, type Actor } from "./domain.ts";
+import { allow, ManagementError, type Actor } from "./domain.ts";
 
 export type RecordSource = { get:(kind:ManagementCollection,id:string)=>ManagementRecord; list:(kind:ManagementCollection)=>ManagementRecord[] };
 const referenceFields:Record<string,ManagementCollection>={documentId:"documents",documentVersionId:"documentVersions",versionId:"documentVersions",effectiveVersionId:"documentVersions",evidenceId:"evidence",fileId:"evidence",checkId:"checks",issueId:"issues",duplicateOf:"issues",technicalQueryId:"technicalQueries",meetingId:"meetings",anchorId:"anchors",allocationId:"allocations",resourceId:"resources",batchId:"batches",qualifiedTestId:"tests",wbsId:"wbs"};
@@ -40,10 +40,13 @@ export function canAccessRecord(actor:Actor,kind:ManagementCollection,record:Man
 }
 export function authorizeRecord(actor:Actor,kind:ManagementCollection,record:ManagementRecord,source:RecordSource,write=false){if(!canAccessRecord(actor,kind,record,source,write))throw new ManagementError(403,"RECORD_FORBIDDEN","记录或关联对象不在当前任务授权范围");}
 export function commandCollection(type:string):ManagementCollection|undefined{
+ if(type==="machinery.save"||type==="machinery.remove")return "resources";
  const map:Record<string,ManagementCollection>={wbs:"wbs",task:"tasks",baseline:"baselines",commitment:"commitments",progress:"progress",dailyLog:"dailyLogs",check:"checks",issue:"issues",inspection:"inspections",resource:"resources",need:"resourceNeeds",allocation:"allocations",usage:"resourceUsage",batch:"batches",test:"tests",material:"materialTransactions",document:"documentVersions",link:"links",technical:"technicalQueries",change:"changes",meeting:"meetings",action:"actions",anchor:"anchors",bookmark:"bookmarks",monitoring:"monitoring",report:"reports",evidence:"evidence"};
  if(type==="document.create")return "documents";if(type==="document.requirement"||type==="document.fulfill")return "documentRequirements";return map[type.split(".")[0]];
 }
 export function authorizeCommand(actor:Actor,m:ManagementCommand,source:RecordSource){
+ // Check live capabilities before receipt replay or revision responses as well as in the domain.
+ if(m.type==="machinery.save"||m.type==="machinery.remove"){allow(actor,"resource");allow(actor,"models");}
  if(actor.taskIds===undefined)return;
  const kind=commandCollection(m.type);
  if(kind&&m.id){try{authorizeRecord(actor,kind,source.get(kind,m.id),source,true);}catch(e){if(!(e instanceof ManagementError&&e.status===404))throw e;}}

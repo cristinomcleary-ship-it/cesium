@@ -1,5 +1,6 @@
 import { newCheckItems,recordCheckItems,confirmCheckIntegrity,checklistVersion } from "./checkIntegrity.ts";
 import { configureTaskConditions,enforceTaskConditions } from "./taskConditions.ts";
+import { MachineryValidationError,validateMachineryMetadata } from "../../src/machineryValidation.ts";
 import { randomUUID } from "node:crypto";
 import type { ManagementCollection, ManagementCommand, ManagementRecord, ManagementRole, ManagementPermission, ProgressEntry, ProgressRevision, ManagementCheckItem } from "../../src/managementTypes.ts";
 
@@ -70,7 +71,7 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
    for(const dep of ids(v.predecessorIds)){ensure(map.has(dep),"DEPENDENCY_MISSING","前置任务不存在");const prior=map.get(dep)!;ensure(!v.planStart||!prior.planEnd||String(prior.planEnd)<=String(v.planStart),"DEPENDENCY_DATE_CONFLICT","前置任务完成晚于后续开始",{taskId:key,predecessorId:dep});visit(dep);}open.delete(key);seen.add(key);};all.forEach(v=>visit(v.id));
  };
  const permission=m.type.startsWith("task.")||m.type.startsWith("wbs.")||m.type.startsWith("baseline.")||m.type.startsWith("commitment.")?"plan"
-  :m.type.startsWith("resource.")||m.type.startsWith("need.")||m.type.startsWith("allocation.")||m.type.startsWith("usage.")||m.type.startsWith("batch.")||m.type.startsWith("test.")||m.type.startsWith("material.")?"resource"
+  :m.type.startsWith("resource.")||m.type.startsWith("machinery.")||m.type.startsWith("need.")||m.type.startsWith("allocation.")||m.type.startsWith("usage.")||m.type.startsWith("batch.")||m.type.startsWith("test.")||m.type.startsWith("material.")?"resource"
   :m.type.startsWith("document.")||m.type.startsWith("technical.")||m.type.startsWith("meeting.")||m.type.startsWith("action.")||m.type.startsWith("change.")||m.type.startsWith("link.")?"document"
   :m.type.startsWith("anchor.")?"document":m.type.startsWith("inspection.")||m.type.startsWith("monitoring.")?"inspect"
   :m.type.startsWith("report.")?"confirm":m.type.startsWith("bookmark.")?"read":"field";
@@ -139,7 +140,18 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
  case "resource.create":case "resource.update":{
   const fields=pick(p,["name","kind","specification","unit","quantity","ownerId","locationDescription","qualificationEvidenceIds","validUntil","availability"]);
   str(fields.name,"资源名称",200);ensure(["crew","equipment","material","auxiliary","test"].includes(String(fields.kind)),"INVALID_KIND","资源类别无效");if(fields.quantity!==undefined)num(fields.quantity,"资源数量");if(fields.validUntil)date(fields.validUntil);fields.qualificationEvidenceIds=evidence(fields.qualificationEvidenceIds);
-  if(m.type==="resource.create")create("resources",fields,"active");else{reason();Object.assign(load("resources"),fields);recheckNeeds(n=>n.resourceId===r!.id,"资源状态或资格发生变化，请重新核对");}break;}
+  if(m.type==="resource.create")create("resources",fields,"active");else{reason();load("resources");ensure(!r!.machinery||fields.kind==="equipment","MACHINERY_RESOURCE_KIND","请先解除三维机械模型，再变更设备资源类别");Object.assign(r!,fields);recheckNeeds(n=>n.resourceId===r!.id,"资源状态或资格发生变化，请重新核对");}break;}
+ case "machinery.save":case "machinery.remove":{
+  allow(actor,"models");load("resources");
+  ensure(r!.kind==="equipment","MACHINERY_RESOURCE_KIND","三维机械模型只能关联已有设备资源");
+  ensure(Object.keys(p).every(key=>["reason",...(m.type==="machinery.save"?["machinery"]:[])].includes(key)),"INVALID_MACHINERY_PAYLOAD","机械命令只能修改模型数据，不能修改资源业务状态");
+  if(p.reason!==undefined)reason();
+  if(m.type==="machinery.save"){
+   try{r!.machinery=validateMachineryMetadata(p.machinery);}catch(error){if(error instanceof MachineryValidationError)throw new ManagementError(400,error.code,error.message,{field:error.field});throw error;}
+  }else{ensure(r!.machinery,"MACHINERY_NOT_ATTACHED","该设备尚未关联三维机械模型");delete r!.machinery;}
+  // Preserve qualification, availability, allocations and admission decisions: display geometry
+  // neither confirms equipment readiness nor invalidates an existing business confirmation.
+  break;}
  case "need.create":case "need.update":{
   const fields=pick(p,["name","taskId","kind","resourceId","quantity","unit","required","ownerId","coordinationNote"]);str(fields.name,"需求名称",200);ensure(["crew","equipment","material","auxiliary","test"].includes(String(fields.kind)),"INVALID_KIND","资源需求类别无效");taskAccess(c,fields.taskId);fields.dueDate=date(p.dueDate);if(fields.quantity!==undefined){num(fields.quantity,"需用量",0.0000001);str(fields.unit,"单位",30);}if(fields.resourceId)c.get("resources",id(fields.resourceId));
   if(m.type==="need.create")create("resourceNeeds",{...fields,required:p.required!==false},"unconfirmed");else{Object.assign(load("resourceNeeds"),fields);r!.status="unconfirmed";r!.changeReason=reason();}break;}

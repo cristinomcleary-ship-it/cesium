@@ -1,0 +1,136 @@
+{
+  "schema": "machinery-asset/v1",
+  "version": "2026-10-13-v1",
+  "id": "excavator",
+  "name": "挖机",
+  "type": "excavator",
+  "config": {
+    "parameters": [
+      {
+        "key": "overall_scale",
+        "label": "整体缩放倍率",
+        "unit": "×",
+        "original": 1.0,
+        "min": 0,
+        "min_exclusive": true,
+        "step": 0.1,
+        "description": "1×为原模型大小；调整倍率会同时改变整机及各部件尺寸。"
+      },
+      {
+        "key": "overall_height_m",
+        "label": "整机总高度",
+        "unit": "m",
+        "original": 5.40582724161427,
+        "min": 0,
+        "min_exclusive": true,
+        "step": 0.01,
+        "description": "从模型最低点至最高点；修改此值等比例调整整机。"
+      },
+      {
+        "key": "body_height_m",
+        "label": "机身参考高度",
+        "unit": "m",
+        "original": 3.04186663301146,
+        "min": 0,
+        "min_exclusive": true,
+        "step": 0.01,
+        "description": "清理后原模型的履带落地最低点至驾驶室顶帽最高点的垂直距离；不含工作臂、铲斗和工作油缸。机身高度作为整机 XYZ 等比例调整的驱动尺寸。"
+      }
+    ],
+    "units": "m",
+    "limitations": [
+      "挖机采用整机比例缩放保持工作臂与液压缸连接；未提供独立关节调整。"
+    ],
+    "reference_dimensions": {
+      "schema_version": 1,
+      "id": "excavator",
+      "type": "excavator",
+      "units": "m",
+      "coordinate_system": "Y-up",
+      "body_height_m": 3.04186663301146,
+      "ground_y_m": -1.7236390487421482,
+      "body_top_y_m": 1.3182275842693116,
+      "anchor_m": [
+        -77.91116964133747,
+        -1.7236390487421482,
+        22.351318011117563
+      ],
+      "definition": "清理后原模型的履带落地最低点至驾驶室顶帽最高点的垂直距离；不含工作臂、铲斗和工作油缸。机身高度作为整机 XYZ 等比例调整的驱动尺寸。",
+      "scale_mode": "whole_model_uniform_from_body_height",
+      "scale_formula": "scale = requested_body_height_m / body_height_m; output = anchor_m + (source - anchor_m) * scale",
+      "anchor_definition": "原姿态下源 Y < -0.7 m 的履带/底盘几何水平包围盒中心投影到履带最低点；这是落地缩放参考点，不是已标定的厂家回转中心。",
+      "independent_body_deformation_supported": false,
+      "independent_body_deformation_reason": "主臂铰点和双主油缸下铰点处于不同高度，源模型没有经验证的机械关节约束；只改变机身 Y 并平移工作臂会破坏油缸连接。统一 XYZ 比例完整保留连接和形状。",
+      "source_evidence": {
+        "source_mesh_count": 62,
+        "source_vertex_count": 58927,
+        "source_triangle_count": 111654,
+        "source_coordinate_normalization_applied": false,
+        "source_unit_conversion_applied_again": false,
+        "measurement_status": "Derived from uploaded geometry and visually checked; not a manufacturer dimension or a field survey."
+      },
+      "overall_height_m": 5.40582724161427
+    },
+    "local_parameters": [],
+    "parameter_policy": "默认原比例联动；最后编辑的尺寸为驱动。机身参考高度始终按整机比例调整。",
+    "type": "excavator"
+  },
+  "vertexCount": 58927,
+  "triangleCount": 111654,
+  "paletteSize": 14,
+  "byteLength": 2924846,
+  "arrays": {
+    "positions": {
+      "offset": 0,
+      "byteLength": 1414248
+    },
+    "indices": {
+      "offset": 1414248,
+      "byteLength": 1339848
+    },
+    "partIds": {
+      "offset": 2754096,
+      "byteLength": 58927
+    },
+    "palette": {
+      "offset": 2813024,
+      "byteLength": 168
+    },
+    "faceColorIndices": {
+      "offset": 2813192,
+      "byteLength": 111654
+    }
+  },
+  "chunks": [
+    {
+      "file": "chunk-000.bin",
+      "byteLength": 524288,
+      "sha256": "7b8993470ff1ca2d96a8394e5be7be5b3911e6ae73cb3294d50eef2453433af7"
+    },
+    {
+      "file": "chunk-001.bin",
+      "byteLength": 524288,
+      "sha256": "43b32a3dcaacb85043117482f59e4d2cfc4cc68221837c73eed7adff40137968"
+    },
+    {
+      "file": "chunk-002.bin",
+      "byteLength": 524288,
+      "sha256": "476dba4655eb02e175bad2071e3aa08ce7a0e299b934b5a3404aefbd1eb76f9b"
+    },
+    {
+      "file": "chunk-003.bin",
+      "byteLength": 524288,
+      "sha256": "05f09499c995199c628ce3bf17b3031e14c3428fbe3399a1d96f3cfaeceaa826"
+    },
+    {
+      "file": "chunk-004.bin",
+      "byteLength": 524288,
+      "sha256": "9d4e48eec1a3f5962abb7d26ce8c9bd053172efbd1fb696d1830a39c39b6805a"
+    },
+    {
+      "file": "chunk-005.bin",
+      "byteLength": 303406,
+      "sha256": "b61d7d1723e32f849bda665520bfd4e56ce48615240348fa7a9997ec6458c39d"
+    }
+  ]
+}

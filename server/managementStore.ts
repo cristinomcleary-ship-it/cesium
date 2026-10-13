@@ -27,7 +27,15 @@ const COOKIE="cesium_management_session",SESSION_MS=8*60*60*1000;
 const emptyCollections=()=>Object.fromEntries(MANAGEMENT_COLLECTIONS.map(k=>[k,[]])) as unknown as Record<ManagementCollection,ManagementRecord[]>;
 const hash=(s:string|Buffer)=>createHash("sha256").update(s).digest("hex");
 function output(res:ServerResponse,status:number,value:unknown){if(res.destroyed||res.headersSent)return;res.statusCode=status;res.setHeader("Content-Type","application/json; charset=utf-8");res.setHeader("Cache-Control","no-store");res.end(JSON.stringify(value));}
-function errorOutput(res:ServerResponse,error:unknown){const e=error instanceof ManagementError?error:new ManagementError(500,"INTERNAL_ERROR","管理服务失败，输入未写入，请重试");output(res,e.status,{error:e.message,code:e.code,details:e.details,current:e.current});}
+/** Geometry capabilities also govern nested historical records in reports and conflict details.
+ * Return a detached public projection; domain reads and persisted resources retain the full value. */
+function withoutUnauthorizedMachinery<T>(value:T,actor?:Actor):T{
+ if(actor?.permissions.includes("models"))return value;
+ const redact=(v:unknown):unknown=>Array.isArray(v)?v.map(redact):v&&typeof v==="object"?Object.fromEntries(Object.entries(v).filter(([key])=>key!=="machinery").map(([key,item])=>[key,redact(item)])):v;
+ return redact(value) as T;
+}
+function publicError(error:unknown,actor?:Actor){return error instanceof ManagementError?new ManagementError(error.status,error.code,error.message,withoutUnauthorizedMachinery(error.details,actor),withoutUnauthorizedMachinery(error.current,actor)):error;}
+function errorOutput(res:ServerResponse,error:unknown,actor?:Actor){const e=publicError(error instanceof ManagementError?error:new ManagementError(500,"INTERNAL_ERROR","管理服务失败，输入未写入，请重试"),actor) as ManagementError;output(res,e.status,{error:e.message,code:e.code,details:e.details,current:e.current});}
 function loopback(req:IncomingMessage){return ["127.0.0.1","::1","::ffff:127.0.0.1"].includes(req.socket.remoteAddress||"");}
 function sameOrigin(req:IncomingMessage){const origin=req.headers.origin;if(!origin)return;let host="";try{host=new URL(origin).host;}catch{/* denied */}if(!host||host!==req.headers.host)throw new ManagementError(403,"CROSS_ORIGIN","不允许跨站访问管理数据");}
 function canonical(value:unknown):string{if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+canonical((value as Record<string,unknown>)[k])).join(',')+'}';return JSON.stringify(value);}
@@ -74,12 +82,12 @@ export function createManagementStore(options:ManagementStoreOptions={}){
  function recordSource(projectId:string):RecordSource{return{get:(kind,key)=>get(projectId,kind,key),list:kind=>list(projectId,kind)};}
  function visible(actor:Actor,record:ManagementRecord,kind:ManagementCollection){return canAccessRecord(actor,kind,record,recordSource(record.projectId));}
  function authorizedGet(projectId:string,actor:Actor,kind:ManagementCollection,key:string){const record=get(projectId,kind,key);authorizeRecord(actor,kind,record,recordSource(projectId));return record;}
- function publicRecord(kind:ManagementCollection,record:ManagementRecord){return kind==="checks"?{...record,checklistVersion:checklistVersion(record)}:record;}
+ function publicRecord(kind:ManagementCollection,record:ManagementRecord,actor:Actor){return withoutUnauthorizedMachinery(kind==="checks"?{...record,checklistVersion:checklistVersion(record)}:record,actor);}
 
  function list(projectId:string,kind:ManagementCollection):ManagementRecord[]{return (db.prepare("SELECT data FROM records WHERE project_id=? AND collection=? ORDER BY rowid").all(projectId,kind) as DbRow[]).map(r=>JSON.parse(r.data));}
  function get(projectId:string,kind:ManagementCollection,key:string){const row=db.prepare("SELECT data FROM records WHERE project_id=? AND collection=? AND id=?").get(projectId,kind,key) as DbRow|undefined;if(!row)throw new ManagementError(404,"RECORD_NOT_FOUND","记录不存在");return JSON.parse(row.data) as ManagementRecord;}
  function collections(projectId:string,actor:Actor,F?:string){const out=emptyCollections();const rows=F?db.prepare(`SELECT v.collection,v.data FROM record_versions v WHERE v.project_id=? AND v.recorded_at<=? AND v.revision=(SELECT max(x.revision) FROM record_versions x WHERE x.project_id=v.project_id AND x.collection=v.collection AND x.id=v.id AND x.recorded_at<=?)`).all(projectId,F,F):db.prepare("SELECT collection,data FROM records WHERE project_id=?").all(projectId);
-  for(const row of rows as {collection:ManagementCollection;data:string}[]){const record=JSON.parse(row.data) as ManagementRecord;if(visible(actor,record,row.collection))out[row.collection].push(publicRecord(row.collection,record));}return out;}
+  for(const row of rows as {collection:ManagementCollection;data:string}[]){const record=JSON.parse(row.data) as ManagementRecord;if(visible(actor,record,row.collection))out[row.collection].push(publicRecord(row.collection,record,actor));}return out;}
  function publicSession(actor:Actor):ManagementSession{return {userId:actor.id,displayName:actor.displayName,roles:actor.roles,authMode:actor.authMode,permissions:actor.permissions,expiresAt:actor.expiresAt};}
  function snapshot(projectId:string,actor:Actor):ManagementSnapshot{getProject(projectId);allow(actor,"read");const projects=(db.prepare("SELECT data FROM projects").all() as DbRow[]).map(v=>JSON.parse(v.data) as ManagementProject).filter(p=>actor.authMode==="local-owner"||getMember(p.id,actor.id)?.active);
   const members=(db.prepare("SELECT data FROM members WHERE project_id=?").all(projectId) as DbRow[]).map(v=>JSON.parse(v.data) as ManagementMember).filter(m=>actor.permissions.includes("admin")||m.id===actor.id||!actor.taskIds);
@@ -149,7 +157,7 @@ export function createManagementStore(options:ManagementStoreOptions={}){
     key=result.record.id;after=result.record.revision;before=after===1?null:after-1;
    }
    bump();audit(m.projectId,actor,m,key,before,after,time);db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?,?)").run(m.projectId,actor.id,m.idempotencyKey,signature,key,time);db.exec("COMMIT");return snapshot(m.projectId,actor);
-  }catch(e){db.exec("ROLLBACK");throw e;}
+  }catch(e){db.exec("ROLLBACK");throw publicError(e,actor);}
  }
  function command(m:ManagementCommand,actor:Actor){const run=queue.catch(()=>undefined).then(()=>execute(m,actor));queue=run;return run;}
  const eventBridge=createManagementEventBridge({projectId:legacyProjectId,legacy:()=>readLegacyEvents(legacyEventPath),fresh:actor=>fresh(actor,legacyProjectId),snapshot:actor=>snapshot(legacyProjectId,fresh(actor,legacyProjectId)),command});
@@ -190,6 +198,7 @@ export function createManagementStore(options:ManagementStoreOptions={}){
  }
  async function middleware(req:IncomingMessage,res:ServerResponse,next:()=>void){
   let url:URL;try{url=new URL(req.url||"/","http://localhost");}catch{next();return;}if(url.pathname==="/__safety/events"){try{sameOrigin(req);const actor=authenticate(req,legacyProjectId);await eventBridge.middleware(req,res,actor);}catch(e){errorOutput(res,e);}return;}if(!url.pathname.startsWith(MANAGEMENT_API+"/")&&url.pathname!==MANAGEMENT_API){next();return;}
+  let responseActor:Actor|undefined;
   try{sameOrigin(req);const projectId=url.searchParams.get("projectId")||legacyProjectId;
    if(url.pathname===MANAGEMENT_API+"/session"){
     if(req.method==="POST"){
@@ -200,23 +209,23 @@ export function createManagementStore(options:ManagementStoreOptions={}){
     if(req.method==="GET"){output(res,200,publicSession(authenticate(req,projectId)));return;}throw new ManagementError(405,"METHOD_NOT_ALLOWED","身份接口不支持该方法");
    }
    if(req.method==="POST"&&[MANAGEMENT_API+"/commands",MANAGEMENT_API+"/command"].includes(url.pathname)){
-    requestMarker(req);const input=await jsonBody(req) as ManagementCommand;const actor=authenticate(req,input.projectId),bootstrap=actor.authMode==="local-owner"&&input.type==="member.save";
+    requestMarker(req);const input=await jsonBody(req) as ManagementCommand;const actor=authenticate(req,input.projectId),bootstrap=actor.authMode==="local-owner"&&input.type==="member.save";responseActor=actor;
     const result=await command(input,actor);if(bootstrap){const logged=login(String(input.payload.username),String(input.payload.password),input.projectId);cookie(res,logged.token);result.session=publicSession(logged.actor);}output(res,200,result);return;
    }
-   const actor=authenticate(req,projectId);
+   const actor=authenticate(req,projectId);responseActor=actor;
    if(req.method==="GET"&&[MANAGEMENT_API+"/state",MANAGEMENT_API+"/snapshot"].includes(url.pathname)){output(res,200,snapshot(projectId,actor));return;}
    if(req.method==="GET"&&url.pathname===MANAGEMENT_API+"/metrics"){
     const filters:ManagementFilters={taskIds:url.searchParams.getAll("taskId"),areaIds:url.searchParams.getAll("areaId"),ownerId:url.searchParams.get("ownerId")||undefined,status:url.searchParams.get("status")||undefined,query:url.searchParams.get("query")||undefined,periodStart:url.searchParams.get("periodStart")||undefined,periodEnd:url.searchParams.get("periodEnd")||undefined};output(res,200,metrics(projectId,actor,url.searchParams.get("D")||now().slice(0,10),url.searchParams.get("F")||now(),filters));return;
    }
    if(req.method==="POST"&&[MANAGEMENT_API+"/upload",MANAGEMENT_API+"/uploads"].includes(url.pathname)){requestMarker(req);await upload(req,res,projectId,actor,url);return;}
    const conditionsMatch=url.pathname.match(/^\/__management\/tasks\/([^/]+)\/conditions$/);if(req.method==="GET"&&conditionsMatch){const task=authorizedGet(projectId,actor,"tasks",id(conditionsMatch[1]));output(res,200,evaluateTaskConditions({now:now(),businessDate:businessDate(projectId),list:k=>list(projectId,k),get:(k,key)=>authorizedGet(projectId,actor,k,key),evidence:key=>authorizeEvidence(projectId,actor,key)},task,revision()));return;}
-   const recordMatch=url.pathname.match(/^\/__management\/records\/([^/]+)\/([^/]+)$/);if(req.method==="GET"&&recordMatch){const kind=recordMatch[1] as ManagementCollection;ensure(MANAGEMENT_COLLECTIONS.includes(kind),"COLLECTION_INVALID","资料集合不存在");const record=get(projectId,kind,id(recordMatch[2]));if(!visible(actor,record,kind))throw new ManagementError(403,"RECORD_FORBIDDEN","记录不在任务授权范围");output(res,200,publicRecord(kind,record));return;}
+   const recordMatch=url.pathname.match(/^\/__management\/records\/([^/]+)\/([^/]+)$/);if(req.method==="GET"&&recordMatch){const kind=recordMatch[1] as ManagementCollection;ensure(MANAGEMENT_COLLECTIONS.includes(kind),"COLLECTION_INVALID","资料集合不存在");const record=get(projectId,kind,id(recordMatch[2]));if(!visible(actor,record,kind))throw new ManagementError(403,"RECORD_FORBIDDEN","记录不在任务授权范围");output(res,200,publicRecord(kind,record,actor));return;}
    const fileMatch=url.pathname.match(/^\/__management\/files\/([^/]+)\/(original|preview)$/);if((req.method==="GET"||req.method==="HEAD")&&fileMatch){
     allow(actor,"files");const e=get(projectId,"evidence",id(fileMatch[1]));if(!visible(actor,e,"evidence"))throw new ManagementError(403,"FILE_FORBIDDEN","附件不在授权任务范围");validateEvidence(projectId,e.id);ensure(e.storageName,"FILE_EXTERNAL","原资料附件应使用其已授权资料地址");const path=join(root,"management-files",id(e.storageName));const real=realpathSync(path);ensure(real.startsWith(realpathSync(join(root,"management-files"))+sep),"FILE_PATH_INVALID","附件路径无效");
     res.setHeader("Content-Type",String(e.mime||"application/octet-stream"));res.setHeader("Content-Length",String(e.size));res.setHeader("X-Content-Type-Options","nosniff");res.setHeader("Content-Security-Policy","sandbox");res.setHeader("Cache-Control","private, no-store");res.setHeader("Vary","Cookie");res.setHeader("Content-Disposition",`inline; filename*=UTF-8''${encodeURIComponent(e.name)}`);if(req.method==="HEAD")res.end();else createReadStream(path).pipe(res);return;
    }
    throw new ManagementError(404,"ENDPOINT_NOT_FOUND","管理接口不存在");
-  }catch(e){errorOutput(res,e);}
+  }catch(e){errorOutput(res,e,responseActor);}
  }
  return {middleware,accessMiddleware,command,load:snapshot,metrics,authenticate,localActor,root,close:()=>{if(!closed){closed=true;db.close();}}};
 }

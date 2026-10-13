@@ -1,0 +1,57 @@
+# 机械参数模型模块
+
+该模块加载经过确认的吊机、桩机和挖机源几何，在浏览器内重建尺寸并生成自包含 GLB。它不依赖 `window`、Cesium 或 Vite，因此参数求解和导出可直接在 Node 测试。
+
+## 接入
+
+```ts
+import {
+  loadMachineryAsset, defaultMachineryParameters,
+  resolveMachineryParameters, createMachineryGlb,
+} from './machinery';
+
+const asset = await loadMachineryAsset('crane', {
+  baseUrl: import.meta.env.BASE_URL + 'machinery/',
+  signal: abortController.signal,
+});
+let parameters = defaultMachineryParameters(asset);
+parameters = resolveMachineryParameters(asset, parameters,
+  { boom_length_m: 8 }, { proportional: true });
+const glb = createMachineryGlb(asset, parameters, { proportional: true });
+```
+
+`MACHINERY_CATALOG` 只包含三个模型的 `id/name/type`，不携带几何。`loadMachineryAsset` 只请求选中模型的 manifest 和二进制分块。Vite 的部署前缀由调用方显式传入；默认路径为 `/machinery/`。调用方可以按模型 ID 和资产版本缓存成功结果，失败或取消的请求不应缓存。返回资产使用 `asset.version` 字段；版本常量从 `src/machineryTypes.ts` 共享。
+
+## 参数语义
+
+- 默认值直接取已确认源模型的米制尺寸，整体倍率为 `1`；重置使用 `defaultMachineryParameters(asset)`。
+- 默认 `proportional: true`：编辑任一尺寸时，按“目标尺寸 ÷ 该尺寸原始值”计算整机比例，所有尺寸同步。每次重建均从源几何开始，整体倍率仅应用一次。
+- `proportional: false`：吊臂和吊钩索具联动伸缩；四个支脚按左右/前后中心整距平移，连接梁联动；桩机可调桅杆段高度，顶部刚性平移。挖机尚无已确认的独立关节控制。所有模型的整体倍率、机身参考高度、整机高度仍用于缩放当前完整外形。
+- 切换模式本身不修改参数或外形。使用空补丁 `resolveMachineryParameters(asset, current, {}, options)` 保留当前形状；模式表示**下一次编辑规则**。独立编辑后的形状可能不符合源比例，即使随后已切换为联动模式。
+- `changes` 是编辑补丁，通常仅含一个键。联动模式下多个键的最后一个字段作为驱动。恢复保存记录时，把完整参数作为 `current` 并传空补丁，不能把保存快照当作一次编辑。
+- 恢复和导出会校核机身参考高度及真实总高度；存档参数与几何不一致时明确拒绝，不静默改形。几何 API 接收已求解的完整参数。
+- `body_height_m` 是从地面到源模型固定机身上沿的参考尺寸，不是额外局部拉伸参数。吊机支腿距离为支脚中心线之间的整距，不是单侧伸出量。
+- `config.local_parameters` 中的最小值只是当前几何分件避免反转的约束；整体缩放后独立尺寸的可用最小值相应乘以倍率。没有假定厂家最大尺寸。输入须为大于零的有限数值，超出浮点渲染范围时拒绝生成。
+
+GLB 元数据分别记录 `editMode` 和 `originalProportionsMaintained`，防止把编辑规则当作现有外形认证。参数几何没有厂家载荷曲线、重心或稳定性计算，不能据此判定机械报验状态或倾覆安全限界。
+
+## 坐标、颜色和放置
+
+紧凑资产保留原始世界坐标、顶点顺序、三角面顺序和部件编号。坐标已经是 Y-up、米制，禁止再次按 FBX 原单位换算。`computeMachinerySourcePositions` 返回世界坐标重建结果，主要用于验证。
+
+`computeMachineryGeometry` 和 `createMachineryGlb` 将派生坐标减去固定原始地面 anchor，使落点为 `[0, 0, 0]`、最低有效几何的 Y 为零。源数组不改变。Cesium 放置时只需地理位置和朝向变换，不再归中、缩放或额外落地平移；引擎本身不包含 Cesium 的 Y-up 到 Z-up 转换。
+
+GLB 的 +X 为模型参考方向，物理机头方位未统一标定。平台将该参考轴的朝向记为从北顺时针的角度，不作为测量方位。GLB 保留 FBX 原数值漫反射 RGB，使用逐面法线和双面材质；未烘焙缺失贴图或 V-Ray 材质。原始零面积面仅在生成可显示 GLB 时剔除，并记录数量。
+
+## 资产与验证
+
+三个模型的二进制总计 4,838,822 字节，分为 11 块，每块最多 512 KiB。manifest 包含分块 SHA-256、数组范围、源参数和部件几何常量。加载时检查版本、结构、有限数值、索引及颜色；支持 WebCrypto 的环境同时校验 SHA-256。
+
+从已审阅的 `model_data.json` 可重复打包，脚本只写目标目录，验证源顶点、索引、部件和颜色逐字节往返一致：
+
+```sh
+python src/machinery/tools/build_assets.py --source /path/to/model_data.json
+node --experimental-transform-types --import ./tools/test-module-loader.mjs --test src/machinery/machinery.test.ts
+```
+
+测试覆盖原始默认值、地面 anchor、每个尺寸驱动的联动、反复修改与重置、独立变形及全局缩放组合、模式切换、无效参数、按模型加载、损坏资产拒绝、GLB 字节结构、颜色与有限单位法线。

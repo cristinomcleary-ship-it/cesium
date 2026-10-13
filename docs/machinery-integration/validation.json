@@ -1,0 +1,50 @@
+{
+  "baseline": "19eb1153394ee40b4a1f6d1265659e75d821f919",
+  "assetVersion": "2026-10-13-v1",
+  "automatedTests": {
+    "passed": 54,
+    "failed": 0,
+    "coverage": [
+      "14 geometry/asset/GLB",
+      "6 Cesium integration/lifecycle",
+      "34 management HTTP/resource/permission regression"
+    ]
+  },
+  "browser": {
+    "classification": "actual-platform-ui-with-isolated-test-data-and-original-machinery-assets",
+    "renderer": "Chromium SwiftShader WebGL2",
+    "platformChecks": [
+      "UI create/place/scale/save crane",
+      "UI create/place/scale/save pile",
+      "UI create/place/scale/save excavator",
+      "cancel linked draft restores saved dimensions",
+      "crane independent boom edit persists body scale",
+      "browser reload restores all exact model parameters/placements",
+      "excavator body-height drives whole-machine scale",
+      "remove keeps equipment ledger",
+      "one existing Cesium Viewer canvas"
+    ],
+    "panelChecks": {
+      "firstCreateNoBusyLock": true,
+      "noDefaultZeroPlacement": true,
+      "realSave": true,
+      "discardCloseKeepsSavedEntity": true,
+      "discardRestoresSavedParams": true,
+      "lostCommittedReplyRetainsDraft": true,
+      "retrySameReceiptSuccess": true,
+      "pickEscapeClears": true,
+      "sceneScaleRealMeters": true,
+      "chineseFontUsesPlatformLocal": true,
+      "saveButtonNotClipped": true,
+      "readonlyContextCanLocateButCannotEdit": true,
+      "mobilePanelFitsViewport": true
+    },
+    "uncaughtPageErrors": [],
+    "intentionalNetworkFailure": "The panel test deliberately drops a committed save response to verify retry receipt reuse."
+  },
+  "limitations": [
+    "No real railway construction site or control points supplied",
+    "Software-rendered browser is not hardware performance acceptance",
+    "Railway limits/protection coverage/tipping infringement calculation not implemented"
+  ]
+}

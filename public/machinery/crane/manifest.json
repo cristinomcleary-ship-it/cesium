@@ -1,0 +1,352 @@
+{
+  "schema": "machinery-asset/v1",
+  "version": "2026-10-13-v1",
+  "id": "crane",
+  "name": "吊机",
+  "type": "crane",
+  "config": {
+    "type": "crane",
+    "coordinate_system": "FBX world X/Y-up/Z, metres; unchanged original positions",
+    "parameters": [
+      {
+        "key": "overall_scale",
+        "label": "整体缩放倍率",
+        "unit": "×",
+        "original": 1.0,
+        "min": 0,
+        "min_exclusive": true,
+        "step": 0.1,
+        "description": "1×为原模型大小；调整倍率会同时改变整机及各部件尺寸。"
+      },
+      {
+        "key": "overall_height_m",
+        "label": "整机总高度",
+        "unit": "m",
+        "original": 3.236115124958876,
+        "min": 0,
+        "min_exclusive": true,
+        "step": 0.01,
+        "description": "从模型最低点至最高点；修改此值等比例调整整机。"
+      },
+      {
+        "key": "body_height_m",
+        "label": "机身参考高度",
+        "unit": "m",
+        "original": 0.34396821030206226,
+        "min": 0,
+        "min_exclusive": true,
+        "step": 0.01,
+        "description": "地面至操作室外壳顶部；修改此值按比例调整整机。"
+      },
+      {
+        "key": "boom_length_m",
+        "label": "吊臂长度",
+        "unit": "m",
+        "original": 3.065900560376245,
+        "step": 0.01,
+        "min": 0,
+        "min_exclusive": true,
+        "description": "联动时按原比例调整整机；独立模式只调整该部件。"
+      },
+      {
+        "key": "outrigger_lateral_m",
+        "label": "支腿横向中心间距",
+        "unit": "m",
+        "original": 0.5799999999999923,
+        "step": 0.01,
+        "min": 0,
+        "min_exclusive": true,
+        "description": "联动时按原比例调整整机；独立模式只调整该部件。"
+      },
+      {
+        "key": "outrigger_longitudinal_m",
+        "label": "支腿纵向中心间距",
+        "unit": "m",
+        "original": 0.47520002508163417,
+        "step": 0.01,
+        "min": 0,
+        "min_exclusive": true,
+        "description": "联动时按原比例调整整机；独立模式只调整该部件。"
+      }
+    ],
+    "boom": {
+      "axis": [
+        -0.1684118912113476,
+        0.9385291065149094,
+        0.30133129794786184
+      ],
+      "root_center_m": [
+        4.216639656903021,
+        0.270516793086903,
+        1.4568748157656328
+      ],
+      "tip_center_m": [
+        3.700305545264127,
+        3.1479537066803807,
+        2.380726611002884
+      ],
+      "root_projection_m": -0.01724239588046547,
+      "tip_projection_m": 3.0486581644957798,
+      "extension_anchor_projection_m": 0.7499580883486151,
+      "original_length_m": 3.065900560376245,
+      "fixed_geometry_length_m": 0.7672004842290806,
+      "measurement": "三伸展段几何中心线；根部投影最小站位至末端臂段投影最大站位，不含吊钩垂距",
+      "mode": "fixed base with axial geometric deformation of extending sections; rigid head and hook translated with tip"
+    },
+    "outriggers": {
+      "longitudinal_axis": [
+        1,
+        0,
+        0
+      ],
+      "lateral_axis": [
+        0,
+        0,
+        1
+      ],
+      "center_m": [
+        4.140783552885056,
+        0.009699861804632818,
+        1.585895118462758
+      ],
+      "original_lateral_m": 0.5799999999999923,
+      "original_longitudinal_m": 0.47520002508163417,
+      "measurement": "四圆形支脚中心按左右/前后取组均值的整距，保留源模型细微交错",
+      "legs": [
+        {
+          "index": 0,
+          "name": "后侧负Z支腿",
+          "pad_component": 428,
+          "center_m": [
+            3.9147335357666018,
+            0.00969990905163145,
+            1.295895118462762
+          ],
+          "longitudinal_sign": -1,
+          "lateral_sign": -1,
+          "rigid_part_id": 10,
+          "beam_part_id": 20,
+          "beam_inner_z_m": 1.5589788750239009,
+          "beam_outer_z_m": 1.3056787964253056,
+          "pad_width_x_m": 0.049999969482422024,
+          "pad_width_z_m": 0.04999999999999938
+        },
+        {
+          "index": 1,
+          "name": "前侧负Z支腿",
+          "pad_component": 423,
+          "center_m": [
+            4.389933538436889,
+            0.00969990905163145,
+            1.295895118462762
+          ],
+          "longitudinal_sign": 1,
+          "lateral_sign": -1,
+          "rigid_part_id": 11,
+          "beam_part_id": 21,
+          "beam_inner_z_m": 1.5589788750239009,
+          "beam_outer_z_m": 1.3056787964253056,
+          "pad_width_x_m": 0.049999969482422024,
+          "pad_width_z_m": 0.04999999999999938
+        },
+        {
+          "index": 2,
+          "name": "后侧正Z支腿",
+          "pad_component": 430,
+          "center_m": [
+            3.8916335449218753,
+            0.009699814557634185,
+            1.8758951184627544
+          ],
+          "longitudinal_sign": -1,
+          "lateral_sign": 1,
+          "rigid_part_id": 12,
+          "beam_part_id": 22,
+          "beam_inner_z_m": 1.612811637785969,
+          "beam_outer_z_m": 1.866111651072136,
+          "pad_width_x_m": 0.050000000000000266,
+          "pad_width_z_m": 0.04999999999999938
+        },
+        {
+          "index": 3,
+          "name": "前侧正Z支腿",
+          "pad_component": 429,
+          "center_m": [
+            4.3668335924148565,
+            0.009699814557634185,
+            1.8758951184627544
+          ],
+          "longitudinal_sign": 1,
+          "lateral_sign": 1,
+          "rigid_part_id": 13,
+          "beam_part_id": 23,
+          "beam_inner_z_m": 1.612811637785969,
+          "beam_outer_z_m": 1.866111651072136,
+          "pad_width_x_m": 0.050000032424926566,
+          "pad_width_z_m": 0.04999999999999938
+        }
+      ]
+    },
+    "parts": [
+      {
+        "id": 0,
+        "name": "固定车体、基础臂和液压支撑",
+        "vertex_count": 32825
+      },
+      {
+        "id": 1,
+        "name": "可伸展吊臂段及附件",
+        "vertex_count": 680
+      },
+      {
+        "id": 2,
+        "name": "臂头、吊钩及垂直索具",
+        "vertex_count": 4713
+      },
+      {
+        "id": 3,
+        "name": "根端至臂头联动索具",
+        "vertex_count": 6
+      },
+      {
+        "id": 10,
+        "name": "后侧负Z支腿刚性支脚",
+        "vertex_count": 304
+      },
+      {
+        "id": 11,
+        "name": "前侧负Z支腿刚性支脚",
+        "vertex_count": 301
+      },
+      {
+        "id": 12,
+        "name": "后侧正Z支腿刚性支脚",
+        "vertex_count": 303
+      },
+      {
+        "id": 13,
+        "name": "前侧正Z支腿刚性支脚",
+        "vertex_count": 304
+      },
+      {
+        "id": 20,
+        "name": "后侧负Z支腿连接梁",
+        "vertex_count": 287
+      },
+      {
+        "id": 21,
+        "name": "前侧负Z支腿连接梁",
+        "vertex_count": 290
+      },
+      {
+        "id": 22,
+        "name": "后侧正Z支腿连接梁",
+        "vertex_count": 315
+      },
+      {
+        "id": 23,
+        "name": "前侧正Z支腿连接梁",
+        "vertex_count": 314
+      }
+    ],
+    "source_vertex_order_preserved": true,
+    "source_faces_order_preserved": true,
+    "limits": [
+      "供尺寸配置与模型示意；未标定到实机型号。",
+      "伸展段采用沿中心线的几何变形，未实现厂家逐节伸缩行程或承载验算。",
+      "保持现有回转、仰角和吊钩垂距；本轮不提供角度或吊重控制。",
+      "支腿脚垫和立柱保持原宽高，中心距变化时连接梁以车体内端固定、外端随脚垫移动的方式联动；不推断底盘结构改造可行性。",
+      "任何参数变化均不是安全批准或稳定性计算。"
+    ],
+    "reference_dimensions": {
+      "anchor_m": [
+        4.140783552885056,
+        -2.506415502807613e-07,
+        1.585895118462758
+      ],
+      "body_height_m": 0.34396821030206226,
+      "definition": "地面至操作室外壳顶部；修改此值按比例调整整机。",
+      "overall_height_m": 3.236115124958876,
+      "ground_y_m": -2.506415502807613e-07,
+      "body_top_y_m": 0.34396795966051197
+    },
+    "local_parameters": [
+      {
+        "key": "boom_length_m",
+        "label": "吊臂长度",
+        "unit": "m",
+        "original": 3.065900560376245,
+        "min": 0.7682004842290806,
+        "step": 0.01,
+        "minimum_basis": "保留模型固定根段并避免可伸展段反转；非厂家行程限制"
+      },
+      {
+        "key": "outrigger_lateral_m",
+        "label": "支腿横向中心间距",
+        "unit": "m",
+        "original": 0.5799999999999923,
+        "min": 0.1038330386464208,
+        "step": 0.01,
+        "minimum_basis": "避免横向连接梁反转和支脚内缘跨越连接点；非厂家许可范围"
+      },
+      {
+        "key": "outrigger_longitudinal_m",
+        "label": "支腿纵向中心间距",
+        "unit": "m",
+        "original": 0.47520002508163417,
+        "min": 0.050000032424926566,
+        "step": 0.01,
+        "minimum_basis": "前后支脚几何不重叠；非结构布置许可范围"
+      }
+    ],
+    "parameter_policy": "默认原比例联动；最后编辑的尺寸为驱动。机身参考高度始终按整机比例调整。"
+  },
+  "vertexCount": 40642,
+  "triangleCount": 57483,
+  "paletteSize": 21,
+  "byteLength": 1763595,
+  "arrays": {
+    "positions": {
+      "offset": 0,
+      "byteLength": 975408
+    },
+    "indices": {
+      "offset": 975408,
+      "byteLength": 689796
+    },
+    "partIds": {
+      "offset": 1665208,
+      "byteLength": 40642
+    },
+    "palette": {
+      "offset": 1705856,
+      "byteLength": 252
+    },
+    "faceColorIndices": {
+      "offset": 1706112,
+      "byteLength": 57483
+    }
+  },
+  "chunks": [
+    {
+      "file": "chunk-000.bin",
+      "byteLength": 524288,
+      "sha256": "ecc9634351edb47b4b20ca7297f1f2b0e32914f552b9be69e9cf6e6a08cfc704"
+    },
+    {
+      "file": "chunk-001.bin",
+      "byteLength": 524288,
+      "sha256": "f7e3f234de82438b83e5177679ce917c738c8822605d1bff4cee667eefd96749"
+    },
+    {
+      "file": "chunk-002.bin",
+      "byteLength": 524288,
+      "sha256": "47bef04b4aa0f818899e1803bdd44c765b021a0007ed5e9b0ac078fbb01fa6bd"
+    },
+    {
+      "file": "chunk-003.bin",
+      "byteLength": 190731,
+      "sha256": "fd739c3d6e59533aee183d4b022698ed575b5350e4392f8a68c6ccfddb5a738f"
+    }
+  ]
+}
