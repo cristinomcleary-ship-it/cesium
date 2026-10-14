@@ -95,6 +95,10 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
    for(const key of definition.selectedLimitIds){const limit=c.get("railSafety",key);ensure(limit.status==="active"&&(limit.definition as RailSafetyDefinition)?.kind==="limit","RAIL_SAFETY_LIMIT_INVALID","所选限界不存在或已停用");ensure(!limit.taskId||limit.taskId===taskId,"RAIL_SAFETY_TASK_MISMATCH","所选限界属于不同任务");}
    ensure(!c.list("railSafety").some(v=>v.id!==m.id&&v.status==="active"&&(v.definition as RailSafetyDefinition)?.kind==="machine"&&(v.definition as {resourceId?:string}).resourceId===definition.resourceId),"RAIL_SAFETY_MACHINE_EXISTS","该机械已有管控配置，请编辑现有配置");
   }
+  if(definition.kind==="guard"&&definition.workArea?.deviceId){
+   const deviceId=definition.workArea.deviceId;
+   ensure(!c.list("railSafety").some(v=>{const d=v.definition as RailSafetyDefinition;return v.id!==m.id&&v.projectId===c.projectId&&v.status==="active"&&d?.kind==="guard"&&d.workArea?.deviceId===deviceId;}),"RAIL_SAFETY_DEVICE_BOUND","本项目该定位设备已绑定其他防护人员，请先解除原绑定");
+  }
   const old=m.id?c.list("railSafety").find(v=>v.id===m.id):undefined;
   if(old){load("railSafety");requiredState(r!,["active"]);ensure((r!.definition as RailSafetyDefinition)?.kind===definition.kind,"RAIL_SAFETY_KIND_IMMUTABLE","不能改变已有管控对象类别");if(definition.kind==="machine")ensure((r!.definition as {resourceId:string}).resourceId===definition.resourceId,"RAIL_SAFETY_RESOURCE_IMMUTABLE","不能更换已有配置的机械编号");if(definition.kind==="limit")for(const other of c.list("railSafety")){const d=other.definition as RailSafetyDefinition;if(other.status==="active"&&d?.kind==="machine"&&d.selectedLimitIds.includes(r!.id))ensure(!taskId||other.taskId===taskId,"RAIL_SAFETY_TASK_MISMATCH","此限界已被其他任务或全局机械引用，请先解除引用");}Object.assign(r!,{name,definition});if(taskId)r!.taskId=taskId;else delete r!.taskId;
   }else create("railSafety",{name,...(taskId?{taskId}:{}),definition},"active");

@@ -11,7 +11,7 @@ import { DEFAULT_RAIL_SAFETY_DISPLAY } from './railSafetyDisplay.ts';
 import { projectWgs84ToLocal, unprojectLocalToWgs84 } from './railSafetyGeometry.ts';
 import { MACHINERY_ASSET_VERSION, type MachineryMetadata } from './machineryTypes.ts';
 import { MACHINERY_PARAMETER_DEFAULTS } from './machineryValidation.ts';
-import type { RailSafetyDefinition, RailSafetyPosition, RailSafetyRecord } from './railSafetyTypes.ts';
+import type { RailSafetyDefinition, RailSafetyPosition, RailSafetyPositioningResult, RailSafetyRecord } from './railSafetyTypes.ts';
 
 const originalFetch = globalThis.fetch;
 const fileFetcher: typeof fetch = async input => {
@@ -41,13 +41,14 @@ function context(records: RailSafetyRecord[]): RailSafetySceneContext {
 function fixture(options: RailSafetySceneOptions = {}) {
   const canvas = Object.assign(new EventTarget(), { disableRootEvents: true, onwheel: null, style: { cursor: '' } });
   let source!: CustomDataSource;
+  const sources = new Map<string, CustomDataSource>();
   let picked: Entity | undefined;
   const viewer = { canvas, dataSources: {
-    add(value: CustomDataSource) { source = value; return Promise.resolve(value); },
-    remove(value: CustomDataSource) { value.entities.removeAll(); return true; },
+    add(value: CustomDataSource) { if (value.name === '铁路旁施工管控') source = value; sources.set(value.name, value); return Promise.resolve(value); },
+    remove(value: CustomDataSource) { value.entities.removeAll(); sources.delete(value.name); return true; },
   }, scene: { requestRender() {}, pick: () => ({ id: picked }) }, isDestroyed: () => false, flyTo: async () => true } as unknown as Viewer;
   const scene = new RailSafetyScene(viewer, options);
-  return { scene, source: () => source, clickEntity(id: string) {
+  return { scene, source: () => source, sources, clickEntity(id: string) {
     picked = source.entities.getById(id);
     const handler = (scene as unknown as { selectionHandler: ScreenSpaceEventHandler }).selectionHandler;
     const action = handler.getInputAction(ScreenSpaceEventType.LEFT_CLICK) as (event: { position: Cartesian2 }) => void;
@@ -332,4 +333,131 @@ test('dense convex display rings reduce shadow volumes within five centimetres w
   assert.equal(simplifyRailSafetyDisplayRing(small), small, 'tiny overlaps retain their full shape');
   const concave = ring.map((p, i) => i === 90 ? origin : p);
   assert.equal(simplifyRailSafetyDisplayRing(concave), concave, 'concave rings retain source topology');
+});
+
+test('fall demonstration transforms only its copy and cleans up on preview, selection and context changes', async () => {
+  const f = fixture();
+  const saved = context([
+    record('config', { schemaVersion: 1, kind: 'machine', resourceId: 'crane', selectedLimitIds: ['near'] }),
+    record('near', { schemaVersion: 1, kind: 'limit', polygon: square() }),
+  ]), original = structuredClone(saved);
+  try {
+    f.scene.setContext(saved); await settled(f.scene);
+    const baseline = f.scene.getSnapshot();
+    assert.equal(await f.scene.startFallDemo('crane'), true);
+    const demoSource = f.sources.get('机械倾覆运动演示（只读副本）')!;
+    assert.equal(demoSource.entities.values.filter(e => e.model).length, 1);
+    f.scene.setFallDemo({ angle: 45, direction: 180 });
+    const display = structuredClone(DEFAULT_RAIL_SAFETY_DISPLAY); display.guards.opacity = 0.4;
+    f.scene.setDisplay(display);
+    assert.equal(f.scene.getSnapshot().fallDemo.angle, 45, 'ordinary scene rendering leaves the demo pose intact');
+    assert.deepEqual(f.scene.getResults(), baseline.results);
+    assert.equal(f.scene.getSnapshot().generation, baseline.generation);
+    assert.equal(f.scene.getSnapshot().signature, baseline.signature);
+    assert.deepEqual(saved, original);
+    const preview = machinery(); preview.placement.heading = 30;
+    f.scene.setMachineryPreview('crane', preview);
+    assert.equal(f.scene.getSnapshot().fallDemo.active, false);
+    assert.equal(f.sources.has(demoSource.name), false);
+    await f.scene.startFallDemo('crane');
+    f.scene.setSelected('limit', 'near'); assert.equal(f.scene.getSnapshot().fallDemo.active, false);
+    await f.scene.startFallDemo('crane');
+    f.scene.setContext({ ...saved, active: false }); assert.equal(f.scene.getSnapshot().fallDemo.active, false);
+    assert.equal(f.sources.has(demoSource.name), false);
+    f.scene.setContext(saved); await f.scene.startFallDemo('crane');
+    f.scene.setContext({ ...saved, actorId: 'another-actor' }); assert.equal(f.scene.getSnapshot().fallDemo.active, false);
+    await f.scene.startFallDemo('crane'); f.scene.dispose(); assert.equal(f.sources.size, 0);
+  } finally { f.scene.dispose(); }
+});
+
+test('pending fall demonstration cannot revive after permission or project changes', async () => {
+  const f = fixture(); let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  globalThis.fetch = async (...args) => { await gate; return fileFetcher(...args); };
+  try {
+    f.scene.setContext(context([]));
+    const pending = f.scene.startFallDemo('crane');
+    assert.equal(f.scene.getSnapshot().fallDemo.loading, true);
+    f.scene.setContext({ projectId: 'other', active: true, canView: false, records: [], resources: [] });
+    release(); assert.equal(await pending, false);
+    assert.equal(f.scene.getSnapshot().fallDemo.active, false);
+    assert.equal(f.sources.has('机械倾覆运动演示（只读副本）'), false);
+  } finally { release(); globalThis.fetch = fileFetcher; f.scene.dispose(); }
+});
+
+test('saved work-area monitoring stays independent of station, responsibility area and incomplete drafts', async () => {
+  const f = fixture(), time = JulianDate.now();
+  const guard = record('guard', { schemaVersion: 1, kind: 'guard', station: origin, polygon: square(), resourceIds: [],
+    workArea: { polygon: square(origin, 5), deviceId: 'guard-device', staleAfterSeconds: 30 } });
+  const saved = { ...context([guard]), resources: [] }, original = structuredClone(saved);
+  const result: RailSafetyPositioningResult = { state: 'outside', reason: '越界', isAlarm: true, source: 'measured', sample: {
+    projectId: 'project', deviceId: 'guard-device', coordinateSystem: 'WGS84', position: unprojectLocalToWgs84({ x: 50, y: 0 }, origin),
+    timestamp: '2026-10-14T00:00:00Z', accuracyMeters: 0.5, source: 'measured',
+  } };
+  const get = (suffix: string) => f.source().entities.getById(`rail-safety:guard:guard:${suffix}`)!;
+  try {
+    f.scene.setContext(saved); f.scene.setGuardPositionStates([{ guardId: 'guard', result }]);
+    const station = Cartesian3.clone(get('station').position!.getValue(time)!);
+    assert.ok(get('area').polygon && get('work-area').polygon && get('position').point);
+    assert.equal(get('area').polygon!.material!.getValue(time).color.withAlpha(1).toCssHexString(), '#39bfff');
+    assert.equal(get('work-area').polygon!.material!.getValue(time).color.withAlpha(1).toCssHexString(), '#ff3c50');
+    assert.ok(Cartesian3.distance(get('position').position!.getValue(time)!, station) > 40);
+    let changes = 0; const remove = f.source().entities.collectionChanged.addEventListener(() => { changes++; });
+    f.scene.setGuardPositionStates([{ guardId: 'guard', result: { ...result, reason: '更新的说明' } }]);
+    assert.equal(changes, 0, 'per-second prose changes do not rebuild scene geometry'); remove();
+    assert.equal(f.scene.getSnapshot().guardPositions[0].result.reason, '更新的说明');
+    assert.ok(guard.definition.kind === 'guard');
+    f.scene.setDraft({ id: 'guard', name: '人员草稿', definition: { ...guard.definition,
+      workArea: { ...guard.definition.workArea!, polygon: square(origin, 10) } } });
+    await settled(f.scene);
+    assert.ok(get('work-area:saved').polygon && get('work-area').polygon && get('position').point);
+    assert.match(get('work-area:label').label!.text!.getValue(time), /草稿/);
+    f.scene.setDraft({ id: 'guard', name: '人员草稿', definition: { ...guard.definition,
+      workArea: { ...guard.definition.workArea!, polygon: square(origin, 10).slice(0, 2) } } });
+    await settled(f.scene);
+    assert.ok(get('work-area:saved').polygon && get('position').point, 'invalid work-area draft retains saved monitoring');
+    assert.equal(get('work-area:saved').polygon!.material!.getValue(time).color.withAlpha(1).toCssHexString(), '#ff3c50');
+    assert.equal(get('area'), undefined, 'the invalid responsibility draft retains its existing validation behavior');
+    f.scene.setDraft(undefined);
+    assert.ok(Cartesian3.equals(get('station').position!.getValue(time)!, station));
+    const simulated = { ...result, source: 'simulated' as const, sample: { ...result.sample!, source: 'simulated' as const } };
+    f.scene.setGuardPositionStates([{ guardId: 'guard', result: simulated }]);
+    assert.match(get('position').label!.text!.getValue(time), /模拟定位/);
+    assert.match(get('work-area:label').label!.text!.getValue(time), /模拟/);
+    f.scene.setGuardPositionStates([{ guardId: 'guard', result: { ...result, state: 'uncertain', isAlarm: false } }]);
+    assert.equal(get('work-area').polygon!.material!.getValue(time).color.withAlpha(1).toCssHexString(), '#ffae39');
+    assert.equal(get('position').point!.color!.getValue(time).toCssHexString(), '#ffae39');
+    f.scene.setGuardPositionStates([{ guardId: 'guard', result: { ...result, state: 'stale', isAlarm: false } }]);
+    assert.equal(get('position').point!.color!.getValue(time).toCssHexString(), Color.LIGHTGRAY.toCssHexString());
+    f.scene.setGuardPositionStates([{ guardId: 'guard', result: { ...result, sample: { ...result.sample!, deviceId: 'other-device' } } }]);
+    assert.equal(get('position'), undefined, 'a different bound device cannot populate this guard');
+    f.scene.setGuardPositionStates([{ guardId: 'guard', result }]);
+    const changed = structuredClone(saved); if (changed.records[0].definition.kind === 'guard') changed.records[0].definition.workArea!.staleAfterSeconds = 60;
+    f.scene.setContext(changed); assert.equal(get('position'), undefined);
+    f.scene.setGuardPositionStates([{ guardId: 'guard', result }]); assert.ok(get('position'), 'forced saved-boundary reevaluation restores an unchanged result');
+    f.scene.setContext({ ...changed, canView: false }); assert.deepEqual(f.scene.getSnapshot().guardPositions, []);
+    assert.deepEqual(saved, original, 'tracked or simulated coordinates never write the fixed station or polygons');
+  } finally { f.scene.dispose(); }
+});
+
+test('cross-task limit drafts become individually unknown without suppressing a known overlap', async () => {
+  const f = fixture();
+  const saved = context([
+    { ...record('config', { schemaVersion: 1, kind: 'machine', resourceId: 'crane', selectedLimitIds: ['global', 'task'] }), taskId: 'A' },
+    record('global', { schemaVersion: 1, kind: 'limit', polygon: square() }),
+    { ...record('task', { schemaVersion: 1, kind: 'limit', polygon: square() }), taskId: 'A' },
+  ]);
+  try {
+    f.scene.setContext(saved); await settled(f.scene);
+    assert.deepEqual(f.scene.getResults()[0].limits.map(value => value.status), ['overlap', 'overlap']);
+    f.scene.setDraft({ id: 'task', name: '另任务限界草稿', taskId: 'B', definition: saved.records[2].definition }); await settled(f.scene);
+    assert.deepEqual(f.scene.getResults()[0].limits.map(value => value.status), ['overlap', 'unknown']);
+    assert.equal(f.scene.getResults()[0].status, 'overlap');
+    assert.match(f.scene.getResults()[0].limits[1].message!, /不同任务/);
+    assert.ok(!f.scene.getSnapshot().entityIds.some(id => id.includes('intersection:task:')));
+    f.scene.setDraft({ id: 'config', name: '另任务机械草稿', taskId: 'B', definition: saved.records[0].definition }); await settled(f.scene);
+    assert.deepEqual(f.scene.getResults()[0].limits.map(value => value.status), ['overlap', 'unknown']);
+    f.scene.setDraft(undefined); await settled(f.scene);
+    assert.deepEqual(f.scene.getResults()[0].limits.map(value => value.status), ['overlap', 'overlap']);
+  } finally { f.scene.dispose(); }
 });

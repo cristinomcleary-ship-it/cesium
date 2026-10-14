@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createManagementStore } from "../managementStore.ts";
 import type { ManagementCollection, ManagementCommandType, ManagementRecord } from "../../src/managementTypes.ts";
-import type { RailSafetyDefinition, RailSafetyPosition } from "../../src/railSafetyTypes.ts";
+import type { RailSafetyDefinition, RailSafetyGuard, RailSafetyPosition } from "../../src/railSafetyTypes.ts";
 import { validateRailSafetyDefinition, validateRailSafetyPolygon } from "../../src/railSafetyValidation.ts";
 import { canAccessRecord, recordReferences, type RecordSource } from "./authorization.ts";
 import type { Actor } from "./domain.ts";
@@ -154,4 +154,38 @@ test("definition validation accepts local concave and dateline polygons, and aut
   const reverseSource: RecordSource = { get: (kind, id) => kind === "resources" ? resource : consumers.find(v => v.id === id)!, list: kind => kind === "railSafety" ? consumers : [] };
   assert.equal(canAccessRecord(actor, "resources", resource, reverseSource), true, "a task-specific rail safety assignment binds the resource task scope");
   consumers.push(bGuard); assert.equal(canAccessRecord(actor, "resources", resource, reverseSource), false, "a resource shared by A and B is not disclosed to an A-only actor");
+});
+
+test("guard work area and device binding persist independently with strict validation and project uniqueness", async () => {
+  const f = await fixture(); try {
+    await seed(f);
+    const workPolygon = [point(-10, -10), point(10, -10), point(10, 10), point(-10, 10)];
+    const definition: RailSafetyGuard = { ...(guard() as RailSafetyGuard), workArea: { polygon: workPolygon, deviceId: "tracker:01", staleAfterSeconds: 15 } };
+    await f.ok("railSafety.save", { name: "独立人员工作区", definition }, "guard", 1);
+    await f.restart();
+    const saved = (await f.record("guard")).data;
+    assert.deepEqual(saved.definition, definition);
+    assert.deepEqual(saved.definition.polygon, polygon, "protection responsibility is unchanged");
+    assert.deepEqual(saved.definition.workArea.polygon, workPolygon, "work area survives restart independently");
+    const before = await f.state();
+    for (const workArea of [
+      { polygon: workPolygon.slice(0, 2), deviceId: "tracker:02" },
+      { polygon: workPolygon, deviceId: "" }, { polygon: workPolygon, coordinateSystem: "GCJ02" },
+      { polygon: workPolygon, staleAfterSeconds: 0 }, { polygon: workPolygon, staleAfterSeconds: 3601 },
+      { polygon: workPolygon, simulated: false },
+    ]) {
+      const result = await f.command("railSafety.save", { name: "非法工作区", definition: { ...definition, workArea } }, "guard", saved.revision);
+      assert.equal(result.status, 400); assert.equal(result.data.code, "INVALID_RAIL_SAFETY");
+    }
+    const duplicate = await f.command("railSafety.save", { name: "设备重复绑定", definition }, "guard:duplicate", 0);
+    assert.equal(duplicate.status, 400); assert.equal(duplicate.data.code, "RAIL_SAFETY_DEVICE_BOUND");
+    assert.deepEqual((await f.state()).collections, before.collections, "rejected changes must not alter saved geometry or bindings");
+    await f.ok("railSafety.save", { name: "同一人员编辑", definition }, "guard", saved.revision);
+    await f.ok("project.create", { id: "binding-other-project", name: "独立项目" });
+    const otherDefinition = { ...definition, resourceIds: [] };
+    await f.ok("railSafety.save", { name: "另一项目同设备编号", definition: otherDefinition }, "guard:other", 0, { projectId: "binding-other-project" });
+    await f.ok("railSafety.remove", { reason: "设备解除使用" }, "guard", saved.revision + 1);
+    await f.ok("railSafety.save", { name: "设备重新分配", definition }, "guard:replacement", 0);
+    assert.equal((await f.record("guard:replacement")).data.definition.workArea.deviceId, "tracker:01");
+  } finally { await f.close(); }
 });

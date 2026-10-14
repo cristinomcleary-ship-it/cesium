@@ -1,4 +1,4 @@
-import { RAIL_SAFETY_MAX_EXTENT_METRES, RAIL_SAFETY_MAX_REFERENCES, RAIL_SAFETY_MAX_VERTICES, type RailSafetyDefinition, type RailSafetyPolygon, type RailSafetyPosition, type RailSafetySupport } from "./railSafetyTypes.ts";
+import { RAIL_SAFETY_MAX_EXTENT_METRES, RAIL_SAFETY_MAX_REFERENCES, RAIL_SAFETY_MAX_VERTICES, type RailSafetyDefinition, type RailSafetyPolygon, type RailSafetyPosition, type RailSafetySupport, type RailSafetyWorkArea } from "./railSafetyTypes.ts";
 
 export class RailSafetyValidationError extends Error {
   readonly code = "INVALID_RAIL_SAFETY";
@@ -63,14 +63,22 @@ export function validateRailSafetySupport(value: unknown): RailSafetySupport {
   const p = object(value, ["length", "width", "centerX", "centerZ"], "support");
   return { length: number(p.length, 0.1, 200, "support.length"), width: number(p.width, 0.1, 200, "support.width"), centerX: number(p.centerX, -100, 100, "support.centerX"), centerZ: number(p.centerZ, -100, 100, "support.centerZ") };
 }
+export function validateRailSafetyWorkArea(value: unknown): RailSafetyWorkArea {
+  const p = object(value, ["polygon", "deviceId", "staleAfterSeconds"], "workArea");
+  return {
+    polygon: validateRailSafetyPolygon(p.polygon, "workArea.polygon"),
+    ...(p.deviceId === undefined ? {} : { deviceId: identifier(p.deviceId, "workArea.deviceId") }),
+    ...(p.staleAfterSeconds === undefined ? {} : { staleAfterSeconds: number(p.staleAfterSeconds, 1, 3600, "workArea.staleAfterSeconds") }),
+  };
+}
 /** Strict replacement contract: neither geometry approval nor automatic attendance is inferred. */
 export function validateRailSafetyDefinition(value: unknown): RailSafetyDefinition {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("缺少管控配置", "definition");
   const kind = (value as Record<string, unknown>).kind;
-  const extra = kind === "guard" ? ["station", "polygon", "resourceIds"] : kind === "limit" ? ["polygon"] : kind === "machine" ? ["resourceId", "selectedLimitIds", "inspectionStatus", "support"] : fail("不支持的管控对象类别", "kind");
+  const extra = kind === "guard" ? ["station", "polygon", "resourceIds", "workArea"] : kind === "limit" ? ["polygon"] : kind === "machine" ? ["resourceId", "selectedLimitIds", "inspectionStatus", "support"] : fail("不支持的管控对象类别", "kind");
   const p = object(value, ["schemaVersion", "kind", ...extra], "definition");
   if (p.schemaVersion !== 1) fail("不支持的管控数据版本", "schemaVersion");
-  if (kind === "guard") return { schemaVersion: 1, kind, station: validateRailSafetyPosition(p.station, "station"), polygon: validateRailSafetyPolygon(p.polygon), resourceIds: references(p.resourceIds, "resourceIds") };
+  if (kind === "guard") return { schemaVersion: 1, kind, station: validateRailSafetyPosition(p.station, "station"), polygon: validateRailSafetyPolygon(p.polygon), resourceIds: references(p.resourceIds, "resourceIds"), ...(p.workArea === undefined ? {} : { workArea: validateRailSafetyWorkArea(p.workArea) }) };
   if (kind === "limit") return { schemaVersion: 1, kind, polygon: validateRailSafetyPolygon(p.polygon) };
   if (p.inspectionStatus !== undefined && (typeof p.inspectionStatus !== "string" || !["unknown", "reported", "unreported"].includes(p.inspectionStatus))) fail("报验标记无效", "inspectionStatus");
   return { schemaVersion: 1, kind: "machine", resourceId: identifier(p.resourceId, "resourceId"), selectedLimitIds: references(p.selectedLimitIds, "selectedLimitIds"), ...(p.inspectionStatus === undefined ? {} : { inspectionStatus: p.inspectionStatus as "unknown" | "reported" | "unreported" }), ...(p.support === undefined ? {} : { support: validateRailSafetySupport(p.support) }) };

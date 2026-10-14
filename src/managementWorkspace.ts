@@ -105,6 +105,7 @@ export class ManagementWorkspace {
     this.railSafety = new RailSafetyPanel({ viewer: this.viewer, host,
       save: (id, name, definition, revision, taskId) => this.mutateMachinery('railSafety.save', id, revision, { name, definition, taskId, reason: '用户编辑邻近营业线管控定义' }),
       remove: (id, revision) => this.mutateMachinery('railSafety.remove', id, revision, { reason: '用户移除管控定义，历史记录保留' }),
+      openTasks: () => { void this.openRailSafetyTasks().catch(error => this.message(error instanceof Error ? error.message : '任务页面打开失败', true)); },
       editMachinery: id => {
         if (!this.railSafety.close()) return;
         this.machinery.open(); void this.machinery.selectResource(id);
@@ -226,6 +227,22 @@ export class ManagementWorkspace {
     return this.railSafety.isOpen;
   }
 
+  /** Future device adapters submit explicit WGS84 samples through the same visible-project checks as the panel. */
+  ingestRailSafetyPosition(input: unknown) {
+    if (this.disposed) throw new Error('工作台已关闭，不能接收定位数据');
+    return this.railSafety.ingestPositionSample(input);
+  }
+
+  private async openRailSafetyTasks(): Promise<void> {
+    if (!this.session || !this.data) { this.message('请先登录并读取当前项目。', true); return; }
+    if (!this.guardNavigation() || !this.railSafety.close()) return;
+    const projectId = this.data?.projectId, actorId = this.session.userId;
+    if (!this.active) await this.open();
+    if (this.disposed || !this.active || this.data?.projectId !== projectId || this.session?.userId !== actorId) return;
+    if (!this.changeMode('management')) return;
+    this.ui.openTaskList();
+  }
+
   async locateWorkbenchMachinery(recordId: string): Promise<void> {
     await this.refreshMachineryContext();
     const state = this.getWorkbenchMachineryState();
@@ -333,6 +350,7 @@ export class ManagementWorkspace {
     this.railSafety?.setContext({
       projectId: this.data?.projectId ?? 'safety:project', actorId: this.session?.userId,
       records: this.data?.collections.railSafety ?? [], resources: this.data?.collections.resources ?? [], tasks: this.data?.collections.tasks ?? [],
+      canCreateTask: !!this.session?.permissions.includes('plan'),
       canView: !!this.session?.permissions.includes('models') && this.data?.projectId === 'safety:project',
       canEdit: this.data?.projectId === 'safety:project' && !!this.session?.permissions.includes('models') && !!this.session?.permissions.includes('resource'),
       active: !this.disposed && (!this.active || this.mode === 'scene'),

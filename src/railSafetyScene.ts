@@ -13,13 +13,14 @@ import {
 import { RailSafetyComputation } from './railSafetyComputation';
 import {
   RAIL_SAFETY_MAX_VERTICES, type RailSafetyDefinition, type RailSafetyMachine,
-  type RailSafetyPosition, type RailSafetyRecord,
+  type RailSafetyPosition, type RailSafetyPositioningResult, type RailSafetyRecord,
 } from './railSafetyTypes';
 import { validateRailSafetyDefinition, validateRailSafetyPolygon } from './railSafetyValidation';
 import {
   DEFAULT_RAIL_SAFETY_DISPLAY, normalizeRailSafetyDisplay,
   type RailSafetyAreaDisplay, type RailSafetyDisplaySettings,
 } from './railSafetyDisplay';
+import { RailSafetyFallDemo, type RailSafetyFallDemoPatch, type RailSafetyFallDemoSnapshot } from './railSafetyFallDemo';
 
 export type RailSafetyPick = MachineryPlacementPick;
 export type RailSafetyPickProgress = {
@@ -46,8 +47,10 @@ export type RailSafetySceneOptions = {
   onPickProgress?: (progress: RailSafetyPickProgress) => void;
   onPickingChange?: (picking: boolean) => void;
   onSelect?: (kind: 'machine' | 'guard' | 'limit', id: string) => void;
+  onFallDemoChange?: (snapshot: RailSafetyFallDemoSnapshot) => void;
 };
-type Draft = { id: string; name: string; definition: RailSafetyDefinition };
+export type RailSafetyGuardPositionState = { guardId: string; result: RailSafetyPositioningResult };
+type Draft = { id: string; name: string; taskId?: string; definition: RailSafetyDefinition };
 type Entry = Draft & { revision?: number; deleted?: boolean; definitionError?: string };
 type Envelope = FallEnvelope;
 type MachineVisual = { resourceId: string; envelope: Envelope; intersections: Array<{ limitId: string; polygons: Point2[][] }>; touchingLimitIds: string[] };
@@ -60,6 +63,7 @@ const BLUE = Color.fromCssColorString('#39bfff');
 const PURPLE = Color.fromCssColorString('#c78bff');
 const ORANGE = Color.fromCssColorString('#ffae39');
 const RED = Color.fromCssColorString('#ff3c50');
+const GREEN = Color.fromCssColorString('#45e99b');
 const clone = <T>(value: T): T => structuredClone(value);
 const signatureOf = (text: string): string => {
   let hash = 2166136261;
@@ -140,12 +144,18 @@ export class RailSafetyScene {
   private disposed = false;
   private layers = { guards: true, limits: true, envelopes: true };
   private display = normalizeRailSafetyDisplay(DEFAULT_RAIL_SAFETY_DISPLAY);
+  private readonly fallDemo: RailSafetyFallDemo;
+  private fallDemoInputKey?: string;
+  private guardPositions: RailSafetyGuardPositionState[] = [];
+  private guardPositionsVisualKey = '';
   private pickHandler?: ScreenSpaceEventHandler;
   private pickAbort?: AbortController;
   private picking?: Picking;
   private previousCursor?: string;
 
   constructor(private readonly viewer: Viewer, private readonly options: RailSafetySceneOptions = {}) {
+    this.fallDemo = new RailSafetyFallDemo(viewer, { loadAsset: id => this.loadAsset(id), onChange: options.onFallDemoChange,
+      labelFont: text => this.ensureLabelFont(text) ? '13px "Noto Sans SC", "Microsoft YaHei", sans-serif' : '13px "Microsoft YaHei", sans-serif' });
     void Promise.resolve(viewer.dataSources.add(this.source)).then(() => {
       if (this.disposed && !viewer.isDestroyed()) viewer.dataSources.remove(this.source, true);
     });
@@ -170,14 +180,24 @@ export class RailSafetyScene {
     const identityChanged = context.projectId !== this.context.projectId || context.sessionKey !== this.context.sessionKey
       || context.actorId !== this.context.actorId || context.canView !== this.context.canView;
     if (identityChanged || context.active !== this.context.active) {
+      this.stopFallDemo(); this.guardPositions = []; this.guardPositionsVisualKey = '';
       this.cancelPicking(); this.draft = undefined; this.preview = undefined;
       this.computation.dispose(); this.computation = new RailSafetyComputation(); this.envelopeTasks.clear();
       if (identityChanged) { this.selected = undefined; this.envelopes.clear(); }
     }
+    const previousRecords = this.context.records;
     this.context = { ...context,
       records: clone(context.records.filter(r => r.projectId === context.projectId)),
       resources: clone(context.resources.filter(r => !r.projectId || r.projectId === context.projectId)),
     };
+    const positionCount = this.guardPositions.length;
+    this.guardPositions = this.guardPositions.filter(({ guardId }) => {
+      const before = previousRecords.find(r => r.id === guardId), after = this.context.records.find(r => r.id === guardId);
+      return after?.status !== 'deleted' && after?.definition.kind === 'guard' && before?.definition.kind === 'guard'
+        && JSON.stringify(before.definition.workArea) === JSON.stringify(after.definition.workArea);
+    });
+    if (this.guardPositions.length !== positionCount) this.guardPositionsVisualKey = '';
+    this.invalidateFallDemo();
     this.source.show = context.active && context.canView;
     this.reconcile();
   }
@@ -185,6 +205,7 @@ export class RailSafetyScene {
   setDraft(draft: Draft | undefined): void {
     if (this.disposed) return;
     this.draft = draft ? clone(draft) : undefined;
+    this.invalidateFallDemo();
     this.reconcile(draft ? 100 : 0);
   }
 
@@ -194,6 +215,7 @@ export class RailSafetyScene {
     if (!this.context.resources.some(r => r.id === id)) return;
     if (!state) { if (this.preview?.id === id) this.preview = undefined; }
     else this.preview = { id, state: clone(state) };
+    this.invalidateFallDemo();
     this.reconcile(state ? 150 : 0);
   }
 
@@ -201,6 +223,8 @@ export class RailSafetyScene {
     if (this.disposed) return;
     const entry = this.entries.find(e => e.id === id);
     if (kind === 'machine' && entry?.definition.kind === 'machine') id = entry.definition.resourceId;
+    const demoId = this.fallDemo.getSnapshot().resourceId;
+    if (demoId && (kind !== 'machine' || id !== demoId)) this.stopFallDemo();
     this.selected = { kind, id }; this.reconcile(); this.render();
   }
 
@@ -217,13 +241,40 @@ export class RailSafetyScene {
     this.display = display; this.render();
   }
 
+  async startFallDemo(resourceId: string): Promise<boolean> {
+    if (this.disposed || !this.context.canView || !this.context.active) return false;
+    const input = this.fallDemoInput(resourceId);
+    if (!input) { this.fallDemo.reject('请选择当前项目中参数完整的机械，先完成有效的支承配置'); return false; }
+    this.fallDemoInputKey = JSON.stringify(input);
+    return this.fallDemo.start(input);
+  }
+
+  setFallDemo(patch: RailSafetyFallDemoPatch): void { if (!this.disposed) this.fallDemo.set(patch); }
+  resetFallDemo(): void { if (!this.disposed) this.fallDemo.reset(); }
+  stopFallDemo(): void { this.fallDemoInputKey = undefined; this.fallDemo.stop(); }
+
+  /** Results come from the saved-boundary positioning evaluator, never from a drawing draft. */
+  setGuardPositionStates(states: RailSafetyGuardPositionState[]): void {
+    if (this.disposed || !this.context.active || !this.context.canView) return;
+    this.guardPositions = clone(states.filter(({ guardId, result }) => {
+      const guard = this.context.records.find(r => r.id === guardId && r.status !== 'deleted' && r.definition.kind === 'guard');
+      return !!guard && (!result.sample || (result.sample.projectId === this.context.projectId
+        && guard.definition.kind === 'guard' && result.sample.deviceId === guard.definition.workArea?.deviceId));
+    }));
+    // The per-second expiry evaluator may update prose without changing anything visible.
+    const visualKey = JSON.stringify(this.guardPositions.map(({ guardId, result }) =>
+      [guardId, result.state, result.isAlarm, result.source, result.sample]));
+    if (visualKey === this.guardPositionsVisualKey) return;
+    this.guardPositionsVisualKey = visualKey; this.render();
+  }
+
   getResults(): RailSafetyMachineResult[] { return clone(this.results); }
 
   getSnapshot() {
     return { projectId: this.context.projectId, active: this.context.active, canView: this.context.canView,
       picking: !!this.picking, generation: this.generation, signature: this.signature, pending: this.pending,
       results: this.getResults(), entityIds: this.source.entities.values.map(e => e.id), layers: { ...this.layers },
-      display: clone(this.display) };
+      display: clone(this.display), fallDemo: this.fallDemo.getSnapshot(), guardPositions: clone(this.guardPositions) };
   }
 
   beginPickPoint(callback: (point: RailSafetyPick) => void): void {
@@ -281,6 +332,7 @@ export class RailSafetyScene {
     this.disposed = true; this.generation++; this.pending = 0; this.cancelPicking(); this.abort.abort();
     if (this.computeTimer !== undefined) clearTimeout(this.computeTimer);
     this.computation.dispose();
+    this.fallDemo.dispose(); this.guardPositions = [];
     this.assets.clear(); this.envelopes.clear(); this.envelopeTasks.clear(); this.results = []; this.visuals = []; this.entries = [];
     this.entitySelection.clear();
     if (!this.selectionHandler.isDestroyed()) this.selectionHandler.destroy();
@@ -301,7 +353,7 @@ export class RailSafetyScene {
       this.entries = []; this.results = []; this.render(); this.publish(); return;
     }
     this.entries = this.context.records.filter(r => r.id !== this.draft?.id).map(r => ({
-      id: r.id, name: r.name, definition: r.definition, revision: r.revision, deleted: r.status === 'deleted',
+      id: r.id, name: r.name, taskId: r.taskId, definition: r.definition, revision: r.revision, deleted: r.status === 'deleted',
     }));
     if (this.draft) this.entries.push(this.draft);
     this.entries = this.entries.map(entry => {
@@ -346,6 +398,30 @@ export class RailSafetyScene {
 
   private stateFor(resourceId: string): MachineryState | undefined {
     return readMachineryState(this.preview?.id === resourceId ? this.preview.state : this.context.resources.find(r => r.id === resourceId)?.machinery);
+  }
+
+  private fallDemoInput(resourceId: string) {
+    const resource = this.context.resources.find(r => r.id === resourceId && r.status !== 'deleted');
+    const state = resource && this.stateFor(resourceId);
+    if (!resource || !state || !this.context.active || !this.context.canView) return;
+    const configs: Array<{ definition: RailSafetyDefinition }> = this.context.records.filter(r => r.id !== this.draft?.id
+      && r.status !== 'deleted' && r.definition.kind === 'machine' && r.definition.resourceId === resourceId);
+    if (this.draft?.definition.kind === 'machine' && this.draft.definition.resourceId === resourceId) configs.push(this.draft);
+    if (configs.length > 1) return;
+    let support: RailSafetyMachine['support'];
+    if (configs[0]) {
+      try {
+        const definition = validateRailSafetyDefinition(configs[0].definition);
+        if (definition.kind !== 'machine') return;
+        support = definition.support;
+      } catch { return; }
+    }
+    return { resourceId, resourceName: resource.name, state, support };
+  }
+
+  private invalidateFallDemo(): void {
+    const id = this.fallDemo.getSnapshot().resourceId;
+    if (id && JSON.stringify(this.fallDemoInput(id)) !== this.fallDemoInputKey) this.stopFallDemo();
   }
 
   private async evaluate(resource: Resource, generation: number): Promise<void> {
@@ -407,6 +483,11 @@ export class RailSafetyScene {
         if (!limit || limit.deleted || limit.definition.kind !== 'limit' || limit.definitionError) {
           result.limits.push({ id: limitId, name: limit?.name ?? '不可用限界', status: 'unknown',
             message: limit?.definitionError ?? '限界已删除、无权查看或不存在，请重新核对选用范围' });
+          continue;
+        }
+        // Match the server's reference rule: global limits or the configuration's own task only.
+        if (limit.taskId && limit.taskId !== entry?.taskId) {
+          result.limits.push({ id: limit.id, name: limit.name, status: 'unknown', message: '所选限界属于不同任务，请重新核对选用范围' });
           continue;
         }
         try {
@@ -538,6 +619,38 @@ export class RailSafetyScene {
       { point: false, lift: 1.8 * personnel.scale + 0.3, pixelOffset: -40, alwaysReadable: true });
   }
 
+  private guardWorkArea(entry: Entry, savedMonitoringOnly = false): void {
+    if (entry.definition.kind !== 'guard') return;
+    const saved = this.context.records.find(r => r.id === entry.id && r.status !== 'deleted');
+    const savedArea = saved?.definition.kind === 'guard' ? saved.definition.workArea : undefined;
+    const state = this.guardPositions.find(value => value.guardId === entry.id)?.result;
+    const result = state?.sample && (state.sample.projectId !== this.context.projectId || state.sample.deviceId !== savedArea?.deviceId) ? undefined : state;
+    const draftArea = savedMonitoringOnly || (this.draft?.id === entry.id && JSON.stringify(entry.definition.workArea) !== JSON.stringify(savedArea));
+    const stateText = `${result?.sample?.source === 'simulated' ? '模拟 · ' : ''}${result ? { inside: '区域内', outside: '越界', uncertain: '边界附近待核实', stale: '定位过期',
+      unconfigured: '未配置监测', 'no-fix': '等待定位' }[result.state] : '等待定位'}`;
+    const measuredColor = result?.state === 'inside' ? GREEN : result?.state === 'outside' ? RED
+      : result?.state === 'uncertain' ? ORANGE : Color.LIGHTGRAY;
+    const drawArea = (suffix: string, polygon: RailSafetyPosition[], title: string, color: Color, alarm = false) => {
+      this.polygon(`${PREFIX}guard:${entry.id}:work-area${suffix}`, title, polygon, color, 'guard', entry.id,
+        alarm ? Math.max(0.28, this.display.guards.opacity) : Math.min(0.25, this.display.guards.opacity), this.display.guards, alarm);
+      this.label(`${PREFIX}guard:${entry.id}:work-area${suffix}:label`, title, polygon[0], color, 'guard', entry.id,
+        { point: false, surface: this.display.guards.surface, alwaysReadable: true });
+    };
+    if (draftArea && savedArea) drawArea(':saved', savedArea.polygon, `${entry.name}已保存工作区 · ${stateText}`,
+      measuredColor, result?.state === 'outside');
+    if (entry.definition.workArea && !savedMonitoringOnly) drawArea('', entry.definition.workArea.polygon,
+      draftArea ? `${entry.name}工作区域草稿（不用于定位判断）` : `${entry.name}工作区域 · ${stateText}`,
+      draftArea ? PURPLE : measuredColor, !draftArea && result?.state === 'outside');
+    const sample = result?.sample;
+    if (!sample || !positionValid(sample.position)) return;
+    const source = sample.source === 'simulated' ? '模拟定位' : '定位';
+    const color = result.state === 'outside' ? RED : ['stale', 'no-fix', 'unconfigured'].includes(result.state) ? Color.LIGHTGRAY
+      : result.state === 'uncertain' || sample.source === 'simulated' ? ORANGE : GREEN;
+    // The tracked coordinate remains separate from the explicitly chosen fixed station.
+    this.label(`${PREFIX}guard:${entry.id}:position`, `${entry.name} · ${source} · ${stateText}（精度±${sample.accuracyMeters.toFixed(1)}m）`,
+      sample.position, color, 'guard', entry.id, { alwaysReadable: true });
+  }
+
   /** Cesium caches glyph bitmaps: reload labels after the local CJK face becomes available. */
   private ensureLabelFont(text: string): boolean {
     if (typeof document === 'undefined' || !document.fonts || this.fontTexts.has(text)) return true;
@@ -569,17 +682,27 @@ export class RailSafetyScene {
 
   private render(): void {
     if (this.disposed) return;
+    this.fallDemo.refreshLabelFont();
     this.source.entities.suspendEvents();
     try {
       this.renderedEntityIds.clear(); this.entitySelection.clear();
       if (!this.context.canView || !this.context.active) return;
       for (const entry of this.entries) {
-        if (entry.deleted || entry.definitionError) continue;
+        if (entry.deleted) continue;
+        if (entry.definitionError) {
+          // Editing an incomplete draft must not hide monitoring against the saved boundary.
+          if (entry.definition.kind === 'guard' && this.layers.guards) {
+            const saved = this.context.records.find(r => r.id === entry.id && r.status !== 'deleted' && r.definition.kind === 'guard');
+            if (saved) this.guardWorkArea({ id: saved.id, name: saved.name, definition: saved.definition }, true);
+          }
+          continue;
+        }
         const definition = entry.definition;
         if (definition.kind === 'guard' && this.layers.guards) {
           this.polygon(`${PREFIX}guard:${entry.id}:area`, `${entry.name}负责区域`, definition.polygon, BLUE, 'guard', entry.id,
             this.display.guards.opacity, this.display.guards);
           this.guardStation(entry.id, entry.name, definition.station);
+          this.guardWorkArea(entry);
         } else if (definition.kind === 'limit' && this.layers.limits) {
           this.polygon(`${PREFIX}limit:${entry.id}:area`, entry.name, definition.polygon, PURPLE, 'limit', entry.id, 0.16);
           this.label(`${PREFIX}limit:${entry.id}:name`, entry.name, definition.polygon[0], PURPLE, 'limit', entry.id);
@@ -626,6 +749,8 @@ export class RailSafetyScene {
   private startPicking(picking: Picking): void {
     this.cancelPicking();
     if (this.disposed || !this.context.canView || !this.context.active) return;
+    // A visual-only model must never become the picked support or personnel surface.
+    this.stopFallDemo();
     this.picking = picking;
     const handler = new ScreenSpaceEventHandler(this.viewer.canvas), abort = new AbortController();
     this.pickHandler = handler; this.pickAbort = abort;
