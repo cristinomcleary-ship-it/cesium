@@ -5,6 +5,7 @@ import { readMachineryState } from "./machineryScene";
 import type { RailSafetyDefinition, RailSafetyPosition, RailSafetyRecord } from "./railSafetyTypes";
 import { RAIL_SAFETY_MAX_VERTICES } from "./railSafetyTypes";
 import { RailSafetyScene, type RailSafetyMachineResult } from "./railSafetyScene";
+import { normalizeRailSafetyDisplay, readRailSafetyDisplay, writeRailSafetyDisplay, type RailSafetyDisplaySettings } from "./railSafetyDisplay";
 import "./railSafetyPanel.css";
 
 type Tab = "machine" | "guard" | "limit";
@@ -43,6 +44,8 @@ export class RailSafetyPanel {
   private readonly scene: RailSafetyScene;
   private context: RailSafetyPanelContext = { projectId: "", records: [], resources: [], tasks: [], canEdit: false, canView: false, active: false };
   private tab: Tab = "machine";
+  private display = normalizeRailSafetyDisplay(undefined);
+  private displayTab: keyof RailSafetyDisplaySettings = "envelopes";
   private draft?: Draft;
   private selectedId = "";
   private opened = false;
@@ -64,6 +67,12 @@ export class RailSafetyPanel {
       <div class="rs-scroll">
         <p class="rs-readonly" data-role="readonly" hidden>只读查看 · 当前账号没有施工管控编辑权限</p>
         <div class="rs-toolbar"><label class="rs-label rs-select-label"><span data-role="select-label">机械资源</span><select data-role="selection" aria-label="选择管控对象"></select></label><button type="button" data-action="new">新增</button><button type="button" data-action="locate">定位</button></div>
+        <section class="rs-display" aria-label="显示效果">
+          <div class="rs-display-heading"><h3>显示效果</h3><button type="button" data-action="reset-display">恢复默认</button></div>
+          <nav class="rs-display-tabs" aria-label="显示设置分类"><button type="button" data-action="display-guards" data-display-tab="guards">防护责任区</button><button type="button" data-action="display-envelopes" data-display-tab="envelopes">倾覆影响区</button><button type="button" data-action="display-personnel" data-display-tab="personnel">防护人员</button></nav>
+          <div data-role="display-controls"></div>
+          <p class="rs-help" data-role="display-storage">调整立即生效，按当前账号和项目记住显示偏好；不改变区域坐标与筛查结果。</p>
+        </section>
         <div class="rs-results" data-role="results" aria-live="polite"></div>
         <div data-role="editor"></div>
         <div class="rs-picking" data-role="picking" hidden><p data-role="pick-message">点击场景地面添加顶点。</p><div class="rs-actions"><button type="button" data-action="undo-point">撤销一点</button><button type="button" data-action="finish-polygon">完成区域</button><button type="button" data-action="cancel-pick">取消绘制</button></div></div>
@@ -94,7 +103,7 @@ export class RailSafetyPanel {
       },
       onSelect: (kind, id) => {
         if (!this.opened || this.busy || this.picking) return;
-        this.requestDiscard(() => { this.tab = kind; this.select(id); }, "切换对象会放弃尚未保存的修改。");
+        this.requestDiscard(() => { this.tab = kind; this.displayTab = kind === "guard" ? "guards" : "envelopes"; this.select(id); }, "切换对象会放弃尚未保存的修改。");
       },
     });
     this.root.addEventListener("click", event => {
@@ -123,8 +132,15 @@ export class RailSafetyPanel {
   setContext(context: RailSafetyPanelContext) {
     if (this.destroyed) return;
     const previous = this.context;
+    const displayScopeChanged = previous.projectId !== context.projectId || previous.actorId !== context.actorId;
     const reset = previous.projectId !== context.projectId || previous.actorId !== context.actorId || (previous.canView && !context.canView) || (previous.canEdit && !context.canEdit) || (previous.active && !context.active);
     this.context = context;
+    if (displayScopeChanged) {
+      this.display = readRailSafetyDisplay(context.projectId, context.actorId);
+      this.scene.setDisplay(this.display);
+      this.find('[data-role="display-storage"]').textContent = "调整立即生效，按当前账号和项目记住显示偏好；不改变区域坐标与筛查结果。";
+      this.renderDisplay();
+    }
     if (reset) {
       ++this.generation; this.scene.cancelPicking(); this.scene.setDraft(undefined);
       this.draft = undefined; this.selectedId = ""; this.dirty = false; this.busy = false; this.results = []; this.concurrentRevision = false;
@@ -202,7 +218,72 @@ export class RailSafetyPanel {
       this.dirty = true; this.render(); this.message(this.tab === "guard" ? "填写姓名，设置站位并绘制责任区域，再关联负责机械。" : "填写限界名称，按顺序点选或输入区域顶点。"); this.find<HTMLInputElement>('[data-field="name"]').focus();
     }, "新增对象会放弃当前未保存的修改。");
   }
-  private render() { this.renderSelection(); this.renderEditor(); this.renderStats(); this.renderResults(); this.controls(); }
+  private render() { this.renderSelection(); this.renderEditor(); this.renderDisplay(); this.renderStats(); this.renderResults(); this.controls(); }
+  private renderDisplay() {
+    const container = this.find('[data-role="display-controls"]'); container.replaceChildren();
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-display-tab]")) {
+      const selected = button.dataset.displayTab === this.displayTab;
+      button.classList.toggle("is-active", selected); button.setAttribute("aria-pressed", String(selected));
+    }
+    const grid = element("div", "rs-display-grid");
+    const select = (label: string, property: string, value: string, options: [string, string][]) => {
+      const wrapper = element("label", "rs-label"), input = element("select");
+      wrapper.append(element("span", "", label)); input.dataset.display = property;
+      for (const [id, title] of options) input.add(new Option(title, id));
+      input.value = value; wrapper.append(input); grid.append(wrapper);
+    };
+    const range = (label: string, property: string, value: number, min: number, max: number, step: number) => {
+      const wrapper = element("label", "rs-label rs-display-range"), caption = element("span", "rs-range-caption");
+      const output = element("output", "", this.displayValue(property, value)); output.dataset.displayOutput = property;
+      caption.append(document.createTextNode(label), output);
+      const input = element("input"); input.type = "range"; input.min = String(min); input.max = String(max); input.step = String(step); input.value = String(value); input.dataset.display = property; input.setAttribute("aria-label", label);
+      wrapper.append(caption, input); grid.append(wrapper);
+    };
+    if (this.displayTab === "personnel") {
+      select("人员标记", "personnel.representation", this.display.personnel.representation, [["model", "三维防护人员"], ["point", "简洁圆点"]]);
+      range("模型比例", "personnel.scale", this.display.personnel.scale, 0.5, 3, 0.1);
+      range("模型朝向", "personnel.heading", this.display.personnel.heading, 0, 360, 5);
+      container.append(grid, element("p", "rs-help", "人物带安全帽与反光背心，以已保存站位为脚底。模型比例仅为显示大小，不代表实际身高，不改变站位或筛查尺寸。"));
+    } else {
+      const key = this.displayTab, settings = this.display[key];
+      select("依附方式", `${key}.surface`, settings.surface, [["model", "依附模型 + 地形"], ["terrain", "仅贴地形"], ["absolute", "原始高程"]]);
+      select("范围样式", `${key}.style`, settings.style, [["fill", "填充 + 边线"], ["outline", "仅边线"]]);
+      range("填充浓度", `${key}.opacity`, settings.opacity, 0, 1, 0.01);
+      range("边线宽度", `${key}.lineWidth`, settings.lineWidth, 1, 8, 0.5);
+      container.append(grid, element("p", "rs-help", "依附模型：覆盖已加载的 3D Tiles 与地形表面；仅贴地形：忽略模型，可能被模型遮挡；原始高程：按原有顶点高程显示。"));
+    }
+    this.displayControls();
+  }
+  private displayValue(property: string, value: number) {
+    return property.endsWith("opacity") ? `${Math.round(value * 100)}%` : property.endsWith("lineWidth") ? `${value} px` : property.endsWith("scale") ? `${value.toFixed(1)}×` : `${value}°`;
+  }
+  private displayControls() {
+    const available = !this.destroyed && this.context.canView && this.context.active;
+    const area = this.displayTab === "personnel" ? undefined : this.display[this.displayTab];
+    for (const control of this.root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>("[data-display], [data-display-tab], [data-action=reset-display]")) {
+      const property = control.dataset.display;
+      control.disabled = !available
+        || !!property?.endsWith("opacity") && area?.style === "outline"
+        || (property === "personnel.scale" || property === "personnel.heading") && this.display.personnel.representation === "point";
+    }
+  }
+  private updateDisplay(input: HTMLInputElement | HTMLSelectElement) {
+    if (!this.context.canView || !this.context.active || this.destroyed || !input.dataset.display) return;
+    const [group, property] = input.dataset.display.split(".");
+    if (group !== "guards" && group !== "envelopes" && group !== "personnel") return;
+    const next = { ...this.display, [group]: { ...this.display[group], [property]: input.type === "range" ? Number(input.value) : input.value } };
+    this.display = normalizeRailSafetyDisplay(next);
+    this.applyDisplay(); this.displayControls();
+    const output = this.root.querySelector<HTMLOutputElement>(`[data-display-output="${input.dataset.display}"]`);
+    if (output) output.value = this.displayValue(input.dataset.display, Number(input.value));
+  }
+  private applyDisplay() {
+    this.scene.setDisplay(this.display);
+    const stored = writeRailSafetyDisplay(this.context.projectId, this.context.actorId, this.display);
+    this.find('[data-role="display-storage"]').textContent = stored
+      ? "调整立即生效，按当前账号和项目记住显示偏好；不改变区域坐标与筛查结果。"
+      : "显示已更新；当前浏览器无法记住偏好，刷新后可能恢复先前设置。不改变区域坐标与筛查结果。";
+  }
   private renderSelection() {
     const select = this.find<HTMLSelectElement>('[data-role="selection"]'); select.replaceChildren(new Option(this.tab === "machine" ? "选择机械" : this.tab === "guard" ? "选择防护人员" : "选择安全限界", ""));
     const records = this.tab === "machine" ? this.resources() : this.records().filter(record => record.definition.kind === this.tab);
@@ -336,6 +417,7 @@ export class RailSafetyPanel {
     }
   }
   private controls() {
+    this.displayControls();
     const write = this.editable && !this.busy && !this.picking;
     const form = this.root.querySelector<HTMLFieldSetElement>('[data-role="form"]'); if (form) form.disabled = !write;
     this.find('[data-role="readonly"]').hidden = this.context.canEdit;
@@ -352,6 +434,7 @@ export class RailSafetyPanel {
     const edit = this.root.querySelector<HTMLButtonElement>('[data-action="edit-machinery"]'); if (edit) edit.disabled = !write;
   }
   private input(input: HTMLInputElement) {
+    if (input.dataset.display) { if (input.type === "range") this.updateDisplay(input); return; }
     if (!this.editable || this.busy || this.picking || !this.draft) return;
     const field = input.dataset.field, definition = this.draft.definition;
     if (field === "name") this.draft.name = input.value;
@@ -364,6 +447,7 @@ export class RailSafetyPanel {
     this.changed();
   }
   private change(input: HTMLInputElement | HTMLSelectElement) {
+    if (input.dataset.display) { if (input.type !== "range") this.updateDisplay(input); return; }
     if (input.dataset.layer && this.context.canView) {
       this.scene.setLayers({ [input.dataset.layer]: (input as HTMLInputElement).checked }); return;
     }
@@ -392,6 +476,15 @@ export class RailSafetyPanel {
     this.dirty = true; this.scene.setDraft({ id: this.draft.id, name: this.draft.name || "未命名草稿", definition: clone(this.draft.definition) }); this.controls();
   }
   private action(action: string, button: HTMLButtonElement) {
+    if (action.startsWith("display-")) {
+      const tab = action.slice(8);
+      if (this.context.canView && (tab === "guards" || tab === "envelopes" || tab === "personnel")) { this.displayTab = tab; this.renderDisplay(); }
+      return;
+    }
+    if (action === "reset-display") {
+      if (this.context.canView && this.context.active) { this.display = normalizeRailSafetyDisplay(undefined); this.applyDisplay(); this.renderDisplay(); }
+      return;
+    }
     if (action === "close") { this.close(); return; }
     if (action === "keep") { this.pendingAction = undefined; this.find('[data-role="confirm"]').hidden = true; return; }
     if (action === "confirm") { const pending = this.pendingAction; this.pendingAction = undefined; this.find('[data-role="confirm"]').hidden = true; pending?.(); return; }
@@ -400,7 +493,7 @@ export class RailSafetyPanel {
     if (action === "undo-point") { this.scene.undoPoint(); return; }
     if (action === "finish-polygon") { this.scene.finishPolygon(); return; }
     if (this.busy || this.picking) return;
-    if (action.startsWith("tab-")) { const tab = action.slice(4) as Tab; this.requestDiscard(() => { this.tab = tab; this.select(tab === "machine" ? this.resources()[0]?.id || "" : this.records().find(record => record.definition.kind === tab)?.id || ""); }, "切换分类会放弃当前未保存修改。"); return; }
+    if (action.startsWith("tab-")) { const tab = action.slice(4) as Tab; this.requestDiscard(() => { this.tab = tab; this.displayTab = tab === "guard" ? "guards" : "envelopes"; this.select(tab === "machine" ? this.resources()[0]?.id || "" : this.records().find(record => record.definition.kind === tab)?.id || ""); }, "切换分类会放弃当前未保存修改。"); return; }
     if (action === "locate" && this.draft) { void this.scene.flyTo(this.draft.definition.kind === "machine" ? this.draft.definition.resourceId : this.draft.id); return; }
     if (action === "locate-result" && button.dataset.resourceId) { void this.scene.flyTo(button.dataset.resourceId); return; }
     if (action === "cancel") { this.requestDiscard(() => this.select(this.selectedId), "取消编辑会恢复已保存配置。" ); return; }

@@ -1,9 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import type { CustomDataSource, Viewer } from 'cesium';
-import { RailSafetyScene, type RailSafetySceneContext } from './railSafetyScene.ts';
-import { unprojectLocalToWgs84 } from './railSafetyGeometry.ts';
+import {
+  Cartesian2, Cartesian3, Cartographic, ClassificationType, Color, HeightReference, JulianDate,
+  Matrix3, Matrix4, ScreenSpaceEventType, Transforms,
+  type CustomDataSource, type Entity, type ScreenSpaceEventHandler, type Viewer,
+} from 'cesium';
+import { RailSafetyScene, simplifyRailSafetyDisplayRing, type RailSafetySceneContext, type RailSafetySceneOptions } from './railSafetyScene.ts';
+import { DEFAULT_RAIL_SAFETY_DISPLAY } from './railSafetyDisplay.ts';
+import { projectWgs84ToLocal, unprojectLocalToWgs84 } from './railSafetyGeometry.ts';
 import { MACHINERY_ASSET_VERSION, type MachineryMetadata } from './machineryTypes.ts';
 import { MACHINERY_PARAMETER_DEFAULTS } from './machineryValidation.ts';
 import type { RailSafetyDefinition, RailSafetyPosition, RailSafetyRecord } from './railSafetyTypes.ts';
@@ -33,15 +38,21 @@ function context(records: RailSafetyRecord[]): RailSafetySceneContext {
   return { projectId: 'project', sessionKey: 'session', actorId: 'actor', active: true, canView: true, records,
     resources: [{ id: 'crane', name: '吊机', projectId: 'project', machinery: machinery() }] };
 }
-function fixture() {
+function fixture(options: RailSafetySceneOptions = {}) {
   const canvas = Object.assign(new EventTarget(), { disableRootEvents: true, onwheel: null, style: { cursor: '' } });
   let source!: CustomDataSource;
+  let picked: Entity | undefined;
   const viewer = { canvas, dataSources: {
     add(value: CustomDataSource) { source = value; return Promise.resolve(value); },
     remove(value: CustomDataSource) { value.entities.removeAll(); return true; },
-  }, scene: { requestRender() {} }, isDestroyed: () => false, flyTo: async () => true } as unknown as Viewer;
-  const scene = new RailSafetyScene(viewer);
-  return { scene, source: () => source };
+  }, scene: { requestRender() {}, pick: () => ({ id: picked }) }, isDestroyed: () => false, flyTo: async () => true } as unknown as Viewer;
+  const scene = new RailSafetyScene(viewer, options);
+  return { scene, source: () => source, clickEntity(id: string) {
+    picked = source.entities.getById(id);
+    const handler = (scene as unknown as { selectionHandler: ScreenSpaceEventHandler }).selectionHandler;
+    const action = handler.getInputAction(ScreenSpaceEventType.LEFT_CLICK) as (event: { position: Cartesian2 }) => void;
+    action({ position: new Cartesian2() });
+  } };
 }
 async function settled(scene: RailSafetyScene) {
   for (let i = 0; i < 1000; i++) {
@@ -152,4 +163,173 @@ test('pending asset loads cannot publish geometry after permission is revoked or
     assert.deepEqual(f.scene.getSnapshot().entityIds, []);
     assert.equal(f.scene.getSnapshot().pending, 0);
   } finally { release(); globalThis.fetch = fileFetcher; f.scene.dispose(); }
+});
+
+test('independent surface and style changes preserve assessment geometry, results and the source records', async () => {
+  let publications = 0;
+  const f = fixture({ onResults: () => publications++ });
+  const time = JulianDate.now();
+  const saved = context([
+    record('config', { schemaVersion: 1, kind: 'machine', resourceId: 'crane', selectedLimitIds: ['near'] }),
+    record('near', { schemaVersion: 1, kind: 'limit', polygon: square() }),
+    record('guard', { schemaVersion: 1, kind: 'guard', station: origin, polygon: square(), resourceIds: ['crane'] }),
+  ]);
+  const original = structuredClone(saved);
+  const entity = (id: string) => f.source().entities.getById(id)!;
+  const guardId = 'rail-safety:guard:guard:area', envelopeId = 'rail-safety:machine:crane:envelope';
+  try {
+    f.scene.setContext(saved); await settled(f.scene);
+    const before = f.scene.getSnapshot(), count = publications;
+    const originalGuardEntity = entity(guardId), originalEnvelopeEntity = entity(envelopeId);
+    const changedIds = new Set<string>();
+    f.source().entities.collectionChanged.addEventListener((_collection, _added, _removed, changed) => changed.forEach(value => changedIds.add(value.id)));
+    const polygonBefore = entity(envelopeId).polygon!.hierarchy!.getValue(time).positions.map((p: Cartesian3) => Cartographic.fromCartesian(p));
+    assert.equal(entity(guardId).polygon!.perPositionHeight!.getValue(time), false);
+    assert.equal(entity(guardId).polygon!.classificationType!.getValue(time), ClassificationType.BOTH);
+    assert.equal(entity(guardId).polyline!.clampToGround!.getValue(time), true);
+
+    const settings = structuredClone(DEFAULT_RAIL_SAFETY_DISPLAY);
+    settings.guards = { surface: 'absolute', style: 'outline', opacity: 0.4, lineWidth: 6 };
+    settings.envelopes = { surface: 'terrain', style: 'outline', opacity: 0, lineWidth: 4 };
+    f.scene.setDisplay(settings);
+    const after = f.scene.getSnapshot();
+    assert.equal(entity(guardId), originalGuardEntity, 'Cesium visualizers must retain the same live entity');
+    assert.equal(entity(envelopeId), originalEnvelopeEntity);
+    assert.ok(changedIds.has(guardId) && changedIds.has(envelopeId), 'live visualizers receive changed notifications');
+    assert.equal(after.generation, before.generation);
+    assert.equal(after.signature, before.signature);
+    assert.equal(after.pending, 0);
+    assert.deepEqual(after.results, before.results);
+    assert.equal(publications, count, 'display changes cannot publish a new assessment');
+    assert.deepEqual(saved, original, 'saved coordinates and machinery data must remain untouched');
+    assert.equal(entity(guardId).polygon!.perPositionHeight!.getValue(time), true);
+    assert.equal(entity(guardId).polygon!.fill!.getValue(time), false);
+    assert.equal(entity(guardId).polyline!.clampToGround!.getValue(time), false);
+    assert.equal(entity(guardId).polyline!.width!.getValue(time), 6);
+    assert.equal(entity(guardId).polyline!.material!.getType(time), 'PolylineOutline');
+    const guardPoint = entity(guardId).polygon!.hierarchy!.getValue(time).positions[0];
+    assert.ok(Math.abs(Cartographic.fromCartesian(guardPoint).height - (saved.records[2].definition as { polygon: RailSafetyPosition[] }).polygon[0].height - 0.06) < 1e-6);
+
+    for (const id of [envelopeId, 'rail-safety:machine:crane:support']) {
+      assert.equal(entity(id).polygon!.perPositionHeight!.getValue(time), false);
+      assert.equal(entity(id).polygon!.classificationType!.getValue(time), ClassificationType.TERRAIN);
+      assert.equal(entity(id).polyline!.classificationType!.getValue(time), ClassificationType.TERRAIN);
+      assert.equal(entity(id).polyline!.clampToGround!.getValue(time), true);
+    }
+    assert.equal(entity('rail-safety:machine:crane:radius').polyline!.classificationType!.getValue(time), ClassificationType.TERRAIN);
+    assert.equal(entity('rail-safety:machine:crane:farthest').point!.heightReference!.getValue(time), HeightReference.CLAMP_TO_TERRAIN);
+    assert.equal(entity('rail-safety:machine:crane:farthest').label!.disableDepthTestDistance!.getValue(time), Number.POSITIVE_INFINITY);
+    const polygonAfter = entity(envelopeId).polygon!.hierarchy!.getValue(time).positions.map((p: Cartesian3) => Cartographic.fromCartesian(p));
+    assert.deepEqual(polygonAfter, polygonBefore, 'the envelope coordinates do not get recalculated or replaced');
+    const intersection = entity(after.entityIds.find(id => id.includes(':intersection:'))!);
+    assert.equal(intersection.polygon!.fill!.getValue(time), true, 'known risk remains visible in outline-only mode');
+    const riskColor = intersection.polygon!.material!.getValue(time).color as Color;
+    assert.ok(riskColor.red > 0.9 && riskColor.alpha >= 0.48);
+    assert.ok(intersection.polygon!.zIndex!.getValue(time) > entity(guardId).polygon!.zIndex!.getValue(time));
+    assert.equal(entity('rail-safety:limit:near:area').polygon!.perPositionHeight!.getValue(time), true, 'saved limit presentation remains unchanged');
+
+    settings.guards.style = 'fill'; settings.guards.opacity = 0;
+    f.scene.setDisplay(settings); f.scene.setSelected('guard', 'guard');
+    assert.equal(entity(guardId).polygon!.material!.getValue(time).color.alpha, 0, 'selection cannot override a chosen zero opacity');
+    settings.guards.opacity = 1; f.scene.setDisplay(settings);
+    assert.equal(entity(guardId).polygon!.material!.getValue(time).color.alpha, 1);
+    settings.envelopes.lineWidth = 1; f.scene.setDisplay(settings);
+    assert.equal(entity(envelopeId).polyline!.material!.getType(time), 'Color', 'draped borders use a stable solid category color');
+    assert.ok(entity(envelopeId).polyline!.material!.getValue(time).color.red > 0.9, 'a one-pixel line retains its category color');
+    const snapshot = f.scene.getSnapshot(); snapshot.display.guards.opacity = 0.7;
+    assert.equal(f.scene.getSnapshot().display.guards.opacity, 1, 'snapshot preferences are an independent copy');
+  } finally { f.scene.dispose(); }
+});
+
+test('personnel models preserve the recorded foot height, orient by compass heading and remain selectable in either representation', () => {
+  const selections: unknown[] = [];
+  const f = fixture({ onSelect: (...args) => selections.push(args) });
+  const time = JulianDate.now(), id = 'rail-safety:guard:guard:station';
+  const saved = context([record('guard', { schemaVersion: 1, kind: 'guard', station: origin, polygon: square(), resourceIds: [] })]);
+  const facing = (entity: Entity) => Matrix3.multiplyByVector(Matrix3.fromQuaternion(entity.orientation!.getValue(time)), Cartesian3.UNIT_X, new Cartesian3());
+  try {
+    f.scene.setContext({ ...saved, resources: [] });
+    let station = f.source().entities.getById(id)!;
+    const liveStation = station;
+    assert.equal(station.model!.uri!.getValue(time), '/models/rail-safety/guard.gltf');
+    assert.equal(station.model!.heightReference!.getValue(time), HeightReference.NONE);
+    assert.ok(Math.abs(Cartographic.fromCartesian(station.position!.getValue(time)!).height - origin.height - 0.03) < 1e-6);
+    const frame = Transforms.eastNorthUpToFixedFrame(station.position!.getValue(time)!);
+    const north = Matrix4.multiplyByPointAsVector(frame, Cartesian3.UNIT_Y, new Cartesian3());
+    assert.ok(Cartesian3.dot(facing(station), north) > 0.999999, 'heading zero faces geographic north');
+    const settings = structuredClone(DEFAULT_RAIL_SAFETY_DISPLAY);
+    settings.personnel.scale = 2; settings.personnel.heading = 90;
+    f.scene.setDisplay(settings);
+    station = f.source().entities.getById(id)!;
+    assert.equal(station, liveStation);
+    assert.equal(station.model!.scale!.getValue(time), 2);
+    assert.equal(station.model!.minimumPixelSize!.getValue(time), 40);
+    assert.equal(station.model!.maximumScale!.getValue(time), 16);
+    const east = Matrix4.multiplyByPointAsVector(frame, Cartesian3.UNIT_X, new Cartesian3());
+    assert.ok(Cartesian3.dot(facing(station), east) > 0.999999, 'heading 90 faces geographic east');
+    const label = f.source().entities.getById(`${id}:label`)!;
+    assert.equal(label.label!.disableDepthTestDistance!.getValue(time), Number.POSITIVE_INFINITY);
+    assert.equal(label.label!.pixelOffset!.getValue(time).y, -40);
+    f.clickEntity(id);
+    assert.deepEqual(selections, [['guard', 'guard']]);
+
+    settings.personnel.representation = 'point'; f.scene.setDisplay(settings);
+    station = f.source().entities.getById(id)!;
+    assert.equal(station, liveStation, 'model-to-point updates the same visualized entity');
+    assert.equal(station.model, undefined);
+    assert.ok(station.point && station.label);
+    assert.equal(f.source().entities.getById(`${id}:label`), undefined);
+    f.clickEntity(id);
+    assert.deepEqual(selections, [['guard', 'guard'], ['guard', 'guard']]);
+    f.scene.setLayers({ guards: false });
+    assert.ok(!f.scene.getSnapshot().entityIds.some(id => id.startsWith('rail-safety:guard:')));
+  } finally { f.scene.dispose(); }
+});
+
+test('slow font loading never delays personnel models or their readable fallback labels', () => {
+  const f = fixture();
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: {
+    fonts: { load: () => new Promise(() => {}) }, querySelector: () => ({ sheet: {} }),
+  } });
+  try {
+    f.scene.setContext({ ...context([record('guard', { schemaVersion: 1, kind: 'guard', station: origin, polygon: square(), resourceIds: [] })]), resources: [] });
+    const station = f.source().entities.getById('rail-safety:guard:guard:station');
+    const label = f.source().entities.getById('rail-safety:guard:guard:station:label');
+    assert.ok(station?.model, 'the person exists before fonts resolve');
+    assert.equal(label?.label?.text?.getValue(JulianDate.now()), 'guard');
+    assert.doesNotMatch(label!.label!.font!.getValue(JulianDate.now()), /Noto Sans SC/, 'fallback glyphs use a different Cesium cache key');
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'document', descriptor);
+    else Reflect.deleteProperty(globalThis, 'document');
+    f.scene.dispose();
+  }
+});
+
+test('dense convex display rings reduce shadow volumes within five centimetres without changing source geometry', () => {
+  const ellipse = (x: number, y: number) => Array.from({ length: 360 }, (_, i) =>
+    unprojectLocalToWgs84({ x: x * Math.cos(i * Math.PI / 180), y: y * Math.sin(i * Math.PI / 180) }, origin));
+  const ring = ellipse(12, 10), original = structuredClone(ring);
+  const reduced = simplifyRailSafetyDisplayRing(ring);
+  assert.ok(reduced.length >= 3 && reduced.length < ring.length / 2);
+  assert.deepEqual(ring, original, 'render optimization cannot edit the assessed ring');
+  assert.ok(reduced.every(p => ring.includes(p)), 'retained vertices are original locations');
+  const points = ring.map(p => projectWgs84ToLocal(p, ring[0]));
+  const simplified = reduced.map(p => projectWgs84ToLocal(p, ring[0]));
+  let maximumDeviation = 0;
+  for (const p of points) {
+    let nearest = Infinity;
+    simplified.forEach((a, i) => {
+      const b = simplified[(i + 1) % simplified.length], dx = b.x - a.x, dy = b.y - a.y;
+      const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy)));
+      nearest = Math.min(nearest, Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy));
+    });
+    maximumDeviation = Math.max(maximumDeviation, nearest);
+  }
+  assert.ok(maximumDeviation <= 0.05 + 1e-8, `rendered boundary deviation ${maximumDeviation} m`);
+  const narrow = ellipse(50, 0.005), small = ellipse(0.05, 0.04);
+  assert.equal(simplifyRailSafetyDisplayRing(narrow), narrow, 'a narrow overlap must not collapse into a line');
+  assert.equal(simplifyRailSafetyDisplayRing(small), small, 'tiny overlaps retain their full shape');
+  const concave = ring.map((p, i) => i === 90 ? origin : p);
+  assert.equal(simplifyRailSafetyDisplayRing(concave), concave, 'concave rings retain source topology');
 });

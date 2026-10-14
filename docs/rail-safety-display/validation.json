@@ -1,0 +1,358 @@
+{
+  "classification": "actual-original-workbench-webgl-ui-with-synthetic-sloped-3d-tiles",
+  "startedAt": "2026-10-13T15:36:19.694Z",
+  "dataDir": "tmp/rail-safety-display-Auuasa",
+  "productionDataReadOrModified": false,
+  "fixture": {
+    "location": {
+      "longitude": 116.391,
+      "latitude": 39.907
+    },
+    "width": 100,
+    "depth": 100,
+    "heightFormula": "12 + 0.12 * east + 0.06 * north (metres)",
+    "limitations": [
+      "Synthetic 3D Tiles geometry; not a surveyed site or accuracy certification",
+      "Software WebGL renderer when supplied launch options use SwiftShader"
+    ]
+  },
+  "checks": [
+    {
+      "id": "authoring-and-sloped-tile",
+      "status": "passed",
+      "evidence": {
+        "guardId": "bba3a355-b01e-4534-89ef-c5152986674c",
+        "limitId": "c5b2d738-cef9-485b-9eeb-ecb3a3763af2",
+        "tileCapabilities": {
+          "groundPolylines": true,
+          "groundPolygons": true
+        },
+        "tileState": {
+          "ready": 1,
+          "selected": 1,
+          "loaded": true,
+          "bounding": {
+            "center": {
+              "x": -2177732.5624046447,
+              "y": 4388744.628716139,
+              "z": 4070076.6445986014
+            },
+            "radius": 71.48601261785413
+          },
+          "show": true,
+          "root": "_Model3DTileContent",
+          "failures": [],
+          "rootVisible": true,
+          "contentAvailable": true,
+          "contentState": 3,
+          "inCollection": true,
+          "camera": {
+            "x": -2177827.82964536,
+            "y": 4388857.377705977,
+            "z": 4070084.6330492785
+          },
+          "rootTransform": {
+            "0": -0.8957815923193475,
+            "1": -0.44449447562575417,
+            "2": 0,
+            "3": 0,
+            "4": 0.28516247658799965,
+            "5": -0.5746827269070485,
+            "6": 0.7670867782336477,
+            "7": 0,
+            "8": -0.34096583525041446,
+            "9": 0.6871422156532552,
+            "10": 0.641543353686345,
+            "11": 0,
+            "12": -2177728.9822633746,
+            "13": 4388737.413722875,
+            "14": 4070069.9083933877,
+            "15": 1
+          }
+        },
+        "result": {
+          "resourceId": "display-acceptance-crane",
+          "resourceName": "吊机 · 显示验收",
+          "recordId": "377029a1-9765-4aaa-968f-d7d43dbca136",
+          "status": "overlap",
+          "label": "平面潜在侵限",
+          "message": "倾覆几何外包与用户定义限界存在平面重叠",
+          "draft": false,
+          "warnings": [
+            "支承来自当前模型支脚底面，需核对实际支腿落地情况与模型尺寸。",
+            "模型几何推算，未包含首次接触停止、吊载和地基变化，不作为机械稳定性或作业许可结论。",
+            "仅进行平面几何筛查；不代表三维碰撞判定或施工安全批准"
+          ],
+          "limits": [
+            {
+              "id": "c5b2d738-cef9-485b-9eeb-ecb3a3763af2",
+              "name": "相交验收限界",
+              "status": "overlap",
+              "distanceMeters": 0
+            }
+          ],
+          "guards": [
+            {
+              "id": "bba3a355-b01e-4534-89ef-c5152986674c",
+              "name": "防护员 · 斜面责任区",
+              "known": true,
+              "containsStation": false,
+              "message": "仅判断机械站位；不代表全部作业范围已有防护"
+            }
+          ],
+          "signature": "056cd22e",
+          "maxDistanceMeters": 11.726197359812872,
+          "supportSource": "model-outriggers",
+          "nearestDistanceMeters": 0
+        }
+      }
+    },
+    {
+      "id": "model-clamped-fill-visible-on-raised-slope",
+      "status": "passed",
+      "evidence": {
+        "absolutePixels": {
+          "blue": 34,
+          "orange": 10675,
+          "width": 1240,
+          "height": 938
+        },
+        "modelPixels": {
+          "blue": 45291,
+          "orange": 13384,
+          "width": 1240,
+          "height": 938
+        },
+        "guard": {
+          "id": "rail-safety:guard:bba3a355-b01e-4534-89ef-c5152986674c:area",
+          "polygon": {
+            "fill": true,
+            "vertexCount": 4,
+            "perPositionHeight": false,
+            "classificationType": 2,
+            "alpha": 0.55
+          },
+          "polyline": {
+            "clampToGround": true,
+            "classificationType": 2,
+            "width": 3,
+            "alpha": 1
+          },
+          "model": null,
+          "point": false
+        },
+        "envelope": {
+          "id": "rail-safety:machine:display-acceptance-crane:envelope",
+          "polygon": {
+            "fill": true,
+            "vertexCount": 50,
+            "perPositionHeight": false,
+            "classificationType": 2,
+            "alpha": 0.45
+          },
+          "polyline": {
+            "clampToGround": true,
+            "classificationType": 2,
+            "width": 4.5,
+            "alpha": 1
+          },
+          "model": null,
+          "point": false
+        }
+      }
+    },
+    {
+      "id": "independent-surface-modes-and-outline",
+      "status": "passed",
+      "evidence": {
+        "guard": {
+          "id": "rail-safety:guard:bba3a355-b01e-4534-89ef-c5152986674c:area",
+          "polygon": {
+            "fill": false,
+            "vertexCount": 4,
+            "perPositionHeight": false,
+            "classificationType": 2,
+            "alpha": 0.55
+          },
+          "polyline": {
+            "clampToGround": true,
+            "classificationType": 2,
+            "width": 7,
+            "alpha": 1
+          },
+          "model": null,
+          "point": false
+        },
+        "envelope": {
+          "id": "rail-safety:machine:display-acceptance-crane:envelope",
+          "polygon": {
+            "fill": true,
+            "vertexCount": 244,
+            "perPositionHeight": true,
+            "classificationType": 2,
+            "alpha": 0.45
+          },
+          "polyline": {
+            "clampToGround": false,
+            "classificationType": 2,
+            "width": 6.5,
+            "alpha": 1
+          },
+          "model": null,
+          "point": false
+        },
+        "display": {
+          "guards": {
+            "surface": "model",
+            "style": "outline",
+            "opacity": 0.55,
+            "lineWidth": 7
+          },
+          "envelopes": {
+            "surface": "model",
+            "style": "outline",
+            "opacity": 0.45,
+            "lineWidth": 5
+          },
+          "personnel": {
+            "representation": "model",
+            "scale": 1,
+            "heading": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "person-model-and-point-scale-heading",
+      "status": "passed",
+      "evidence": {
+        "model": {
+          "id": "rail-safety:guard:bba3a355-b01e-4534-89ef-c5152986674c:station",
+          "polygon": null,
+          "polyline": null,
+          "model": {
+            "uri": "/models/rail-safety/guard.gltf",
+            "scale": 2,
+            "heightReference": 0
+          },
+          "point": false,
+          "orientation": {
+            "x": 0.04201353286668906,
+            "y": -0.4212639369079369,
+            "z": -0.847504760987495,
+            "w": 0.3201675164978705
+          },
+          "position": {
+            "x": -2177716.72916615,
+            "y": 4388753.271697173,
+            "z": 4070074.6332154437
+          }
+        },
+        "point": {
+          "id": "rail-safety:guard:bba3a355-b01e-4534-89ef-c5152986674c:station",
+          "polygon": null,
+          "polyline": null,
+          "model": null,
+          "point": true,
+          "position": {
+            "x": -2177716.7734913914,
+            "y": 4388753.3610258475,
+            "z": 4070074.716616048
+          }
+        }
+      }
+    },
+    {
+      "id": "display-does-not-modify-assessment-or-records",
+      "status": "passed",
+      "evidence": {
+        "sameAssessment": true,
+        "sameBusinessRecords": true,
+        "displayGeneratedSaveCommands": 0
+      }
+    },
+    {
+      "id": "preferences-survive-reload",
+      "status": "passed",
+      "evidence": {
+        "before": {
+          "guards": {
+            "surface": "model",
+            "style": "outline",
+            "opacity": 0.55,
+            "lineWidth": 7
+          },
+          "envelopes": {
+            "surface": "model",
+            "style": "outline",
+            "opacity": 0.45,
+            "lineWidth": 5
+          },
+          "personnel": {
+            "representation": "model",
+            "scale": 2,
+            "heading": 75
+          }
+        },
+        "after": {
+          "guards": {
+            "surface": "model",
+            "style": "outline",
+            "opacity": 0.55,
+            "lineWidth": 7
+          },
+          "envelopes": {
+            "surface": "model",
+            "style": "outline",
+            "opacity": 0.45,
+            "lineWidth": 5
+          },
+          "personnel": {
+            "representation": "model",
+            "scale": 2,
+            "heading": 75
+          }
+        }
+      }
+    },
+    {
+      "id": "runtime-clean",
+      "status": "passed",
+      "evidence": {
+        "canvasCount": 1,
+        "pageErrors": [],
+        "consoleErrors": []
+      }
+    }
+  ],
+  "screenshots": [
+    "output/rail-safety-display/01-absolute-surface-clipping.png",
+    "output/rail-safety-display/02-model-attached-fill.png",
+    "output/rail-safety-display/03-model-attached-outline.png",
+    "output/rail-safety-display/04-guard-person-model.png",
+    "output/rail-safety-display/05-guard-point-option.png",
+    "output/rail-safety-display/06-final-display-settings.png"
+  ],
+  "pageErrors": [],
+  "consoleErrors": [],
+  "requests": [
+    {
+      "type": "railSafety.save"
+    },
+    {
+      "type": "railSafety.save"
+    },
+    {
+      "type": "railSafety.save"
+    }
+  ],
+  "origin": "http://127.0.0.1:<ephemeral-port>",
+  "result": "passed",
+  "finishedAt": "2026-10-13T15:39:37.088Z",
+  "evidenceHandling": "Screenshots are generated local evidence and are not committed or included in the source patch.",
+  "knownVisualLimitation": {
+    "description": "A small orange hairline artifact remains in some model-clamped fill views on the synthetic raised/sloped tile. The cause has not been established; the acceptance does not claim artifact-free rendering or attribute the artifact to a driver.",
+    "targetedDiagnostic": "The separate stable-frame diagnostic counted 83 orange-ish pixels in a sky-only region at baseline. Hiding all polygons or all polylines removed the residue; individual isolated envelope/support/farthest/radius views did not establish a sole entity owner.",
+    "scope": "Current source retains the verified bounded display simplification and solid clamped borders; no speculative workaround was added."
+  }
+}
