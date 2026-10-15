@@ -9,6 +9,7 @@ import { MachineryScene } from './machineryScene';
 import { MACHINERY_ASSET_VERSION, type MachineryMetadata } from './machineryTypes';
 import { computeMachineryFallEnvelope, convexHull } from './railSafetyGeometry';
 import { computeRailSafetyFallDemoPose, prepareRailSafetyFallDemo, type PreparedRailSafetyFallDemo, type RailSafetyFallDemoPose } from './railSafetyFallDemoGeometry';
+import { computeRailSafetyFallProjection, resolveRailSafetyFallAxis } from './railSafetyFallProjection';
 
 const origin = { longitude: 121.47, latitude: 31.23, height: 112 };
 const near = (a: number, b: number, tolerance = 1e-7) => assert.ok(Math.abs(a - b) < tolerance, `${a} differs from ${b}`);
@@ -48,7 +49,10 @@ test('angle zero exactly preserves MachineryScene.place position/orientation and
   const asset = box();
   for (const heading of [0, 37, 90, 193, 359]) {
     const state = metadata(asset, heading), entity = new Entity();
-    (MachineryScene.prototype as unknown as { place(entity: Entity, state: MachineryMetadata): void }).place(entity, state);
+    const placement = MachineryScene.prototype as unknown as {
+      place(this: { isDisplayed(recordId: string, state: MachineryMetadata): boolean }, recordId: string, entity: Entity, state: MachineryMetadata): void;
+    };
+    placement.place.call({ isDisplayed: (_id, current) => current.visible }, 'pose-fixture', entity, state);
     const prepared = prepareRailSafetyFallDemo(asset, state);
     const pose = computeRailSafetyFallDemoPose(prepared, 71, 0), time = JulianDate.now();
     assert.deepEqual(pose.position, entity.position!.getValue(time));
@@ -63,7 +67,7 @@ test('angle zero exactly preserves MachineryScene.place position/orientation and
   }
 });
 
-test('every support pivot remains fixed while the upper body rotates outward at 0–90 degrees', () => {
+test('every continuous-bearing support pivot remains fixed while the upper body rotates outward at 0–90 degrees', () => {
   const asset = box();
   for (const heading of [0, 37, 90]) {
     const prepared = prepareRailSafetyFallDemo(asset, metadata(asset, heading));
@@ -78,10 +82,41 @@ test('every support pivot remains fixed while the upper body rotates outward at 
       const delta = Matrix4.multiplyByPointAsVector(inverseTangent, Cartesian3.subtract(rotated, midpoint, new Cartesian3()), new Cartesian3());
       const bearing = pose.actualDirectionDegrees * Math.PI / 180, radians = angle * Math.PI / 180;
       nearVector(delta, new Cartesian3(10 * Math.sin(radians) * Math.sin(bearing), 10 * Math.sin(radians) * Math.cos(bearing), 10 * Math.cos(radians)));
-      // Orthogonal box sides ensure the nearest possible edge is within 45 degrees.
+      // A requested corner direction is preserved instead of snapping to a box side.
       const difference = Math.abs(((pose.actualDirectionDegrees - direction + 540) % 360) - 180);
-      assert.ok(difference <= 45 + 1e-8);
+      near(difference, 0);
       near(Quaternion.magnitude(pose.orientation), 1);
+    }
+  }
+});
+
+test('the GLB pose and projected triangle mask share the same ENU rotation at oblique bearings', async () => {
+  for (const id of ['crane', 'pile', 'excavator'] as const) {
+    const asset = await model(id), state = metadata(asset, 37);
+    const prepared = prepareRailSafetyFallDemo(asset, state);
+    const inverse = Matrix4.inverseTransformation(prepared.tangentToWorld, new Matrix4());
+    for (const [direction, angle] of [[17, 0], [51, 37], [223, 75], [319, 90]]) {
+      const pose = computeRailSafetyFallDemoPose(prepared, direction, angle);
+      const projection = computeRailSafetyFallProjection(prepared.projection, direction, angle);
+      const axis = resolveRailSafetyFallAxis(prepared.projection, direction);
+      const radians = angle * Math.PI / 180;
+      // Cover distributed indexed vertices from each full real asset, including the
+      // boom, counterweight and feet, while the raster suite checks triangle interiors.
+      for (let i = 0; i < prepared.projection.usedVertices.length; i += 37) {
+        const index = prepared.projection.usedVertices[i], vertices = prepared.projection.vertices;
+        const vertex = new Cartesian3(vertices[index * 3], vertices[index * 3 + 1], vertices[index * 3 + 2]);
+        const original = Matrix4.multiplyByPoint(prepared.tangentToWorld, vertex, new Cartesian3());
+        const actual = Matrix4.multiplyByPoint(inverse, moveAttached(prepared, pose, original), new Cartesian3());
+        const d = axis.normal.x * vertex.x + axis.normal.y * vertex.y - axis.offset;
+        const t = axis.tangent.x * vertex.x + axis.tangent.y * vertex.y;
+        const n = axis.offset + d * Math.cos(radians) + vertex.z * Math.sin(radians);
+        nearVector(actual, new Cartesian3(axis.normal.x * n + axis.tangent.x * t,
+          axis.normal.y * n + axis.tangent.y * t, vertex.z * Math.cos(radians) - d * Math.sin(radians)), 1e-7);
+        const column = Math.floor((actual.x - projection.bounds.xMin) / projection.cellSizeMeters);
+        const row = Math.floor((projection.bounds.yMax - actual.y) / projection.cellSizeMeters);
+        assert.ok(column >= 0 && column < projection.width && row >= 0 && row < projection.height);
+        assert.equal(projection.mask[row * projection.width + column], 1, `${id} source vertex is inside projected silhouette`);
+      }
     }
   }
 });

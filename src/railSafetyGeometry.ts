@@ -9,8 +9,16 @@ export type GeoPoint = { longitude: number; latitude: number; height?: number };
 export type FallSupportRectangle = { length: number; width: number; centerX: number; centerZ: number };
 export type FallEnvelope = {
   status: 'estimated' | 'unavailable'; origin: GeoPoint; polygon: Point2[];
-  landingPoints: Point2[]; supportPolygon: Point2[]; maxDistanceMeters: number;
-  envelopeRadiusMeters: number; samplingMarginMeters: number;
+  /** Compatibility name: farthest projected sweep point for each sampled direction. */
+  landingPoints: Point2[]; supportPolygon: Point2[];
+  /** Greatest station-to-projection distance among sampled 0–90° sweep extrema. */
+  maxDistanceMeters: number;
+  /** Summary only. Never use this radius to draw or screen the envelope. */
+  envelopeRadiusMeters: number;
+  /** Uniform outward buffer covering the directions between samples. */
+  samplingMarginMeters: number;
+  /** Maximum tangent-strip width; bounds the extra strip boxing before convexification. */
+  stripMarginMeters: number;
   supportSource: 'user-defined' | 'model-outriggers' | 'model-base-estimate' | 'unavailable';
   method: string; assumptions: string[]; warnings: string[];
 };
@@ -188,24 +196,32 @@ function offsetConvex(polygon: Point2[], margin: number): Point2[] {
   });
 }
 
-/** Pure geometry screen; never a stability calculation or prediction of an actual accident.
- * For outward normal n and support line n·x=s, a mesh point (p,h) could reach
- * q=p+(sqrt((n·p-s)^2+h^2)-(n·p-s))*n on the horizontal ground if allowed to
- * rotate until THAT point touches. Allowing all points to do this independently ignores
- * earlier rigid-body contacts and therefore overestimates reachable landing locations.
- * At each sampled angle, tangent strips bound ALL mesh points (not just boom tips).
- * Their convex hull is expanded by 2*R*delta: |dq/dtheta| <= 4R, so the nearest
- * sample (<=delta/2 away) plus this margin bounds unsampled normals as well.
- * Mesh triangle interiors are covered too: the normal reach is a convex norm,
- * tangent position is linear, and each interior landing lies between the original
- * plan projection and the convex combination of its vertex landing positions.
- * The result is explicitly a conservative outer envelope, not an exact fall footprint. */
+/** Conservative convex envelope of the complete rigid mesh's 0–90° sweep.
+ * It uses the SAME support line and rigid motion as the angle-specific demonstration.
+ * For outward normal n, support offset s, tangent t and vertex (p,h):
+ *     q(alpha) = p + [d*(cos(alpha)-1) + h*sin(alpha)]*n, d=n·p-s.
+ * At fixed n, every projected vertex moves along a straight line. Over 0–90° its
+ * extrema occur at 0°, 90°, or atan2(h,d) when d>0. The latter is needed for
+ * outboard components; independently rotating every point until it lands can go
+ * beyond 90° and is intentionally NOT used. Taking convex hulls covers triangle
+ * interiors because a fixed-angle rigid projection is affine in the vertices.
+ *
+ * Each sampled direction's extrema are boxed into 32 tangent strips; every box
+ * corner lies within one strip width of an actual swept point. The angle sampling
+ * buffer is sqrt(3)*R*delta/2: with R=max |(p-v,h)| over mesh/support vertices,
+ * F=d*(cos(alpha)-1)+h*sin(alpha) obeys |F|<=sqrt(2)*R and
+ * |dF/dtheta|<=R. As n and n' are perpendicular, |dq/dtheta|<=sqrt(3)*R.
+ * The bound holds piecewise across changes of the active support vertex too.
+ * Thus unsampled directions (<=delta/2 from a sample) are never silently excluded.
+ *
+ * Convexification fills concavities, and the motion continues after first ground
+ * contact. This is a geometric screen, not a stability or accident prediction. */
 export function computeMachineryFallEnvelope(asset: LoadedMachineryAsset, metadata: MachineryMetadata, supportOverride?: FallSupportRectangle): FallEnvelope {
   const origin = { longitude: metadata.placement.longitude, latitude: metadata.placement.latitude, height: metadata.placement.height };
   const result: FallEnvelope = {
-    status: 'unavailable', origin, polygon: [], landingPoints: [], supportPolygon: [], maxDistanceMeters: 0, envelopeRadiusMeters: 0, samplingMarginMeters: 0, supportSource: 'unavailable',
-    method: 'support-line-independent-ground-reach-outer-envelope/v1',
-    assumptions: ['水平地面；机械不滑移、不解体；固定地面支承线', '采用当前完整模型形状，逐点求可达地面位置；忽略刚体首次接地挡止', '360 个倾覆方向；切向分条外包、凸包及角度采样余量，属于保守几何筛查', '未计吊载、未建模附件、地基沉降及现场尺寸误差'], warnings: [],
+    status: 'unavailable', origin, polygon: [], landingPoints: [], supportPolygon: [], maxDistanceMeters: 0, envelopeRadiusMeters: 0, samplingMarginMeters: 0, stripMarginMeters: 0, supportSource: 'unavailable',
+    method: 'support-line-rigid-0-90-sweep-convex-envelope/v2',
+    assumptions: ['水平地面；机械不滑移、不解体；固定地面支承线', '当前完整模型绕支承线作 0–90°刚体转动，解析计算各顶点投影扫掠极值；与按角度演示采用同一运动', '360 个方向、每方向 32 个切向分条及有界方向采样余量；取凸包后筛查，凹口会被填充', '忽略首次接地挡止，接地后继续作几何旋转；未计吊载、未建模附件、地基沉降及现场尺寸误差'], warnings: [],
   };
   try {
     validateGeo(origin);
@@ -247,9 +263,9 @@ export function computeMachineryFallEnvelope(asset: LoadedMachineryAsset, metada
     result.supportPolygon = support.map(enu);
     let radius = 0;
     for (const v of vertices) for (const p of support) radius = Math.max(radius, Math.hypot(v.x - p.x, v.y - p.y, Math.max(0, v.h)));
-    const directions = 360, strips = 16, delta = 2 * Math.PI / directions, outerPoints: Point2[] = [], landings: Point2[] = [];
+    const directions = 360, strips = 32, delta = 2 * Math.PI / directions, outerPoints: Point2[] = [], landings: Point2[] = [];
     // The bound also covers changes of the active support vertex: the support function is continuous.
-    result.samplingMarginMeters = 2 * radius * delta;
+    result.samplingMarginMeters = Math.sqrt(3) * radius * delta / 2;
     const xmin = mesh.bounds.min[0], xmax = mesh.bounds.max[0], zmin = mesh.bounds.min[2], zmax = mesh.bounds.max[2];
     for (let direction = 0; direction < directions; direction++) {
       const angle = direction * delta, nx = Math.cos(angle), ny = Math.sin(angle), tx = -ny, ty = nx;
@@ -258,16 +274,28 @@ export function computeMachineryFallEnvelope(asset: LoadedMachineryAsset, metada
       const tangentMin = (tx >= 0 ? xmin : xmax) * tx + (ty >= 0 ? zmin : zmax) * ty;
       const tangentMax = (tx >= 0 ? xmax : xmin) * tx + (ty >= 0 ? zmax : zmin) * ty;
       const step = Math.max(1e-10, (tangentMax - tangentMin) / strips);
+      result.stripMarginMeters = Math.max(result.stripMarginMeters, step);
       const nmin = new Float64Array(strips).fill(Infinity), nmax = new Float64Array(strips).fill(-Infinity);
       const tmin = new Float64Array(strips).fill(Infinity), tmax = new Float64Array(strips).fill(-Infinity);
       let farthest = { x: 0, y: 0 }, farthestSquare = -1;
       for (const v of vertices) {
-        const d = v.x * nx + v.y * ny - offset, h = Math.max(0, v.h), normal = offset + Math.sqrt(d * d + h * h), tangent = v.x * tx + v.y * ty;
-        const qx = normal * nx + tangent * tx, qy = normal * ny + tangent * ty, square = qx * qx + qy * qy;
-        if (square > farthestSquare) { farthestSquare = square; farthest = { x: qx, y: qy }; }
+        const d = v.x * nx + v.y * ny - offset, h = Math.max(0, v.h), tangent = v.x * tx + v.y * ty;
+        // 90° gives s+h. Only an initially outboard point can have a larger
+        // intermediate-angle projection; an inboard point reaches its maximum at 90°.
+        const normal90 = offset + h, normalPeak = offset + (d > 0 ? Math.hypot(d, h) : h);
         const bin = Math.max(0, Math.min(strips - 1, Math.floor((tangent - tangentMin) / step)));
-        nmin[bin] = Math.min(nmin[bin], normal); nmax[bin] = Math.max(nmax[bin], normal);
+        nmin[bin] = Math.min(nmin[bin], normal90); nmax[bin] = Math.max(nmax[bin], normalPeak);
         tmin[bin] = Math.min(tmin[bin], tangent); tmax[bin] = Math.max(tmax[bin], tangent);
+        // Norm is convex on the projected line segment, so its farthest point is
+        // one of these exact extrema (including the unchanged 0° projection).
+        let farthestNormal = offset + d;
+        if (Math.abs(normal90) > Math.abs(farthestNormal)) farthestNormal = normal90;
+        if (Math.abs(normalPeak) > Math.abs(farthestNormal)) farthestNormal = normalPeak;
+        const square = farthestNormal * farthestNormal + tangent * tangent;
+        if (square > farthestSquare) {
+          farthestSquare = square;
+          farthest = { x: farthestNormal * nx + tangent * tx, y: farthestNormal * ny + tangent * ty };
+        }
       }
       landings.push(enu(farthest)); result.maxDistanceMeters = Math.max(result.maxDistanceMeters, Math.sqrt(farthestSquare));
       for (let bin = 0; bin < strips; bin++) if (Number.isFinite(nmin[bin])) {
@@ -281,7 +309,8 @@ export function computeMachineryFallEnvelope(asset: LoadedMachineryAsset, metada
     result.polygon = polygon; result.landingPoints = landings;
     result.envelopeRadiusMeters = Math.max(...polygon.map(p => Math.hypot(p.x, p.y)));
     result.status = 'estimated';
-    result.warnings.push('模型几何推算，未包含首次接触停止、吊载和地基变化，不作为机械稳定性或作业许可结论。');
+    result.warnings.push('0–90°全方向刚体投影的保守凸包，非统一半径圆；近轴对称的高耸机械仍可能呈近圆形。');
+    result.warnings.push('投影凹口、首次接触停止、吊载和地基变化未计入此外包，不作为机械稳定性或作业许可结论。');
   } catch (error) {
     result.polygon = []; result.landingPoints = []; result.maxDistanceMeters = 0; result.envelopeRadiusMeters = 0;
     result.warnings.push(error instanceof Error ? error.message : '无法计算倾覆外包');

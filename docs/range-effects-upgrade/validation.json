@@ -1,0 +1,1926 @@
+{
+  "classification": "actual-workbench-range-effects-directional-envelope-and-device-http-webgl",
+  "productCodeFrozenAt": "fd028cb7ecfab22f2d810335afb667ff299dee55",
+  "result": "passed",
+  "checksPassed": 5,
+  "checksTotal": 5,
+  "productionDataReadOrModified": false,
+  "browserVersion": "153.0.8010.0",
+  "renderer": "SwiftShader software WebGL",
+  "viewport": {
+    "width": 1366,
+    "height": 768
+  },
+  "fixture": {
+    "location": {
+      "longitude": 116.391,
+      "latitude": 39.907
+    },
+    "width": 100,
+    "depth": 100,
+    "heightFormula": "12 + 0.12 * east + 0.06 * north (metres)",
+    "limitations": [
+      "Synthetic 3D Tiles geometry; not a surveyed site or accuracy certification",
+      "Software WebGL renderer when supplied launch options use SwiftShader"
+    ]
+  },
+  "execution": "Five checks completed across three evidence-bearing runs of the same frozen product; failed harness observations are listed below, not counted as passes.",
+  "runs": [
+    {
+      "sourceReport": "output/range-effects-steady/report.json",
+      "startedAt": "2026-10-14T06:28:26.808Z",
+      "finishedAt": "2026-10-14T06:35:36.843Z",
+      "mode": "targeted-effects-and-outline",
+      "originalResult": "failed",
+      "passedChecks": [
+        "six-range-effects-animate-real-materials-and-keep-color-alpha",
+        "directional-outline-is-not-center-circle-and-matches-screening",
+        "hidden-effects-stop-refresh-and-restore"
+      ],
+      "pageErrors": [],
+      "consoleErrors": []
+    },
+    {
+      "sourceReport": "output/range-effects-final/report.json",
+      "startedAt": "2026-10-14T06:36:40.925Z",
+      "finishedAt": "2026-10-14T06:40:44.736Z",
+      "mode": "remaining-animation-and-device",
+      "originalResult": "failed",
+      "passedChecks": [
+        "animated-pose-group-and-exit-preserve-original-and-business"
+      ],
+      "pageErrors": [],
+      "consoleErrors": []
+    },
+    {
+      "sourceReport": "output/range-effects-device-final/report.json",
+      "startedAt": "2026-10-14T06:42:22.925Z",
+      "finishedAt": "2026-10-14T06:43:56.051Z",
+      "mode": "device-baseline-follow-up",
+      "originalResult": "passed",
+      "passedChecks": [
+        "device-http-ingest-reaches-panel-and-expiry-without-simulation"
+      ],
+      "pageErrors": [],
+      "consoleErrors": []
+    }
+  ],
+  "observationAdjustments": [
+    {
+      "source": "output/range-effects/report.json",
+      "issue": "Synchronous WebGL readPixels in postRender timed out; no product page/console errors. Replaced with browser screenshot PNG comparison."
+    },
+    {
+      "source": "output/range-effects-screenshots/report.json",
+      "issue": "Primitive identity sampled before asynchronous material batch replacement finished. Steady observations begin after first screenshot; all 13 identities then remain unchanged across rendered frames."
+    },
+    {
+      "source": "output/range-effects-steady/report.json",
+      "issue": "An evidence-only assignment in check 4 referenced a variable local to check 1. Fixed the harness and continued only checks 4 and 5."
+    },
+    {
+      "source": "output/range-effects-final/report.json",
+      "issue": "Check 5 used the prior machine editor risk signature as its baseline. Selection/draft are explicit signature inputs. Rebased after selecting the personnel editor and settling; then full results including signature and intersection geometry remain equal during real HTTP updates."
+    }
+  ],
+  "checks": [
+    {
+      "id": "six-range-effects-animate-real-materials-and-keep-color-alpha",
+      "status": "passed",
+      "evidence": {
+        "reference": {
+          "entities": {
+            "responsibility": {
+              "id": "rail-safety:guard:range-effects-guard:area",
+              "fill": {
+                "type": "Color",
+                "constant": true,
+                "animated": false,
+                "color": "#167dff",
+                "alpha": 0.25
+              },
+              "line": {
+                "type": "Color",
+                "constant": true,
+                "animated": false,
+                "color": "#167dff",
+                "alpha": 1
+              }
+            },
+            "workArea": {
+              "id": "rail-safety:guard:range-effects-guard:work-area",
+              "fill": {
+                "type": "Color",
+                "constant": true,
+                "animated": false,
+                "color": "#12d887",
+                "alpha": 0.25
+              },
+              "line": {
+                "type": "Color",
+                "constant": true,
+                "animated": false,
+                "color": "#12d887",
+                "alpha": 1
+              }
+            },
+            "limit": {
+              "id": "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:area",
+              "fill": {
+                "type": "Color",
+                "constant": true,
+                "animated": false,
+                "color": "#a45bff",
+                "alpha": 0.16
+              },
+              "line": {
+                "type": "Color",
+                "constant": true,
+                "animated": false,
+                "color": "#a45bff",
+                "alpha": 1
+              }
+            },
+            "wall": {
+              "id": "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:wall",
+              "fill": {
+                "type": "Color",
+                "constant": true,
+                "animated": false,
+                "color": "#a45bff",
+                "alpha": 0.22
+              },
+              "line": {
+                "type": "Color",
+                "constant": true,
+                "animated": false,
+                "color": "#a45bff",
+                "alpha": 1
+              }
+            },
+            "envelope": {
+              "id": "rail-safety:machine:projection-crane-01:envelope",
+              "fill": {
+                "type": "Color",
+                "constant": true,
+                "animated": false,
+                "color": "#ff7900",
+                "alpha": 0.22
+              },
+              "line": {
+                "type": "Color",
+                "constant": true,
+                "animated": false,
+                "color": "#ff7900",
+                "alpha": 1
+              }
+            },
+            "support": {
+              "id": "rail-safety:machine:projection-crane-01:support",
+              "fill": {
+                "type": "Color",
+                "constant": true,
+                "animated": false,
+                "color": "#b9d5ec",
+                "alpha": 0.11
+              },
+              "line": {
+                "type": "Color",
+                "constant": true,
+                "animated": false,
+                "color": "#b9d5ec",
+                "alpha": 1
+              }
+            },
+            "risk": {
+              "id": "rail-safety:machine:projection-crane-01:intersection:fbd30ed1-21bc-4794-873f-74da644ac11d:0",
+              "fill": {
+                "type": "Color",
+                "constant": true,
+                "animated": false,
+                "color": "#ff1456",
+                "alpha": 0.48
+              },
+              "line": {
+                "type": "Color",
+                "constant": true,
+                "animated": false,
+                "color": "#ff1456",
+                "alpha": 1
+              }
+            }
+          },
+          "gpu": []
+        },
+        "modes": [
+          {
+            "mode": "breathe",
+            "first": {
+              "entities": {
+                "responsibility": {
+                  "id": "rail-safety:guard:range-effects-guard:area",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#167dff",
+                    "alpha": 0.25,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#167dff",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  }
+                },
+                "workArea": {
+                  "id": "rail-safety:guard:range-effects-guard:work-area",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#12d887",
+                    "alpha": 0.25,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#12d887",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  }
+                },
+                "limit": {
+                  "id": "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:area",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 0.16,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  }
+                },
+                "wall": {
+                  "id": "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:wall",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 0.22,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  }
+                },
+                "envelope": {
+                  "id": "rail-safety:machine:projection-crane-01:envelope",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff7900",
+                    "alpha": 0.22,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff7900",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  }
+                },
+                "support": {
+                  "id": "rail-safety:machine:projection-crane-01:support",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#b9d5ec",
+                    "alpha": 0.11,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#b9d5ec",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  }
+                },
+                "risk": {
+                  "id": "rail-safety:machine:projection-crane-01:intersection:fbd30ed1-21bc-4794-873f-74da644ac11d:0",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff1456",
+                    "alpha": 0.48,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff1456",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  }
+                }
+              },
+              "gpu": [
+                {
+                  "primitiveId": 1,
+                  "primitiveType": "Primitive",
+                  "entityIds": [
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:wall"
+                  ],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 2,
+                  "primitiveType": "Primitive",
+                  "entityIds": [
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:area"
+                  ],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 3,
+                  "primitiveType": "Primitive",
+                  "entityIds": [
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:wall",
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:area"
+                  ],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 4,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 5,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 6,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 7,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 8,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 9,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 10,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 11,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 12,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 13,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                }
+              ]
+            },
+            "second": {
+              "entities": {
+                "responsibility": {
+                  "id": "rail-safety:guard:range-effects-guard:area",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#167dff",
+                    "alpha": 0.25,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#167dff",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  }
+                },
+                "workArea": {
+                  "id": "rail-safety:guard:range-effects-guard:work-area",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#12d887",
+                    "alpha": 0.25,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#12d887",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  }
+                },
+                "limit": {
+                  "id": "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:area",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 0.16,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  }
+                },
+                "wall": {
+                  "id": "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:wall",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 0.22,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  }
+                },
+                "envelope": {
+                  "id": "rail-safety:machine:projection-crane-01:envelope",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff7900",
+                    "alpha": 0.22,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff7900",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  }
+                },
+                "support": {
+                  "id": "rail-safety:machine:projection-crane-01:support",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#b9d5ec",
+                    "alpha": 0.11,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#b9d5ec",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  }
+                },
+                "risk": {
+                  "id": "rail-safety:machine:projection-crane-01:intersection:fbd30ed1-21bc-4794-873f-74da644ac11d:0",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff1456",
+                    "alpha": 0.48,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff1456",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 1,
+                    "intensity": 0.55
+                  }
+                }
+              },
+              "gpu": [
+                {
+                  "primitiveId": 1,
+                  "primitiveType": "Primitive",
+                  "entityIds": [
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:wall"
+                  ],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 2,
+                  "primitiveType": "Primitive",
+                  "entityIds": [
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:area"
+                  ],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 3,
+                  "primitiveType": "Primitive",
+                  "entityIds": [
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:wall",
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:area"
+                  ],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 4,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 5,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 6,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 7,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 8,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 9,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 10,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 11,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 12,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 13,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 1,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                }
+              ]
+            },
+            "pixelComparison": {
+              "width": 800,
+              "height": 570,
+              "firstFrame": 281,
+              "secondFrame": 314,
+              "firstPath": "output/range-effects-steady/breathe-frame-1.png",
+              "secondPath": "output/range-effects-steady/breathe-frame-2.png",
+              "changedPixels": 339521,
+              "maxDelta": 143,
+              "totalDelta": 9933783,
+              "contextLost": false
+            }
+          },
+          {
+            "mode": "flow",
+            "first": {
+              "entities": {
+                "responsibility": {
+                  "id": "rail-safety:guard:range-effects-guard:area",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#167dff",
+                    "alpha": 0.25,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#167dff",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  }
+                },
+                "workArea": {
+                  "id": "rail-safety:guard:range-effects-guard:work-area",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#12d887",
+                    "alpha": 0.25,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#12d887",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  }
+                },
+                "limit": {
+                  "id": "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:area",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 0.16,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  }
+                },
+                "wall": {
+                  "id": "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:wall",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 0.22,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  }
+                },
+                "envelope": {
+                  "id": "rail-safety:machine:projection-crane-01:envelope",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff7900",
+                    "alpha": 0.22,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff7900",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  }
+                },
+                "support": {
+                  "id": "rail-safety:machine:projection-crane-01:support",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#b9d5ec",
+                    "alpha": 0.11,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#b9d5ec",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  }
+                },
+                "risk": {
+                  "id": "rail-safety:machine:projection-crane-01:intersection:fbd30ed1-21bc-4794-873f-74da644ac11d:0",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff1456",
+                    "alpha": 0.48,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff1456",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  }
+                }
+              },
+              "gpu": [
+                {
+                  "primitiveId": 14,
+                  "primitiveType": "Primitive",
+                  "entityIds": [
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:wall"
+                  ],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 15,
+                  "primitiveType": "Primitive",
+                  "entityIds": [
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:area"
+                  ],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 16,
+                  "primitiveType": "Primitive",
+                  "entityIds": [
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:wall",
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:area"
+                  ],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 17,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 18,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 19,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 20,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 21,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 22,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 23,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 24,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 25,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 26,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                }
+              ]
+            },
+            "second": {
+              "entities": {
+                "responsibility": {
+                  "id": "rail-safety:guard:range-effects-guard:area",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#167dff",
+                    "alpha": 0.25,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#167dff",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  }
+                },
+                "workArea": {
+                  "id": "rail-safety:guard:range-effects-guard:work-area",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#12d887",
+                    "alpha": 0.25,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#12d887",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  }
+                },
+                "limit": {
+                  "id": "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:area",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 0.16,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  }
+                },
+                "wall": {
+                  "id": "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:wall",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 0.22,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#a45bff",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  }
+                },
+                "envelope": {
+                  "id": "rail-safety:machine:projection-crane-01:envelope",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff7900",
+                    "alpha": 0.22,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff7900",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  }
+                },
+                "support": {
+                  "id": "rail-safety:machine:projection-crane-01:support",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#b9d5ec",
+                    "alpha": 0.11,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#b9d5ec",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  }
+                },
+                "risk": {
+                  "id": "rail-safety:machine:projection-crane-01:intersection:fbd30ed1-21bc-4794-873f-74da644ac11d:0",
+                  "fill": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff1456",
+                    "alpha": 0.48,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  },
+                  "line": {
+                    "type": "RailSafetyRangeEffectColorV1",
+                    "constant": true,
+                    "animated": true,
+                    "color": "#ff1456",
+                    "alpha": 1,
+                    "speed": 1,
+                    "mode": 2,
+                    "intensity": 0.55
+                  }
+                }
+              },
+              "gpu": [
+                {
+                  "primitiveId": 14,
+                  "primitiveType": "Primitive",
+                  "entityIds": [
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:wall"
+                  ],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 15,
+                  "primitiveType": "Primitive",
+                  "entityIds": [
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:area"
+                  ],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 16,
+                  "primitiveType": "Primitive",
+                  "entityIds": [
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:wall",
+                    "rail-safety:limit:fbd30ed1-21bc-4794-873f-74da644ac11d:area"
+                  ],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 17,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 18,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 19,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 20,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 21,
+                  "primitiveType": "GroundPrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 22,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 23,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 24,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 25,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                },
+                {
+                  "primitiveId": 26,
+                  "primitiveType": "GroundPolylinePrimitive",
+                  "entityIds": [],
+                  "type": "RailSafetyRangeEffectColorV1",
+                  "mode": 2,
+                  "speed": 1,
+                  "intensity": 0.55,
+                  "frameClock": true,
+                  "ready": true
+                }
+              ]
+            },
+            "pixelComparison": {
+              "width": 800,
+              "height": 570,
+              "firstFrame": 367,
+              "secondFrame": 405,
+              "firstPath": "output/range-effects-steady/flow-frame-1.png",
+              "secondPath": "output/range-effects-steady/flow-frame-2.png",
+              "changedPixels": 275717,
+              "maxDelta": 243,
+              "totalDelta": 7908796,
+              "contextLost": false
+            }
+          }
+        ],
+        "persistenceKeyIncludesActorAndProject": true,
+        "recordsAndRiskUnchanged": true
+      },
+      "sourceReport": "output/range-effects-steady/report.json",
+      "sourceRunResult": "failed"
+    },
+    {
+      "id": "directional-outline-is-not-center-circle-and-matches-screening",
+      "status": "passed",
+      "evidence": {
+        "method": "support-line-rigid-0-90-sweep-convex-envelope/v2",
+        "vertices": 261,
+        "renderedVertices": 49,
+        "minRadius": 10.944960865672087,
+        "maxRadius": 11.407660798638906,
+        "samplingMarginMeters": 0.15830601055500007,
+        "stripMarginMeters": 0.16448057803523997,
+        "computedExtents": {
+          "xmin": -10.964174553658431,
+          "xmax": 11.152886804193434,
+          "ymin": -11.178197626302763,
+          "ymax": 11.088454551384428
+        },
+        "renderedExtents": {
+          "xmin": -10.964174553916227,
+          "xmax": 11.15067499991199,
+          "ymin": -11.17819762475554,
+          "ymax": 11.088454549587562
+        },
+        "relation": "overlap",
+        "reportedRelation": "overlap",
+        "intersectionCount": 1,
+        "visibleIntersectionCount": 1,
+        "resultStatus": "overlap"
+      },
+      "sourceReport": "output/range-effects-steady/report.json",
+      "sourceRunResult": "failed"
+    },
+    {
+      "id": "hidden-effects-stop-refresh-and-restore",
+      "status": "passed",
+      "evidence": {
+        "hidden": {
+          "scene": {
+            "active": false,
+            "running": false,
+            "pendingFrame": false
+          },
+          "demo": {
+            "active": false,
+            "running": false,
+            "pendingFrame": false
+          }
+        },
+        "restored": true,
+        "static": {
+          "scene": {
+            "active": false,
+            "running": false,
+            "pendingFrame": false
+          },
+          "demo": {
+            "active": false,
+            "running": false,
+            "pendingFrame": false
+          }
+        }
+      },
+      "sourceReport": "output/range-effects-steady/report.json",
+      "sourceRunResult": "failed"
+    },
+    {
+      "id": "animated-pose-group-and-exit-preserve-original-and-business",
+      "status": "passed",
+      "evidence": {
+        "initial": {
+          "state": {
+            "active": true,
+            "loading": false,
+            "direction": 23,
+            "angle": 30,
+            "playing": false,
+            "maxAngle": 90,
+            "modelCreated": true,
+            "sourcePartCount": 12,
+            "sourceTriangleCount": 57483,
+            "entityIds": [
+              "rail-safety:fall-demo:projection-crane-01:model",
+              "rail-safety:fall-demo:projection-crane-01:pivot",
+              "rail-safety:fall-demo:projection-crane-01:footprint"
+            ],
+            "projectionReady": true,
+            "projectionBusy": false,
+            "resourceId": "projection-crane-01",
+            "resourceName": "连续方位投影验收吊机",
+            "actualDirection": 23,
+            "projectionAngle": 30,
+            "projectionDirection": 23,
+            "projectionCellSizeMeters": 0.1,
+            "projectionAreaMeters2": 5.350000000000001,
+            "firstContactAngle": 1.0892971048469004e-06,
+            "belowGround": true
+          },
+          "model": {
+            "id": "rail-safety:fall-demo:projection-crane-01:model",
+            "matrix": [
+              -0.8245865269311514,
+              -0.5419558625865991,
+              -0.1622988065625768,
+              0,
+              0.452886866093378,
+              -0.8042839432195938,
+              0.3847347465452787,
+              0,
+              -0.3390435755529665,
+              0.2437440905686874,
+              0.9086463955737145,
+              0,
+              -2177739.833002285,
+              4388743.385885817,
+              4070078.5871509146,
+              1
+            ],
+            "uri": "blob:http://127.0.0.1:5197/d5989dbd-ed99-4d89-96aa-bcab2dd8b315"
+          },
+          "primitives": [
+            {
+              "id": "rail-safety:fall-demo:projection-crane-01:model",
+              "ready": true,
+              "show": true,
+              "type": "Model"
+            }
+          ],
+          "mask": {
+            "width": 57,
+            "height": 43,
+            "hash": "eef8d16",
+            "occupied": 535,
+            "emptyInsideConvexHull": 713,
+            "bounds": {
+              "xMin": -1.017145907196073,
+              "yMin": -0.7835728155068657,
+              "xMax": 4.682854092803927,
+              "yMax": 3.516427184493134
+            },
+            "cellSizeMeters": 0.1,
+            "areaMeters2": 5.350000000000001,
+            "direction": 23,
+            "angle": 30
+          },
+          "texture": {
+            "occupied": 535,
+            "colors": [
+              "#ff7900",
+              "#ff7b00"
+            ],
+            "opaqueColors": [
+              "#ff7900"
+            ],
+            "maxFillChannelError": 2,
+            "fillToleranceMax": 3,
+            "colorViolations": 0
+          },
+          "footprint": {
+            "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+            "show": true,
+            "classification": 2
+          },
+          "measuredPose": {
+            "angle": 30.000000000000036,
+            "direction": 23
+          },
+          "footprintPrimitives": [
+            {
+              "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+              "type": "Primitive",
+              "ready": true,
+              "show": true
+            }
+          ]
+        },
+        "modes": [
+          {
+            "mode": "pose",
+            "overview": false,
+            "footprint": {
+              "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+              "show": true,
+              "classification": 2
+            }
+          },
+          {
+            "mode": "overview",
+            "overview": true,
+            "footprint": {
+              "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+              "show": false,
+              "classification": 2
+            }
+          },
+          {
+            "mode": "both",
+            "overview": true,
+            "footprint": {
+              "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+              "show": true,
+              "classification": 2
+            }
+          }
+        ],
+        "hidden": {
+          "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+          "show": false,
+          "classification": 2
+        },
+        "loops": {
+          "scene": {
+            "active": false,
+            "running": false,
+            "pendingFrame": false
+          },
+          "demo": {
+            "active": false,
+            "running": false,
+            "pendingFrame": false
+          }
+        },
+        "remains": {
+          "entities": [],
+          "groundIds": [],
+          "projectionClientPresent": false,
+          "canvasPresent": false,
+          "objectUrlPresent": false
+        },
+        "remainingDemoModel": null,
+        "displayBusinessCommands": 0,
+        "originalMatrixUnchanged": true,
+        "riskResultsUnchanged": true,
+        "pageErrors": [],
+        "consoleErrors": []
+      },
+      "sourceReport": "output/range-effects-final/report.json",
+      "sourceRunResult": "failed"
+    },
+    {
+      "id": "device-http-ingest-reaches-panel-and-expiry-without-simulation",
+      "status": "passed",
+      "evidence": {
+        "transport": "POST measured HTTP sample, authenticated GET polling, actual work-area state UI",
+        "positioningBaseline": {
+          "results": [
+            {
+              "resourceId": "projection-crane-01",
+              "resourceName": "连续方位投影验收吊机",
+              "recordId": "c79bef16-8865-4323-801e-1a700ba5c148",
+              "status": "overlap",
+              "label": "平面潜在侵限",
+              "message": "倾覆几何外包与用户定义限界存在平面重叠",
+              "draft": false,
+              "warnings": [
+                "支承来自当前模型支脚底面，需核对实际支腿落地情况与模型尺寸。",
+                "0–90°全方向刚体投影的保守凸包，非统一半径圆；近轴对称的高耸机械仍可能呈近圆形。",
+                "投影凹口、首次接触停止、吊载和地基变化未计入此外包，不作为机械稳定性或作业许可结论。",
+                "仅进行平面几何筛查；不代表三维碰撞判定或施工安全批准"
+              ],
+              "limits": [
+                {
+                  "id": "84e838d1-a0f5-4290-bece-34b14bb2081b",
+                  "name": "投影验收限界",
+                  "status": "overlap",
+                  "distanceMeters": 0
+                }
+              ],
+              "guards": [
+                {
+                  "id": "range-effects-guard",
+                  "name": "范围效果与定位验收防护员",
+                  "known": true,
+                  "containsStation": false,
+                  "message": "仅判断机械站位；不代表全部作业范围已有防护"
+                }
+              ],
+              "signature": "14d621d5",
+              "maxDistanceMeters": 11.211316974416428,
+              "supportSource": "model-outriggers",
+              "nearestDistanceMeters": 0
+            }
+          ],
+          "geometry": {
+            "method": "support-line-rigid-0-90-sweep-convex-envelope/v2",
+            "vertices": 261,
+            "renderedVertices": 49,
+            "minRadius": 10.944960865672087,
+            "maxRadius": 11.407660798638906,
+            "samplingMarginMeters": 0.15830601055500007,
+            "stripMarginMeters": 0.16448057803523997,
+            "computedExtents": {
+              "xmin": -10.964174553658431,
+              "xmax": 11.152886804193434,
+              "ymin": -11.178197626302763,
+              "ymax": 11.088454551384428
+            },
+            "renderedExtents": {
+              "xmin": -10.964174553916227,
+              "xmax": 11.15067499991199,
+              "ymin": -11.17819762475554,
+              "ymax": 11.088454549587562
+            },
+            "relation": "overlap",
+            "reportedRelation": "overlap",
+            "intersectionCount": 1,
+            "visibleIntersectionCount": 1,
+            "resultStatus": "overlap"
+          }
+        },
+        "samples": [
+          {
+            "expected": "inside",
+            "state": {
+              "state": "inside",
+              "reason": "定位精度范围位于工作区域内",
+              "isAlarm": false,
+              "source": "measured",
+              "sample": {
+                "projectId": "safety:project",
+                "deviceId": "range-projection-device",
+                "coordinateSystem": "WGS84",
+                "position": {
+                  "longitude": 116.3907892067029,
+                  "latitude": 39.907,
+                  "height": 12
+                },
+                "timestamp": "2026-10-14T06:43:47.956Z",
+                "accuracyMeters": 0.5,
+                "source": "measured"
+              },
+              "boundaryDistanceMeters": 8.011043860605808
+            }
+          },
+          {
+            "expected": "outside",
+            "state": {
+              "state": "outside",
+              "reason": "定位精度范围已位于工作区域外",
+              "isAlarm": true,
+              "source": "measured",
+              "sample": {
+                "projectId": "safety:project",
+                "deviceId": "range-projection-device",
+                "coordinateSystem": "WGS84",
+                "position": {
+                  "longitude": 116.391,
+                  "latitude": 39.907,
+                  "height": 12
+                },
+                "timestamp": "2026-10-14T06:43:50.251Z",
+                "accuracyMeters": 0.5,
+                "source": "measured"
+              },
+              "boundaryDistanceMeters": 10.013804825419381
+            }
+          }
+        ],
+        "expired": {
+          "state": "stale",
+          "reason": "定位已过期，不能作为当前在岗或范围内的依据",
+          "isAlarm": false,
+          "source": "measured",
+          "sample": {
+            "projectId": "safety:project",
+            "deviceId": "range-projection-device",
+            "coordinateSystem": "WGS84",
+            "position": {
+              "longitude": 116.391,
+              "latitude": 39.907,
+              "height": 12
+            },
+            "timestamp": "2026-10-14T06:43:50.251Z",
+            "accuracyMeters": 0.5,
+            "source": "measured"
+          }
+        },
+        "recordsAndRiskAndIntersectionGeometryUnchanged": true,
+        "simulatedOverrideDisabled": true,
+        "productionDataReadOrModified": false
+      },
+      "sourceReport": "output/range-effects-device-final/report.json",
+      "sourceRunResult": "passed"
+    }
+  ],
+  "additionalVerification": {
+    "productionBuild": {
+      "result": "passed",
+      "durationSeconds": 21.75,
+      "log": "delivery-effects-oct14/build.log"
+    },
+    "relatedRegression": {
+      "result": "passed",
+      "passed": 134,
+      "failed": 0,
+      "skipped": 0,
+      "durationSeconds": 12.94,
+      "log": "delivery-effects-oct14/regression.log"
+    }
+  },
+  "limitations": [
+    "Synthetic sloped 3D Tiles and generated HTTP samples; no real tracker hardware, surveyed site or production database was used.",
+    "Measured source denotes the authenticated ingest path under test, not an actual field measurement.",
+    "Effects speed follows rendered frames; a multiplier is not a calibrated wall-time period.",
+    "Fall outline remains a conservative fixed-support rigid sweep envelope; it is not a dynamic accident prediction."
+  ]
+}

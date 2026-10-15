@@ -56,6 +56,8 @@ export class MachineryScene {
   private readonly tasks = new Map<string, LoadTask>();
   private readonly generations = new Map<string, number>();
   private readonly errors = new Map<string, string>();
+  /** Presentation-only overrides; never written into resource machinery metadata. */
+  private readonly displayVisibility = new Map<string, boolean>();
   private draft?: Draft;
   private projectId = '';
   private canView = true;
@@ -80,7 +82,7 @@ export class MachineryScene {
       // Invalidate all staged models before publishing the new project or permission.
       for (const id of this.tasks.keys()) this.invalidate(id);
     }
-    if (context.projectId !== this.projectId) this.removeAll();
+    if (context.projectId !== this.projectId) { this.displayVisibility.clear(); this.removeAll(); }
     this.projectId = context.projectId; this.canView = context.canView; this.enabled = context.active;
     this.source.show = this.canView && this.enabled;
     this.sync(context.records.filter(record => !record.projectId || record.projectId === context.projectId));
@@ -95,6 +97,25 @@ export class MachineryScene {
       if (state) this.saved.set(record.id, { id: record.id, name: record.name || record.id, state });
     }
     this.reconcile();
+  }
+
+  /** Replace temporary display choices. Explicit true also reveals saved visible=false models. */
+  setDisplayVisibility(overrides: Record<string, boolean>): void {
+    if (this.disposed) return;
+    const next = new Map(Object.entries(overrides).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'));
+    if (next.size === this.displayVisibility.size && [...next].every(([id, visible]) => this.displayVisibility.get(id) === visible)) return;
+    this.displayVisibility.clear();
+    for (const [id, visible] of next) this.displayVisibility.set(id, visible);
+    this.reconcile();
+  }
+
+  getDisplayVisibility(recordId: string): boolean {
+    const state = this.draft?.recordId === recordId ? this.draft.state : this.saved.get(recordId)?.state;
+    return state ? this.isDisplayed(recordId, state) : false;
+  }
+
+  private isDisplayed(recordId: string, state: MachineryState): boolean {
+    return this.displayVisibility.get(recordId) ?? state.visible;
   }
 
   async preview(recordId: string, value: MachineryState, asset?: LoadedMachineryAsset): Promise<void> {
@@ -179,7 +200,7 @@ export class MachineryScene {
   destroy(): void {
     if (this.disposed) return;
     this.disposed = true; this.cancelPick(); this.assetAbort.abort();
-    this.draft = undefined; this.saved.clear(); this.removeAll(); this.assets.clear();
+    this.draft = undefined; this.saved.clear(); this.displayVisibility.clear(); this.removeAll(); this.assets.clear();
     if (!this.viewer.isDestroyed()) this.viewer.dataSources.remove(this.source, true);
   }
 
@@ -204,14 +225,14 @@ export class MachineryScene {
 
   private render(recordId: string, state: MachineryState, suppliedAsset?: LoadedMachineryAsset): Promise<void> {
     const key = geometryKey(state), current = this.rendered.get(recordId);
-    if (!state.visible) {
+    if (!this.isDisplayed(recordId, state)) {
       this.invalidate(recordId);
       if (current) current.entity.show = false;
       this.errors.delete(recordId);
       this.requestRender(); return Promise.resolve();
     }
     if (current?.geometryKey === key) {
-      this.invalidate(recordId); this.place(current.entity, state);
+      this.invalidate(recordId); this.place(recordId, current.entity, state);
       this.errors.delete(recordId);
       this.requestRender(); return Promise.resolve();
     }
@@ -233,14 +254,14 @@ export class MachineryScene {
         stagedUrl = URL.createObjectURL(new Blob([buffer], { type: 'model/gltf-binary' }));
         // Read the current placement after await: moving a pending preview must not restore stale coordinates.
         const desired = this.draft?.recordId === recordId ? this.draft.state : this.saved.get(recordId)?.state;
-        if (!isCurrent() || !desired || geometryKey(desired) !== key || !desired.visible) return;
+        if (!isCurrent() || !desired || geometryKey(desired) !== key || !this.isDisplayed(recordId, desired)) return;
         const previous = this.rendered.get(recordId);
         const entity = previous?.entity ?? this.source.entities.add(new Entity({
           id: `machinery:${recordId}`, name: this.saved.get(recordId)?.name || recordId,
         }));
         entity.model = new ModelGraphics({ uri: stagedUrl, scale: 1, minimumPixelSize: 0,
           heightReference: HeightReference.NONE, runAnimations: false });
-        this.place(entity, desired);
+        this.place(recordId, entity, desired);
         this.rendered.set(recordId, { entity, url: stagedUrl, geometryKey: key });
         stagedUrl = undefined;
         if (previous) URL.revokeObjectURL(previous.url);
@@ -261,7 +282,7 @@ export class MachineryScene {
     return task;
   }
 
-  private place(entity: Entity, state: MachineryState): void {
+  private place(recordId: string, entity: Entity, state: MachineryState): void {
     const p = state.placement;
     const position = Cartesian3.fromDegrees(p.longitude, p.latitude, p.height);
     entity.position = new ConstantPositionProperty(position);
@@ -270,7 +291,7 @@ export class MachineryScene {
     // The exporter already subtracts the source ground anchor. Apply no second axis/scale correction.
     entity.orientation = new ConstantProperty(Transforms.headingPitchRollQuaternion(position,
       new HeadingPitchRoll(CesiumMath.toRadians(p.heading), 0, 0)));
-    entity.show = state.visible;
+    entity.show = this.isDisplayed(recordId, state);
   }
 
   private loadAsset(id: MachineryState['assetId']): Promise<LoadedMachineryAsset> {

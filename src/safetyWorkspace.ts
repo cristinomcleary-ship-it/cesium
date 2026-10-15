@@ -7,6 +7,7 @@ import type { ManagementRecord } from './managementTypes';
 import { projectManagementEvents } from './managementEventProjection';
 import type { ManagementSceneContext, ManagementSceneHost } from "./managementSceneTypes";
 import { SafetyVideoRoam, type SafetyVideoRoamState } from "./safetyVideoRoam";
+import { SafetyVideoStatusChanges, safetyVideoRoamStatusKey, type SafetyVideoStatusInput } from "./safetyVideoStatus";
 import { SafetyModelOptimization } from "./safetyModelOptimization";
 import { Cartographic, Cesium3DTileset, Math as CesiumMath, Matrix4, type Viewer } from "cesium";
 import { SafetySpatialEditor } from "./safetySpatialEditor";
@@ -83,6 +84,8 @@ export class SafetyWorkspace {
   private unsubscribe?: () => void;
   private removeClock?: () => void;
   private removeModelQuality?: () => void;
+  private managementQualitySignature = '';
+  private readonly videoStatusChanges = new SafetyVideoStatusChanges();
   private restoreInteractions?: () => void;
   private active = false;
   private disposed = false;
@@ -157,7 +160,14 @@ export class SafetyWorkspace {
       },
       onCompare: original => { this.beforeManualNavigation(); this.store?.patch({ mode: original ? "inspection" : "presentation" }); },
     });
-    this.removeModelQuality = options.subscribeModelQuality?.(() => this.publishManagementContext());
+    this.removeModelQuality = options.subscribeModelQuality?.(() => {
+      // Tile counts and camera revisions change continuously during navigation.
+      // The workbench only displays each layer's quality label.
+      const signature = JSON.stringify(options.getModelQualityStates?.().map(state => [state.modelId, state.label]) ?? []);
+      if (signature === this.managementQualitySignature) return;
+      this.managementQualitySignature = signature;
+      this.publishManagementContext();
+    });
     this.dashboard.setVisible(false);
     this.mediaDialog.className = "safety-media-dialog";
     document.body.append(this.mediaDialog);
@@ -283,7 +293,11 @@ export class SafetyWorkspace {
   getManagementModelVersions() { return this.modelRegistry.map(({assetId,assetVersion,coordinateTransformVersion})=>({assetId,assetVersion,coordinateTransformVersion})); }
   getManagementViewer(): Viewer { return this.options.viewer; }
   getManagementVideo(): HTMLVideoElement | undefined { return this.video; }
+  private managementDisplayAccess = { models: true, files: true, media: true };
+  /** Current established resource gate; local workbench access is unchanged before management activates it. */
+  getManagementResourceAccess() { return { ...this.managementDisplayAccess }; }
   setManagementResourceAccess(access: {models:boolean;files:boolean;media:boolean}): void {
+    this.managementDisplayAccess = { ...access };
     const resources=new Set<object>();
     for(const item of this.options.getImports()){
       const resource=item.resource as object & {show?:boolean};resources.add(resource);
@@ -532,7 +546,7 @@ export class SafetyWorkspace {
     if (now - this.lastStateTick >= 100) {
       this.lastStateTick = now;
       if (Math.abs(time - this.store.state.time) > 8) this.store.patch({ time });
-      else this.updateVideoStatus();
+      else if (this.videoStatusChanges.changed(this.videoStatusInput())) this.updateVideoStatus();
     }
     this.observedStoreTime = this.store.state.time;
     this.effects.tick(elapsed, time);
@@ -563,6 +577,18 @@ export class SafetyWorkspace {
     video.classList.remove("safety-reused-video"); this.videoOrigin = undefined;
   }
 
+  private videoStatusInput(): SafetyVideoStatusInput {
+    const video = this.video, source = this.options.getPlaybackSource();
+    return {
+      sourceKey: JSON.stringify([source.recordId, source.generation, source.url, source.name]),
+      currentSource: video?.currentSrc ?? '', selectedMedia: this.selectedMedia, mode: this.inspectionMode,
+      bound: this.hasBoundVideo(), loading: this.mediaLoading,
+      currentTime: video?.currentTime ?? 0, duration: Number.isFinite(video?.duration) ? video!.duration : 0,
+      paused: video?.paused ?? true, ended: video?.ended ?? false, rate: video?.playbackRate ?? 1,
+      readyState: video?.readyState ?? 0, errorCode: video?.error?.code, errorMessage: video?.error?.message,
+    };
+  }
+
   private updateVideoStatus(): void {
     if (!this.store) return;
     this.syncVideoRoamBinding();
@@ -576,6 +602,7 @@ export class SafetyWorkspace {
       currentTimeSeconds: available ? this.video!.currentTime : undefined, durationSeconds: available && Number.isFinite(this.video!.duration) ? this.video!.duration : undefined,
       rate: this.video?.playbackRate || 1, hasTrack: this.hasReplayTrack(),
       error: this.video?.error ? "画面暂不可用，请重试或切换来源" : undefined });
+    this.videoStatusChanges.changed(this.videoStatusInput());
     this.publishManagementContext();
   }
 
@@ -614,9 +641,11 @@ export class SafetyWorkspace {
   private beforeManualNavigation(): void { this.videoRoam?.beforeManualNavigation(); }
 
   private acceptVideoRoamState(state: SafetyVideoRoamState): void {
+    const statusChanged = safetyVideoRoamStatusKey(this.roamState) !== safetyVideoRoamStatusKey(state);
     // A same-URL media reload invalidates the host even if the library generation stayed equal.
     if (state.state === "unbound" || state.state === "source-changed" || state.state === "destroyed") this.roamBindingKey = "";
     this.roamState = state; this.dashboard.setVideoRoamState(state); this.updateInspectionContext();
+    if (statusChanged) this.publishManagementContext();
   }
 
   private unbindVideoRoam(): void {

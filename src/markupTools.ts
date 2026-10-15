@@ -6,6 +6,7 @@ import {
   ClassificationType,
   Color,
   ColorMaterialProperty,
+  ConstantProperty,
   CustomDataSource,
   Entity,
   HeightReference,
@@ -40,6 +41,7 @@ export type MarkupOverviewSnapshot = Readonly<{
   items: ReadonlyArray<MarkupOverviewItem>;
 }>;
 export type MarkupOverviewListener = (snapshot: MarkupOverviewSnapshot) => void;
+export type MarkupDisplayItem = { id: string; name: string; kind: MarkupKind; visible: boolean; defaultVisible: boolean };
 type HeightMode = "picked" | "surface";
 type LineEffect = "solid" | "flowDash" | "pulseGlow" | "arrow";
 type StoredPosition = { longitude: number; latitude: number; height: number };
@@ -447,6 +449,8 @@ export class MarkupTools {
   private dynamicLinesRendered = 0;
   private resumeExternalInteractions: (() => void) | null = null;
   private readonly overviewListeners = new Set<MarkupOverviewListener>();
+  private readonly displayVisibility = new Map<string, boolean>();
+  private displayLabelsVisible = true;
   private disposed = false;
 
   constructor(private readonly viewer: Viewer, private readonly toast: (message: string, error?: boolean) => void, private readonly options: MarkupToolsOptions = {}) {
@@ -509,6 +513,7 @@ export class MarkupTools {
     this.textureGcTimer = null;
     this.pendingTexture = null;
     this.overviewListeners.clear();
+    this.displayVisibility.clear();
     if (!this.viewer.isDestroyed()) this.viewer.dataSources.remove(this.dataSource, true);
   }
 
@@ -527,13 +532,13 @@ export class MarkupTools {
     let visible = 0;
     for (const record of this.records) {
       byKind[record.kind] += 1;
-      if (record.visible) visible += 1;
+      if (this.isDisplayed(record)) visible += 1;
     }
     const items = this.records.slice(0, 100).map((record) => Object.freeze({
       id: record.id,
       name: record.name,
       kind: record.kind,
-      visible: record.visible,
+      visible: this.isDisplayed(record),
       updatedAt: record.updatedAt,
     }));
     return Object.freeze({
@@ -543,6 +548,37 @@ export class MarkupTools {
       byKind: Object.freeze(byKind),
       items: Object.freeze(items),
     });
+  }
+
+  /** Complete display inventory, independent of the compact 100-item overview. */
+  getDisplayItems(): MarkupDisplayItem[] {
+    return this.records.map(record => ({ id: record.id, name: record.name, kind: record.kind,
+      visible: this.isDisplayed(record), defaultVisible: record.visible }));
+  }
+
+  /** Replace temporary display preferences without mutating records, history or persistence. */
+  setDisplayVisibility(overrides: Record<string, boolean>, labelsVisible = true): void {
+    if (this.disposed || this.viewer.isDestroyed()) return;
+    const next = new Map(Object.entries(overrides).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"));
+    if (labelsVisible === this.displayLabelsVisible && next.size === this.displayVisibility.size
+      && [...next].every(([id, visible]) => this.displayVisibility.get(id) === visible)) return;
+    this.displayVisibility.clear();
+    for (const [id, visible] of next) this.displayVisibility.set(id, visible);
+    this.displayLabelsVisible = labelsVisible;
+    for (const record of this.records) {
+      const entity = this.dataSource.entities.getById(record.id), visible = this.isDisplayed(record);
+      if (entity) {
+        entity.show = visible;
+        if (entity.label) entity.label.show = new ConstantProperty(visible && (record.kind === "text" || this.displayLabelsVisible));
+      }
+      if (visible && record.kind === "facade" && record.textureId && !this.textureUrls.has(record.textureId)) void this.hydrateTexture(record);
+    }
+    this.render();
+    this.viewer.scene.requestRender();
+  }
+
+  private isDisplayed(record: MarkupRecord): boolean {
+    return this.displayVisibility.get(record.id) ?? record.visible;
   }
 
   subscribeOverview(listener: MarkupOverviewListener): () => void {
@@ -1150,7 +1186,7 @@ export class MarkupTools {
       ? `贴图未找到：${record.textureName}，请重新选择`
       : this.textureUrls.has(record.textureId ?? "")
         ? `当前贴图：${record.textureName}`
-        : record.visible
+        : this.isDisplayed(record)
           ? `当前贴图：${record.textureName}（正在从本机恢复）`
           : `当前贴图：${record.textureName}（显示立面时加载）`;
     else status.textContent = "未选择贴图，将使用当前颜色";
@@ -1190,6 +1226,7 @@ export class MarkupTools {
   }
 
   private addEntity(record: MarkupRecord) {
+    const visible = this.isDisplayed(record);
     const stored = displayPositions(record);
     const positions = stored.map(toCartesian);
     const center = toCartesian(centerPosition(stored));
@@ -1197,6 +1234,8 @@ export class MarkupTools {
     const fill = color.withAlpha(record.style.opacity);
     const surface = record.heightMode === "surface";
     const label = {
+      // Text annotations are their own content, rather than an attached nameplate.
+      show: visible && (record.kind === "text" || this.displayLabelsVisible),
       text: record.name,
       font: `600 ${Math.round(record.style.fontSize)}px Microsoft YaHei, sans-serif`,
       fillColor: Color.WHITE,
@@ -1213,11 +1252,11 @@ export class MarkupTools {
     };
     const description = `<div style="font-family:Microsoft YaHei,sans-serif"><h3>${escapeHtml(record.name)}</h3><p>${escapeHtml(record.note || "暂无备注")}</p><p>类型：${KIND_LABELS[record.kind]}</p></div>`;
     if (record.kind === "point") {
-      this.dataSource.entities.add({ id: record.id, name: record.name, show: record.visible, position: positions[0], description, point: { pixelSize: record.style.pointSize, color: color.withAlpha(record.style.opacity), outlineColor: Color.WHITE, outlineWidth: 2, heightReference: surface ? HeightReference.CLAMP_TO_GROUND : HeightReference.NONE, disableDepthTestDistance: 2500 }, label });
+      this.dataSource.entities.add({ id: record.id, name: record.name, show: visible, position: positions[0], description, point: { pixelSize: record.style.pointSize, color: color.withAlpha(record.style.opacity), outlineColor: Color.WHITE, outlineWidth: 2, heightReference: surface ? HeightReference.CLAMP_TO_GROUND : HeightReference.NONE, disableDepthTestDistance: 2500 }, label });
       return;
     }
     if (record.kind === "text") {
-      this.dataSource.entities.add({ id: record.id, name: record.name, show: record.visible, position: positions[0], description, label: { ...label, fillColor: color.withAlpha(Math.max(0.2, record.style.opacity)), pixelOffset: Cartesian2.ZERO, verticalOrigin: VerticalOrigin.CENTER, heightReference: surface ? HeightReference.CLAMP_TO_GROUND : HeightReference.NONE } });
+      this.dataSource.entities.add({ id: record.id, name: record.name, show: visible, position: positions[0], description, label: { ...label, fillColor: color.withAlpha(Math.max(0.2, record.style.opacity)), pixelOffset: Cartesian2.ZERO, verticalOrigin: VerticalOrigin.CENTER, heightReference: surface ? HeightReference.CLAMP_TO_GROUND : HeightReference.NONE } });
       return;
     }
     if (record.kind === "label") {
@@ -1225,7 +1264,7 @@ export class MarkupTools {
       this.dataSource.entities.add({
         id: record.id,
         name: record.name,
-        show: record.visible,
+        show: visible,
         position: positions[0],
         description,
         point: { pixelSize: Math.max(7, record.style.pointSize * 0.75), color, outlineColor: Color.WHITE, outlineWidth: 2, heightReference: surface ? HeightReference.CLAMP_TO_GROUND : HeightReference.NONE, disableDepthTestDistance: 2500 },
@@ -1234,11 +1273,11 @@ export class MarkupTools {
       return;
     }
     if (record.kind === "polyline") {
-      this.dataSource.entities.add({ id: record.id, name: record.name, show: record.visible, position: center, description, polyline: { positions, width: record.style.lineWidth, material: this.createPolylineMaterial(record, color), depthFailMaterial: color.withAlpha(0.4), clampToGround: surface }, label });
+      this.dataSource.entities.add({ id: record.id, name: record.name, show: visible, position: center, description, polyline: { positions, width: record.style.lineWidth, material: this.createPolylineMaterial(record, color), depthFailMaterial: color.withAlpha(0.4), clampToGround: surface }, label });
       return;
     }
     if (record.kind === "facade") {
-      if (record.visible && record.textureId && !this.textureUrls.has(record.textureId)) void this.hydrateTexture(record);
+      if (visible && record.textureId && !this.textureUrls.has(record.textureId)) void this.hydrateTexture(record);
       const height = record.style.verticalHeight;
       const minimumHeights = stored.map((position) => position.height);
       const maximumHeights = stored.map((position) => position.height + height);
@@ -1248,7 +1287,7 @@ export class MarkupTools {
       this.dataSource.entities.add({
         id: record.id,
         name: record.name,
-        show: record.visible,
+        show: visible,
         position: toCartesian(labelPosition),
         description,
         wall: { positions, minimumHeights, maximumHeights, material: this.createFacadeMaterial(record, color), outline: false },
@@ -1267,7 +1306,7 @@ export class MarkupTools {
       this.dataSource.entities.add({
         id: record.id,
         name: record.name,
-        show: record.visible,
+        show: visible,
         position: toCartesian(labelPosition),
         description,
         polygon: { hierarchy: new PolygonHierarchy(footprint), height: baseHeight, extrudedHeight: topHeight, heightReference: HeightReference.NONE, extrudedHeightReference: HeightReference.NONE, perPositionHeight: false, material: fill, outline: true, outlineColor: color, closeTop: true, closeBottom: true },
@@ -1280,7 +1319,7 @@ export class MarkupTools {
     this.dataSource.entities.add({
       id: record.id,
       name: record.name,
-      show: record.visible,
+      show: visible,
       position: center,
       description,
       polygon: { hierarchy: new PolygonHierarchy(positions), material: fill, outline: !surface, outlineColor: color, perPositionHeight: !surface, heightReference: surface ? HeightReference.CLAMP_TO_GROUND : HeightReference.NONE, classificationType: ClassificationType.BOTH },
@@ -1299,7 +1338,7 @@ export class MarkupTools {
     const sceneOverview = document.querySelector<HTMLElement>("#sceneMarkupOverview");
     if (sceneCount) sceneCount.textContent = String(this.records.length);
     if (sceneOverview) {
-      const visible = this.records.filter((record) => record.visible).length;
+      const visible = this.records.filter((record) => this.isDisplayed(record)).length;
       sceneOverview.textContent = this.records.length ? `${visible} 个显示 · ${this.records.length - visible} 个隐藏` : "尚未创建";
     }
     if (!this.records.length) {
@@ -1308,11 +1347,11 @@ export class MarkupTools {
     } else {
       root.className = "markup-list";
       root.innerHTML = this.records.map((record) => `
-        <div class="markup-row${record.id === this.selectedId ? " active" : ""}${record.visible ? "" : " hidden-object"}" data-markup-id="${record.id}">
+        <div class="markup-row${record.id === this.selectedId ? " active" : ""}${this.isDisplayed(record) ? "" : " hidden-object"}" data-markup-id="${record.id}">
           <span class="markup-kind">${KIND_ICONS[record.kind]}</span>
           <button class="markup-info" data-action="select"><strong>${escapeHtml(record.name)}</strong><small>${KIND_LABELS[record.kind]}</small></button>
-          <button data-action="visibility" title="${record.visible ? "隐藏" : "显示"}">${record.visible ? "◉" : "○"}</button>
-          <button data-action="fly" title="定位" ${record.visible ? "" : "disabled"}>◎</button>
+          <button data-action="visibility" title="${this.isDisplayed(record) ? "隐藏" : "显示"}">${this.isDisplayed(record) ? "◉" : "○"}</button>
+          <button data-action="fly" title="定位" ${this.isDisplayed(record) ? "" : "disabled"}>◎</button>
           <button data-action="remove" title="删除">×</button>
         </div>`).join("");
       root.querySelectorAll<HTMLElement>(".markup-row").forEach((row) => {
@@ -1381,7 +1420,7 @@ export class MarkupTools {
   private flyTo(id: string) {
     const record = this.records.find((item) => item.id === id);
     const entity = this.dataSource.entities.getById(id);
-    if (!record || !entity || !record.visible || this.disposed || this.viewer.isDestroyed()) return;
+    if (!record || !entity || !this.isDisplayed(record) || this.disposed || this.viewer.isDestroyed()) return;
     this.selectRecord(id, false);
     void Promise.resolve(this.viewer.flyTo(entity, { duration: 1.2 })).catch((error) => {
       if (!this.disposed) console.warn("[Markup] Unable to fly to markup", error);

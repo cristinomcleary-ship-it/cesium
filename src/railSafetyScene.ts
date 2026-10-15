@@ -18,8 +18,9 @@ import {
 import { validateRailSafetyDefinition, validateRailSafetyPolygon } from './railSafetyValidation';
 import {
   DEFAULT_RAIL_SAFETY_DISPLAY, normalizeRailSafetyDisplay,
-  type RailSafetyAreaDisplay, type RailSafetyDisplaySettings,
+  type RailSafetyAreaDisplay, type RailSafetyDisplaySettings, type RailSafetyRangeColors,
 } from './railSafetyDisplay';
+import { createRailSafetyEffectMaterial, isRailSafetyEffectMaterialAnimated, RailSafetyEffectRenderLoop } from './railSafetyEffects';
 import { RailSafetyFallDemo, type RailSafetyFallDemoPatch, type RailSafetyFallDemoSnapshot } from './railSafetyFallDemo';
 
 export type RailSafetyPick = MachineryPlacementPick;
@@ -50,6 +51,8 @@ export type RailSafetySceneOptions = {
   onFallDemoChange?: (snapshot: RailSafetyFallDemoSnapshot) => void;
 };
 export type RailSafetyGuardPositionState = { guardId: string; result: RailSafetyPositioningResult };
+export type RailSafetyDisplayObjectKind = 'personnel' | 'responsibility' | 'workArea' | 'limit' | 'envelope';
+export type RailSafetyDisplayObject = { key: string; kind: RailSafetyDisplayObjectKind; id: string; name: string; visible: boolean };
 type Draft = { id: string; name: string; taskId?: string; definition: RailSafetyDefinition };
 type Entry = Draft & { revision?: number; deleted?: boolean; definitionError?: string };
 type Envelope = FallEnvelope;
@@ -144,8 +147,12 @@ export class RailSafetyScene {
   private disposed = false;
   private layers = { guards: true, limits: true, envelopes: true };
   private display = normalizeRailSafetyDisplay(DEFAULT_RAIL_SAFETY_DISPLAY);
+  private objectVisibility: Record<string, boolean> = {};
+  private labelsVisible = true;
   private readonly fallDemo: RailSafetyFallDemo;
+  private readonly effectRenderLoop: RailSafetyEffectRenderLoop;
   private fallDemoInputKey?: string;
+  private fallDemoVisualKey = '';
   private guardPositions: RailSafetyGuardPositionState[] = [];
   private guardPositionsVisualKey = '';
   private pickHandler?: ScreenSpaceEventHandler;
@@ -154,7 +161,12 @@ export class RailSafetyScene {
   private previousCursor?: string;
 
   constructor(private readonly viewer: Viewer, private readonly options: RailSafetySceneOptions = {}) {
-    this.fallDemo = new RailSafetyFallDemo(viewer, { loadAsset: id => this.loadAsset(id), onChange: options.onFallDemoChange,
+    this.effectRenderLoop = new RailSafetyEffectRenderLoop({ requestRender: () => this.requestRender() });
+    this.fallDemo = new RailSafetyFallDemo(viewer, { loadAsset: id => this.loadAsset(id), onChange: snapshot => {
+      const key = JSON.stringify([snapshot.active, snapshot.resourceId, snapshot.projectionReady, snapshot.projectionError]);
+      if (key !== this.fallDemoVisualKey) { this.fallDemoVisualKey = key; this.render(); }
+      this.options.onFallDemoChange?.(snapshot);
+    },
       labelFont: text => this.ensureLabelFont(text) ? '13px "Noto Sans SC", "Microsoft YaHei", sans-serif' : '13px "Microsoft YaHei", sans-serif' });
     void Promise.resolve(viewer.dataSources.add(this.source)).then(() => {
       if (this.disposed && !viewer.isDestroyed()) viewer.dataSources.remove(this.source, true);
@@ -183,7 +195,7 @@ export class RailSafetyScene {
       this.stopFallDemo(); this.guardPositions = []; this.guardPositionsVisualKey = '';
       this.cancelPicking(); this.draft = undefined; this.preview = undefined;
       this.computation.dispose(); this.computation = new RailSafetyComputation(); this.envelopeTasks.clear();
-      if (identityChanged) { this.selected = undefined; this.envelopes.clear(); }
+      if (identityChanged) { this.selected = undefined; this.envelopes.clear(); this.objectVisibility = {}; this.labelsVisible = true; }
     }
     const previousRecords = this.context.records;
     this.context = { ...context,
@@ -241,6 +253,44 @@ export class RailSafetyScene {
     this.display = display; this.render();
   }
 
+  /** Catalogue keys identify display leaves, independently of business records and layer switches. */
+  getDisplayObjects(): RailSafetyDisplayObject[] {
+    if (this.disposed || !this.context.active || !this.context.canView) return [];
+    const objects = new Map<string, RailSafetyDisplayObject>();
+    const add = (kind: RailSafetyDisplayObjectKind, id: string, name: string) => {
+      const key = `rail:${kind}:${id}`;
+      objects.set(key, { key, kind, id, name, visible: this.objectVisibility[key] !== false });
+    };
+    for (const entry of this.entries) {
+      if (entry.deleted) continue;
+      if (entry.definition.kind === 'guard') {
+        add('personnel', entry.id, entry.name);
+        add('responsibility', entry.id, `${entry.name} · 防护责任区`);
+        const saved = this.context.records.find(record => record.id === entry.id && record.definition.kind === 'guard');
+        if (entry.definition.workArea || saved?.definition.kind === 'guard' && saved.definition.workArea) add('workArea', entry.id, `${entry.name} · 人员工作区`);
+      } else if (entry.definition.kind === 'limit') add('limit', entry.id, entry.name);
+    }
+    for (const result of this.results) add('envelope', result.resourceId, `${result.resourceName} · 倾覆影响区`);
+    return [...objects.values()];
+  }
+
+  setObjectVisibility(kind: RailSafetyDisplayObjectKind, id: string, visible: boolean): void {
+    this.setDisplayVisibility({ ...this.objectVisibility, [`rail:${kind}:${id}`]: visible }, this.labelsVisible);
+  }
+
+  setLabelsVisible(visible: boolean): void { this.setDisplayVisibility(this.objectVisibility, visible); }
+
+  /** Replaces the display manager's preferences in one render, including objects created later. */
+  setDisplayVisibility(overrides: Record<string, boolean>, labelsVisible: boolean): void {
+    if (this.disposed) return;
+    const next: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(overrides)) {
+      if (/^rail:(personnel|responsibility|workArea|limit|envelope):.+$/.test(key) && typeof value === 'boolean') next[key] = value;
+    }
+    if (JSON.stringify(next) === JSON.stringify(this.objectVisibility) && labelsVisible === this.labelsVisible) return;
+    this.objectVisibility = next; this.labelsVisible = labelsVisible; this.render();
+  }
+
   async startFallDemo(resourceId: string): Promise<boolean> {
     if (this.disposed || !this.context.canView || !this.context.active) return false;
     const input = this.fallDemoInput(resourceId);
@@ -274,7 +324,8 @@ export class RailSafetyScene {
     return { projectId: this.context.projectId, active: this.context.active, canView: this.context.canView,
       picking: !!this.picking, generation: this.generation, signature: this.signature, pending: this.pending,
       results: this.getResults(), entityIds: this.source.entities.values.map(e => e.id), layers: { ...this.layers },
-      display: clone(this.display), fallDemo: this.fallDemo.getSnapshot(), guardPositions: clone(this.guardPositions) };
+      display: clone(this.display), displayObjects: this.getDisplayObjects(), labelsVisible: this.labelsVisible,
+      fallDemo: this.fallDemo.getSnapshot(), guardPositions: clone(this.guardPositions) };
   }
 
   beginPickPoint(callback: (point: RailSafetyPick) => void): void {
@@ -332,7 +383,7 @@ export class RailSafetyScene {
     this.disposed = true; this.generation++; this.pending = 0; this.cancelPicking(); this.abort.abort();
     if (this.computeTimer !== undefined) clearTimeout(this.computeTimer);
     this.computation.dispose();
-    this.fallDemo.dispose(); this.guardPositions = [];
+    this.effectRenderLoop.dispose(); this.fallDemo.dispose(); this.guardPositions = [];
     this.assets.clear(); this.envelopes.clear(); this.envelopeTasks.clear(); this.results = []; this.visuals = []; this.entries = [];
     this.entitySelection.clear();
     if (!this.selectionHandler.isDestroyed()) this.selectionHandler.destroy();
@@ -536,6 +587,11 @@ export class RailSafetyScene {
   private publish(): void { this.options.onResults?.(this.getResults()); }
 
   private add(entity: Entity.ConstructorOptions, kind: 'machine' | 'guard' | 'limit', id: string): void {
+    const suffix = String(entity.id).slice(`${PREFIX}${kind}:${id}:`.length);
+    const displayKind: RailSafetyDisplayObjectKind = kind === 'machine' ? 'envelope' : kind === 'limit' ? 'limit'
+      : suffix.startsWith('work-area') ? 'workArea' : suffix === 'area' ? 'responsibility' : 'personnel';
+    if (this.objectVisibility[`rail:${displayKind}:${id}`] === false) return;
+    if (!this.labelsVisible && entity.label) entity = { ...entity, label: undefined };
     const replacement = new Entity(entity);
     let added = this.source.entities.getById(replacement.id);
     if (added) {
@@ -544,17 +600,37 @@ export class RailSafetyScene {
       added.name = replacement.name;
       // Assign undefined too, so switching representation clears obsolete graphics.
       added.position = replacement.position; added.orientation = replacement.orientation;
-      added.polygon = replacement.polygon; added.polyline = replacement.polyline;
+      added.polygon = replacement.polygon; added.polyline = replacement.polyline; added.wall = replacement.wall;
       added.point = replacement.point; added.label = replacement.label; added.model = replacement.model;
     } else added = this.source.entities.add(replacement);
     this.renderedEntityIds.add(added.id);
     this.entitySelection.set(added.id, { kind, id });
   }
 
+  private rangeCategory(id: string): keyof RailSafetyRangeColors {
+    if (id.includes(':work-area')) return 'workArea';
+    if (id.startsWith(`${PREFIX}guard:`)) return 'responsibility';
+    if (id.startsWith(`${PREFIX}limit:`)) return 'limit';
+    if (id.endsWith(':support')) return 'support';
+    if (id.includes(':intersection:') || id.includes(':contact:')) return 'risk';
+    return 'envelope';
+  }
+
+  private rangeMaterial(color: Color, category: keyof RailSafetyRangeColors) {
+    return createRailSafetyEffectMaterial({ color, effect: this.display.effects[category] });
+  }
+
+  private syncEffectAnimation(): void {
+    const active = this.context.active && this.context.canView && this.source.show && this.source.entities.values.some(entity =>
+      entity.show && [entity.polygon?.material, entity.polyline?.material, entity.wall?.material].some(material => material && isRailSafetyEffectMaterialAnimated(material)));
+    this.effectRenderLoop.setActive(active);
+  }
+
   private polygon(id: string, name: string, positions: RailSafetyPosition[], color: Color, kind: 'machine' | 'guard' | 'limit', owner: string,
     fill = 0.13, display?: RailSafetyAreaDisplay, emphasis = false): void {
     if (positions.length < 3 || !positions.every(positionValid)) return;
     const selected = this.selected?.kind === kind && this.selected.id === owner;
+    const category = this.rangeCategory(id);
     const draped = !!display && display.surface !== 'absolute';
     const displayPositions = draped ? simplifyRailSafetyDisplayRing(positions) : positions;
     const points = displayPositions.map(p => world(p, draped ? 0 : 0.06));
@@ -562,25 +638,44 @@ export class RailSafetyScene {
     this.add({ id, name, polygon: { hierarchy: new PolygonHierarchy(points), perPositionHeight: !draped,
       // Omitting height/extrusion allows Cesium GroundPrimitive to classify the loaded surface.
       classificationType: display?.surface === 'terrain' ? ClassificationType.TERRAIN : ClassificationType.BOTH,
-      fill: emphasis || display?.style !== 'outline', material: color.withAlpha(alpha), outline: false,
+      fill: emphasis || display?.style !== 'outline', material: this.rangeMaterial(color.withAlpha(alpha), category), outline: false,
       zIndex: emphasis ? 10 : kind === 'guard' ? 2 : 3 },
-      polyline: this.areaLine([...points, points[0]], color, display, selected, emphasis),
+      polyline: this.areaLine([...points, points[0]], color, display, selected, emphasis, category),
     }, kind, owner);
   }
 
-  private areaLine(positions: Cartesian3[], color: Color, display?: RailSafetyAreaDisplay, selected = false, emphasis = false) {
+  private areaLine(positions: Cartesian3[], color: Color, display?: RailSafetyAreaDisplay, selected = false, emphasis = false, category: keyof RailSafetyRangeColors = 'envelope') {
     const width = display ? Math.max(display.lineWidth, emphasis ? 4 : 0) + (selected ? 1.5 : 0) : selected ? 3 : 1.6;
     const draped = !!display && display.surface !== 'absolute';
+    const effect = this.display.effects[category];
+    const material = this.rangeMaterial(color, category);
     return { positions, width,
       // Solid category colors avoid the ground outline shader's sub-pixel striping on software WebGL.
-      material: display && !draped ? new PolylineOutlineMaterialProperty({ color, outlineColor: Color.BLACK.withAlpha(0.85), outlineWidth: Math.min(1, width * 0.4) }) : color,
+      material: (effect.mode === 'static' || effect.intensity === 0) && display && !draped ? new PolylineOutlineMaterialProperty({ color, outlineColor: Color.BLACK.withAlpha(0.85), outlineWidth: Math.min(1, width * 0.4) }) : material,
       clampToGround: draped,
       classificationType: display?.surface === 'terrain' ? ClassificationType.TERRAIN : ClassificationType.BOTH,
       zIndex: emphasis ? 20 : 12 };
   }
 
+  /** A display curtain follows each recorded vertex height; it is not a 3D clearance calculation. */
+  private limitWall(entry: Entry): void {
+    if (entry.definition.kind !== 'limit') return;
+    const polygon = entry.definition.polygon;
+    if (polygon.length < 3 || !polygon.every(positionValid)) return;
+    const { wallHeight, wallOpacity } = this.display.limits;
+    const color = Color.fromCssColorString(this.display.colors.limit);
+    const closed = [...polygon, polygon[0]], selected = this.selected?.kind === 'limit' && this.selected.id === entry.id;
+    this.add({ id: `${PREFIX}limit:${entry.id}:wall`, name: `${entry.name} · 立面显示墙（${wallHeight}m）`,
+      wall: { positions: closed.map(p => world(p)), minimumHeights: closed.map(p => p.height),
+        maximumHeights: closed.map(p => p.height + wallHeight), material: this.rangeMaterial(color.withAlpha(wallOpacity), 'limit'), outline: false },
+      // Keep a readable top edge even when the wall face is transparent.
+      polyline: { positions: closed.map(p => world(p, wallHeight)), width: selected ? 3 : 2,
+        material: this.rangeMaterial(color, 'limit'), clampToGround: false },
+    }, 'limit', entry.id);
+  }
+
   private label(id: string, name: string, position: RailSafetyPosition, color: Color, kind: 'machine' | 'guard' | 'limit', owner: string,
-    options: { point?: boolean; lift?: number; alwaysReadable?: boolean; pixelOffset?: number; surface?: RailSafetyAreaDisplay['surface'] } = {}): void {
+    options: { point?: boolean; lift?: number; alwaysReadable?: boolean; pixelOffset?: number; surface?: RailSafetyAreaDisplay['surface']; textColor?: Color } = {}): void {
     if (!positionValid(position)) return;
     const fontReady = this.ensureLabelFont(name);
     const heightReference = options.surface === 'model' ? HeightReference.CLAMP_TO_GROUND
@@ -589,7 +684,7 @@ export class RailSafetyScene {
       point: options.point === false ? undefined : { pixelSize: 9, color, outlineColor: Color.BLACK, outlineWidth: 1, disableDepthTestDistance: 0, heightReference },
       // Render immediately with the system font; refreshing with a different font key avoids Cesium's cached fallback glyphs.
       label: { text: name, font: fontReady ? '13px "Noto Sans SC", "Microsoft YaHei", sans-serif' : '13px "Microsoft YaHei", sans-serif',
-        fillColor: Color.WHITE, outlineColor: Color.BLACK,
+        fillColor: options.textColor ?? Color.WHITE, outlineColor: Color.BLACK,
         outlineWidth: 3, style: LabelStyle.FILL_AND_OUTLINE, verticalOrigin: VerticalOrigin.BOTTOM,
         pixelOffset: new Cartesian2(0, options.pixelOffset ?? -12), showBackground: true, backgroundColor: Color.BLACK.withAlpha(0.65), heightReference,
         disableDepthTestDistance: options.alwaysReadable ? Number.POSITIVE_INFINITY : 0,
@@ -630,17 +725,19 @@ export class RailSafetyScene {
       unconfigured: '未配置监测', 'no-fix': '等待定位' }[result.state] : '等待定位'}`;
     const measuredColor = result?.state === 'inside' ? GREEN : result?.state === 'outside' ? RED
       : result?.state === 'uncertain' ? ORANGE : Color.LIGHTGRAY;
-    const drawArea = (suffix: string, polygon: RailSafetyPosition[], title: string, color: Color, alarm = false) => {
+    // The area's chosen colour identifies its purpose; tracking status stays in the label and position marker.
+    const workAreaColor = Color.fromCssColorString(this.display.colors.workArea);
+    const drawArea = (suffix: string, polygon: RailSafetyPosition[], title: string, color: Color, alarm = false, textColor = color) => {
       this.polygon(`${PREFIX}guard:${entry.id}:work-area${suffix}`, title, polygon, color, 'guard', entry.id,
         alarm ? Math.max(0.28, this.display.guards.opacity) : Math.min(0.25, this.display.guards.opacity), this.display.guards, alarm);
       this.label(`${PREFIX}guard:${entry.id}:work-area${suffix}:label`, title, polygon[0], color, 'guard', entry.id,
-        { point: false, surface: this.display.guards.surface, alwaysReadable: true });
+        { point: false, surface: this.display.guards.surface, alwaysReadable: true, textColor });
     };
     if (draftArea && savedArea) drawArea(':saved', savedArea.polygon, `${entry.name}已保存工作区 · ${stateText}`,
-      measuredColor, result?.state === 'outside');
+      workAreaColor, result?.state === 'outside', measuredColor);
     if (entry.definition.workArea && !savedMonitoringOnly) drawArea('', entry.definition.workArea.polygon,
       draftArea ? `${entry.name}工作区域草稿（不用于定位判断）` : `${entry.name}工作区域 · ${stateText}`,
-      draftArea ? PURPLE : measuredColor, !draftArea && result?.state === 'outside');
+      draftArea ? PURPLE : workAreaColor, !draftArea && result?.state === 'outside', draftArea ? PURPLE : measuredColor);
     const sample = result?.sample;
     if (!sample || !positionValid(sample.position)) return;
     const source = sample.source === 'simulated' ? '模拟定位' : '定位';
@@ -682,11 +779,28 @@ export class RailSafetyScene {
 
   private render(): void {
     if (this.disposed) return;
+    const demo = this.fallDemo.getSnapshot();
+    const allowed = this.context.canView && this.context.active;
+    this.fallDemo.setDisplay({
+      footprintVisible: allowed && this.layers.envelopes && this.display.envelopes.representation !== 'overview'
+        && (!demo.resourceId || this.objectVisibility[`rail:envelope:${demo.resourceId}`] !== false),
+      modelVisible: allowed,
+      area: this.display.envelopes,
+      color: this.display.colors.envelope,
+      effect: this.display.effects.envelope,
+    });
     this.fallDemo.refreshLabelFont();
     this.source.entities.suspendEvents();
     try {
       this.renderedEntityIds.clear(); this.entitySelection.clear();
       if (!this.context.canView || !this.context.active) return;
+      const colors = {
+        responsibility: Color.fromCssColorString(this.display.colors.responsibility),
+        limit: Color.fromCssColorString(this.display.colors.limit),
+        envelope: Color.fromCssColorString(this.display.colors.envelope),
+        risk: Color.fromCssColorString(this.display.colors.risk),
+        support: Color.fromCssColorString(this.display.colors.support),
+      };
       for (const entry of this.entries) {
         if (entry.deleted) continue;
         if (entry.definitionError) {
@@ -699,42 +813,49 @@ export class RailSafetyScene {
         }
         const definition = entry.definition;
         if (definition.kind === 'guard' && this.layers.guards) {
-          this.polygon(`${PREFIX}guard:${entry.id}:area`, `${entry.name}负责区域`, definition.polygon, BLUE, 'guard', entry.id,
+          this.polygon(`${PREFIX}guard:${entry.id}:area`, `${entry.name}负责区域`, definition.polygon, colors.responsibility, 'guard', entry.id,
             this.display.guards.opacity, this.display.guards);
           this.guardStation(entry.id, entry.name, definition.station);
           this.guardWorkArea(entry);
         } else if (definition.kind === 'limit' && this.layers.limits) {
-          this.polygon(`${PREFIX}limit:${entry.id}:area`, entry.name, definition.polygon, PURPLE, 'limit', entry.id, 0.16);
-          this.label(`${PREFIX}limit:${entry.id}:name`, entry.name, definition.polygon[0], PURPLE, 'limit', entry.id);
+          if (this.display.limits.representation !== 'wall') this.polygon(`${PREFIX}limit:${entry.id}:area`, entry.name, definition.polygon, colors.limit, 'limit', entry.id, 0.16);
+          if (this.display.limits.representation !== 'plane') this.limitWall(entry);
+          this.label(`${PREFIX}limit:${entry.id}:name`, entry.name, definition.polygon[0], colors.limit, 'limit', entry.id,
+            { lift: this.display.limits.representation === 'plane' ? 0.16 : this.display.limits.wallHeight + 0.16, textColor: colors.limit });
         }
       }
       if (this.layers.envelopes) for (const visual of this.visuals) {
         const { resourceId, envelope } = visual;
         const display = this.display.envelopes;
+        const currentProjection = demo.active && demo.resourceId === resourceId && demo.projectionReady && !demo.projectionError;
+        const overviewDisplay = currentProjection && display.representation === 'both' ? { ...display, style: 'outline' as const } : display;
         const convert = (points: Point2[]) => points.map(p => unprojectLocalToWgs84(p, envelope.origin));
-        this.polygon(`${PREFIX}machine:${resourceId}:envelope`, '倾覆几何影响范围', convert(envelope.polygon), ORANGE, 'machine', resourceId,
-          display.opacity, display);
-        this.polygon(`${PREFIX}machine:${resourceId}:support`, '计算支承区域', convert(envelope.supportPolygon), Color.LIGHTGRAY, 'machine', resourceId,
+        this.polygon(`${PREFIX}machine:${resourceId}:support`, '计算支承区域', convert(envelope.supportPolygon), colors.support, 'machine', resourceId,
           Math.min(0.12, display.opacity / 2), display);
+        // A single direction/angle is not the all-direction assessment. Hide its old
+        // overview highlights as a unit; the unchanged results retain that explicit scope.
+        if (currentProjection && display.representation === 'pose') continue;
+        this.polygon(`${PREFIX}machine:${resourceId}:envelope`, '全方向倾覆保守外包', convert(envelope.polygon), colors.envelope, 'machine', resourceId,
+          overviewDisplay.opacity, overviewDisplay);
         const farthest = envelope.landingPoints.reduce<Point2 | undefined>((best, p) => !best || Math.hypot(p.x, p.y) > Math.hypot(best.x, best.y) ? p : best, undefined);
         if (farthest) {
           const point = unprojectLocalToWgs84(farthest, envelope.origin);
-          this.label(`${PREFIX}machine:${resourceId}:farthest`, `估计最远落点 ${envelope.maxDistanceMeters.toFixed(2)} m`, point, ORANGE, 'machine', resourceId,
+          this.label(`${PREFIX}machine:${resourceId}:farthest`, `扫掠最远投影 ${envelope.maxDistanceMeters.toFixed(2)} m`, point, colors.envelope, 'machine', resourceId,
             { surface: display.surface, alwaysReadable: true });
           const origin = { ...envelope.origin, height: envelope.origin.height ?? 0 };
           this.add({ id: `${PREFIX}machine:${resourceId}:radius`, name: '站位至最远几何落点',
-            polyline: this.areaLine([world(origin, 0.08), world(point, 0.08)], ORANGE, display),
+            polyline: this.areaLine([world(origin, 0.08), world(point, 0.08)], colors.envelope, display),
           }, 'machine', resourceId);
         }
         for (const hit of visual.intersections) hit.polygons.forEach((polygon, i) => this.polygon(
-          `${PREFIX}machine:${resourceId}:intersection:${hit.limitId}:${i}`, '平面潜在侵限相交区', convert(polygon), RED, 'machine', resourceId,
+          `${PREFIX}machine:${resourceId}:intersection:${hit.limitId}:${i}`, '平面潜在侵限相交区', convert(polygon), colors.risk, 'machine', resourceId,
           Math.max(0.48, display.opacity), display, true));
         for (const limitId of visual.touchingLimitIds) {
           const limit = this.entries.find(entry => entry.id === limitId);
           if (limit?.definition.kind !== 'limit' || limit.definitionError) continue;
           const positions = limit.definition.polygon.map(p => world(p, 0.1));
           this.add({ id: `${PREFIX}machine:${resourceId}:contact:${limitId}`, name: '发生接触的限界边线',
-            polyline: this.areaLine([...positions, positions[0]], RED, display, false, true),
+            polyline: this.areaLine([...positions, positions[0]], colors.risk, display, false, true, 'risk'),
           }, 'machine', resourceId);
         }
       }
@@ -742,7 +863,7 @@ export class RailSafetyScene {
       for (const entity of [...this.source.entities.values]) {
         if (!entity.id.startsWith(`${PREFIX}drawing:`) && !this.renderedEntityIds.has(entity.id)) this.source.entities.remove(entity);
       }
-      this.source.entities.resumeEvents(); this.renderPicking(); this.requestRender();
+      this.source.entities.resumeEvents(); this.syncEffectAnimation(); this.renderPicking(); this.requestRender();
     }
   }
 

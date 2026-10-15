@@ -187,6 +187,55 @@ test('scene rejects unsupported asset versions and incomplete metadata instead o
   assert.equal(readMachineryState({ ...state('pile'), placement: { ...state('pile').placement, heading: 361 } }), undefined);
 });
 
+test('display overrides reveal saved-hidden machinery and survive preview, restore, sync and read-only context', async () => {
+  const originalFetch = globalThis.fetch; globalThis.fetch = fileFetcher;
+  const fixture = viewerFixture(), scene = new MachineryScene(fixture.viewer), model = await asset('pile');
+  const saved = { ...state('pile'), visible: false }, original = structuredClone(saved);
+  const record = { id: 'display-guarded', projectId: 'project:A', name: 'Pile', machinery: saved };
+  try {
+    scene.setContext({ projectId: record.projectId, records: [record], canView: true, active: true });
+    assert.equal(scene.getDisplayVisibility(record.id), false);
+    assert.equal(fixture.source().entities.values.length, 0);
+    scene.setDisplayVisibility({ [record.id]: true });
+    assert.equal(await scene.flyTo(record.id), true, 'explicit show starts loading even when persistent visible=false');
+    const entity = fixture.source().entities.getById(`machinery:${record.id}`)!;
+    assert.equal(entity.show, true);
+    const draft = structuredClone(saved); draft.placement.heading = 90;
+    await scene.preview(record.id, draft, model);
+    assert.equal(entity.show, true, 'display override also applies to an editing preview');
+    scene.clearPreview(); assert.equal(entity.show, true, 'restore cannot discard the presentation override');
+    scene.sync([record]); assert.equal(entity.show, true);
+    scene.setDisplayVisibility({ [record.id]: false }); assert.equal(entity.show, false);
+    await scene.preview(record.id, { ...draft, visible: true }, model);
+    assert.equal(entity.show, false, 'editing visible=true cannot bypass an explicit display hide');
+    scene.clearPreview();
+    scene.setDisplayVisibility({}); assert.equal(entity.show, false, 'reset restores the persisted hidden default');
+    scene.setDisplayVisibility({ [record.id]: true });
+    scene.setContext({ projectId: record.projectId, records: [record], canView: false, active: true });
+    assert.equal(fixture.source().show, false, 'display overrides cannot bypass viewing permission');
+    scene.setContext({ projectId: record.projectId, records: [record], canView: true, active: true });
+    assert.equal(scene.getDisplayVisibility(record.id), true);
+    scene.setContext({ projectId: 'project:B', records: [{ ...record, projectId: 'project:B' }], canView: true, active: true });
+    assert.equal(scene.getDisplayVisibility(record.id), false, 'project changes clear preferences for reused resource ids');
+    assert.deepEqual(saved, original, 'display choices never rewrite persisted machinery metadata');
+  } finally { scene.destroy(); globalThis.fetch = originalFetch; }
+});
+
+test('hiding machinery during staged loading cannot resurrect it after the load resolves', async () => {
+  const model = await asset('pile'), fixture = viewerFixture(true), scene = new MachineryScene(fixture.viewer);
+  scene.setContext({ projectId: 'project:A', records: [], canView: true, active: true });
+  try {
+    const pending = scene.preview('staged-display', state('pile'), model);
+    scene.setDisplayVisibility({ 'staged-display': false });
+    fixture.release(); await pending;
+    assert.equal(fixture.source().entities.values.length, 0);
+    assert.equal(scene.getDisplayVisibility('staged-display'), false);
+    scene.setDisplayVisibility({ 'staged-display': true });
+    assert.equal(await scene.flyTo('staged-display'), true);
+    assert.equal(fixture.source().entities.getById('machinery:staged-display')!.show, true);
+  } finally { scene.destroy(); }
+});
+
 test('all three machines rotate actual entity orientation clockwise without moving the station or regenerating local geometry', async () => {
   // ModelUtility is Cesium's actual renderer helper, exposed at runtime but omitted from public TS declarations.
   const utility = (Cesium as unknown as { ModelUtility: { getAxisCorrectionMatrix(up: number, forward: number, result: Cesium.Matrix4): Cesium.Matrix4 } }).ModelUtility;

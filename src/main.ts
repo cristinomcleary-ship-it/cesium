@@ -1,4 +1,6 @@
 import { SceneLibrary } from "./sceneLibrary";
+import { detectsSoftwareRenderer, installCameraNavigationPerformance } from "./cameraNavigationPerformance";
+import { SceneDisplayPanel, type SceneDisplayItem } from "./sceneDisplayPanel";
 import { ModelQualityTracker, type ModelQualityState } from "./modelQualityState";
 import type { SafetyWorkspace } from "./safetyWorkspace";
 import type { ManagementWorkspace } from "./managementWorkspace";
@@ -75,11 +77,15 @@ import { VideoArFusion, videoArFusionPanelHtml } from "./videoArFusion";
 import type { CadCoordinateOptions, CadDisplayMode, ImportRecord, TilesetOptions } from "./types";
 import "./style.css";
 
+let sceneDisplayPanel: SceneDisplayPanel | undefined;
+let sceneDisplayReady = false, sceneDisplayQueued = false;
+let sceneDisplayOverrides: Record<string, boolean> = Object.create(null);
+
 const token = import.meta.env.VITE_CESIUM_ION_TOKEN?.trim();
 if (token) Ion.defaultAccessToken = token;
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
-  <div class="shell">
+  <div class="shell workbench-right-dock">
     <header class="app-header">
       <div class="brand">
         <span class="brand-mark">C</span>
@@ -99,11 +105,15 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <button class="tab" data-tab="monitoring" data-label="基坑监测" data-menu-icon="▥">基坑监测</button>
         <button class="tab" data-tab="report" data-label="3维汇报" data-menu-icon="▣">3维汇报</button>
       </nav>
-      <button id="openSafetyWorkspace" class="text-button safety-entry-button" type="button">项目统筹平台</button>
+      <button id="openSafetyWorkspace" class="text-button safety-entry-button" type="button">现场工作台</button>
       <a href="/ar-v2.html" class="text-button" title="独立视觉定位与融合">AR V2</a>
       <div class="workspace-mode"><span class="workspace-pulse"></span><span>数字孪生工作台</span></div>
     </header>
     <aside class="sidebar">
+      <nav class="workbench-dock-tabs" aria-label="右侧工作区"><button type="button" data-dock="display" aria-pressed="true">场景显示</button><button type="button" data-dock="editor" aria-pressed="false">参数编辑</button></nav>
+      <div id="workbenchDisplayHost"></div>
+      <div id="workbenchEditorHost" hidden>
+      <div class="workbench-parameters">
       <section class="layers-section scene-explorer" aria-labelledby="sceneExplorerTitle">
         <div class="section-title">
           <div class="scene-explorer-title"><small>SCENE CONTENT</small><span id="sceneExplorerTitle">图层与标绘</span></div>
@@ -157,7 +167,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <button class="secondary" id="exportDigitalTwinCatalog">导出数据目录</button>
           <p class="hint" id="digitalTwinStorageStatus">数据目录元数据保存在本机浏览器；模型、视频和照片不会重复写入目录。</p>
         </section>
-        <section class="panel" data-panel="machinery"><h2>施工机械</h2><p>在当前 Cesium 场景放置吊机、桩机与挖机。右侧面板编辑尺寸与位置，保存到同一工程资源台账。</p><p>关闭编辑面板或切换功能后，已保存的机械仍显示在场景中。可在“图层与标绘”区域定位和管理机械。</p></section>
+        <section class="panel" data-panel="machinery"><h2>施工机械</h2><p>在当前 Cesium 场景放置吊机、桩机与挖机。右侧面板编辑尺寸与位置，保存到同一工程资源台账。</p><p>关闭编辑面板或切换功能后，已保存的机械仍显示在场景中。可在右侧“场景显示 → 施工机械”中定位和管理全部机械。</p></section>
         <section class="panel" data-panel="rail-safety"><h2>邻近营业线管控</h2><p>定义防护人员站位与责任区、铁路设备安全限界，并选择机械检查假设倾覆的地面影响范围。</p><p>尺寸单位 m。范围与人员位置由用户定义；相交结果为当前参数下的平面几何筛查。</p><button type="button" id="reopenRailSafety" class="text-button">打开管控面板</button></section>
         <section class="panel active" data-panel="cad">
           <div class="dropzone" id="cadDropzone">
@@ -277,6 +287,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         ${foundationPitMonitoringPanelHtml}
         ${threeDReportPanelHtml}
       </main>
+      </div>
+      </div>
       <footer><span class="status-dot"></span><span id="status">Cesium 已就绪</span></footer>
     </aside>
     <section class="viewport">
@@ -348,6 +360,13 @@ const viewer = new Viewer("cesiumContainer", {
 RequestScheduler.maximumRequests = 40;
 RequestScheduler.maximumRequestsPerServer = 10;
 viewer.resolutionScale = 1;
+// Software GPUs can stall the page on synchronous navigation depth readback.
+// Keep hardware navigation and every explicit model/survey pick unchanged.
+const cameraNavigationPerformance = installCameraNavigationPerformance(viewer.scene, {
+  enabled: detectsSoftwareRenderer(viewer.canvas),
+  shouldUseLightweightNavigation: () => !viewer.trackedEntity && Matrix4.equals(viewer.camera.transform, Matrix4.IDENTITY),
+});
+window.addEventListener("beforeunload", () => cameraNavigationPerformance.dispose(), { once: true });
 type CustomBasemap = { type: "xyz" | "tms" | "arcgis"; url: string; maximumLevel: number; credit: string };
 const CUSTOM_BASEMAP_KEY = "cesium-custom-basemap-v1";
 let localImagery: LocalImageryResult | null = null;
@@ -816,6 +835,7 @@ function locateImport(item: ImportRecord) {
 }
 
 function renderLayers() {
+  scheduleSceneDisplay();
   projectLibrary?.render();
   safetyWorkspace?.layersChanged();
   if (digitalTwinSyncReady) scheduleDigitalTwinSync();
@@ -847,6 +867,7 @@ function renderLayers() {
 
 function setImportVisibility(item: ImportRecord, visible: boolean, options: { silent?: boolean; deferRender?: boolean } = {}) {
   item.visible = visible;
+  sceneDisplayPanel?.setVisibility([`layer:${item.id}`], visible);
   projectLibrary?.queueUpdate(item.id, { visible });
   if (item.kind === "3D Tiles") {
     (item.resource as Cesium3DTileset).show = visible;
@@ -1092,7 +1113,7 @@ try {
 function sandTableBoundingSphere() {
   const spheres: BoundingSphere[] = [];
   for (const item of imports) {
-    if (!item.visible) continue;
+    if (!isImportDisplayed(item)) continue;
     const resource = item.resource as { isDestroyed?: () => boolean; boundingSphere?: BoundingSphere };
     try {
       if (resource.isDestroyed?.()) continue;
@@ -1152,7 +1173,7 @@ function focusSandTableScene(mode: SandTableFocusMode) {
   }
   const sphere = sandTableBoundingSphere();
   if (!sphere) {
-    const fallback = [...imports].reverse().find((item) => item.visible);
+    const fallback = [...imports].reverse().find((item) => isImportDisplayed(item));
     if (fallback) locateImport(fallback);
     else focusSandTableScene("home");
     return;
@@ -1823,7 +1844,7 @@ try {
       } catch {
         return [];
       }
-      return [{ id: item.id, name: item.name, visible: item.visible && tileset.show, tileset }];
+      return [{ id: item.id, name: item.name, visible: isImportDisplayed(item) && tileset.show, tileset }];
     }),
     canEnterImmersive: () => (
       viewer.scene.mode === SceneMode.SCENE3D
@@ -2244,9 +2265,11 @@ $("#loadModel").addEventListener("click", async () => {
 // Capture before older modules' tab handlers: neither module may discard the other's draft.
 let workbenchNavigationGeneration = 0;
 let requestedMachineryRecord: string | undefined;
+let requestedRailDisplayObject: {kind: string; id: string} | undefined;
 document.addEventListener('click', event => {
   const target = (event.target as Element).closest<HTMLElement>('.tab,#openSafetyWorkspace,#openMarkupWorkspace,#openWorkbenchMachinery,[data-machinery-action="edit"]');
   if (!target || managementWorkspace?.isOpen) return;
+  setWorkbenchDock('editor');
   const machineryEntry = ['machinery', 'rail-safety'].includes(target.dataset.tab || '') || target.id === 'openWorkbenchMachinery' || target.dataset.machineryAction === 'edit';
   const markupDraft = document.querySelector<HTMLButtonElement>('#markupCancelDrawing');
   if (machineryEntry && markupDraft && !markupDraft.disabled) {
@@ -2271,8 +2294,10 @@ document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => tab.addEve
     try {
       const workspace = await ensureManagementWorkspace();
       if (navigation !== workbenchNavigationGeneration || !await workspace.openWorkbenchRailSafety(() => navigation === workbenchNavigationGeneration)) return;
+      if (requestedRailDisplayObject) { workspace.selectRailDisplayObject(requestedRailDisplayObject.kind, requestedRailDisplayObject.id); requestedRailDisplayObject = undefined; }
     } catch (error) { toast(error instanceof Error ? error.message : String(error), true); return; }
   } else if (managementWorkspace && !managementWorkspace.prepareWorkbenchNavigation()) return;
+  setWorkbenchDock("editor");
   const previousTab = document.querySelector<HTMLButtonElement>(".tab.active")?.dataset.tab;
   const leavingSandTable = previousTab === "sandtable"
     && tab.dataset.tab !== "sandtable";
@@ -2749,7 +2774,7 @@ async function ensureManagementWorkspace(): Promise<ManagementWorkspace> {
     safetyWorkspaceLoading ??= import("./safetyWorkspace").then(({ SafetyWorkspace }) => {
       safetyWorkspace = new SafetyWorkspace({
         viewer, host: $("#safetyWorkspaceHost"), ready: () => projectLibrary!.ready,
-        getImports: () => imports,
+        getImports: () => imports.map(item => ({ ...item, visible: isImportDisplayed(item) })),
         getModelQualityStates, subscribeModelQuality,
         getVideoDiagnostics: () => { const diagnostics = videoArFusion.getDiagnostics(); return { ...diagnostics, media: { ...diagnostics.media, recordId: projectLibrary?.activeVideoRecordId || null } }; },
         setVideoTextureQuality: mode => videoArFusion.setTextureQuality(mode),
@@ -2798,6 +2823,8 @@ async function ensureManagementWorkspace(): Promise<ManagementWorkspace> {
     const sceneWorkspace = await safetyWorkspaceLoading;
     managementWorkspaceLoading ??= import("./managementWorkspace").then(({ ManagementWorkspace }) => {
       managementWorkspace = new ManagementWorkspace(sceneWorkspace, $("#safetyWorkspaceHost"), {
+        panelHost: $("#workbenchEditorHost"), onDisplayManager: () => setWorkbenchDock("display"),
+        onDisplayMount: host => { sceneDisplayPanel?.mount(host ?? $("#workbenchDisplayHost")); scheduleSceneDisplay(); },
         onChange: renderWorkbenchMachinery,
         onPanelChange: setWorkbenchMachineryPanelOpen,
         pickPosition: pixel => {
@@ -2809,7 +2836,7 @@ async function ensureManagementWorkspace(): Promise<ManagementWorkspace> {
             for (const source of sources) source.show = false;
             viewer.entities.show = false; viewer.render();
             const picked = viewer.scene.pick(pixel);
-            const imported = imports.find(item => item.visible && (item.kind === '3D Tiles' || item.kind === 'Model') &&
+            const imported = imports.find(item => isImportDisplayed(item) && (item.resource as {show:boolean}).show && (item.kind === '3D Tiles' || item.kind === 'Model') &&
               (picked?.primitive === item.resource || picked?.primitive?.tileset === item.resource || picked?.tileset === item.resource));
             if (!imported || !viewer.scene.pickPositionSupported) return undefined;
             const point = viewer.scene.pickPosition(pixel);
@@ -2830,6 +2857,7 @@ async function ensureManagementWorkspace(): Promise<ManagementWorkspace> {
 
 let resumeWorkbenchMachineryInteractions: (() => void) | undefined;
 function setWorkbenchMachineryPanelOpen(open: boolean): void {
+  if (open) setWorkbenchDock("editor");
   if (!open) {
     resumeWorkbenchMachineryInteractions?.(); resumeWorkbenchMachineryInteractions = undefined;
     document.body.classList.remove('workbench-machinery-open'); return;
@@ -2847,42 +2875,75 @@ function setWorkbenchMachineryPanelOpen(open: boolean): void {
   document.body.classList.add('workbench-machinery-open');
 }
 
-function renderWorkbenchMachinery(): void {
-  const root = document.getElementById('workbenchMachineryObjects'); if (!root) return;
-  const state = managementWorkspace?.getWorkbenchMachineryState();
-  const account = document.getElementById('machineryAccountEntry');
-  if (account) account.hidden = !!state?.canView;
-  root.replaceChildren();
-  if (!state?.canView || !state.records.length) {
-    root.textContent = state?.status || (state?.canView ? '尚无已放置的机械。点击“添加 / 编辑”创建或选择设备。' : '正在读取施工机械…'); return;
-  }
-  for (const record of state.records) {
-    const row = document.createElement('div'); row.className = 'workbench-machinery-row'; row.dataset.machineryRecord = record.id;
-    const name = document.createElement('span'); name.className = 'workbench-machinery-name'; name.textContent = record.name; name.title = record.name;
-    const visible = record.machinery?.visible !== false;
-    const status = document.createElement('small'); status.textContent = visible ? '显示中' : '已隐藏';
-    name.append(status); row.append(name);
-    for (const [action, label] of [['visibility', visible ? '隐藏' : '显示'], ['locate', '定位'], ['edit', state.canEdit ? '编辑' : '查看']] as const) {
-      const button = document.createElement('button'); button.type = 'button'; button.dataset.machineryAction = action; button.textContent = label;
-      button.disabled = action === 'visibility' && !state.canEdit;
-      if (action === 'visibility') { button.setAttribute('aria-pressed', String(visible)); button.title = state.canEdit ? '保存机械显示状态' : '仅有查看权限，不能修改显示状态'; }
-      button.addEventListener('click', async () => {
-        button.disabled = true;
-        try {
-          const workspace = await ensureManagementWorkspace();
-          if (action === 'visibility') await workspace.setWorkbenchMachineryVisibility(record.id, !visible);
-          else if (action === 'locate') await workspace.locateWorkbenchMachinery(record.id);
-          else {
-            requestedMachineryRecord = record.id; document.querySelector<HTMLButtonElement>('.tab[data-tab="machinery"]')?.click();
-          }
-        } catch (error) { toast(error instanceof Error ? error.message : String(error), true); }
-        finally { renderWorkbenchMachinery(); }
-      });
-      row.append(button);
-    }
-    root.append(row);
-  }
+function renderWorkbenchMachinery(): void { scheduleSceneDisplay(); }
+
+function setWorkbenchDock(mode: 'display' | 'editor'): void {
+  document.getElementById('workbenchDisplayHost')!.hidden = mode !== 'display';
+  document.getElementById('workbenchEditorHost')!.hidden = mode !== 'editor';
+  document.querySelectorAll<HTMLButtonElement>('[data-dock]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.dock === mode)));
+  if (mode === 'display') scheduleSceneDisplay();
 }
+function scheduleSceneDisplay(): void {
+  if (!sceneDisplayReady || sceneDisplayQueued) return;
+  sceneDisplayQueued = true;
+  queueMicrotask(() => { sceneDisplayQueued = false; if (sceneDisplayReady) syncSceneDisplay(); });
+}
+function syncSceneDisplay(): void {
+  if (!sceneDisplayPanel) return;
+  const state = managementWorkspace?.getWorkbenchMachineryState();
+  const items: SceneDisplayItem[] = [];
+  foundationPitMonitoring.setDisplayContext(JSON.stringify([state?.projectId ?? 'workbench-local', state?.actorId ?? null]));
+  const layerTypes = { 'CAD': 'CAD 图纸', '3D Tiles': '实景模型', 'GIS': 'GIS 数据', 'Model': '工程模型', 'Drone Video': '无人机视频' };
+  for (const layer of imports.filter(isImportAllowed)) items.push({ id: `layer:${layer.id}`, name: layer.name, category: layerTypes[layer.kind], visible: layer.visible,
+    detail: layer.kind === '3D Tiles' ? modelQualityTrackers.get(layer.id)?.getState().label : undefined,
+    locate: () => { locateImport(layer); },
+    edit: layer.kind === 'Model' ? () => { if (managementWorkspace?.isOpen && !managementWorkspace.openEngineeringTool('models')) return; setWorkbenchDock('editor'); document.querySelector<HTMLButtonElement>('.tab[data-tab="models"]')?.click(); modelEditor.select(layer.id); } : undefined });
+  for (const record of state?.records ?? []) items.push({ id: `machine:${record.id}`, name: record.name, category: '施工机械', visible: (record.machinery as {visible?:boolean})?.visible !== false,
+    locate: async () => { await managementWorkspace?.locateWorkbenchMachinery(record.id); },
+    edit: async () => { if (managementWorkspace?.isOpen) { await managementWorkspace.editFieldObject('machine', record.id); return; } requestedMachineryRecord = record.id; document.querySelector<HTMLButtonElement>('.tab[data-tab="machinery"]')?.click(); } });
+  const categories: Record<string,string> = { personnel: '防护人员', responsibility: '防护责任区', workArea: '人员工作区', limit: '铁路安全限界', envelope: '机械倾覆范围' };
+  for (const object of managementWorkspace?.getWorkbenchDisplayObjects() ?? []) items.push({ id: object.key, name: object.name, category: categories[object.kind] ?? object.kind, visible: true,
+    locate: async () => { await managementWorkspace?.locateRailDisplayObject(object.id); },
+    edit: async () => { if (managementWorkspace?.isOpen) { await managementWorkspace.editFieldObject(object.kind, object.id); return; } requestedRailDisplayObject = { kind: object.kind, id: object.id }; document.querySelector<HTMLButtonElement>('.tab[data-tab="rail-safety"]')?.click(); } });
+  for (const object of managementWorkspace?.isOpen && !state?.canView ? [] : markupTools?.getDisplayItems() ?? []) items.push({ id: `markup:${object.id}`, name: object.name, category: '标绘对象', visible: object.defaultVisible,
+    edit: () => { if (managementWorkspace?.isOpen && !managementWorkspace.openEngineeringTool('markup')) return; document.querySelector<HTMLButtonElement>('.tab[data-tab="markup"]')?.click(); } });
+  for (const object of managementWorkspace?.isOpen && !state?.canView ? [] : foundationPitMonitoring.getDisplayItems()) items.push({ id: object.id, name: object.name, category: object.kind === 'model' ? '基坑模型' : object.kind === 'marker' ? '基坑中心提示' : '基坑监测点', visible: object.defaultVisible, edit: () => { if (managementWorkspace?.isOpen && !managementWorkspace.openEngineeringTool('monitoring')) return; document.querySelector<HTMLButtonElement>('.tab[data-tab="monitoring"]')?.click(); } });
+  sceneDisplayPanel.setContext(state?.projectId ?? 'workbench-local', state?.actorId, items);
+  for (const layer of imports) applyImportDisplay(layer);
+}
+function applySceneDisplay(overrides: Record<string,boolean>, labelsVisible: boolean): void {
+  sceneDisplayOverrides = overrides;
+  for (const layer of imports) applyImportDisplay(layer);
+  const markups: Record<string,boolean> = Object.create(null);
+  for (const [key, visible] of Object.entries(overrides)) if (key.startsWith('markup:')) markups[key.slice(7)] = visible;
+  markupTools?.setDisplayVisibility(markups, labelsVisible);
+  const pits = Object.fromEntries(Object.entries(overrides).filter(([key]) => key.startsWith('pit:')));
+  foundationPitMonitoring.setDisplayVisibility(pits, labelsVisible);
+  const pitSwitch = document.querySelector<HTMLInputElement>('#pitMonitoringVisible');
+  if (pitSwitch) {
+    const pitItems = foundationPitMonitoring.getDisplayItems(), shown = pitItems.filter(item => item.visible).length;
+    pitSwitch.checked = !!pitItems.length && shown === pitItems.length; pitSwitch.indeterminate = shown > 0 && shown < pitItems.length;
+  }
+  managementWorkspace?.setWorkbenchDisplayVisibility(overrides, labelsVisible);
+  viewer.scene.requestRender();
+}
+function isImportAllowed(layer: ImportRecord): boolean {
+  const access = managementWorkspace?.getWorkbenchLayerAccess();
+  return !access || (layer.kind === 'CAD' || layer.kind === 'GIS' ? access.files : access.models);
+}
+function isImportDisplayed(layer: ImportRecord): boolean {
+  return isImportAllowed(layer) && (sceneDisplayOverrides[`layer:${layer.id}`] ?? layer.visible);
+}
+function applyImportDisplay(layer: ImportRecord): void {
+  const resource = layer.resource as {show:boolean;isDestroyed?:()=>boolean};
+  if (resource.isDestroyed?.()) return;
+  const visible = isImportDisplayed(layer);
+  if (resource.show === visible) return;
+  resource.show = visible;
+  if (layer.kind === '3D Tiles') { modelQualityTrackers.get(layer.id)?.invalidateView(); videoArFusion.invalidateProjection('display-preference-changed'); }
+  if (!visible && layer.kind === 'Model') modelEditor.select(null);
+}
+
 
 async function openSafetyWorkspace(): Promise<void> {
   try {
@@ -2890,12 +2951,37 @@ async function openSafetyWorkspace(): Promise<void> {
     if (!workspace.prepareWorkbenchNavigation()) return;
     if (new URLSearchParams(window.location.search).get('interface') === 'legacy') await safetyWorkspace!.open();
     else await workspace.open();
-  } catch (error) { toast(`项目统筹平台打开失败：${error instanceof Error ? error.message : String(error)}`, true); }
+  } catch (error) { toast(`现场工作台打开失败：${error instanceof Error ? error.message : String(error)}`, true); }
 }
 $('#openWorkbenchMachinery').addEventListener('click', () => document.querySelector<HTMLButtonElement>('.tab[data-tab="machinery"]')?.click());
 $('#reopenRailSafety').addEventListener('click', () => document.querySelector<HTMLButtonElement>('.tab[data-tab="rail-safety"]')?.click());
 $('#machineryAccountEntry').addEventListener('click', () => void openSafetyWorkspace());
 $("#openSafetyWorkspace").addEventListener("click", () => void openSafetyWorkspace());
+// The display dock and business editors share one right-hand column; switching never closes a draft.
+const libraryDetails = document.querySelector<HTMLElement>('.saved-library')!;
+const libraryActions = document.createElement('div'); libraryActions.className = 'workbench-library-actions';
+libraryActions.append(document.getElementById('clearAll')!, document.getElementById('openMarkupWorkspace')!);
+libraryDetails.append(libraryActions);
+document.querySelector('.workbench-parameters .panel-scroll')!.append(libraryDetails);
+sceneDisplayPanel = new SceneDisplayPanel($('#workbenchDisplayHost'), { onApply: applySceneDisplay, onError: message => toast(String(message), true) });
+sceneDisplayReady = true;
+document.querySelectorAll<HTMLButtonElement>('[data-dock]').forEach(button => button.addEventListener('click', () => setWorkbenchDock(button.dataset.dock as 'display' | 'editor')));
+// Existing visual switches also write the single personal display state.
+document.getElementById('markupList')?.addEventListener('click', event => {
+  const button = (event.target as Element).closest<HTMLButtonElement>('[data-action="visibility"]');
+  const id = button?.closest<HTMLElement>('[data-markup-id]')?.dataset.markupId;
+  const item = id && markupTools?.getDisplayItems().find(item => item.id === id);
+  if (!button || !item) return;
+  event.preventDefault(); event.stopImmediatePropagation(); sceneDisplayPanel?.setVisibility([`markup:${item.id}`], !item.visible);
+}, true);
+document.getElementById('pitMonitoringVisible')?.addEventListener('change', event => {
+  const visible = (event.target as HTMLInputElement).checked;
+  event.stopImmediatePropagation(); sceneDisplayPanel?.setVisibility(foundationPitMonitoring.getDisplayItems().map(item => item.id), visible);
+}, true);
+markupTools?.subscribeOverview(scheduleSceneDisplay);
+foundationPitMonitoring.subscribeOverview(scheduleSceneDisplay);
+window.addEventListener('beforeunload', () => { sceneDisplayReady = false; sceneDisplayPanel?.dispose(); }, { once: true });
+scheduleSceneDisplay();
 void projectLibrary.start().then(() => {
   renderLayers(); viewer.scene.requestRender();
   void ensureManagementWorkspace().then(() => renderWorkbenchMachinery()).catch(error => { const list = document.getElementById('workbenchMachineryObjects'); if (list) list.textContent = '施工机械初始化失败：' + (error instanceof Error ? error.message : String(error)); });

@@ -25,11 +25,14 @@ export type MachineryPanelContext = {
 export type MachineryPanelOptions = {
   viewer: Viewer;
   host: HTMLElement;
+  /** Optional shared right-side workbench; moving the editor retains draft/interaction state. */
+  workbenchHost?: HTMLElement;
   save: (recordId: string, machinery: MachineryState, expectedRevision: number) => Promise<void>;
   remove: (recordId: string, expectedRevision: number) => Promise<void>;
   createResource?: (name: string) => Promise<{ id: string } | void>;
   onPickingChange?: (picking: boolean) => void;
   onOpenChange?: (open: boolean) => void;
+  onSelectionChange?: (recordId: string) => void;
   /** Shares the current displayed draft with dependent spatial assessments. */
   onPreviewChange?: (recordId: string, state?: MachineryState) => void;
   pickPosition?: (position: Cartesian2) => MachineryPlacementPick | undefined;
@@ -65,6 +68,7 @@ export class MachineryPanel {
   private editOrder: string[] = [];
   private pendingAction?: () => void;
   private positionSource = "尚未设置位置";
+  private managementHost?: HTMLElement;
 
   constructor(private readonly options: MachineryPanelOptions) {
     this.scene = new MachineryScene(options.viewer, {
@@ -161,7 +165,20 @@ export class MachineryPanel {
   get hasDraft() { return this.dirty; }
   get isPicking() { return this.picking; }
   get isBusy() { return this.busy; }
-  setPresentation(mode: 'workbench' | 'management') { this.root.dataset.presentation = mode; }
+  get selectedResourceId() { return this.context.canView ? this.selectedId : ""; }
+  /** Move the existing editor into a stable field-workbench slot without recreating its draft. */
+  setManagementHost(host?: HTMLElement) {
+    if (this.destroyed) return;
+    this.managementHost = host;
+    this.setPresentation(this.root.dataset.presentation === 'workbench' ? 'workbench' : 'management');
+  }
+  setPresentation(mode: 'workbench' | 'management') {
+    if (this.destroyed) return;
+    this.root.dataset.presentation = mode;
+    const host = mode === 'workbench' ? this.options.workbenchHost ?? this.options.host : this.managementHost ?? this.options.host;
+    this.root.dataset.docked = String(mode === 'management' && !!this.managementHost);
+    if (this.root.parentElement !== host) host.append(this.root);
+  }
   locate(recordId: string) { return this.scene.flyTo(recordId); }
   private get editable() { return this.context.canEdit && this.context.canView && this.context.active && this.opened && !this.destroyed; }
   private find<T extends Element>(selector: string): T {
@@ -205,6 +222,7 @@ export class MachineryPanel {
     if (reset) { this.clearDraft(); this.selectedId = ""; this.opened = false; this.busy = false; this.options.onOpenChange?.(false); }
     const records = context.canView ? this.records() : [];
     this.scene.setContext({ projectId: context.projectId, records: records.map(record => ({ id: record.id, machinery: savedState(record) })), canView: context.canView, active: context.active });
+    if (previous.actorId !== context.actorId) this.scene.setDisplayVisibility({});
     this.renderResources();
     // A command callback may refresh the dataset before its promise resolves.
     // Keep that operation's generation/revision until its own completion path runs.
@@ -216,6 +234,15 @@ export class MachineryPanel {
     }
     this.root.hidden = !this.opened || !context.canView || !context.active;
     this.updateControls();
+  }
+
+  /** Display preferences are available to viewers; this does not edit/save a resource. */
+  setDisplayVisibility(overrides: Record<string, boolean>): void {
+    if (!this.destroyed) this.scene.setDisplayVisibility(overrides);
+  }
+
+  getDisplayVisibility(id: string): boolean {
+    return !this.destroyed && this.scene.getDisplayVisibility(id);
   }
 
   open() {
@@ -247,6 +274,7 @@ export class MachineryPanel {
     if (this.dirty) { this.requestDiscard(() => { this.dirty = false; void this.selectResource(id); }, "切换机械资源会放弃当前未保存修改。"); return false; }
     const record = this.records().find(item => item.id === id);
     this.clearDraft(); this.selectedId = record?.id || ""; this.selectedRevision = record?.revision || 0;
+    this.options.onSelectionChange?.(this.selectedId);
     this.renderResources();
     if (!record) { this.renderEditor(); this.message("请先选择机械资源。"); return false; }
     const saved = savedState(record);

@@ -1,5 +1,7 @@
+import { fieldObjectReference, fieldObjectReferences, guardPersonnel, importedRailwayPlan, validateWorkflowFile, workflowCategory } from "./railwayWorkflow.ts";
+import { railSafetyRiskIssueFields } from "./railSafetyRisk.ts";
 import { newCheckItems,recordCheckItems,confirmCheckIntegrity,checklistVersion } from "./checkIntegrity.ts";
-import { configureTaskConditions,enforceTaskConditions } from "./taskConditions.ts";
+import { configureTaskConditions,enforceTaskConditions,enforceTaskResumeIssues } from "./taskConditions.ts";
 import { MachineryValidationError,validateMachineryMetadata } from "../../src/machineryValidation.ts";
 import { RailSafetyValidationError,validateRailSafetyDefinition } from "../../src/railSafetyValidation.ts";
 import type { RailSafetyDefinition } from "../../src/railSafetyTypes.ts";
@@ -34,9 +36,10 @@ export interface DomainContext {
  member:(id:string,taskIds?:string[],permission?:ManagementPermission)=>void; area:(id:string)=>void; evidence:(id:string)=>void;
  freeze:(payload:Record<string,unknown>)=>Record<string,unknown>;
 }
-const mutableTaskFields=["name","wbsId","ownerId","planStart","planEnd","targetQuantity","unit","weight","milestone","areaIds","predecessorIds","description"];
+const railwayTaskFields=["railwayLine","railwaySection","railwayMileage","railwayTrack","railwayWorkType","workWindowStart","workWindowEnd","permitReference","batchLabel"];
+const mutableTaskFields=[...railwayTaskFields,"name","wbsId","ownerId","planStart","planEnd","targetQuantity","unit","weight","milestone","areaIds","resourceIds","predecessorIds","description"];
 function requiredState(record:ManagementRecord,states:string[]) { if(!states.includes(record.status))throw new ManagementError(409,"INVALID_STATE",`当前状态 ${record.status} 不允许该操作`,{allowed:states},record); }
-function taskAccess(c:DomainContext,taskId:unknown) {const task=c.get("tasks",id(taskId,"任务"));if(c.actor.taskIds&&!c.actor.taskIds.includes(task.id))throw new ManagementError(403,"TASK_FORBIDDEN","任务不在授权范围");if(c.actor.roles.includes("worker")&&!c.actor.roles.some(r=>["owner","manager","planner"].includes(r))&&["task.start","task.request-completion","progress.create","progress.revise","progress.submit","dailyLog.create"].includes(c.command.type)&&task.ownerId!==c.actor.id)throw new ManagementError(403,"TASK_EXECUTOR_REQUIRED","现场填报人员只能办理本人负责的执行任务");return task;}
+function taskAccess(c:DomainContext,taskId:unknown) {const task=c.get("tasks",id(taskId,"任务"));if(c.actor.taskIds&&!c.actor.taskIds.includes(task.id))throw new ManagementError(403,"TASK_FORBIDDEN","任务不在授权范围");if(c.actor.roles.includes("worker")&&!c.actor.roles.some(r=>["owner","manager","planner"].includes(r))&&["task.start","task.pause","task.resume","task.request-completion","progress.create","progress.revise","progress.submit","dailyLog.create"].includes(c.command.type)&&task.ownerId!==c.actor.id)throw new ManagementError(403,"TASK_EXECUTOR_REQUIRED","现场填报人员只能办理本人负责的执行任务");return task;}
 function validateLinks(c:DomainContext,p:Record<string,unknown>) {
  if(p.taskId!==undefined)taskAccess(c,p.taskId);
  if(p.taskIds!==undefined)for(const v of ids(p.taskIds))taskAccess(c,v);
@@ -61,10 +64,27 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
  const recheckDocumentRequirements=(versionId:string)=>{for(const requirement of c.list("documentRequirements").filter(v=>v.status==="confirmed"&&v.versionId===versionId)){requirement.revision++;requirement.updatedAt=now;requirement.status="pending-recheck";requirement.recheckReason="适用资料版本已替代或作废，请重新核对";c.save("documentRequirements",requirement);}};
  const taskFields=(v:Record<string,unknown>)=>{
   str(v.name,"任务名称",200);if(v.wbsId)c.get("wbs",id(v.wbsId));
+  if(v.resourceIds!==undefined){
+   v.resourceIds=ids(v.resourceIds);
+   for(const key of v.resourceIds as string[]){const resource=c.get("resources",key);ensure(resource.kind==="equipment"&&resource.status!=="deleted","TASK_RESOURCE_KIND","作业关联只能选择当前项目的有效机械设备资源");}
+  }
   validateLinks(c,v);if(v.planStart||v.planEnd){date(v.planStart,"计划开始");date(v.planEnd,"计划完成");ensure(String(v.planStart)<=String(v.planEnd),"DATE_CONFLICT","开始日期不能晚于完成日期");}
   if(v.planStart&&v.planEnd){for(const endpoint of [v.planStart,v.planEnd])ensure(c.workingDays.includes(new Date(String(endpoint)+"T00:00:00Z").getUTCDay()),"WORK_CALENDAR_CONFLICT","计划起止日期不在项目工作日历内",{date:endpoint,workingDays:c.workingDays});}
   if(v.targetQuantity!==undefined){num(v.targetQuantity,"目标量",0.0000001);str(v.unit,"单位",30);}
   if(v.weight!==undefined)num(v.weight,"权重",0.0000001);
+  for(const key of railwayTaskFields){
+   if(v[key]===undefined)continue;
+   ensure(typeof v[key]==="string","INVALID_FIELD",`${key}须为文本`);
+   const value=(v[key] as string).trim();if(!value){delete v[key];continue;}v[key]=str(value,key,200);
+  }
+  if(v.workWindowStart!==undefined||v.workWindowEnd!==undefined){
+   ensure(v.workWindowStart!==undefined&&v.workWindowEnd!==undefined,"WORK_WINDOW_INCOMPLETE","作业时段须同时填写开始和结束；清空时也须同时清空");
+   for(const key of ["workWindowStart","workWindowEnd"]){
+    const value=String(v[key]);
+    ensure(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)&&Number.isFinite(Date.parse(value+":00Z"))&&new Date(value+":00Z").toISOString().slice(0,16)===value,"INVALID_WORK_WINDOW","作业时段须为有效北京时间 YYYY-MM-DDTHH:mm，精确到分钟");
+   }
+   ensure(String(v.workWindowStart)<String(v.workWindowEnd),"WORK_WINDOW_CONFLICT","作业结束必须晚于开始，跨日作业请填写次日结束时间");
+  }
  };
  const dependencyCheck=(task:ManagementRecord)=>{
   const all=c.list("tasks").filter(v=>v.id!==task.id).concat(task),map=new Map(all.map(v=>[v.id,v]));
@@ -72,15 +92,16 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
   const visit=(key:string)=>{if(open.has(key))throw new ManagementError(409,"DEPENDENCY_CYCLE","前置关系形成环路",{taskId:key});if(seen.has(key))return;open.add(key);const v=map.get(key)!;
    for(const dep of ids(v.predecessorIds)){ensure(map.has(dep),"DEPENDENCY_MISSING","前置任务不存在");const prior=map.get(dep)!;ensure(!v.planStart||!prior.planEnd||String(prior.planEnd)<=String(v.planStart),"DEPENDENCY_DATE_CONFLICT","前置任务完成晚于后续开始",{taskId:key,predecessorId:dep});visit(dep);}open.delete(key);seen.add(key);};all.forEach(v=>visit(v.id));
  };
- const permission=m.type.startsWith("task.")||m.type.startsWith("wbs.")||m.type.startsWith("baseline.")||m.type.startsWith("commitment.")?"plan"
+ const permission=m.type==="railSafety.reportRisk"?"field":m.type.startsWith("task.")||m.type.startsWith("wbs.")||m.type.startsWith("baseline.")||m.type.startsWith("commitment.")?"plan"
   :m.type.startsWith("railSafety.")||m.type.startsWith("resource.")||m.type.startsWith("machinery.")||m.type.startsWith("need.")||m.type.startsWith("allocation.")||m.type.startsWith("usage.")||m.type.startsWith("batch.")||m.type.startsWith("test.")||m.type.startsWith("material.")?"resource"
   :m.type.startsWith("document.")||m.type.startsWith("technical.")||m.type.startsWith("meeting.")||m.type.startsWith("action.")||m.type.startsWith("change.")||m.type.startsWith("link.")?"document"
   :m.type.startsWith("anchor.")?"document":m.type.startsWith("inspection.")||m.type.startsWith("monitoring.")?"inspect"
   :m.type.startsWith("report.")?"confirm":m.type.startsWith("bookmark.")?"read":"field";
  if(["progress.confirm","progress.return","progress.revoke","task.confirm-completion","baseline.approve","commitment.publish","change.confirm"].includes(m.type))allow(actor,"confirm");
  else if(["check.confirm","issue.assign","issue.review","issue.dismiss"].includes(m.type))allow(actor,"review");
- else if(["document.publish","document.void","technical.publish"].includes(m.type))allow(actor,"publish");else if(["task.start","task.request-completion","technical.create","technical.comment","action.complete","document.create","document.version","document.submit","anchor.create","anchor.update"].includes(m.type)){if(!actor.permissions.includes(permission))allow(actor,"field");}else allow(actor,permission);
+ else if(["document.publish","document.void","technical.publish"].includes(m.type))allow(actor,"publish");else if(["task.start","task.pause","task.resume","task.request-completion","technical.create","technical.comment","action.complete","document.create","document.version","document.submit","anchor.create","anchor.update"].includes(m.type)){if(!actor.permissions.includes(permission))allow(actor,"field");}else allow(actor,permission);
  switch(m.type){
+ case "railSafety.reportRisk":create("issues",railSafetyRiskIssueFields(c),"pending-verification");break;
  case "railSafety.save":{
   allow(actor,"models");
   ensure(Object.keys(p).every(key=>["name","taskId","definition","reason"].includes(key)),"INVALID_RAIL_SAFETY_PAYLOAD","管控命令只允许修改名称、关联任务和定义");
@@ -104,6 +125,10 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
   }else create("railSafety",{name,...(taskId?{taskId}:{}),definition},"active");
   break;
  }
+ case "railSafety.personnel":{
+  allow(actor,"models");allow(actor,"files");ensure(Object.keys(p).every(key=>key==="personnel"),"PERSONNEL_INVALID","人员命令只接受人员档案");
+  load("railSafety");requiredState(r!,["active"]);ensure((r!.definition as RailSafetyDefinition)?.kind==="guard","PERSONNEL_GUARD_REQUIRED","人员档案只能关联有效防护人员模型");r!.personnel=guardPersonnel(c,p.personnel);r!.name=(r!.personnel as {name:string}).name;break;
+ }
  case "railSafety.remove":{
   allow(actor,"models");ensure(Object.keys(p).every(key=>key==="reason"),"INVALID_RAIL_SAFETY_PAYLOAD","移除操作只允许填写原因");if(p.reason!==undefined)str(p.reason,"移除原因",4000);
   load("railSafety");requiredState(r!,["active"]);r!.status="deleted";r!.deletedAt=now;r!.deletedBy=actor.id;break;
@@ -112,11 +137,19 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
   const f=pick(p,["name","parentId","areaIds","description"]);str(f.name,"工作包名称",200);if(f.parentId)c.get("wbs",id(f.parentId));validateLinks(c,f);
   if(m.type.endsWith("create"))create("wbs",f,"active");else Object.assign(load("wbs"),f);
   let parent=r!.parentId;const chain=new Set([r!.id]);while(parent){const key=id(parent);ensure(!chain.has(key),"WBS_CYCLE","工作包不能移入自身后代");chain.add(key);parent=c.get("wbs",key).parentId;}break;}
- case "task.create":create("tasks",{...pick(p,mutableTaskFields),name:str(p.name,"任务名称",200),areaIds:ids(p.areaIds),predecessorIds:ids(p.predecessorIds),planVersion:1});taskFields(r!);dependencyCheck(r!);break;
- case "task.update":{load("tasks");requiredState(r!,["draft","published","in-progress","pending-completion"]);if(r!.status!=="draft")reason();Object.assign(r!,pick(p,mutableTaskFields));r!.areaIds=ids(r!.areaIds);r!.predecessorIds=ids(r!.predecessorIds);r!.planVersion=Number(r!.planVersion)+1;taskFields(r!);dependencyCheck(r!);break;}
+ case "task.create":create("tasks",{...pick(p,mutableTaskFields),name:str(p.name,"任务名称",200),areaIds:ids(p.areaIds),predecessorIds:ids(p.predecessorIds),planVersion:1});taskFields(r!);if(p.railwayPlan!==undefined)r!.railwayPlan=importedRailwayPlan(c,p.railwayPlan,r!);dependencyCheck(r!);break;
+ case "task.update":{ensure(p.railwayPlan===undefined,"RAILWAY_PLAN_IMMUTABLE","导入计划来源不能通过修改作业覆盖");load("tasks");requiredState(r!,["draft","published","in-progress","paused","pending-completion"]);if(r!.status!=="draft")reason();Object.assign(r!,pick(p,mutableTaskFields));r!.areaIds=ids(r!.areaIds);r!.predecessorIds=ids(r!.predecessorIds);r!.planVersion=Number(r!.planVersion)+1;taskFields(r!);dependencyCheck(r!);break;}
  case "task.publish":load("tasks");requiredState(r!,["draft"]);str(r!.ownerId,"负责人");date(r!.planStart);date(r!.planEnd);taskFields(r!);r!.status="published";break;
- case "task.conditions.configure":load("tasks");requiredState(r!,["draft","published","in-progress","pending-completion"]);r!.conditionPolicy=configureTaskConditions(c,r!,p);break;
+ case "task.conditions.configure":load("tasks");requiredState(r!,["draft","published","in-progress","paused","pending-completion"]);r!.conditionPolicy=configureTaskConditions(c,r!,p);break;
  case "task.start":load("tasks");requiredState(r!,["published"]);enforceTaskConditions(c,r!,"start");r!.status="in-progress";break;
+ case "task.pause":{
+  load("tasks");requiredState(r!,["in-progress"]);const note=reason();r!.status="paused";r!.pausedAt=now;r!.pausedBy=actor.id;r!.pauseReason=note;
+  const history=Array.isArray(r!.executionHistory)?r!.executionHistory as unknown[]:[];history.push({action:"pause",at:now,by:actor.id,reason:note,taskRevision:r!.revision});r!.executionHistory=history;break;
+ }
+ case "task.resume":{
+  load("tasks");requiredState(r!,["paused"]);const note=reason();enforceTaskConditions(c,r!,"start");enforceTaskResumeIssues(c,r!);r!.status="in-progress";r!.resumedAt=now;r!.resumedBy=actor.id;r!.resumeReason=note;
+  const history=Array.isArray(r!.executionHistory)?r!.executionHistory as unknown[]:[];history.push({action:"resume",at:now,by:actor.id,reason:note,taskRevision:r!.revision});r!.executionHistory=history;break;
+ }
  case "task.request-completion":load("tasks");requiredState(r!,["in-progress","published"]);r!.status="pending-completion";break;
  case "task.confirm-completion":load("tasks");requiredState(r!,["pending-completion"]);enforceTaskConditions(c,r!,"completion");r!.status="completed";r!.completionConfirmedAt=now;r!.completionConfirmedBy=actor.id;break;
  case "task.cancel":load("tasks");ensure(r!.status!=="completed","INVALID_STATE","已完成任务不能取消");r!.status="cancelled";r!.cancelReason=reason();break;
@@ -148,7 +181,7 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
   const source=m.type==="check.copy"?c.get("checks",id(p.sourceId)):undefined;const input=source?source.items:p.items;ensure(Array.isArray(input)&&input.length>0,"NO_CHECK_ITEMS","请提供检查项目");
   const items=newCheckItems(input);
   const purpose=p.purpose||source?.purpose||"preconstruction";ensure(["preconstruction","quality","safety","acceptance"].includes(String(purpose)),"CHECK_PURPOSE","检查专业或用途无效");
-  create("checks",{purpose,name:str(p.name||source?.name,"检查名称",200),taskId:p.taskId||source?.taskId,businessDate:date(p.businessDate),shift:String(p.shift||"日班"),inspectionObjectId:String(p.inspectionObjectId||source?.inspectionObjectId||p.taskId||""),items,sourceId:source?.id,templateVersion:p.templateVersion??source?.templateVersion??1});ensure(Number.isSafeInteger(r!.templateVersion)&&Number(r!.templateVersion)>0,"CHECK_TEMPLATE_VERSION_INVALID","清单模板版本须为正整数");r!.checklistVersion=checklistVersion(r!);break;}
+  create("checks",{...fieldObjectReference(c,p.objectRef??source?.objectRef,p.taskId||source?.taskId),purpose,name:str(p.name||source?.name,"检查名称",200),taskId:p.taskId||source?.taskId,businessDate:date(p.businessDate),shift:String(p.shift||"日班"),inspectionObjectId:String(p.inspectionObjectId||source?.inspectionObjectId||p.taskId||""),items,sourceId:source?.id,templateVersion:p.templateVersion??source?.templateVersion??1});ensure(Number.isSafeInteger(r!.templateVersion)&&Number(r!.templateVersion)>0,"CHECK_TEMPLATE_VERSION_INVALID","清单模板版本须为正整数");r!.checklistVersion=checklistVersion(r!);break;}
  case "check.record":load("checks");requiredState(r!,["draft"]);r!.items=recordCheckItems(r!,p,evidence);r!.checklistVersion=checklistVersion(r!);break;
  case "check.confirm":load("checks");requiredState(r!,["draft"]);confirmCheckIntegrity(r!,p);for(const item of r!.items as ManagementCheckItem[])(item.evidenceIds||[]).forEach(c.evidence);r!.checklistVersion=checklistVersion(r!);r!.status="confirmed";r!.confirmedAt=now;r!.confirmedBy=actor.id;r!.satisfied=(r!.items as ManagementCheckItem[]).every(a=>!a.required||a.result==="pass"||a.result==="not-applicable");break;
  case "issue.create":{
@@ -156,7 +189,7 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
   const issueEvidence=evidence(p.evidenceIds);
   const annotations=p.comparisonAnnotations;ensure(annotations===undefined||Array.isArray(annotations)&&annotations.length<=20,"INVALID_PHOTO_ANNOTATIONS","照片标注须为有限的点列表");
   const comparisonAnnotations=(Array.isArray(annotations)?annotations:[]).map((value:unknown)=>{ensure(value&&typeof value==="object"&&!Array.isArray(value),"INVALID_PHOTO_ANNOTATIONS","照片标注格式无效");const a=value as Record<string,unknown>;ensure(typeof a.evidenceId==="string"&&issueEvidence.includes(a.evidenceId),"INVALID_PHOTO_ANNOTATIONS","标注必须引用本问题已授权的证据");const image=c.get("evidence",a.evidenceId);ensure(String(image.mime).startsWith("image/"),"INVALID_PHOTO_ANNOTATIONS","标注只能关联原始照片");ensure(typeof a.x==="number"&&Number.isFinite(a.x)&&a.x>=0&&a.x<=1&&typeof a.y==="number"&&Number.isFinite(a.y)&&a.y>=0&&a.y<=1,"INVALID_PHOTO_ANNOTATIONS","标注必须位于原始照片范围内");return{evidenceId:a.evidenceId,x:a.x,y:a.y,coordinateSystem:"normalized-original-image",imageSha256:image.sha256};});
-  create("issues",{...pick(p,["taskId","taskIds","kind","checkId","riskPointId","positionSnapshot","blocksCompletion","discovery"]),name:str(p.name,"问题描述",1000),evidenceIds:issueEvidence,...(comparisonAnnotations.length?{comparisonAnnotations}:{}),rounds:[],originalDueDate:null},"pending-verification");break;}
+  create("issues",{...fieldObjectReference(c,p.objectRef,p.taskId),...pick(p,["taskId","taskIds","kind","checkId","riskPointId","positionSnapshot","blocksCompletion","discovery"]),name:str(p.name,"问题描述",1000),evidenceIds:issueEvidence,...(comparisonAnnotations.length?{comparisonAnnotations}:{}),rounds:[],originalDueDate:null},"pending-verification");break;}
  case "issue.assign":load("issues");requiredState(r!,["pending-verification","pending-rectification","rectifying"]);c.member(id(p.ownerId),[...(r!.taskId?[r!.taskId]:[]),...ids(r!.taskIds)],"field");r!.ownerId=id(p.ownerId);r!.dueDate=date(p.dueDate);r!.originalDueDate??=r!.dueDate;r!.verifiedAt??=now;r!.status="pending-rectification";break;
  case "issue.start":load("issues");if(r!.ownerId!==actor.id&&!actor.permissions.includes("review")&&!actor.permissions.includes("confirm"))throw new ManagementError(403,"ISSUE_EXECUTOR_REQUIRED","仅指派执行人或有权管理人员可办理整改");requiredState(r!,["pending-rectification"]);r!.status="rectifying";break;
  case "issue.submit":load("issues");if(r!.ownerId!==actor.id&&!actor.permissions.includes("review")&&!actor.permissions.includes("confirm"))throw new ManagementError(403,"ISSUE_EXECUTOR_REQUIRED","仅指派执行人或有权管理人员可提交整改");requiredState(r!,["pending-rectification","rectifying"]);(r!.rounds as unknown[]).push({round:(r!.rounds as unknown[]).length+1,description:str(p.description,"整改说明"),evidenceIds:evidence(p.evidenceIds),submittedAt:now,submittedBy:actor.id});r!.status="pending-review";break;
@@ -169,7 +202,7 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
  case "resource.create":case "resource.update":{
   const fields=pick(p,["name","kind","specification","unit","quantity","ownerId","locationDescription","qualificationEvidenceIds","validUntil","availability"]);
   str(fields.name,"资源名称",200);ensure(["crew","equipment","material","auxiliary","test"].includes(String(fields.kind)),"INVALID_KIND","资源类别无效");if(fields.quantity!==undefined)num(fields.quantity,"资源数量");if(fields.validUntil)date(fields.validUntil);fields.qualificationEvidenceIds=evidence(fields.qualificationEvidenceIds);
-  if(m.type==="resource.create")create("resources",fields,"active");else{reason();load("resources");ensure(!r!.machinery||fields.kind==="equipment","MACHINERY_RESOURCE_KIND","请先解除三维机械模型，再变更设备资源类别");ensure(fields.kind==="equipment"||!c.list("railSafety").some(v=>{const d=v.definition as RailSafetyDefinition;return v.status==="active"&&(d?.kind==="machine"&&d.resourceId===r!.id||d?.kind==="guard"&&d.resourceIds.includes(r!.id));}),"RAIL_SAFETY_RESOURCE_KIND","请先解除机械管控和防护关联，再变更设备类别");Object.assign(r!,fields);recheckNeeds(n=>n.resourceId===r!.id,"资源状态或资格发生变化，请重新核对");}break;}
+  if(m.type==="resource.create")create("resources",fields,"active");else{reason();load("resources");ensure(!r!.machinery||fields.kind==="equipment","MACHINERY_RESOURCE_KIND","请先解除三维机械模型，再变更设备资源类别");ensure(fields.kind==="equipment"||!c.list("railSafety").some(v=>{const d=v.definition as RailSafetyDefinition;return v.status==="active"&&(d?.kind==="machine"&&d.resourceId===r!.id||d?.kind==="guard"&&d.resourceIds.includes(r!.id));}),"RAIL_SAFETY_RESOURCE_KIND","请先解除机械管控和防护关联，再变更设备类别");ensure(fields.kind==="equipment"||!c.list("tasks").some(task=>task.status!=="deleted"&&Array.isArray(task.resourceIds)&&task.resourceIds.includes(r!.id)),"TASK_RESOURCE_KIND","请先解除作业卡中的机械关联，再变更设备类别");Object.assign(r!,fields);recheckNeeds(n=>n.resourceId===r!.id,"资源状态或资格发生变化，请重新核对");}break;}
  case "machinery.save":case "machinery.remove":{
   allow(actor,"models");load("resources");
   ensure(r!.kind==="equipment","MACHINERY_RESOURCE_KIND","三维机械模型只能关联已有设备资源");
@@ -226,10 +259,10 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
   if(kind==="return"){const used=c.list("materialTransactions").filter(t=>t.batchId===batch.id&&t.taskId===p.taskId).reduce((n,t)=>n+(t.kind==="issue"?Number(t.quantity):t.kind==="return"?-Number(t.quantity):0),0);ensure(quantity<=used,"RETURN_EXCEEDS_ISSUE","退回数量超过该任务领用量");}
   if(kind==="correct")reason();const available=Number(batch.availableQuantity)+(kind==="return"?quantity:-quantity);ensure(available>=0&&available<=Number(batch.receivedQuantity),"INVALID_BALANCE","调整后可用量超出批次到货余额");
   create("materialTransactions",{name:String(p.name||`${batch.name} ${kind}`),batchId:batch.id,taskId:p.taskId,kind:kind==="correct"?"correction":kind,quantity,unit:batch.unit,businessDate:date(p.businessDate),reason:String(p.reason||""),evidenceIds:evidence(p.evidenceIds)},"recorded");batch.revision++;batch.updatedAt=now;batch.availableQuantity=available;c.save("batches",batch);break;}
- case "document.create":create("documents",{name:str(p.name,"资料名称",200),category:str(p.category,"资料分类",100),code:String(p.code||""),taskIds:ids(p.taskIds)},"active");break;
+ case "document.create":create("documents",{name:str(p.name,"资料名称",200),category:str(p.category,"资料分类",100),workflowCategory:workflowCategory(p.workflowCategory),code:String(p.code||""),taskIds:ids(p.taskIds),...fieldObjectReferences(c,p.objectRefs)},"active");break;
  case "document.version":{
-  const doc=c.get("documents",id(p.documentId));c.evidence(id(p.evidenceId));const version=c.list("documentVersions").filter(v=>v.documentId===doc.id).length+1;
-  create("documentVersions",{name:doc.name,documentId:doc.id,evidenceId:p.evidenceId,version,revisionNote:str(p.revisionNote,"修订说明"),taskIds:ids(p.taskIds||doc.taskIds)});break;}
+  const doc=c.get("documents",id(p.documentId));c.evidence(id(p.evidenceId));validateWorkflowFile(workflowCategory(doc.workflowCategory),c.get("evidence",id(p.evidenceId)));const version=c.list("documentVersions").filter(v=>v.documentId===doc.id).length+1;
+  create("documentVersions",{name:doc.name,documentId:doc.id,evidenceId:p.evidenceId,workflowCategory:doc.workflowCategory,...fieldObjectReferences(c,p.objectRefs??doc.objectRefs),version,revisionNote:str(p.revisionNote,"修订说明"),taskIds:ids(p.taskIds||doc.taskIds)});break;}
  case "document.submit":load("documentVersions");requiredState(r!,["draft","returned"]);c.member(id(p.reviewerId));r!.reviewerId=p.reviewerId;r!.dueDate=date(p.dueDate);r!.status="under-review";break;
  case "document.return":load("documentVersions");requiredState(r!,["under-review"]);r!.status="returned";r!.reviewComment=reason();break;
  case "document.publish":{
@@ -240,7 +273,21 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
  case "document.requirement":create("documentRequirements",{name:str(p.name,"资料交付要求",200),taskId:p.taskId,ownerId:p.ownerId,dueDate:date(p.dueDate),category:String(p.category||"资料")},"pending");break;
  case "document.fulfill":load("documentRequirements");{const v=c.get("documentVersions",id(p.versionId));ensure(v.status==="published","DOCUMENT_NOT_EFFECTIVE","上传或待审资料不能满足交付要求");r!.versionId=v.id;r!.status="confirmed";r!.confirmedAt=now;r!.confirmedBy=actor.id;}break;
  case "link.create":{
-  const anchor=p.anchorId?c.get("anchors",id(p.anchorId)):undefined;const task=p.taskId?taskAccess(c,p.taskId):anchor?.taskId?taskAccess(c,anchor.taskId):undefined;ensure(task||anchor,"LINK_SOURCE_REQUIRED","请关联任务或独立资料锚点");const targetKind=String(p.targetKind) as ManagementCollection;ensure(["documents","documentVersions","evidence","technicalQueries","issues","actions","anchors"].includes(targetKind),"LINK_KIND","关联类型不受支持");const target=c.get(targetKind,id(p.targetId));ensure(!c.list("links").some(a=>a.status==="active"&&a.taskId===task?.id&&a.anchorId===anchor?.id&&a.targetKind===targetKind&&a.targetId===target.id),"DUPLICATE_LINK","该关联已存在");create("links",{name:target.name,taskId:task?.id,anchorId:anchor?.id,targetKind,targetId:target.id,targetRevision:target.revision},"active");break;}
+  const anchor=p.anchorId?c.get("anchors",id(p.anchorId)):undefined;
+  const task=p.taskId?taskAccess(c,p.taskId):anchor?.taskId?taskAccess(c,anchor.taskId):undefined;
+  const hasObjectSource=p.sourceKind!==undefined||p.sourceId!==undefined;
+  let objectFields:Record<string,unknown>={};
+  if(hasObjectSource){
+   allow(actor,"models");allow(actor,"files");
+   const selected=fieldObjectReferences(c,[{kind:p.sourceKind,id:p.sourceId}]);const source=selected.objectSnapshots[0];
+   ensure(!task||!source.data.taskId||source.data.taskId===task.id,"OBJECT_TASK_MISMATCH","现场对象与所选作业不一致");
+   objectFields={sourceKind:selected.objectRefs[0].kind,sourceId:selected.objectRefs[0].id,objectRef:selected.objectRefs[0],objectSnapshot:source};
+  }
+  ensure(task||anchor||hasObjectSource,"LINK_SOURCE_REQUIRED","请关联作业、现场对象或独立资料锚点");
+  const targetKind=String(p.targetKind) as ManagementCollection;ensure(["documents","documentVersions","evidence","technicalQueries","issues","actions","anchors"].includes(targetKind),"LINK_KIND","关联类型不受支持");const target=c.get(targetKind,id(p.targetId));
+  if(hasObjectSource){ensure(!target.deletedAt&&!["deleted","removed","void"].includes(target.status),"LINK_TARGET_UNAVAILABLE","所选资料或记录已停用");if(targetKind==="evidence")c.evidence(target.id);if(targetKind==="documentVersions")c.evidence(id(target.evidenceId));}
+  ensure(!c.list("links").some(a=>a.status==="active"&&a.taskId===task?.id&&a.anchorId===anchor?.id&&a.sourceKind===objectFields.sourceKind&&a.sourceId===objectFields.sourceId&&a.targetKind===targetKind&&a.targetId===target.id),"DUPLICATE_LINK","该关联已存在");
+  create("links",{name:target.name,taskId:task?.id,anchorId:anchor?.id,...objectFields,targetKind,targetId:target.id,targetRevision:target.revision,...(hasObjectSource?{targetSnapshot:{revision:target.revision,capturedAt:now,data:structuredClone(target)}}:{})},"active");break;}
  case "link.remove":load("links");requiredState(r!,["active"]);r!.status="removed";r!.removedAt=now;break;
  case "technical.create":create("technicalQueries",{name:str(p.name,"技术问题",1000),taskId:p.taskId,taskIds:ids(p.taskIds),ownerId:id(p.ownerId),dueDate:date(p.dueDate),documentVersionId:p.documentVersionId?c.get("documentVersions",id(p.documentVersionId)).id:undefined,comments:[],evidenceIds:evidence(p.evidenceIds)},"open");break;
  case "technical.comment":load("technicalQueries");(r!.comments as unknown[]).push({text:str(p.text,"讨论内容"),at:now,by:actor.id,evidenceIds:evidence(p.evidenceIds)});break;

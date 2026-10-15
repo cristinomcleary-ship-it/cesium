@@ -6,6 +6,7 @@ import {
   Color,
   ColorGeometryInstanceAttribute,
   ComponentDatatype,
+  ConstantProperty,
   CustomDataSource,
   DistanceDisplayCondition,
   Geometry,
@@ -30,6 +31,7 @@ import {
   Transforms,
   VerticalOrigin,
   Viewer,
+  type Entity,
 } from "cesium";
 
 type EnclosureType = "sheetPile" | "secantPile" | "diaphragmWall";
@@ -167,6 +169,11 @@ export type FoundationPitOverviewItem = {
   alarmCount: number;
   unmeasuredCount: number;
   updatedAt?: string;
+};
+
+export type FoundationPitDisplayItem = {
+  id: string; name: string; kind: "model" | "marker" | "point" | "support";
+  visible: boolean; defaultVisible: boolean;
 };
 
 export type FoundationPitOverviewSnapshot = {
@@ -389,6 +396,15 @@ export class FoundationPitMonitoring {
   private centerSelectionHandler: ScreenSpaceEventHandler | null = null;
   private interactionSuspensionDepth = 0;
   private readonly overviewListeners = new Set<FoundationPitOverviewListener>();
+  private displayOverrides: Record<string, boolean> = {};
+  private displayLabelsVisible = true;
+  private displayScope = "";
+  private displayAllowed = true;
+  private displayLayerVisible = true;
+  private displayDisposed = false;
+  private displayGroup?: string;
+  private readonly displayEntities = new Map<string, Entity[]>();
+  private readonly displayPrimitives = new Map<string, Primitive[]>();
 
   constructor(private readonly viewer: Viewer, private readonly toast: (message: string, error?: boolean) => void) {
     this.state = this.loadState();
@@ -409,12 +425,83 @@ export class FoundationPitMonitoring {
   }
 
   dispose() {
+    if (this.displayDisposed) return;
+    this.displayDisposed = true;
     this.stopPicking();
     if (this.centerSelectionHandler && !this.centerSelectionHandler.isDestroyed()) this.centerSelectionHandler.destroy();
     this.centerSelectionHandler = null;
     if (this.viewer.scene.primitives.contains(this.sheetPilePrimitives)) this.viewer.scene.primitives.remove(this.sheetPilePrimitives);
     if (this.viewer.dataSources.contains(this.dataSource)) this.viewer.dataSources.remove(this.dataSource, true);
     this.overviewListeners.clear();
+    this.displayEntities.clear(); this.displayPrimitives.clear(); this.displayOverrides = {};
+  }
+
+  /** Business catalogue only; render handles and unfinished editing geometry are not items. */
+  getDisplayItems(): FoundationPitDisplayItem[] {
+    if (!this.displayAllowed || this.displayDisposed) return [];
+    return this.displayCatalogue().map(item => ({ ...item, visible: this.displayVisible(item.id, item.defaultVisible) }));
+  }
+
+  /** Local display preferences never alter persisted visibility or monitoring readings. */
+  setDisplayVisibility(overrides: Record<string, boolean>, labelsVisible = true): void {
+    if (this.displayDisposed) return;
+    const next: Record<string, boolean> = {};
+    for (const item of this.displayCatalogue()) if (Object.hasOwn(overrides, item.id) && typeof overrides[item.id] === "boolean") next[item.id] = overrides[item.id];
+    const objectsChanged = JSON.stringify(next) !== JSON.stringify(this.displayOverrides);
+    if (!objectsChanged && labelsVisible === this.displayLabelsVisible) return;
+    this.displayOverrides = next; this.displayLabelsVisible = labelsVisible;
+    // Newly shown models are built lazily; label changes reuse all existing geometry.
+    if (objectsChanged) this.renderScene(); else this.applyDisplayVisibility();
+  }
+
+  /** The host supplies project/account scope because legacy pit records are local, not project-keyed. */
+  setDisplayContext(scopeKey: string, allowed = true): void {
+    if (this.displayDisposed || (scopeKey === this.displayScope && allowed === this.displayAllowed)) return;
+    if (scopeKey !== this.displayScope) { this.displayOverrides = {}; this.displayLabelsVisible = true; }
+    this.displayScope = scopeKey; this.displayAllowed = allowed;
+    if (!allowed && this.pickMode) this.stopPicking();
+    this.renderScene();
+  }
+
+  private displayCatalogue(): Omit<FoundationPitDisplayItem, "visible">[] {
+    return [
+      ...this.state.pits.flatMap(pit => [
+        { id: `pit:model:${pit.id}`, name: `${pit.name} · 基坑模型`, kind: "model" as const, defaultVisible: pit.visible },
+        { id: `pit:marker:${pit.id}`, name: `${pit.name} · 中心提示`, kind: "marker" as const, defaultVisible: true },
+      ]),
+      ...this.state.points.map(point => ({ id: `pit:point:${point.id}`, name: point.name, kind: "point" as const,
+        defaultVisible: this.state.pits.find(pit => pit.id === point.pitId)?.visible !== false })),
+      ...this.state.supportMonitors.filter(monitor => this.state.pits.some(pit => pit.id === monitor.pitId)).map(monitor => ({ id: `pit:support:${monitor.id}`, name: monitor.name, kind: "support" as const,
+        defaultVisible: this.state.pits.find(pit => pit.id === monitor.pitId)?.visible === true })),
+    ];
+  }
+
+  private displayVisible(id: string, defaultVisible: boolean): boolean {
+    return this.displayAllowed && this.displayLayerVisible && (this.displayOverrides[id] ?? defaultVisible);
+  }
+
+  private renderDisplayGroup(id: string, render: () => void): void {
+    this.displayGroup = id; this.displayEntities.set(id, []); this.displayPrimitives.set(id, []);
+    try { render(); } finally { this.displayGroup = undefined; }
+  }
+
+  private addDisplayEntity(options: Entity.ConstructorOptions): Entity {
+    const entity = this.dataSource.entities.add(options);
+    if (this.displayGroup) this.displayEntities.get(this.displayGroup)!.push(entity);
+    return entity;
+  }
+
+  private applyDisplayVisibility(): void {
+    this.dataSource.show = this.sheetPilePrimitives.show = this.displayAllowed && this.displayLayerVisible;
+    for (const item of this.displayCatalogue()) {
+      const visible = this.displayVisible(item.id, item.defaultVisible);
+      for (const entity of this.displayEntities.get(item.id) ?? []) {
+        entity.show = visible;
+        if (entity.label) entity.label.show = new ConstantProperty(this.displayLabelsVisible);
+      }
+      for (const primitive of this.displayPrimitives.get(item.id) ?? []) primitive.show = visible;
+    }
+    this.viewer.scene.requestRender();
   }
 
   /** A bounded, read-only catalog projection for the platform data center. */
@@ -543,9 +630,8 @@ export class FoundationPitMonitoring {
     this.input<HTMLSelectElement>("#pitTrendPoint").addEventListener("change", () => this.renderTrend());
     this.input<HTMLInputElement>("#pitDeformationScale").addEventListener("input", () => this.renderScene());
     this.input<HTMLInputElement>("#pitMonitoringVisible").addEventListener("change", (event) => {
-      this.dataSource.show = (event.currentTarget as HTMLInputElement).checked;
-      this.sheetPilePrimitives.show = this.dataSource.show;
-      this.viewer.scene.requestRender();
+      this.displayLayerVisible = (event.currentTarget as HTMLInputElement).checked;
+      this.renderScene();
     });
     this.input<HTMLInputElement>("#pitCsvFile").addEventListener("change", (event) => {
       const input = event.currentTarget as HTMLInputElement;
@@ -568,6 +654,7 @@ export class FoundationPitMonitoring {
   private bindCenterSelection() {
     this.centerSelectionHandler = new ScreenSpaceEventHandler(this.viewer.scene.canvas);
     this.centerSelectionHandler.setInputAction((movement: { position: Cartesian2 }) => {
+      if (!this.displayAllowed || this.displayDisposed) return;
       if (this.interactionSuspensionDepth > 0) return;
       if (this.pickMode) return;
       let picked: { id?: unknown } | undefined;
@@ -965,6 +1052,7 @@ export class FoundationPitMonitoring {
   }
 
   private startPicking(mode: PickMode) {
+    if (!this.displayAllowed || this.displayDisposed) return;
     this.stopPicking();
     if (mode === "monitoring" && !this.pointPit()) return this.toast("请先创建并选择所属基坑", true);
     if (mode === "support" && !this.activePit()) return this.toast("请先保存并选择当前基坑", true);
@@ -1106,7 +1194,7 @@ export class FoundationPitMonitoring {
     };
     if (!this.customSupportStart) {
       this.customSupportStart = local;
-      this.dataSource.entities.add({
+      this.addDisplayEntity({
         id: "foundation-pit-custom-support-draft",
         position: this.localToWorld(pit, local),
         point: { pixelSize: 13, color: Color.fromCssColorString("#ffbf47"), outlineColor: Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
@@ -1407,22 +1495,28 @@ export class FoundationPitMonitoring {
   }
 
   private renderScene() {
+    const supportDraft = this.pickMode === "support" && this.customSupportStart
+      ? this.dataSource.entities.getById("foundation-pit-custom-support-draft") : undefined;
     if (String(this.viewer.selectedEntity?.id || "").startsWith("foundation-pit-")) this.viewer.selectedEntity = undefined;
     this.dataSource.entities.removeAll();
     this.sheetPilePrimitives.removeAll();
+    this.displayEntities.clear(); this.displayPrimitives.clear();
+    if (!this.displayAllowed || this.displayDisposed) { this.applyDisplayVisibility(); return; }
     for (const pit of this.state.pits) {
-      this.renderPitIndicator(pit);
-      if (pit.visible) this.renderPitModel(pit);
+      const modelVisible = this.displayVisible(`pit:model:${pit.id}`, pit.visible);
+      this.renderDisplayGroup(`pit:marker:${pit.id}`, () => this.renderPitIndicator(pit, modelVisible));
+      if (modelVisible) this.renderDisplayGroup(`pit:model:${pit.id}`, () => this.renderPitModel(pit));
     }
     for (const point of this.state.points) {
       const pit = this.state.pits.find((candidate) => candidate.id === point.pitId);
-      if (!pit || pit.visible) this.renderMonitoringPoint(point);
+      if (this.displayVisible(`pit:point:${point.id}`, !pit || pit.visible)) this.renderDisplayGroup(`pit:point:${point.id}`, () => this.renderMonitoringPoint(point));
     }
     for (const monitor of this.state.supportMonitors) {
       const pit = this.state.pits.find((candidate) => candidate.id === monitor.pitId);
-      if (pit?.visible) this.renderSupportMonitor(monitor);
+      if (pit && this.displayVisible(`pit:support:${monitor.id}`, pit.visible)) this.renderDisplayGroup(`pit:support:${monitor.id}`, () => this.renderSupportMonitor(monitor));
     }
-    this.viewer.scene.requestRender();
+    if (supportDraft) this.dataSource.entities.add(supportDraft);
+    this.applyDisplayVisibility();
   }
 
   private renderPitModel(pit: FoundationPit) {
@@ -1431,7 +1525,7 @@ export class FoundationPitMonitoring {
     const bottomRing = this.pitRing(pit, -pit.depth);
     const supportBottomRing = this.pitRing(pit, this.supportBottomZ(pit), true);
     const enclosureColor = pit.enclosureType === "sheetPile" ? Color.fromCssColorString("#526875") : pit.enclosureType === "secantPile" ? Color.fromCssColorString("#a49b89") : Color.fromCssColorString("#8b9295");
-    this.dataSource.entities.add({
+    this.addDisplayEntity({
       id: `foundation-pit-model-${pit.id}-excavation`, name: `${pit.name} · 开挖面`,
       wall: {
         positions: groundRing,
@@ -1442,7 +1536,7 @@ export class FoundationPitMonitoring {
       },
       description: this.pitDescription(pit),
     });
-    this.dataSource.entities.add({
+    this.addDisplayEntity({
       id: `foundation-pit-model-${pit.id}-bottom`, name: `${pit.name} · 坑底`,
       polygon: { hierarchy: new PolygonHierarchy(bottomRing.slice(0, 4)), perPositionHeight: true, material: Color.fromCssColorString("#73533b").withAlpha(0.9), outline: true, outlineColor: Color.fromCssColorString("#d39a62") },
       description: this.pitDescription(pit),
@@ -1530,12 +1624,13 @@ export class FoundationPitMonitoring {
       }
     }
     if (geometryInstances.length) {
-      this.sheetPilePrimitives.add(new Primitive({
+      const primitive = this.sheetPilePrimitives.add(new Primitive({
         geometryInstances,
         appearance: new PerInstanceColorAppearance({ flat: true, translucent: false, closed: false, renderState: { cull: { enabled: false } } }),
         asynchronous: false,
         allowPicking: true,
       }));
+      if (this.displayGroup) this.displayPrimitives.get(this.displayGroup)!.push(primitive);
     }
   }
 
@@ -1553,7 +1648,7 @@ export class FoundationPitMonitoring {
     const radius = Math.min(0.65, Math.max(0.36, spacing * 0.57));
     for (let index = 0; index < count; index += 1) {
       const local = this.deformedLocal(pit, { ...this.pointOnPerimeter(pit, index * spacing), z: pit.exposure - pit.supportDepth / 2 });
-      this.dataSource.entities.add({
+      this.addDisplayEntity({
         id: `foundation-pit-model-${pit.id}-pile-${index}`, name: `${pit.name} · 咬合桩 ${index + 1}`,
         position: this.localToWorld(pit, local),
         cylinder: { length: pit.supportDepth * pit.displayScale, topRadius: radius * pit.displayScale, bottomRadius: radius * pit.displayScale, material: (index % 2 ? Color.fromCssColorString("#777d7c") : Color.fromCssColorString("#b7afa0")).withAlpha(0.98), slices: 20, outline: true, outlineColor: Color.fromCssColorString("#d4cabb").withAlpha(0.85) },
@@ -1585,7 +1680,7 @@ export class FoundationPitMonitoring {
 
   private addVerticalPanel(pit: FoundationPit, suffix: string, name: string, x: number, y: number, panelLength: number, thickness: number, headingOffset: number, color: Color) {
     const position = this.localToWorld(pit, this.deformedLocal(pit, { x, y, z: pit.exposure - pit.supportDepth / 2 }));
-    this.dataSource.entities.add({
+    this.addDisplayEntity({
       id: `foundation-pit-model-${pit.id}-${suffix}`, name, position,
       orientation: Transforms.headingPitchRollQuaternion(position, new HeadingPitchRoll(CesiumMath.toRadians(pit.heading) + headingOffset, 0, 0)),
       box: { dimensions: new Cartesian3(panelLength * pit.displayScale, thickness * pit.displayScale, pit.supportDepth * pit.displayScale), material: color.withAlpha(0.98), outline: true, outlineColor: Color.fromCssColorString("#d4d0c8") },
@@ -1593,23 +1688,23 @@ export class FoundationPitMonitoring {
     });
   }
 
-  private renderPitIndicator(pit: FoundationPit) {
+  private renderPitIndicator(pit: FoundationPit, modelVisible = pit.visible) {
     const anchor = this.localToWorld(pit, { x: 0, y: 0, z: 0 }, false);
     const displayedCenter = this.localToWorld(pit, { x: 0, y: 0, z: 0 });
     const labelPosition = this.localToWorld(pit, { x: 0, y: 0, z: pit.exposure + 2 });
     const indicatorColor = Color.fromCssColorString("#ffb020");
-    this.dataSource.entities.add({
+    this.addDisplayEntity({
       id: `foundation-pit-anchor-${pit.id}`, name: `${pit.name} · 实际基坑中心`, position: anchor,
       point: { pixelSize: 14, color: indicatorColor, outlineColor: Color.WHITE, outlineWidth: 3, disableDepthTestDistance: Number.POSITIVE_INFINITY },
-      label: { text: `${pit.name}\n${pit.visible ? "点击管理" : "模型已隐藏 · 点击管理"}`, font: "bold 12px sans-serif", fillColor: pit.visible ? Color.WHITE : Color.fromCssColorString("#ffd166"), outlineColor: Color.BLACK, outlineWidth: 3, style: LabelStyle.FILL_AND_OUTLINE, showBackground: true, backgroundColor: Color.fromCssColorString("#122333").withAlpha(0.78), pixelOffset: new Cartesian2(0, 20), disableDepthTestDistance: Number.POSITIVE_INFINITY },
+      label: { text: `${pit.name}\n${modelVisible ? "点击管理" : "模型已隐藏 · 点击管理"}`, font: "bold 12px sans-serif", fillColor: modelVisible ? Color.WHITE : Color.fromCssColorString("#ffd166"), outlineColor: Color.BLACK, outlineWidth: 3, style: LabelStyle.FILL_AND_OUTLINE, showBackground: true, backgroundColor: Color.fromCssColorString("#122333").withAlpha(0.78), pixelOffset: new Cartesian2(0, 20), disableDepthTestDistance: Number.POSITIVE_INFINITY },
       description: this.pitDescription(pit),
     });
-    if (pit.visible && pit.displayOffset > 0.01) {
-      this.dataSource.entities.add({
+    if (modelVisible && pit.displayOffset > 0.01) {
+      this.addDisplayEntity({
         id: `foundation-pit-indicator-${pit.id}`, name: `${pit.name} · 中心指示`,
         polyline: { positions: [displayedCenter, anchor], width: 6, material: new PolylineArrowMaterialProperty(indicatorColor), depthFailMaterial: indicatorColor.withAlpha(0.78) },
       });
-      this.dataSource.entities.add({
+      this.addDisplayEntity({
         id: `foundation-pit-display-label-${pit.id}`, name: `${pit.name} · 独立展示模型`, position: labelPosition,
         label: { text: `${pit.name}\n独立展示 ↑ ${pit.displayOffset.toFixed(1)} m · 比例 ${pit.displayScale.toFixed(2)}`, font: "bold 13px sans-serif", fillColor: Color.WHITE, outlineColor: Color.BLACK, outlineWidth: 3, style: LabelStyle.FILL_AND_OUTLINE, showBackground: true, backgroundColor: Color.fromCssColorString("#26394c").withAlpha(0.85), pixelOffset: new Cartesian2(0, -12), horizontalOrigin: HorizontalOrigin.CENTER, verticalOrigin: VerticalOrigin.BOTTOM, disableDepthTestDistance: Number.POSITIVE_INFINITY },
       });
@@ -1656,7 +1751,7 @@ export class FoundationPitMonitoring {
   private addBeam(pit: FoundationPit, suffix: string, name: string, x: number, y: number, z: number, length: number, width: number, height: number, headingOffset: number, color: Color, applyDeformation = true) {
     const local = applyDeformation ? this.deformedLocal(pit, { x, y, z }) : { x, y, z };
     const position = this.localToWorld(pit, local);
-    this.dataSource.entities.add({
+    this.addDisplayEntity({
       id: `foundation-pit-model-${pit.id}-${suffix}`, name, position,
       orientation: Transforms.headingPitchRollQuaternion(position, new HeadingPitchRoll(CesiumMath.toRadians(pit.heading) + headingOffset, 0, 0)),
       box: { dimensions: new Cartesian3(length * pit.displayScale, width * pit.displayScale, height * pit.displayScale), material: color.withAlpha(0.98), outline: true, outlineColor: Color.fromCssColorString("#d6dadd").withAlpha(0.9) },
@@ -1665,7 +1760,7 @@ export class FoundationPitMonitoring {
   }
 
   private addPitPolyline(id: string, name: string, positions: Cartesian3[], color: Color, width: number) {
-    this.dataSource.entities.add({
+    this.addDisplayEntity({
       id, name,
       polyline: { positions, width, material: color, depthFailMaterial: color.withAlpha(0.72) },
     });
@@ -1678,7 +1773,7 @@ export class FoundationPitMonitoring {
     const color = STATUS_COLOR[metrics.status];
     const alertText = metrics.reasons.length ? `\n⚠ ${metrics.reasons.join("\n⚠ ")}` : "";
     const readingText = metrics.latest ? `累计 ${metrics.cumulative.toFixed(2)} mm · ${metrics.speed.toFixed(2)} mm/d` : "未监测";
-    this.dataSource.entities.add({
+    this.addDisplayEntity({
       id: `foundation-pit-point-${point.id}`, name: point.name, position: visualPosition,
       point: { pixelSize: metrics.status === "alarm" ? 19 : metrics.status === "warning" ? 15 : 12, color, outlineColor: Color.WHITE, outlineWidth: metrics.status === "alarm" ? 3 : 2, disableDepthTestDistance: Number.POSITIVE_INFINITY, distanceDisplayCondition: new DistanceDisplayCondition(0, 100_000) },
       label: {
@@ -1701,7 +1796,7 @@ export class FoundationPitMonitoring {
     const position = this.localToWorld(pit, this.deformedLocal(pit, local));
     const color = STATUS_COLOR[metrics.status];
     const reading = metrics.latest ? `轴力 ${metrics.latest.axialForce.toFixed(1)} kN · 变形 ${metrics.latest.deformation.toFixed(2)} mm` : "未监测";
-    this.dataSource.entities.add({
+    this.addDisplayEntity({
       id: `foundation-pit-support-monitor-${monitor.id}`, name: monitor.name, position,
       point: { pixelSize: metrics.status === "alarm" ? 19 : 13, color, outlineColor: Color.WHITE, outlineWidth: 3, disableDepthTestDistance: Number.POSITIVE_INFINITY },
       label: { text: `${monitor.name}\n${reading}${metrics.reasons.length ? `\n⚠ ${metrics.reasons.join("\n⚠ ")}` : ""}`, font: metrics.status === "alarm" ? "bold 13px sans-serif" : "12px sans-serif", fillColor: Color.WHITE, outlineColor: Color.BLACK, outlineWidth: 3, style: LabelStyle.FILL_AND_OUTLINE, showBackground: true, backgroundColor: metrics.status === "alarm" ? Color.fromCssColorString("#8d1024").withAlpha(0.94) : Color.fromCssColorString("#07121f").withAlpha(0.84), pixelOffset: new Cartesian2(0, -22), verticalOrigin: VerticalOrigin.BOTTOM, disableDepthTestDistance: Number.POSITIVE_INFINITY },

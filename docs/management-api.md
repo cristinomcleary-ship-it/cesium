@@ -26,7 +26,7 @@
 | project.update | name/horizontalCrs/verticalDatum/workingDays（0日…6六） |
 | member.save | username,displayName,roles[]；首建password；可选active,resourceAccess:{models,files,media},taskIds[]（省略为完整项目，空数组为无任务） |
 | wbs.create/update | name；parentId,areaIds,description |
-| task.create | name；ownerId,wbsId,planStart,planEnd,areaIds[],predecessorIds[],targetQuantity,unit,weight,milestone,description |
+| task.create | name；ownerId,wbsId,planStart,planEnd,areaIds[],resourceIds[],predecessorIds[],targetQuantity,unit,weight,milestone,description；resourceIds 为可选的可见机械关联，不改变安全配置或开工条件 |
 | task.update | 修改字段；已发布任务必填reason（计划版本递增，基线不变） |
 | task.publish/start/request-completion/confirm-completion | 无额外字段；publish校验owner及日期 |
 | task.cancel | reason |

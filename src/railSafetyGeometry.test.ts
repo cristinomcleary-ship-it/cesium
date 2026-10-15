@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { loadMachineryAsset } from './machinery/assets';
-import { defaultMachineryParameters, resolveMachineryParameters } from './machinery/engine';
+import { computeMachineryGeometry, defaultMachineryParameters, resolveMachineryParameters } from './machinery/engine';
 import type { LoadedMachineryAsset, MachineryModelId } from './machinery/types';
 import type { MachineryMetadata } from './machineryTypes';
 import { computeMachineryFallEnvelope, intersectPolygons, pointInPolygon, polygonArea, projectWgs84ToLocal, unprojectLocalToWgs84, type Point2 } from './railSafetyGeometry';
@@ -69,16 +69,19 @@ test('concave user polygons preserve notches and output only intersected pieces'
   assert.equal(intersectPolygons(triangle, l).containment, 'none');
 });
 
-test('analytical box fall includes support offset and diagonal reach, not height-only radius', () => {
+test('analytical 0–90° box sweep includes support offset without independent beyond-90° landings', () => {
   const asset = box(), state = metadata(asset), before = asset.sourcePositions.slice();
   const result = computeMachineryFallEnvelope(asset, state);
   assert.equal(result.status, 'estimated', result.warnings.join('; '));
   assert.equal(result.supportSource, 'model-base-estimate');
-  // Source +X outward normal: opposite top corner travels sqrt(2^2 + 3^2) beyond x=1 support edge.
-  near(result.landingPoints[0].y, 1 + Math.sqrt(13));
+  // At source +X, all top corners reach x=1+3 at 90°. The former independent
+  // landing of the opposite corner (1+sqrt(13)) needs >90° and is excluded.
+  near(result.landingPoints[0].y, 4);
   near(Math.abs(result.landingPoints[0].x), 0.5);
-  assert.ok(result.maxDistanceMeters > 4.6); assert.ok(result.envelopeRadiusMeters > result.maxDistanceMeters);
+  assert.ok(result.maxDistanceMeters > 4); assert.ok(result.maxDistanceMeters < 4.4); assert.ok(result.envelopeRadiusMeters > result.maxDistanceMeters);
   for (const p of result.landingPoints) assert.notEqual(pointInPolygon(p, result.polygon), 'outside');
+  assert.equal(result.method, 'support-line-rigid-0-90-sweep-convex-envelope/v2');
+  assert.ok(result.stripMarginMeters > 0);
   assert.deepEqual(asset.sourcePositions, before);
   assert.deepEqual(computeMachineryFallEnvelope(asset, state), result);
 });
@@ -102,18 +105,40 @@ test('outboard components affect reach and unavailable geometry never produces a
   assert.equal(computeMachineryFallEnvelope(asset, state, { centerX: 0, centerZ: 0, width: -1, length: 2 }).status, 'unavailable');
 });
 
-test('unsampled support directions and triangle interior landings remain inside the conservative envelope', () => {
+test('unsampled directions and all intermediate rigid inclinations contain triangle interiors', () => {
   const asset = box(), state = metadata(asset), result = computeMachineryFallEnvelope(asset, state);
   const sourceSupport = rectangle(-1, -0.5, 2, 1);
-  for (let k = 0; k < 720; k++) {
-    const angle = (k + 0.237) * Math.PI / 360, nx = Math.cos(angle), nz = Math.sin(angle);
+  for (let k = 0; k < 137; k++) {
+    const angle = (k + 0.237) * 2 * Math.PI / 137, nx = Math.cos(angle), nz = Math.sin(angle);
     const support = Math.max(...sourceSupport.map(p => p.x * nx + p.y * nz));
     // Several interior points as well as vertices: interpolation of mesh triangles is covered.
     for (const x of [-1, -0.4, 0.3, 1]) for (const z of [-0.5, 0.13, 0.5]) for (const h of [0, 1.27, 3]) {
-      const d = x * nx + z * nz - support, move = Math.sqrt(d * d + h * h) - d;
-      assert.notEqual(pointInPolygon({ x: z + move * nz, y: x + move * nx }, result.polygon), 'outside');
+      for (const inclination of [0, 0.137, 0.419, 0.713, 1.037, 1.397, Math.PI / 2]) {
+        const d = x * nx + z * nz - support, move = d * (Math.cos(inclination) - 1) + h * Math.sin(inclination);
+        assert.notEqual(pointInPolygon({ x: z + move * nz, y: x + move * nx }, result.polygon), 'outside');
+      }
     }
   }
+});
+
+test('outboard vertices include their intermediate-angle maximum, not only upright and horizontal poses', () => {
+  const base = box();
+  const asset: LoadedMachineryAsset = { ...base, sourcePositions: new Float64Array([...base.sourcePositions, 8, 2, 0]), partIds: new Uint8Array(9), indices: new Uint32Array([...base.indices, 8, 0, 1]) };
+  const result = computeMachineryFallEnvelope(asset, metadata(asset));
+  // d=8-1=7 and h=2. The maximum is at atan2(2,7), not at 0° or 90°.
+  near(result.landingPoints[0].y, 1 + Math.sqrt(53));
+  assert.ok(result.landingPoints[0].y > 8);
+});
+
+test('default polygon follows unequal support dimensions rather than a station-radius circle', () => {
+  const result = computeMachineryFallEnvelope(box(), metadata(box()));
+  const radii = result.polygon.map(p => Math.hypot(p.x, p.y));
+  assert.ok(Math.max(...radii) / Math.min(...radii) > 1.01);
+  const narrow = computeMachineryFallEnvelope(box(), metadata(box()), { centerX: 0, centerZ: 0, length: 2, width: 0.2 });
+  assert.notDeepEqual(narrow.polygon, result.polygon);
+  const farthest = result.landingPoints.reduce((a, b) => Math.hypot(a.x, a.y) > Math.hypot(b.x, b.y) ? a : b);
+  near(Math.hypot(farthest.x, farthest.y), result.maxDistanceMeters);
+  assert.ok(result.envelopeRadiusMeters > result.maxDistanceMeters);
 });
 
 for (const id of ['crane', 'pile', 'excavator'] as const) test(`${id}: real immutable asset computes finite footprint and linked scale`, async () => {
@@ -122,6 +147,22 @@ for (const id of ['crane', 'pile', 'excavator'] as const) test(`${id}: real immu
   assert.equal(a.status, 'estimated', a.warnings.join('; ')); assert.ok(a.polygon.length >= 3);
   assert.equal(a.supportSource, id === 'crane' ? 'model-outriggers' : 'model-base-estimate');
   assert.ok(a.envelopeRadiusMeters >= a.maxDistanceMeters);
+  const mesh = computeMachineryGeometry(asset, state.parameters), used = [...new Set(mesh.indices)];
+  // Independently transform representative real-mesh vertices at non-sampled
+  // bearings and non-integer inclinations, including both motion endpoints.
+  for (const bearing of [0.371, 23.137, 91.431, 167.237, 223.817, 297.119, 359.641]) {
+    const theta = bearing * Math.PI / 180, nx = Math.sin(theta), ny = Math.cos(theta);
+    const offset = Math.max(...a.supportPolygon.map(p => nx * p.x + ny * p.y));
+    for (let k = 0; k < Math.min(32, used.length); k++) {
+      const index = used[Math.floor(k * used.length / Math.min(32, used.length))];
+      const x = mesh.positions[index * 3 + 2], y = mesh.positions[index * 3], h = mesh.positions[index * 3 + 1];
+      for (const inclination of [0, 13.37, 37.19, 61.41, 89.713, 90]) {
+        const alpha = inclination * Math.PI / 180, d = nx * x + ny * y - offset;
+        const move = d * (Math.cos(alpha) - 1) + h * Math.sin(alpha);
+        assert.notEqual(pointInPolygon({ x: x + nx * move, y: y + ny * move }, a.polygon), 'outside', `${id}: ${bearing}° / ${inclination}°`);
+      }
+    }
+  }
   const b = computeMachineryFallEnvelope(asset, { ...state, parameters: resolveMachineryParameters(asset, state.parameters, { overall_scale: 1.5 }) });
   assert.equal(b.status, 'estimated', b.warnings.join('; ')); near(b.maxDistanceMeters, 1.5 * a.maxDistanceMeters, 1e-5);
   assert.deepEqual(asset.sourcePositions, copy);

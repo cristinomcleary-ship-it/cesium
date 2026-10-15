@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "devices": [
+    {
+      "projectId": "safety:project",
+      "guardId": "replace-with-saved-guard-id",
+      "deviceId": "tracker-01",
+      "tokenSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "enabled": false
+    }
+  ]
+}

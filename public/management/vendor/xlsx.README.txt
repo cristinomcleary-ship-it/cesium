@@ -1,0 +1,6 @@
+SheetJS Community Edition 0.20.3
+Upstream: https://sheetjs.com/
+Official browser installation documentation: https://docs.sheetjs.com/docs/getting-started/installation/standalone/
+Downloaded distribution mirror: https://cdn.jsdelivr.net/npm/@e965/xlsx@0.20.3/dist/xlsx.full.min.js
+License: Apache-2.0 (see xlsx.LICENSE.txt)
+This file is bundled locally. The demo does not contact the CDN when reading spreadsheet files.

@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { Cartesian3, JulianDate, type CustomDataSource, type Viewer } from 'cesium';
+import { Cartesian3, ClassificationType, JulianDate, type CustomDataSource, type Viewer } from 'cesium';
 import { RailSafetyFallDemo } from './railSafetyFallDemo.ts';
+import type { RailSafetyFallProjectionClient, RailSafetyFallProjectionResult } from './railSafetyFallProjectionClient';
 import { loadMachineryAsset, type LoadedMachineryAsset } from './machinery/index.ts';
 import { MACHINERY_ASSET_VERSION, type MachineryMetadata } from './machineryTypes.ts';
 import { MACHINERY_PARAMETER_DEFAULTS } from './machineryValidation.ts';
@@ -94,4 +95,141 @@ test('a pending Cesium datasource add is removed after cancellation and replaced
     demo.dispose();
     assert.ok(revoked.includes(uri)); assert.equal(f.sources.size, 0);
   } finally { URL.revokeObjectURL = originalRevoke; demo.dispose(); }
+});
+
+const flush = () => new Promise<void>(resolve => setImmediate(resolve));
+function projectionFixture() {
+  const requests: { direction: number; angle: number; resolve: (result: RailSafetyFallProjectionResult) => void; reject: (error: Error) => void }[] = [];
+  const canvases: HTMLCanvasElement[] = [];
+  let disposed = false;
+  const client: RailSafetyFallProjectionClient = {
+    compute(direction, angle) { return new Promise((resolve, reject) => { requests.push({ direction, angle, resolve, reject }); }); },
+    dispose() { disposed = true; },
+  };
+  const createCanvas = () => {
+    const canvas = { width: 0, height: 0, pixels: undefined as ImageData | undefined,
+      getContext: () => ({ createImageData: (w: number, h: number) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
+        putImageData(data: ImageData) { canvas.pixels = data; } }) };
+    const element = canvas as unknown as HTMLCanvasElement;
+    canvases.push(element); return element;
+  };
+  const resolve = (index: number) => {
+    const request = requests[index];
+    request.resolve({ bounds: { xMin: -2, yMin: -2, xMax: 2, yMax: 2 }, width: 8, height: 8,
+      mask: new Uint8Array(64).fill(1), cellSizeMeters: 0.5, areaMeters2: 16,
+      direction: request.direction, angle: request.angle, firstContactAngle: 70, belowGround: request.angle > 70 });
+  };
+  return { client, requests, createCanvas, canvases, resolve, get disposed() { return disposed; } };
+}
+const footprintDisplay = () => ({ footprintVisible: true, modelVisible: true,
+  area: { surface: 'model' as const, style: 'fill' as const, opacity: 0.3, lineWidth: 2 }, color: '#319ad4' });
+
+test('projection commits a matching model pose, collapses pending drag targets and cannot return after stop', async () => {
+  const f = fixture(), p = projectionFixture();
+  const demo = new RailSafetyFallDemo(f.viewer, { loadAsset: async () => asset, createProjectionClient: () => p.client, createCanvas: p.createCanvas });
+  demo.setDisplay(footprintDisplay());
+  try {
+    await demo.start({ resourceId: 'crane', resourceName: '吊机', state: state() });
+    const source = [...f.sources][0], model = source.entities.getById('rail-safety:fall-demo:crane:model')!;
+    assert.equal(model.show, false, 'no uncomputed angle is presented as ready');
+    assert.equal(demo.getSnapshot().projectionBusy, true); assert.equal(p.requests.length, 1);
+    p.resolve(0); await flush();
+    assert.equal(demo.getSnapshot().projectionReady, true); assert.equal(model.show, true);
+    const original = Cartesian3.clone(model.position!.getValue(JulianDate.now())!);
+    const footprint = source.entities.getById('rail-safety:fall-demo:crane:footprint')!;
+    assert.equal(footprint.polygon!.classificationType!.getValue(), ClassificationType.BOTH);
+    demo.set({ angle: 35, direction: 130 }); demo.set({ angle: 55, direction: 145 });
+    assert.equal(p.requests.length, 2, 'only the first target is in flight');
+    assert.equal(demo.getSnapshot().projectionAngle, 0);
+    assert.ok(Cartesian3.equals(model.position!.getValue(JulianDate.now())!, original), 'model retains the same angle as the visible mask');
+    p.resolve(1); await flush();
+    assert.equal(p.requests.length, 3); assert.equal(p.requests[2].angle, 55);
+    assert.equal(demo.getSnapshot().projectionAngle, 0, 'a late superseded target is discarded');
+    p.resolve(2); await flush();
+    assert.equal(demo.getSnapshot().projectionAngle, 55); assert.equal(demo.getSnapshot().actualDirection, 145);
+    assert.equal(demo.getSnapshot().projectionCellSizeMeters, 0.5); assert.equal(demo.getSnapshot().projectionAreaMeters2, 16);
+    assert.ok(!Cartesian3.equals(model.position!.getValue(JulianDate.now())!, original));
+    demo.set({ angle: 80 }); demo.stop(); p.resolve(3); await flush();
+    assert.equal(p.disposed, true); assert.equal(f.sources.size, 0); assert.equal(demo.getSnapshot().projectionReady, false);
+    assert.equal(p.canvases.at(-1)!.width, 0, 'the last displayed canvas is released on stop');
+  } finally { demo.dispose(); }
+});
+
+test('range styles reuse the projection; hiding a footprint leaves the model available and does not revive on a late result', async () => {
+  const f = fixture(), p = projectionFixture();
+  const demo = new RailSafetyFallDemo(f.viewer, { loadAsset: async () => asset, createProjectionClient: () => p.client, createCanvas: p.createCanvas });
+  demo.setDisplay(footprintDisplay());
+  try {
+    await demo.start({ resourceId: 'crane', resourceName: '吊机', state: state() }); p.resolve(0); await flush();
+    const source = [...f.sources][0], footprint = source.entities.getById('rail-safety:fall-demo:crane:footprint')!;
+    demo.setDisplay({ ...footprintDisplay(), area: { ...footprintDisplay().area, surface: 'absolute', style: 'outline' }, color: '#e36523' });
+    assert.equal(p.requests.length, 1); assert.equal(footprint.polygon!.perPositionHeight!.getValue(), true);
+    assert.ok(footprint.polygon!.textureCoordinates!.getValue());
+    demo.setDisplay({ ...footprintDisplay(), area: { ...footprintDisplay().area, surface: 'terrain' } });
+    assert.equal(footprint.polygon!.classificationType!.getValue(), ClassificationType.TERRAIN);
+    demo.set({ angle: 50 }); demo.setDisplay({ ...footprintDisplay(), footprintVisible: false });
+    assert.equal(footprint.show, false); assert.equal(source.entities.getById('rail-safety:fall-demo:crane:model')!.show, true);
+    p.resolve(1); await flush(); assert.equal(footprint.show, false); assert.equal(p.requests.length, 2);
+    demo.setDisplay({ ...footprintDisplay(), modelVisible: false }); p.resolve(2); await flush();
+    assert.equal(footprint.show, true); assert.equal(source.entities.getById('rail-safety:fall-demo:crane:model')!.show, false);
+  } finally { demo.dispose(); }
+});
+
+test('worker errors expose an honest failed projection and stop playback without inventing a ready footprint', async () => {
+  const f = fixture(), p = projectionFixture();
+  const demo = new RailSafetyFallDemo(f.viewer, { loadAsset: async () => asset, createProjectionClient: () => p.client,
+    createCanvas: p.createCanvas, schedule: f.schedule, cancel: f.cancel });
+  demo.setDisplay(footprintDisplay());
+  try {
+    await demo.start({ resourceId: 'crane', resourceName: '吊机', state: state() });
+    p.requests[0].reject(new Error('test worker unavailable')); await flush();
+    assert.equal(demo.getSnapshot().projectionReady, false); assert.equal(demo.getSnapshot().projectionBusy, false);
+    assert.match(demo.getSnapshot().projectionError!, /worker unavailable/); assert.equal(demo.getSnapshot().playing, false);
+    assert.equal([...f.sources][0].entities.values.filter(entity => entity.polygon).length, 0);
+  } finally { demo.dispose(); }
+});
+
+test('a failure after a ready projection hides the old mask before the overview fallback is restored', async () => {
+  const f = fixture(), p = projectionFixture();
+  const demo = new RailSafetyFallDemo(f.viewer, { loadAsset: async () => asset, createProjectionClient: () => p.client, createCanvas: p.createCanvas });
+  demo.setDisplay(footprintDisplay());
+  try {
+    await demo.start({ resourceId: 'crane', resourceName: '吊机', state: state() }); p.resolve(0); await flush();
+    const footprint = [...f.sources][0].entities.getById('rail-safety:fall-demo:crane:footprint')!;
+    demo.set({ angle: 45 }); p.requests[1].reject(new Error('second projection failed')); await flush();
+    assert.equal(footprint.show, false); assert.equal(demo.getSnapshot().projectionReady, false);
+    demo.setDisplay({ ...footprintDisplay(), color: '#112233' });
+    assert.equal(footprint.show, false, 'style refresh after failure never restores a stale mask');
+    assert.equal(p.requests.length, 2, 'error-driven panel rendering does not requeue recursively');
+  } finally { demo.dispose(); }
+});
+
+test('projection effects animate an unchanged mask and stop on hide, static mode, exit and disposal', async () => {
+  const f = fixture(), p = projectionFixture();
+  const demo = new RailSafetyFallDemo(f.viewer, { loadAsset: async () => asset, createProjectionClient: () => p.client,
+    createCanvas: p.createCanvas, schedule: f.schedule, cancel: f.cancel });
+  const display = { ...footprintDisplay(), effect: { mode: 'flow' as 'flow' | 'breathe' | 'static', speed: 1.5, intensity: 0.7 } };
+  demo.setDisplay(display);
+  try {
+    await demo.start({ resourceId: 'crane', resourceName: '吊机', state: state() }); p.resolve(0); await flush();
+    const footprint = [...f.sources][0].entities.getById('rail-safety:fall-demo:crane:footprint')!, time = JulianDate.now();
+    const polygon = footprint.polygon!, canvas = polygon.material!.getValue(time).image, hierarchy = polygon.hierarchy;
+    assert.equal(polygon.material!.getValue(time).mode, 2); assert.equal(polygon.material!.isConstant, true);
+    assert.equal(f.frames.size, 1);
+    f.tick(0); f.tick(1000);
+    assert.equal(footprint.polygon, polygon); assert.equal(footprint.polygon!.hierarchy, hierarchy);
+    assert.equal(footprint.polygon!.material!.getValue(time).image, canvas);
+    assert.equal(p.requests.length, 1); assert.equal(p.canvases.length, 1, 'animation never regenerates the mesh mask or texture');
+    display.effect.mode = 'breathe'; demo.setDisplay(display);
+    assert.equal(footprint.polygon!.material!.getValue(time).mode, 1);
+    assert.equal(footprint.polygon!.material!.getValue(time).image, canvas);
+    assert.equal(p.canvases.length, 1, 'changing only effect parameters preserves the same raster');
+    demo.setDisplay({ ...display, footprintVisible: false }); assert.equal(f.frames.size, 0);
+    demo.setDisplay(display); assert.equal(f.frames.size, 1);
+    display.effect.mode = 'static'; demo.setDisplay(display); assert.equal(f.frames.size, 0);
+    assert.equal(footprint.polygon!.material!.getType(time), 'Image');
+    display.effect.mode = 'flow'; demo.setDisplay(display); assert.equal(f.frames.size, 1);
+    demo.stop(); assert.equal(f.frames.size, 0); assert.equal(f.sources.size, 0);
+    demo.dispose(); assert.equal(f.frames.size, 0);
+  } finally { demo.dispose(); }
 });

@@ -270,7 +270,8 @@ export class SubsurfaceTools {
   ) {
     this.originalCollision = viewer.scene.screenSpaceCameraController.enableCollisionDetection;
     this.originalDepthTest = viewer.scene.globe.depthTestAgainstTerrain;
-    viewer.scene.pickTranslucentDepth = true;
+    // Keep Cesium's opaque-depth default for camera navigation. Translucent
+    // depth requires an extra render/readback and belongs only to an explicit pick.
     void viewer.dataSources.add(this.overlay);
     this.disableGlobePolygonClipping();
     this.handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
@@ -505,10 +506,18 @@ export class SubsurfaceTools {
     const scene = this.viewer.scene;
     const object = scene.pick(screenPosition) as { primitive?: unknown; content?: unknown; id?: unknown } | undefined;
     if (scene.pickPositionSupported) {
-      const picked = scene.pickPosition(screenPosition);
-      if (picked && Cartesian3.magnitude(picked) > 1) {
-        const modelSurface = Boolean(object && (object.primitive instanceof Model || object.primitive instanceof Cesium3DTileset || object.content));
-        return { position: picked, source: modelSurface ? "倾斜摄影/模型表面" : "场景表面" };
+      const previousTranslucentDepth = scene.pickTranslucentDepth;
+      try {
+        // Underground tools may intentionally pick transparent surfaces. Do not
+        // leave this expensive mode enabled for later camera drag/zoom events.
+        scene.pickTranslucentDepth = true;
+        const picked = scene.pickPosition(screenPosition);
+        if (picked && Cartesian3.magnitude(picked) > 1) {
+          const modelSurface = Boolean(object && (object.primitive instanceof Model || object.primitive instanceof Cesium3DTileset || object.content));
+          return { position: picked, source: modelSurface ? "倾斜摄影/模型表面" : "场景表面" };
+        }
+      } finally {
+        scene.pickTranslucentDepth = previousTranslucentDepth;
       }
     }
     const ray = this.viewer.camera.getPickRay(screenPosition);
