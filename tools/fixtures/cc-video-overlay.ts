@@ -4,7 +4,7 @@ import {
   GeometryInstance, Matrix3, Matrix4, Model, PerInstanceColorAppearance, Primitive, Transforms, Viewer,
 } from 'cesium';
 import { VideoModelOverlay, videoModelOverlayPanelHtml, type SavedVideoOverlaySettings } from '../../src/videoModelOverlay';
-import { parseCcCameraXml } from '../../src/ccCameraTrack';
+import { parseCcCameraXml, type CcCameraSample } from '../../src/ccCameraTrack';
 import type { ImportRecord } from '../../src/types';
 import type { LibraryRecord } from '../../src/projectLibrary';
 
@@ -113,6 +113,32 @@ overlay.onSave = async (snapshot, existingId) => {
   return saved.id;
 };
 const xyz = (point: Cartesian3) => [point.x, point.y, point.z];
+type CameraControls = { enabled: boolean; east: number; north: number; up: number; heading: number; pitch: number; roll: number };
+function cameraControls(): CameraControls {
+  const value = (name: string) => Number((document.getElementById(`ccCamera${name}`) as HTMLInputElement | null)?.value ?? 0);
+  return { enabled: (document.getElementById('ccCameraEnabled') as HTMLInputElement | null)?.checked ?? false,
+    east: value('East'), north: value('North'), up: value('Up'), heading: value('Heading'), pitch: value('Pitch'), roll: value('Roll') };
+}
+/** Independent matrix oracle: construct the optical basis from vectors, not the production quaternion chain. */
+function cameraOracle(sample: CcCameraSample, anchorSample: CcCameraSample, controls: CameraControls) {
+  const point = (v: { x: number; y: number; z: number }) => new Cartesian3(v.x, v.y, v.z);
+  const anchor = point(anchorSample.position), radians = Math.PI / 180;
+  const enu = Matrix4.getMatrix3(Transforms.eastNorthUpToFixedFrame(anchor), new Matrix3());
+  const right = Cartesian3.normalize(Cartesian3.cross(point(anchorSample.direction), point(anchorSample.up), new Cartesian3()), new Cartesian3());
+  const optical = new Matrix3();
+  Matrix3.setColumn(optical, 0, right, optical);
+  Matrix3.setColumn(optical, 1, Cartesian3.negate(point(anchorSample.up), new Cartesian3()), optical);
+  Matrix3.setColumn(optical, 2, point(anchorSample.direction), optical);
+  const yawWorld = Matrix3.multiply(Matrix3.multiply(enu, Matrix3.fromRotationZ(-controls.heading * radians), new Matrix3()), Matrix3.transpose(enu, new Matrix3()), new Matrix3());
+  const opticalChange = Matrix3.multiply(Matrix3.fromRotationX(controls.pitch * radians), Matrix3.fromRotationZ(controls.roll * radians), new Matrix3());
+  const rotation = Matrix3.multiply(yawWorld, Matrix3.multiply(Matrix3.multiply(optical, opticalChange, new Matrix3()), Matrix3.transpose(optical, new Matrix3()), new Matrix3()), new Matrix3());
+  const offset = Matrix3.multiplyByVector(enu, new Cartesian3(controls.east, controls.north, controls.up), new Cartesian3());
+  const translation = Cartesian3.add(Cartesian3.subtract(anchor, Matrix3.multiplyByVector(rotation, anchor, new Cartesian3()), new Cartesian3()), offset, new Cartesian3());
+  const matrix = controls.enabled ? Matrix4.fromRotationTranslation(rotation, translation) : Matrix4.clone(Matrix4.IDENTITY);
+  const transformDirection = (v: { x: number; y: number; z: number }) => xyz(Cartesian3.normalize(Matrix4.multiplyByPointAsVector(matrix, point(v), new Cartesian3()), new Cartesian3()));
+  return { matrix: Matrix4.toArray(matrix), position: xyz(Matrix4.multiplyByPoint(matrix, point(sample.position), new Cartesian3())),
+    direction: transformDirection(sample.direction), up: transformDirection(sample.up), offset: xyz(offset) };
+}
 const initial = {
   position: xyz(viewer.camera.positionWC), direction: xyz(viewer.camera.directionWC), up: xyz(viewer.camera.upWC),
   background: Color.clone(viewer.scene.backgroundColor), globe: viewer.scene.globe.show,
@@ -132,11 +158,13 @@ function snapshot() {
     modelMatrix: Matrix4.toArray(box.modelMatrix), modelShow: box.show, cadShow: cad.show, extraShow: extra.show, gisShow: hiddenGis.show,
     modelDelta: xyz(Matrix4.multiplyByPoint(Matrix4.inverseTransformation(objectFrame, new Matrix4()), Matrix4.multiplyByPoint(box.modelMatrix, scaledSourceCenter, new Cartesian3()), new Cartesian3())),
     modelType: box.constructor.name, modelScale: box.scale, minimumPixelSize: box.minimumPixelSize,
+    modelSavedMatrix: [...records.get('synthetic-model')!.settings.matrix!],
     cadFirst: xyz(cadLine.polyline!.positions!.getValue(viewer.clock.currentTime)[0]),
     cadCorners: cornerEntities.map(entity => xyz(entity.position!.getValue(viewer.clock.currentTime)!)),
     referenceMatrix: Matrix4.toArray(referenceResource.modelMatrix), referenceSavedMatrix: [...records.get('synthetic-reference')!.settings.matrix!], referenceShow: referenceResource.show,
     referenceSelection: (document.getElementById('ccSceneReference') as HTMLSelectElement).value,
     info: document.getElementById('ccOverlayInfo')!.textContent, referenceInfo: document.getElementById('ccReferenceInfo')!.textContent,
+    cameraControls: cameraControls(),
     mediaTime: video?.currentTime ?? null, paused: video?.paused ?? null, videoSeeking: video?.seeking ?? null, videoReadyState: video?.readyState ?? null,
     saveCount, saved: saved ? structuredClone(saved.settings) : null,
     badge: document.querySelector('.cc-video-status')?.textContent ?? '', messages: [...messages], renderErrors: [...renderErrors],
@@ -180,7 +208,7 @@ function modelPixelAlignment() {
   return { points, allMatch: points.every(point => point.orange && point.magenta), modelScale: box.scale, minimumPixelSize: box.minimumPixelSize };
 }
 const harness = {
-  snapshot, initial, pixelStats, modelPixelAlignment,
+  snapshot, initial, pixelStats, modelPixelAlignment, cameraOracle,
   expected(time: number) {
     const clamped = Math.max(0, Math.min(4, time));
     const index = Math.min(1, Math.floor(clamped / 2)), amount = (clamped - index * 2) / 2;
@@ -209,6 +237,11 @@ const harness = {
   },
   diagnostics() { return overlay.createDiagnostics(); },
   async restoreSaved() { if (!saved) throw new Error('No saved scheme'); await overlay.restoreReplay(saved.files, structuredClone(saved.settings), saved.id); },
+  async restoreLegacySaved() {
+    if (!saved) throw new Error('No saved scheme');
+    const legacy = structuredClone(saved.settings); delete legacy.cameraRegistration;
+    await overlay.restoreReplay(saved.files, legacy, saved.id);
+  },
   parseXml(xml: string) { const data = parseCcCameraXml(xml); return { photos: data.photos.length, groups: data.photogroups.length, width: data.photogroups[0].intrinsics.width, height: data.photogroups[0].intrinsics.height, warnings: data.warnings }; },
 };
 (window as unknown as { __ccOverlayHarness: typeof harness }).__ccOverlayHarness = harness;
