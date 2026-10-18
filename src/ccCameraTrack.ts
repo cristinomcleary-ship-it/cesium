@@ -6,7 +6,9 @@
  * GUID-2D452A8A-A4FE-450D-A0CA-9336DCF1238A (including the YPR/Brown formulas).
  * R maps world axes to optical camera axes (right, down, forward). For supported
  * geographic SRS, attitude axes are the local east/north/up frame at the photo.
- * No video timestamp or vertical datum is inferred from a filename or EPSG:4326.
+ * No video timestamp is inferred from a filename. For the supported geographic
+ * systems, heights follow CC's documented ellipsoidal-height export convention;
+ * this does not mean EPSG:4326 itself defines a vertical coordinate system.
  */
 export type CcVector3 = Readonly<{ x: number; y: number; z: number }>;
 export type CcQuaternion = Readonly<{ x: number; y: number; z: number; w: number }>;
@@ -19,7 +21,8 @@ export type CcIntrinsics = Readonly<{
 export type CcDistortion = Readonly<{ k1: number; k2: number; k3: number; p1: number; p2: number }>;
 export type CcReferenceSystem = Readonly<{
   id: string; name: string; definition: string; epsg: 4326 | 4979;
-  heightReference: 'unspecified' | 'ellipsoid';
+  /** CC export convention; EPSG:4326 by itself remains a two-dimensional CRS. */
+  heightReference: 'ellipsoid';
 }>;
 export type CcPhotogroup = Readonly<{
   id: string; name: string; referenceSystem: CcReferenceSystem;
@@ -153,7 +156,11 @@ export function parseCcCameraDocument(document: Document): CcCameraDataset {
     // Unsupported unused definitions are harmless; an active one is rejected below.
     if (!match) continue;
     const epsg = Number(match[1]) as 4326 | 4979;
-    systems.set(id, { id, name: value(node, 'Name') ?? definition, definition, epsg, heightReference: epsg === 4979 ? 'ellipsoid' : 'unspecified' });
+    // Bentley CC's default for geographic/projected SRS is the datum's ellipsoid;
+    // an overridden vertical coordinate system creates a new user-defined SRS.
+    // This is a CC export convention, not an extra axis defined by EPSG:4326.
+    // https://docs.bentley.com/LiveContent/web/ContextCapture%20Help-v18/en/GUID-B6BA56E7-6124-4D90-9D00-D8A2FE7ACE20.html
+    systems.set(id, { id, name: value(node, 'Name') ?? definition, definition, epsg, heightReference: 'ellipsoid' });
   }
   const blockSrsId = value(block, 'SRSId');
   const groups = children(child(block, 'Photogroups', true)!, 'Photogroup');
@@ -221,7 +228,6 @@ export function parseCcCameraDocument(document: Document): CcCameraDataset {
     }
   }
   if (!photos.length) throw new Error('CC XML 没有包含完整空三位姿的照片');
-  if (photogroups.some(group => group.referenceSystem.heightReference === 'unspecified')) warnings.push('EPSG:4326 未定义垂直基准；融合前须选择椭球高，或输入 XML 高程到椭球高的改正量。');
   warnings.push('XML 不含可靠的视频时间；请按实际抽帧规则关联，轨迹范围以外不显示叠加。');
   return { name: value(block, 'Name') ?? 'CC 空三', photogroups, photos, warnings };
 }
@@ -307,7 +313,7 @@ export function createCcCameraTrack(dataset: CcCameraDataset, options: CcTrackOp
   const group = dataset.photogroups[0];
   validateCcIntrinsics(group.intrinsics);
   for (const coefficient of Object.values(group.distortion)) finite(coefficient, '畸变系数');
-  if (options.heightReference !== 'ellipsoid' && options.heightReference !== 'offset-to-ellipsoid') throw new Error('请选择 XML 高程基准，不能直接把未知高程当成椭球高');
+  if (options.heightReference !== 'ellipsoid' && options.heightReference !== 'offset-to-ellipsoid') throw new Error('请选择高度处理方式：使用 CC 原始椭球高，或经核实后添加高程改正量');
   const offset = options.heightReference === 'offset-to-ellipsoid' ? finite(options.heightOffsetMeters ?? NaN, '高程改正量') : 0;
   if (group.referenceSystem.epsg === 4979 && offset !== 0) throw new Error('EPSG:4979 已定义为椭球高，请勿重复添加垂直基准改正');
   if (group.referenceSystem.epsg !== 4326 && group.referenceSystem.epsg !== 4979) throw new Error('不支持该空间参考系');

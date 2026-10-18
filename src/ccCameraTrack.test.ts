@@ -18,7 +18,7 @@ function photo(number: number, patch: Partial<CcPhoto> = {}): CcPhoto {
 function dataset(photos: readonly CcPhoto[]): CcCameraDataset {
   return {
     name: 'Synthetic camera path', photos, warnings: [], photogroups: [{ id: '0', name: 'Synthetic camera',
-      referenceSystem: { id: '0', name: 'WGS84', definition: 'EPSG:4326', epsg: 4326, heightReference: 'unspecified' },
+      referenceSystem: { id: '0', name: 'WGS84', definition: 'EPSG:4326', epsg: 4326, heightReference: 'ellipsoid' },
       intrinsics: { width: 1920, height: 1080, fx: 1000, fy: 1000, cx: 959.5, cy: 539.5, skew: 0 },
       distortion: { k1: 0, k2: 0, k3: 0, p1: 0, p2: 0 },
     }],
@@ -60,8 +60,11 @@ test('document reader consumes optimized direct Pose, largest sensor dimension a
   assert.equal(source.photos[0].filenameNumber, 60);
   assert.deepEqual(source.photogroups[0].intrinsics, { width: 2000, height: 1000, fx: 1000, fy: 1200, cx: 990, cy: 490, skew: .1 });
   assert.deepEqual(source.photogroups[0].distortion, { k1: .01, k2: .02, k3: .03, p1: .05, p2: .04 });
-  assert.equal(source.photogroups[0].referenceSystem.heightReference, 'unspecified');
-  assert.equal(parseCcCameraDocument(documentFixture({ srs: 'EPSG:4979', focalPixels: '2000' })).photogroups[0].intrinsics.fx, 2000);
+  assert.equal(source.photogroups[0].referenceSystem.heightReference, 'ellipsoid', 'CC uses its datum ellipsoid by default, including EPSG:4326 exports');
+  assert.ok(source.warnings.every(warning => !/未定义垂直基准|未知高程/.test(warning)));
+  const geographic3d = parseCcCameraDocument(documentFixture({ srs: 'EPSG:4979', focalPixels: '2000' }));
+  assert.equal(geographic3d.photogroups[0].referenceSystem.heightReference, 'ellipsoid');
+  assert.equal(geographic3d.photogroups[0].intrinsics.fx, 2000);
 });
 
 test('document reader cannot silently substitute nested Metadata or unsupported camera/reference frames', () => {
@@ -136,12 +139,15 @@ test('camera attitude SLERP crosses ±180 yaw via the shortest arc and stays ort
   close(Math.abs(q.w), 1);
 });
 
-test('unknown vertical datum requires an explicit choice; the explicit height offset is applied exactly once', () => {
+test('height handling is explicit; original CC ellipsoid heights are preserved and a verified offset is applied exactly once', () => {
   const source = dataset([photo(0), photo(60)]);
-  assert.throws(() => createCcCameraTrack(source, { ...options, heightReference: undefined } as unknown as CcTrackOptions), /请选择 XML 高程基准/);
+  assert.throws(() => createCcCameraTrack(source, { ...options, heightReference: undefined } as unknown as CcTrackOptions), /请选择高度处理方式/);
+  const original = createCcCameraTrack(source, { ...options, heightOffsetMeters: 12.5 });
+  close(original.sample(2)!.position.x, 6378237, 1e-9);
   assert.throws(() => createCcCameraTrack(source, { ...options, heightReference: 'offset-to-ellipsoid' }), /高程改正量/);
   const corrected = createCcCameraTrack(source, { ...options, heightReference: 'offset-to-ellipsoid', heightOffsetMeters: 12.5 });
   close(corrected.sample(2)!.position.x, 6378249.5);
+  assert.equal(source.photos[0].height, 100, 'sampling must not mutate the stored XML height');
   const ellipsoidal: CcCameraDataset = { ...source, photogroups: [{ ...source.photogroups[0], referenceSystem: { ...source.photogroups[0].referenceSystem, epsg: 4979, heightReference: 'ellipsoid' } }] };
   assert.throws(() => createCcCameraTrack(ellipsoidal, { ...options, heightReference: 'offset-to-ellipsoid', heightOffsetMeters: 12.5 }), /重复/);
 });

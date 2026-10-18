@@ -27,20 +27,35 @@
 - 这是透视叠加。现场建筑、树木和车辆对工程模型的真实遮挡，需要另外提供可用于遮挡的现状几何或深度数据。
 - 本版接收单一透视相机组、`XRightYDown` 相机坐标和 WGS84 经纬度 XML（EPSG:4326／4979）。其他投影坐标系、多相机组或非零 Skew 会明确提示，不会静默套用相机参数。
 
+## 模型在地图中对齐、在视频中错位时
+
+先保留工程模型与倾斜摄影已经核对的定位。二维 CAD 在某一画面中大致吻合，仍不能单独验证不同高度构件的透视关系；还需检查视频时间、相机内外参数与场景的坐标基准。
+
+如果本次 CC 空三对应的倾斜摄影成果在平台中做过整体位置或高程校正，可在“视频与三维场景的坐标关联”中明确选择这份已加载、已保存的成果。系统将它保存的 `modelMatrix` 同步给原始空三相机的位置和方向，模型、CAD 的原定位与比例保持不变。只使用应用层整体定位矩阵，不再次应用瓦片 `root.transform`；当前支持平移和旋转，拒绝缩放、镜像与剪切。
+
+默认不关联，也不自动选择最近图层。必须确认是与本次空三使用同一成果基准的数据，不能仅因它与工程模型在地图中相邻就关联。相机变化会影响所有叠加对象的画面投影；若原矩阵为单位矩阵，这项关联不会改变画面。已有 CAD 或模型的独立 AR 微调也需一并核对。
+
+关联随视频保存定位快照；若该成果的已保存矩阵后来改变，需点击“重新读取成果定位”后重新核验。成果未加载或失去访问权限时，不继续使用过期关联播放；不会默默切换到另一份成果。
+
+CC 对地理参考系默认采用相应 datum 的椭球高；这属于 [CC 的高程约定](https://docs.bentley.com/LiveContent/web/ContextCapture%20Help-v18/en/GUID-B6BA56E7-6124-4D90-9D00-D8A2FE7ACE20.html)，不是说 EPSG:4326 本身定义了垂直基准。新方案默认保留 XML 原始高程，旧方案的手动高差继续保留。只有已核实原数据基准时才使用手动改正，避免与成果整体定位校正重复添加同一高差。
+
+仍有偏差时，在问题画面暂停，点击“导出配准诊断”。JSON 包含视频时间、当前空三相机、内参、畸变、关联矩阵以及有权访问的所选对象／倾斜摄影的保存矩阵、显示矩阵、比例和微调值，不包含原视频或模型文件。关联过期时仍可导出诊断。凭这些实际数值排查，不以修改已对齐的模型定位来补偿未知相机误差。
+
 ## 本次验收范围
 
 本次开发依据现有 Cesium 工程、用户提供的空三 XML 和位置 CSV。尚未取得对应原视频，不宣称已经通过该航次的实景贴合或精度验收。正式验收应提供原视频及可核对的抽帧时间，选取分布在不同位置与深度的同名点，在首、中、尾和转向片段检查偏移；同时验证暂停、拖动进度、离开恢复和保存重开。
 
 ## 开发验证
 
-生产构建及 33 项相机／资源回归通过：
+生产构建及相机／资源／坐标关联回归：
 
 ```bash
 npm run build
-node --experimental-transform-types --test src/ccCameraTrack.test.ts src/videoOverlayResources.test.ts src/videoArCamera.test.ts src/videoArCameraFrame.test.ts src/videoArHeight.test.ts
+node --experimental-transform-types --test src/ccCameraTrack.test.ts src/ccSceneRegistration.test.ts src/videoOverlayResources.test.ts src/videoArCamera.test.ts src/videoArCameraFrame.test.ts src/videoArHeight.test.ts
+node tests/video-overlay-access-regression.mjs
 ```
 
-真实 Chromium／Cesium WebGL 回归使用合成视频和工程几何，验证模型与 CAD 像素、透明背景与透明度、播放和跳转同步、ENU 微调与撤销重做、保存恢复不累积、退出场景恢复、定位范围外隐藏、缩放后的投影一致性和主页面入口。测试还成功解析提供的 31 张影像空三 XML；这仅验证数据读取，不代表原航次的贴合精度。
+真实 Chromium／Cesium WebGL 回归使用合成视频和真实 GLB（非零源原点、2.5 倍比例），用不同高度的 CAD 对照点检查多个视频时刻的投影像素邻域，并验证透明背景与透明度、播放和跳转同步、ENU 微调与撤销重做、保存恢复不累积、退出场景恢复、定位范围外隐藏、缩放后的投影一致性和主页面入口。关联测试另验证同一矩阵同步相机与场景、定位快照保存恢复、变更拦截与诊断导出。像素邻域检查用于排除明显渲染错位，不是子像素精度验收。测试还成功解析提供的 31 张影像空三 XML；这仅验证数据读取，不代表原航次的贴合精度。
 
 ```bash
 # 需已安装 Playwright、Chromium 和 ffmpeg。

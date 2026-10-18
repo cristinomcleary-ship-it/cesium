@@ -2,6 +2,7 @@ import { Cartesian2, Cartesian3, Cartesian4, Color, Matrix4, PerspectiveFrustum,
 import { createCcCameraTrack, parseCcCameraXml, type CcCameraDataset, type CcCameraTrack, type CcTrackOptions } from './ccCameraTrack';
 import { VideoOverlayResources, type VideoOverlayAdjustment } from './videoOverlayResources';
 import { containVideoRect, overlayLensBounds, OVERLAY_LENS_SHADER } from './videoOverlayLens';
+import { transformCcCameraSample, validateCcSceneTransform } from './ccSceneRegistration';
 import type { LibraryRecord } from './projectLibrary';
 import type { ImportRecord } from './types';
 import './videoModelOverlay.css';
@@ -10,6 +11,7 @@ export type SavedVideoOverlaySettings = {
   mode: 'cc-overlay'; version: 1; timing: CcTrackOptions; selectedIds: string[];
   adjustments: Record<string, VideoOverlayAdjustment>; opacity: number; currentTime: number;
   videoName: string; videoSize: number; width: number; height: number;
+  sceneReference?: { recordId: string; matrix: number[] };
 };
 type Options = {
   getImports: () => readonly ImportRecord[]; getRecord: (id: string) => LibraryRecord | undefined;
@@ -31,8 +33,16 @@ export const videoModelOverlayPanelHtml = `
     <label>照片编号规则<select id="ccTimeMode"><option value="filename-number">按文件末尾编号关联（保留跳号）</option><option value="ordinal">XML 内照片按顺序等间隔</option></select></label>
     <label>每个间隔增加的编号<input id="ccFilenameStep" type="number" min="1" step="1" value="1"></label>
     <small>例如每隔 2 秒一张且编号为 0、60、120：间隔填 2，编号增量填 60。仅对等间隔抽帧适用。</small>
-    <label>空三高程<select id="ccHeightReference"><option value="">请选择高度基准</option><option value="ellipsoid">已是 WGS84 椭球高</option><option value="offset-to-ellipsoid">按已知高差换算到椭球高</option></select></label>
-    <label>加到 XML 高度的高差（米）<input id="ccHeightOffset" type="number" step="any" value="0"></label>
+    <label>空三高程<select id="ccHeightReference"><option value="ellipsoid">使用 CC XML 原始高程（默认）</option><option value="offset-to-ellipsoid">按已核实的高差手动改正</option></select></label>
+    <label>加到 XML 高度的高差（米）<input id="ccHeightOffset" type="number" step="any" value="0" disabled></label>
+    <small>CC 默认使用参考椭球高。已有手动高差会保留；仅在已核实原数据高程基准时使用，不能靠移动模型补偿相机高度误差。</small>
+  </details>
+  <details><summary>视频与三维场景的坐标关联</summary>
+    <label>本次空三对应的倾斜摄影<select id="ccSceneReference"><option value="">使用 XML 原始地理坐标</option></select></label>
+    <small>仅关联与本次空三使用同一成果基准的倾斜摄影，将其已保存的整体位置校正同步给视频相机。工程模型和 CAD 的原定位保持不变。</small>
+    <small>相机更新会影响所有叠加对象的画面位置，请勿关联其他航次或仅位置相近的成果。</small>
+    <button id="ccReferenceUpdate" type="button">重新读取成果定位</button><small id="ccReferenceInfo">未关联倾斜摄影成果。</small>
+    <small>XML 高程基准换算与成果位置校正是两项独立设置，同一高差不要重复填写。</small>
   </details>
   <div class="cc-actions"><button id="ccStart" class="primary" type="button">开始融合</button><button id="ccStop" type="button">返回地图</button></div>
   <h3>叠加对象</h3><div id="ccResources"><small>先在 CAD／工程模型中导入并定位对象。</small></div>
@@ -45,6 +55,7 @@ export const videoModelOverlayPanelHtml = `
   <label>叠加透明度<input id="ccOpacity" type="range" min="0" max="1" step="0.01" value="0.8"></label>
   <small>位置微调对整段视频生效，保存在当前视频方案中。</small>
   <div class="cc-actions"><button id="ccSave" class="primary" type="button">保存融合方案</button></div><small id="ccSavedState">尚未保存</small>
+  <div class="cc-actions"><button id="ccDiagnostics" type="button">导出配准诊断</button></div><small>导出相机、时间对应和图层定位参数，不包含视频或模型文件。</small>
 </section>`;
 
 export class VideoModelOverlay {
@@ -56,6 +67,7 @@ export class VideoModelOverlay {
   private dataset?: CcCameraDataset;
   private track?: CcCameraTrack;
   private timing?: CcTrackOptions;
+  private sceneReference?: SavedVideoOverlaySettings['sceneReference'];
   private resources?: VideoOverlayResources;
   private adjustments: Record<string, VideoOverlayAdjustment> = {};
   private selected = new Set<string>();
@@ -97,8 +109,11 @@ export class VideoModelOverlay {
     this.bind('ccStop', 'click', () => this.exit());
     this.bind('ccSave', 'click', () => { void this.save().catch(e => this.fail(e)); });
     this.bind('ccTarget', 'change', () => this.syncAdjustmentInputs());
+    this.bind('ccSceneReference', 'change', () => this.changeSceneReference());
+    this.bind('ccReferenceUpdate', 'click', () => this.changeSceneReference());
+    this.bind('ccDiagnostics', 'click', () => { void this.exportDiagnostics().catch(e => this.fail(e)); });
     for (const id of ['ccFirstTime', 'ccInterval', 'ccTimeMode', 'ccFilenameStep', 'ccHeightReference', 'ccHeightOffset']) {
-      this.bind(id, 'input', () => { ++this.inputGeneration; this.exit(); this.track = undefined; this.dirty(); });
+      this.bind(id, 'input', () => { ++this.inputGeneration; this.exit(); this.track = undefined; this.syncHeightInputs(); this.dirty(); });
     }
     for (const [id, key] of Object.entries({ ccEast: 'east', ccNorth: 'north', ccUp: 'up', ccHeading: 'heading' })) {
       this.bind(id, 'input', () => this.edit(key as keyof VideoOverlayAdjustment, this.number(id)));
@@ -115,7 +130,16 @@ export class VideoModelOverlay {
     this.bind('ccOpacity', 'input', () => { this.opacity = this.number('ccOpacity'); this.dirty(); this.viewer.scene.requestRender(); });
     this.bind('ccDragMode', 'change', () => { this.container.dataset.ccDrag = this.el<HTMLSelectElement>('ccDragMode').value; });
     this.listen(this.video, 'seeking', () => { this.seeking = true; this.resources?.setVisible(false); this.viewer.scene.requestRender(); });
-    this.listen(this.video, 'seeked', () => { this.seeking = false; this.requestFrame(); if (!this.video.requestVideoFrameCallback) this.renderFrame(this.video.currentTime); });
+    this.listen(this.video, 'seeked', () => {
+      if (this.video.seeking) return;
+      this.seeking = false;
+      // A paused seek can present its only decoded frame before `seeked` fires.
+      // That callback is intentionally hidden while seeking; waiting for another
+      // callback would then leave the old camera and hidden geometry indefinitely.
+      // Seek completion makes the new frame available. A later frame callback
+      // refines this fallback to the decoded presentation timestamp as usual.
+      this.renderFrame(this.video.currentTime); this.requestFrame();
+    });
     this.listen(this.video, 'play', () => { this.requestFrame(); this.updatePlayback(); });
     this.listen(this.video, 'pause', () => this.updatePlayback());
     this.listen(this.video, 'ended', () => this.updatePlayback());
@@ -135,6 +159,7 @@ export class VideoModelOverlay {
   private dirty() { ++this.editRevision; this.el('ccSavedState').textContent = '有未保存的更改'; }
   private pickFile(slot: string, file?: File) {
     if (!file) return; ++this.sessionGeneration; ++this.inputGeneration; this.exit(); this.mediaLoad?.cancel(); this.files = { ...this.files, [slot]: file }; this.savedId = undefined; this.dataset = undefined; this.track = undefined;
+    this.sceneReference = undefined; this.refreshSceneReferences();
     this.adjustments = {}; this.undo = []; this.redo = []; this.syncAdjustmentInputs(); this.dirty();
     this.el('ccOverlayInfo').textContent = Object.values(this.files).map(f => f.name).join(' · ');
   }
@@ -142,7 +167,56 @@ export class VideoModelOverlay {
     const height = this.el<HTMLSelectElement>('ccHeightReference').value;
     if (height !== 'ellipsoid' && height !== 'offset-to-ellipsoid') throw new Error('请在“抽帧时间与高度”中选择空三高程基准');
     return { firstTimeSeconds: this.number('ccFirstTime'), intervalSeconds: this.number('ccInterval'), mode: this.el<HTMLSelectElement>('ccTimeMode').value as CcTrackOptions['mode'],
-      filenameStep: this.number('ccFilenameStep'), heightReference: height, heightOffsetMeters: this.number('ccHeightOffset') };
+      filenameStep: this.number('ccFilenameStep'), heightReference: height, heightOffsetMeters: height === 'ellipsoid' ? 0 : this.number('ccHeightOffset') };
+  }
+  private syncHeightInputs() { this.el<HTMLInputElement>('ccHeightOffset').disabled = this.el<HTMLSelectElement>('ccHeightReference').value === 'ellipsoid'; }
+  private sourceMatrix(recordId: string): number[] {
+    const item = this.options.getImports().find(item => item.id === recordId && item.kind === '3D Tiles');
+    const record = item && this.options.getRecord(recordId);
+    if (!item || !record || record.kind !== '3D Tiles') throw new Error('关联的倾斜摄影尚未加载或不可用，请加载对应成果，或选择 XML 原始坐标');
+    // This is only the application's saved world-space correction. The tileset
+    // root transform already participates in its geographic coordinates and must
+    // never be applied again to an XML camera that is already in ECEF.
+    return [...validateCcSceneTransform(record.settings.matrix ?? Matrix4.toArray(Matrix4.IDENTITY))];
+  }
+  private checkSceneReference() {
+    const reference = this.sceneReference; if (!reference) return;
+    validateCcSceneTransform(reference.matrix);
+    const current = this.sourceMatrix(reference.recordId);
+    if (current.some((value, index) => Math.abs(value - reference.matrix[index]) > (index >= 12 ? 1e-6 : 1e-9))) {
+      throw new Error('关联成果的已保存定位已更改，请点击“重新读取成果定位”后再开始融合');
+    }
+  }
+  private changeSceneReference() {
+    const recordId = this.el<HTMLSelectElement>('ccSceneReference').value;
+    try {
+      ++this.inputGeneration; this.exit();
+      this.sceneReference = recordId ? { recordId, matrix: this.sourceMatrix(recordId) } : undefined;
+      this.dirty();
+    } catch (error) { this.fail(error); }
+    this.refreshSceneReferences();
+  }
+  private refreshSceneReferences() {
+    const select = this.el<HTMLSelectElement>('ccSceneReference'), selectedId = this.sceneReference?.recordId ?? '';
+    select.replaceChildren();
+    const add = (label: string, value: string) => { const option = document.createElement('option'); option.textContent = label; option.value = value; select.append(option); };
+    add('使用 XML 原始地理坐标', '');
+    const eligible = this.options.getImports().filter(item => item.kind === '3D Tiles' && this.options.getRecord(item.id)?.kind === '3D Tiles');
+    for (const item of eligible) add(item.name, item.id);
+    if (selectedId && !eligible.some(item => item.id === selectedId)) add('已关联成果尚未加载或不可用', selectedId);
+    select.value = selectedId;
+    this.el<HTMLButtonElement>('ccReferenceUpdate').disabled = !selectedId;
+    let info = '未关联成果，视频相机使用 XML 原始地理坐标。';
+    if (this.sceneReference) {
+      try {
+        this.checkSceneReference();
+        const identity = Matrix4.toArray(Matrix4.IDENTITY);
+        info = this.sceneReference.matrix.every((value, index) => Math.abs(value - identity[index]) < 1e-9)
+          ? '该成果没有整体位置校正；关联后相机位置不变。'
+          : '已关联成果的整体位置校正，仅同步视频相机，不移动 CAD 或工程模型。';
+      } catch (error) { info = error instanceof Error ? error.message : String(error); }
+    }
+    this.el('ccReferenceInfo').textContent = info;
   }
   private async loadMedia() {
     if (this.mediaLoad?.file === this.files.video) return this.mediaLoad.promise;
@@ -162,15 +236,15 @@ export class VideoModelOverlay {
     const load = { file: this.files.video, promise, cancel }; this.mediaLoad = load;
     try { await promise; } finally { if (this.mediaLoad === load) this.mediaLoad = undefined; }
   }
-  private async prepare() {
+  private async prepare(validateReference = true) {
     if (!this.files.video || !this.files.source) throw new Error('请选择原视频和同一视频的 CC 空三 XML');
-    const generation = this.inputGeneration, timing = this.readTiming();
+    const generation = this.inputGeneration, timing = this.readTiming(); if (validateReference) this.checkSceneReference();
     const check = () => { if (generation !== this.inputGeneration || this.destroyed) throw new DOMException('融合输入已切换', 'AbortError'); };
     const dataset = this.dataset ?? parseCcCameraXml(await this.files.source.text()); check();
     const track = createCcCameraTrack(dataset, timing);
     if (Math.abs(track.intrinsics.skew) > 1e-8) throw new Error('当前叠加不支持非零相机 Skew，请使用无 skew 的 CC 相机标定');
     await this.loadMedia();
-    check(); const k = track.intrinsics;
+    check(); if (validateReference) this.checkSceneReference(); const k = track.intrinsics;
     if (Math.abs(this.video.videoWidth / this.video.videoHeight - k.width / k.height) > .001) throw new Error('视频与 CC 影像画幅比例不一致，请使用同源未裁切视频');
     if (!Number.isFinite(this.video.duration) || track.startTime > this.video.duration || track.endTime > this.video.duration + .1) throw new Error('空三时间超出视频，请检查首张时间、抽帧间隔和编号增量');
     this.dataset = dataset; this.timing = timing; this.track = track;
@@ -285,7 +359,9 @@ export class VideoModelOverlay {
   }
   private renderFrame(time: number) {
     if (!this.active || !this.track || this.seeking) return;
-    this.lastFrameTime = time; const sample = this.track.sample(time);
+    if (this.sceneReference) { try { this.checkSceneReference(); } catch (error) { this.exit(); this.fail(error); return; } }
+    this.lastFrameTime = time; const rawSample = this.track.sample(time);
+    const sample = rawSample && (this.sceneReference ? transformCcCameraSample(rawSample, this.sceneReference.matrix) : rawSample);
     this.resources?.setVisible(!!sample);
     if (sample) this.viewer.camera.setView({ destination: v3(sample.position), orientation: { direction: v3(sample.direction), up: v3(sample.up) } });
     if (this.badge) this.badge.textContent = sample ? `${sample.interpolation === 0 || sample.interpolation === 1 ? '空三关键帧' : '关键帧间估计'} · ${clock(time)} · 透视叠加` : '当前时间没有空三定位，已隐藏工程叠加';
@@ -300,6 +376,11 @@ export class VideoModelOverlay {
   refreshResources() {
     if (this.destroyed) return;
     const imports = this.options.getImports(), allowedIds = new Set(imports.map(item => item.id));
+    if (this.active && this.sceneReference) {
+      try { this.checkSceneReference(); }
+      catch (error) { this.exit(); this.fail(error); return; }
+    }
+    this.refreshSceneReferences();
     const items = this.resources?.list().filter(item => allowedIds.has(item.id)) ?? imports.filter(r => ['CAD', 'Model', '3D Tiles'].includes(r.kind)).map(r => ({ id: r.id, name: r.name, kind: r.kind, available: true, description: '', error: undefined }));
     this.selected = new Set([...this.selected].filter(id => allowedIds.has(id)));
     if (!this.selectionInitialized && items.length) { for (const item of items) if (item.kind !== '3D Tiles') this.selected.add(item.id); this.selectionInitialized = true; }
@@ -371,7 +452,8 @@ export class VideoModelOverlay {
       if (session !== this.sessionGeneration || this.destroyed) return;
       const revision = this.editRevision, files = { ...this.files };
       const settings: SavedVideoOverlaySettings = { mode: 'cc-overlay', version: 1, timing: this.timing!, selectedIds: [...this.selected], adjustments: structuredClone(this.adjustments), opacity: this.opacity,
-        currentTime: this.video.currentTime, videoName: this.files.video.name, videoSize: this.files.video.size, width: this.video.videoWidth, height: this.video.videoHeight };
+        currentTime: this.video.currentTime, videoName: this.files.video.name, videoSize: this.files.video.size, width: this.video.videoWidth, height: this.video.videoHeight,
+        ...(this.sceneReference ? { sceneReference: structuredClone(this.sceneReference) } : {}) };
       const savedId = await this.onSave({ name: `${files.video.name} · CC 融合`, files, settings }, this.savedId);
       if (session !== this.sessionGeneration || this.destroyed) return;
       this.savedId = savedId;
@@ -384,12 +466,52 @@ export class VideoModelOverlay {
     if (settings.mode !== 'cc-overlay' || settings.version !== 1 || !settings.timing) throw new Error('不支持的 CC 融合方案');
     if (!files.video || files.video.name !== settings.videoName || files.video.size !== settings.videoSize) throw new Error('保存的视频与融合方案不一致');
     this.files = { ...files }; this.savedId = recordId; this.adjustments = structuredClone(settings.adjustments ?? {}); this.selected = new Set(settings.selectedIds ?? []); this.selectionInitialized = true;
+    if (settings.sceneReference) {
+      if (!settings.sceneReference.recordId || typeof settings.sceneReference.recordId !== 'string') throw new Error('保存的相机坐标关联无效');
+      this.sceneReference = { recordId: settings.sceneReference.recordId, matrix: [...validateCcSceneTransform(settings.sceneReference.matrix)] };
+    }
+    this.refreshSceneReferences();
     const t = settings.timing;
     for (const [id, value] of Object.entries({ ccFirstTime: t.firstTimeSeconds, ccInterval: t.intervalSeconds, ccTimeMode: t.mode, ccFilenameStep: t.filenameStep ?? 1, ccHeightReference: t.heightReference, ccHeightOffset: t.heightOffsetMeters ?? 0 })) this.el<HTMLInputElement>(id).value = String(value);
+    this.syncHeightInputs();
     this.opacity = Math.min(1, Math.max(0, settings.opacity ?? .8)); this.el<HTMLInputElement>('ccOpacity').value = String(this.opacity);
     await this.prepare(); this.video.currentTime = Math.max(0, Math.min(this.video.duration, settings.currentTime || 0)); this.refreshResources(); this.el('ccSavedState').textContent = '已恢复，点击“开始融合”查看';
   }
   setPanelActive(active: boolean) { if (!active) this.exit(); else this.refreshResources(); }
+  async createDiagnostics() {
+    await this.prepare(false);
+    const time = this.active ? this.lastFrameTime : this.video.currentTime;
+    let referenceError: string | null = null;
+    try { this.checkSceneReference(); } catch (error) { referenceError = error instanceof Error ? error.message : String(error); }
+    const raw = this.track!.sample(time), rendered = raw && !referenceError ? (this.sceneReference ? transformCcCameraSample(raw, this.sceneReference.matrix) : raw) : null;
+    return {
+      format: 'cesium-cc-registration-diagnostic', version: 1, createdAt: new Date().toISOString(),
+      video: { name: this.files.video.name, width: this.video.videoWidth, height: this.video.videoHeight, duration: this.video.duration,
+        currentTime: this.video.currentTime, renderedTime: this.active ? time : null, seeking: this.video.seeking },
+      xml: { name: this.files.source.name, photos: this.dataset!.photos.length, referenceSystems: this.dataset!.photogroups.map(group => group.referenceSystem),
+        intrinsics: this.track!.intrinsics, distortion: this.track!.distortion, startTime: this.track!.startTime, endTime: this.track!.endTime },
+      timing: this.timing, sceneReference: this.sceneReference ?? null, referenceError, rawCamera: raw, registeredCamera: rendered,
+      liveCamera: this.active ? { position: this.viewer.camera.positionWC, direction: this.viewer.camera.directionWC, up: this.viewer.camera.upWC,
+        projection: Matrix4.toArray(this.viewer.camera.frustum.projectionMatrix) } : null,
+      viewport: { width: this.viewer.canvas.clientWidth, height: this.viewer.canvas.clientHeight, pixelWidth: this.viewer.canvas.width, pixelHeight: this.viewer.canvas.height },
+      resources: this.options.getImports().filter(item => this.selected.has(item.id) || item.kind === '3D Tiles').map(item => {
+        const resource = item.resource as unknown as { modelMatrix?: Matrix4; scale?: number; minimumPixelSize?: number; boundingSphere?: { center: Cartesian3; radius: number } };
+        const record = this.options.getRecord(item.id); let sphere: { center: Cartesian3; radius: number } | undefined = item.boundingSphere;
+        try { sphere ??= resource.boundingSphere; } catch { /* A not-yet-ready model has no evaluated sphere. */ }
+        return { id: item.id, name: item.name, kind: item.kind, selected: this.selected.has(item.id),
+          savedMatrix: record?.settings.matrix ?? null, displayedMatrix: resource.modelMatrix ? Matrix4.toArray(resource.modelMatrix) : null,
+          scale: resource.scale ?? null, minimumPixelSize: resource.minimumPixelSize ?? null,
+          bounds: sphere ? { center: sphere.center, radius: sphere.radius } : null, adjustment: this.adjustments[item.id] ?? zero() };
+      }),
+      notes: ['诊断不含视频、影像或模型文件。', '场景中的对齐不等于空三和视频已配准；应核对同源成果、时间与高程。'],
+    };
+  }
+  private async exportDiagnostics() {
+    const diagnostic = await this.createDiagnostics();
+    const url = URL.createObjectURL(new Blob([JSON.stringify(diagnostic, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a'); link.href = url; link.download = 'cc-registration-diagnostic.json'; link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
   private exit() {
     ++this.epoch; this.controller?.abort(); this.controller = undefined; this.video.pause(); this.dragging = undefined; this.seeking = false;
     if (this.frameHandle !== undefined) this.video.cancelVideoFrameCallback?.(this.frameHandle); this.frameHandle = undefined;
@@ -410,6 +532,7 @@ export class VideoModelOverlay {
   clear() {
     ++this.sessionGeneration; ++this.inputGeneration; this.mediaLoad?.cancel(); this.exit(); this.video.removeAttribute('src'); this.video.load(); if (this.mediaUrl) URL.revokeObjectURL(this.mediaUrl);
     this.mediaUrl = undefined; this.videoFile = undefined; this.files = {}; this.savedId = undefined; this.dataset = undefined; this.track = undefined;
+    this.sceneReference = undefined;
     this.adjustments = {}; this.undo = []; this.redo = []; this.selected.clear(); this.selectionInitialized = false;
     this.el<HTMLInputElement>('ccVideoFile').value = ''; this.el<HTMLInputElement>('ccXmlFile').value = ''; this.refreshResources();
     this.el('ccOverlayInfo').textContent = '选择视频与 CC 空三 XML，无需 SRT。'; this.el('ccSavedState').textContent = '尚未保存';
