@@ -442,6 +442,31 @@ export class FoundationPitMonitoring {
     return this.displayCatalogue().map(item => ({ ...item, visible: this.displayVisible(item.id, item.defaultVisible) }));
   }
 
+  /** Do not offer quick deletion for a pit hierarchy or any point with measurement history. */
+  getDisplayObjectRemoval(id: string): { remove: () => void; detail: string } | undefined {
+    if (!this.displayAllowed || this.displayDisposed) return;
+    const point = id.startsWith('pit:point:') ? this.state.points.find(item => item.id === id.slice(10)) : undefined;
+    const support = id.startsWith('pit:support:') ? this.state.supportMonitors.find(item => item.id === id.slice(12)) : undefined;
+    const record = point ?? support;
+    if (!record || record.records.length) return;
+    const scope = this.displayScope, snapshot = JSON.stringify(record);
+    return { detail: '删除该未录入监测记录的点位', remove: () => {
+      if (!this.displayAllowed || this.displayDisposed || scope !== this.displayScope) throw new Error('当前项目或账号已变化，请重新选择点位。');
+      if (this.pickMode) throw new Error('请先结束当前取点，再删除监测点。');
+      const current = point ? this.state.points.find(item => item.id === record.id) : this.state.supportMonitors.find(item => item.id === record.id);
+      if (!current || JSON.stringify(current) !== snapshot) throw new Error('点位或监测记录已更新，请刷新后重试。');
+      const next = { ...this.state,
+        points: point ? this.state.points.filter(item => item.id !== record.id) : this.state.points,
+        supportMonitors: support ? this.state.supportMonitors.filter(item => item.id !== record.id) : this.state.supportMonitors };
+      // Persist first: storage failures must leave the displayed and in-memory monitoring data intact.
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); }
+      catch { throw new Error('监测点删除未保存，请检查浏览器存储空间；原数据已保留。'); }
+      this.state = next;
+      delete this.displayOverrides[id];
+      this.render();
+    } };
+  }
+
   /** Local display preferences never alter persisted visibility or monitoring readings. */
   setDisplayVisibility(overrides: Record<string, boolean>, labelsVisible = true): void {
     if (this.displayDisposed) return;
@@ -2306,3 +2331,4 @@ export class FoundationPitMonitoring {
   private fileDate() { const date = new Date(); return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`; }
   private escapeHtml(value: string) { return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!); }
 }
+

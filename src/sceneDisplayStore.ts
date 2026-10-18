@@ -62,6 +62,34 @@ export class SceneDisplayStore {
     this.items = new Map(items.filter(item => identifier(item.id)).slice(0, MAX_ITEMS).map(item => [item.id, item.visible !== false]));
   }
 
+  /** Forget only explicitly deleted resources, including their saved group memberships. */
+  removeItems(itemIds: readonly string[], scopeKey = this.scopeKey): void {
+    const removed = new Set(itemIds.filter(identifier));
+    if (!removed.size || !scopeKey) return;
+    const prune = (preferences: DisplayPreferences): boolean => {
+      let changed = false;
+      for (const id of removed) {
+        if (Object.hasOwn(preferences.overrides, id)) { delete preferences.overrides[id]; changed = true; }
+      }
+      for (const group of preferences.groups) {
+        const members = group.members.filter(id => !removed.has(id));
+        if (members.length !== group.members.length) { group.members = members; changed = true; }
+      }
+      return changed;
+    };
+    if (scopeKey === this.scopeKey) {
+      for (const id of removed) this.items.delete(id);
+      if (prune(this.preferences)) this.persist();
+      return;
+    }
+    // Async resource removal can finish after a project switch. Never change the active scope.
+    const storage = this.storage ?? globalThis.localStorage;
+    const saved = storage.getItem(scopeKey);
+    if (!saved) return;
+    const preferences = normalizeSceneDisplayPreferences(JSON.parse(saved));
+    if (prune(preferences)) storage.setItem(scopeKey, JSON.stringify(preferences));
+  }
+
   isVisible(id: string): boolean {
     return Object.hasOwn(this.preferences.overrides, id) ? this.preferences.overrides[id] : this.items.get(id) ?? false;
   }
@@ -140,3 +168,4 @@ export class SceneDisplayStore {
     } catch { this.error = "显示调整已生效，但浏览器无法保存偏好；刷新后可能恢复先前设置。"; }
   }
 }
+

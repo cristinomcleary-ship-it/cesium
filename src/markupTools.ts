@@ -556,6 +556,32 @@ export class MarkupTools {
       visible: this.isDisplayed(record), defaultVisible: record.visible }));
   }
 
+  /** One displayed object only; retains the normal undo history and persistence rollback. */
+  getDisplayObjectRemoval(id: string): { remove: () => void; detail: string } | undefined {
+    const record = this.records.find(item => item.id === id);
+    if (!record || this.disposed || this.viewer.isDestroyed()) return;
+    const snapshot = JSON.stringify(record);
+    return { detail: '删除该标绘，可在标绘工具中撤销', remove: () => {
+      const current = this.records.find(item => item.id === id);
+      if (!current || JSON.stringify(current) !== snapshot) throw new Error('该标绘已更新或删除，请刷新后重试。');
+      this.removeDisplayObject(id);
+    } };
+  }
+
+  removeDisplayObject(id: string): void {
+    if (this.disposed || this.viewer.isDestroyed()) throw new Error('标绘工作台已关闭。');
+    if (this.drawingKind || this.redrawId) throw new Error('请先完成或取消当前标绘，再删除对象。');
+    if (!this.records.some(item => item.id === id)) throw new Error('该标绘已经删除。');
+    const wasSelected = this.selectedId === id;
+    if (!this.mutate(() => { this.records = this.records.filter(item => item.id !== id); })) throw new Error('标绘删除失败，原数据已保留。');
+    this.displayVisibility.delete(id);
+    if (wasSelected) {
+      this.selectedId = null;
+      if (this.viewer.selectedEntity?.id === id) this.viewer.selectedEntity = undefined;
+    }
+    this.render();
+  }
+
   /** Replace temporary display preferences without mutating records, history or persistence. */
   setDisplayVisibility(overrides: Record<string, boolean>, labelsVisible = true): void {
     if (this.disposed || this.viewer.isDestroyed()) return;
@@ -1737,3 +1763,4 @@ export class MarkupTools {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") { event.preventDefault(); this.redo(); }
   }
 }
+

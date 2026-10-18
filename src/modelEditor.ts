@@ -3,9 +3,11 @@ import {
   Cartesian2,
   Cartesian3,
   Color,
+  IntersectionTests,
   Matrix3,
   Matrix4,
   Model,
+  Plane,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
   Transforms,
@@ -13,6 +15,7 @@ import {
 } from "cesium";
 
 export type EditMode = "horizontal" | "vertical" | "rotate";
+export type ModelTransformAdjustment = { east?: number; north?: number; up?: number; heading?: number };
 
 export type EditableModel = {
   id: string;
@@ -34,17 +37,24 @@ export class ModelEditor {
   private selected: EditableModel | null = null;
   private mode: EditMode = "horizontal";
   private dragging = false;
+  private dragCameraInputs: boolean | null = null;
+  private dragPlane: Plane | null = null;
+  private destroyed = false;
   private last = new Cartesian2();
   private models = new Map<string, EditableModel>();
   private onChange: ChangeCallback;
   private suspensionDepth = 0;
   private suspendedSelectionId: string | null = null;
+  private releasePointer = () => this.finishDrag();
 
   constructor(viewer: Viewer, onChange: ChangeCallback) {
     this.viewer = viewer;
     this.onChange = onChange;
     this.handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
     this.bindMouse();
+    window.addEventListener("mouseup", this.releasePointer);
+    window.addEventListener("pointerup", this.releasePointer);
+    window.addEventListener("blur", this.releasePointer);
   }
 
   add(id: string, name: string, model: Model, saved?: LibrarySettings["editor"]) {
@@ -65,6 +75,7 @@ export class ModelEditor {
   }
 
   remove(id: string) {
+    if (this.selected?.id === id) this.finishDrag();
     this.models.delete(id);
     if (this.selected?.id === id) this.select(null);
   }
@@ -75,7 +86,7 @@ export class ModelEditor {
     for (const [id, item] of this.models) {
       if (!item.model.isDestroyed()) continue;
       this.models.delete(id);
-      if (this.selected?.id === id) this.selected = null;
+      if (this.selected?.id === id) { this.finishDrag(); this.selected = null; }
       removed += 1;
     }
     if (removed) this.onChange(this.selected, this.mode);
@@ -83,6 +94,7 @@ export class ModelEditor {
   }
 
   select(id: string | null) {
+    if (this.selected?.id !== id) this.finishDrag();
     if (this.selected && !this.selected.model.isDestroyed()) this.selected.model.silhouetteSize = 0;
     this.selected = id ? this.models.get(id) ?? null : null;
     if (this.selected && !this.selected.model.isDestroyed()) {
@@ -97,17 +109,60 @@ export class ModelEditor {
   }
 
   setMode(mode: EditMode) {
+    this.finishDrag();
     this.mode = mode;
     this.onChange(this.selected, this.mode);
   }
 
   reset() {
-    if (!this.selected) return;
-    this.selected.east = 0;
-    this.selected.north = 0;
-    this.selected.up = 0;
-    this.selected.heading = 0;
+    this.setTransform({ east: 0, north: 0, up: 0, heading: 0 });
+  }
+
+  getSelected() { return this.selected; }
+
+  /** Numeric controls and dragging use exactly the same persisted transform. */
+  setTransform(values: ModelTransformAdjustment): boolean {
+    if (!this.selected || this.selected.model.isDestroyed()) return false;
+    const fields = ["east", "north", "up", "heading"] as const;
+    if (fields.some((key) => values[key] !== undefined && !Number.isFinite(values[key]))) return false;
+    this.finishDrag();
+    for (const key of fields) if (values[key] !== undefined) this.selected[key] = values[key]!;
     this.apply(this.selected);
+    return true;
+  }
+
+  adjustTransform(values: ModelTransformAdjustment): boolean {
+    if (!this.selected) return false;
+    const next: ModelTransformAdjustment = {};
+    for (const key of ["east", "north", "up", "heading"] as const) if (values[key] !== undefined) next[key] = this.selected[key] + values[key]!;
+    return this.setTransform(next);
+  }
+
+  /** Start a new adjustment origin after the user places an existing model again. */
+  relocate(id: string, matrix: Matrix4, center: Cartesian3): boolean {
+    const item = this.models.get(id);
+    if (!item || item.model.isDestroyed()) return false;
+    this.finishDrag();
+    item.baseMatrix = Matrix4.clone(matrix);
+    item.center = Cartesian3.clone(center);
+    item.east = item.north = item.up = item.heading = 0;
+    item.model.modelMatrix = Matrix4.clone(matrix);
+    this.select(id);
+    this.viewer.scene.requestRender();
+    return true;
+  }
+
+  destroy() {
+    if (this.destroyed) return;
+    this.finishDrag();
+    this.destroyed = true;
+    if (this.selected && !this.selected.model.isDestroyed()) this.selected.model.silhouetteSize = 0;
+    if (!this.handler.isDestroyed()) this.handler.destroy();
+    window.removeEventListener("mouseup", this.releasePointer);
+    window.removeEventListener("pointerup", this.releasePointer);
+    window.removeEventListener("blur", this.releasePointer);
+    this.models.clear();
+    this.selected = null;
   }
 
   /** Temporarily prevents model picking and dragging without changing model data. */
@@ -135,10 +190,16 @@ export class ModelEditor {
 
   private finishDrag() {
     this.dragging = false;
-    if (!this.viewer.isDestroyed()) this.viewer.scene.screenSpaceCameraController.enableInputs = true;
+    this.dragPlane = null;
+    // A global LEFT_UP must never unlock another tool's camera interaction lock.
+    if (this.dragCameraInputs !== null && !this.viewer.isDestroyed()) {
+      this.viewer.scene.screenSpaceCameraController.enableInputs = this.dragCameraInputs;
+    }
+    this.dragCameraInputs = null;
   }
 
   private apply(item: EditableModel) {
+    if (item.model.isDestroyed()) { this.pruneDestroyed(); return; }
     const enu = Transforms.eastNorthUpToFixedFrame(item.center);
     const inverseEnu = Matrix4.inverseTransformation(enu, new Matrix4());
     const translation = Matrix4.fromTranslation(new Cartesian3(item.east, item.north, item.up));
@@ -147,6 +208,7 @@ export class ModelEditor {
     const worldAdjustment = Matrix4.multiply(enu, localAdjustment, new Matrix4());
     Matrix4.multiply(worldAdjustment, inverseEnu, worldAdjustment);
     item.model.modelMatrix = Matrix4.multiply(worldAdjustment, item.baseMatrix, new Matrix4());
+    this.viewer.scene.requestRender();
     this.onChange(item, this.mode);
   }
 
@@ -155,16 +217,39 @@ export class ModelEditor {
     return Math.max(0.01, (height * 1.2) / Math.max(300, this.viewer.canvas.clientHeight));
   }
 
+  private horizontalDelta(start: Cartesian2, end: Cartesian2): Cartesian3 | undefined {
+    if (!this.selected || !this.dragPlane) return undefined;
+    const startRay = this.viewer.camera.getPickRay(start);
+    const endRay = this.viewer.camera.getPickRay(end);
+    if (!startRay || !endRay) return undefined;
+    // Almost-horizontal rays can intersect kilometres away and make a tiny mouse
+    // movement fling the model out of view. Wait for a clearer viewing angle.
+    if (Math.abs(Cartesian3.dot(startRay.direction, this.dragPlane.normal)) < 0.02
+      || Math.abs(Cartesian3.dot(endRay.direction, this.dragPlane.normal)) < 0.02) return undefined;
+    const a = IntersectionTests.rayPlane(startRay, this.dragPlane, new Cartesian3());
+    const b = IntersectionTests.rayPlane(endRay, this.dragPlane, new Cartesian3());
+    if (!a || !b) return undefined;
+    const delta = Cartesian3.subtract(b, a, new Cartesian3());
+    const inverseEnu = Matrix4.inverseTransformation(Transforms.eastNorthUpToFixedFrame(this.selected.center), new Matrix4());
+    return Matrix4.multiplyByPointAsVector(inverseEnu, delta, new Cartesian3());
+  }
+
   private bindMouse() {
     this.handler.setInputAction((event: { position: Cartesian2 }) => {
-      if (this.suspensionDepth > 0) return;
+      if (this.destroyed || this.suspensionDepth > 0) return;
       const picked = this.viewer.scene.pick(event.position) as { id?: { engineeringModelId?: string }; primitive?: Model } | undefined;
       const pickedId = picked?.id?.engineeringModelId;
       if (pickedId && this.models.has(pickedId)) this.select(pickedId);
       if (!this.selected || (pickedId !== this.selected.id && picked?.primitive !== this.selected.model)) return;
+      if (this.selected.model.isDestroyed()) { this.pruneDestroyed(); return; }
       this.dragging = true;
       Cartesian2.clone(event.position, this.last);
+      this.dragCameraInputs = this.viewer.scene.screenSpaceCameraController.enableInputs;
       this.viewer.scene.screenSpaceCameraController.enableInputs = false;
+      const enu = Transforms.eastNorthUpToFixedFrame(this.selected.center);
+      const normal = Matrix4.multiplyByPointAsVector(enu, Cartesian3.UNIT_Z, new Cartesian3());
+      const origin = Matrix4.multiplyByPoint(enu, new Cartesian3(this.selected.east, this.selected.north, this.selected.up), new Cartesian3());
+      this.dragPlane = Plane.fromPointNormal(origin, normal);
     }, ScreenSpaceEventType.LEFT_DOWN);
 
     this.handler.setInputAction((event: { endPosition: Cartesian2 }) => {
@@ -172,16 +257,19 @@ export class ModelEditor {
       if (!this.dragging || !this.selected) return;
       const dx = event.endPosition.x - this.last.x;
       const dy = event.endPosition.y - this.last.y;
-      Cartesian2.clone(event.endPosition, this.last);
       const factor = this.metersPerPixel();
       if (this.mode === "horizontal") {
-        this.selected.east += dx * factor;
-        this.selected.north -= dy * factor;
+        const delta = this.horizontalDelta(this.last, event.endPosition);
+        if (delta) {
+          this.selected.east += delta.x;
+          this.selected.north += delta.y;
+        }
       } else if (this.mode === "vertical") {
         this.selected.up -= dy * factor;
       } else {
         this.selected.heading -= (dx * Math.PI) / 360;
       }
+      Cartesian2.clone(event.endPosition, this.last);
       this.apply(this.selected);
     }, ScreenSpaceEventType.MOUSE_MOVE);
 
@@ -190,3 +278,4 @@ export class ModelEditor {
     }, ScreenSpaceEventType.LEFT_UP);
   }
 }
+

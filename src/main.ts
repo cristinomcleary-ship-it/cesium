@@ -41,6 +41,7 @@ import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader";
 import { loadLocalImagery, type LocalImageryResult } from "./localImagery";
 import { UnavailableMapTileDiscardPolicy } from "./imageryOverzoom";
 import { ModelEditor, type EditMode, type EditableModel } from "./modelEditor";
+import { beginPickPlacement, getPlacementPreviewPosition, createAnchoredModelMatrix, fetchGlbPlacementBounds, type ModelPlacementBounds } from "./modelPlacement";
 import { gaussKrugerToWgs84, inferredZoneNumber, parseLongitude, type GaussAxisOrder, type GaussEllipsoid } from "./coordinateUtils";
 import { SubsurfaceTools, subsurfacePanelHtml } from "./subsurfaceTools";
 import { FoundationPitMonitoring, foundationPitMonitoringPanelHtml } from "./foundationPitMonitoring";
@@ -216,8 +217,9 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <small>DWG · RVT · SKP · GLB</small>
           </div>
           <div id="converterStatus" class="converter-status">正在检测本机转换能力…</div>
-          <label>初始放置方式<select id="modelPlacement"><option value="customGeo">自定义经纬度放置</option><option value="customGauss">自定义高斯-克吕格坐标</option><option value="coordinates">使用模型坐标</option></select></label>
-          <div id="modelCustomFields" class="field-grid">
+          <label>初始放置方式<select id="modelPlacement"><option value="mapPick" selected>在场景中点选位置（推荐）</option><option value="customGeo">自定义经纬度放置</option><option value="customGauss">自定义高斯-克吕格坐标</option><option value="coordinates">使用模型坐标</option></select></label>
+          <p id="modelPickHint" class="hint">上传转换完成后，在场景中点击放置位置；之后可平移、升降和旋转调整。</p>
+          <div id="modelCustomFields" class="field-grid hidden">
             <label>经度<input id="modelLon" type="number" step="any" value="116.3913" /></label>
             <label>纬度<input id="modelLat" type="number" step="any" value="39.9075" /></label>
             <label>高程（米）<input id="modelHeight" type="number" step="any" value="0" /></label>
@@ -239,13 +241,13 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             </div>
             <p class="hint">模型的落点按北坐标、东坐标换算；中央子午线支持任意十进制度或度分秒。</p>
           </div>
-          <div id="modelCoordinateHint" class="notice hidden"><strong>模型坐标要求</strong><p>仅适用于转换结果已经使用 WGS84 地心地固（ECEF）世界坐标的模型。普通建筑局部坐标请选择自定义放置。</p></div>
+          <div id="modelCoordinateHint" class="notice hidden"><strong>模型坐标要求</strong><p>仅适用于转换结果已经使用 WGS84 地心地固（ECEF）世界坐标的模型。普通建筑局部坐标请选择在场景中点选位置。</p></div>
           <div class="model-load-actions">
             <button class="primary" id="loadModel">转换并加载模型</button>
             <button class="secondary hidden" id="cancelModelLoad" type="button">取消当前任务</button>
           </div>
           <p id="modelLoadStatus" class="hint" aria-live="polite">选择文件后会先检查本机转换能力，不可用时不会上传文件。</p>
-          <div class="notice"><strong>源格式说明</strong><p>GLB 可直接加载。DWG、RVT、SKP 会调用本机合法转换器自动生成 GLB；转换器状态显示为“未配置”时，请先按项目示例文件配置。</p></div>
+          <div class="notice"><strong>源格式说明</strong><p>GLB 可直接加载。SKP 使用后台转换组件生成 GLB，不启动 SketchUp 窗口；DWG、RVT 使用配置的转换器。状态不可用时请按安装说明补齐组件。</p></div>
         </section>
         <section class="panel" data-panel="tiles">
           <div class="dropzone compact" id="ccFolderZone">
@@ -321,6 +323,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <p class="hint">文件只在当前页面本地读取，不上传。关闭或刷新页面后需重新选择。</p>
       </div>
       ${subsurfacePanelHtml}
+      <div id="modelPlacementPrompt" class="model-placement-prompt" hidden role="status"><span>请在场景中点击模型放置位置，可先移动或缩放视图。Esc 取消。</span><button id="cancelModelPlacement" type="button">取消放置</button></div>
       <div id="modelTools" class="model-tools hidden">
         <div class="tool-title"><span>模型位置调整</span><small id="editingModelName"></small></div>
         <div class="tool-buttons">
@@ -329,8 +332,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <button data-edit-mode="rotate">↻ 旋转方向</button>
           <button id="resetModelTransform">重置</button>
         </div>
+        <div class="model-transform-fields"><label>向东（m）<input id="modelEditEast" type="number" step="0.1" value="0"></label><label>向北（m）<input id="modelEditNorth" type="number" step="0.1" value="0"></label><label>升高（m）<input id="modelEditUp" type="number" step="0.1" value="0"></label><label>旋转（°）<input id="modelEditHeading" type="number" step="1" value="0"></label></div>
+        <div class="tool-buttons model-transform-actions"><button id="applyModelTransform" type="button">应用数值</button><button id="relocateModel" type="button">重新点选位置</button><button id="locateEditingModel" type="button">定位此模型</button></div>
         <div id="modelTransformReadout">东 0.00m · 北 0.00m · 高 0.00m · 旋转 0.00°</div>
-        <div class="tool-hint">在地图中按住模型并拖动；单击其他模型可切换选择</div>
+        <div class="tool-hint">按住模型拖动，或输入数值调整；修改自动保存。重新点选位置会建立新的调整起点。</div>
       </div>
       ${threeDReportStageHtml}
       <div id="toast" role="status"></div>
@@ -687,6 +692,10 @@ function updateModelTools(item: EditableModel | null, mode: EditMode) {
       east: item.east, north: item.north, up: item.up, heading: item.heading },
   } });
   $("#editingModelName").textContent = item.name;
+  for (const [selector, number] of Object.entries({modelEditEast:item.east,modelEditNorth:item.north,modelEditUp:item.up,modelEditHeading:CesiumMath.toDegrees(item.heading)})) {
+    const input=$<HTMLInputElement>(`#${selector}`); if(document.activeElement!==input)input.value=String(Number(number.toFixed(4)));
+  }
+  viewer.scene.requestRender();
   $("#modelTransformReadout").textContent = `东 ${item.east.toFixed(2)}m · 北 ${item.north.toFixed(2)}m · 高 ${item.up.toFixed(2)}m · 旋转 ${CesiumMath.toDegrees(item.heading).toFixed(2)}°`;
 }
 
@@ -886,6 +895,8 @@ function setImportVisibility(item: ImportRecord, visible: boolean, options: { si
 }
 
 function removeImport(item: ImportRecord) {
+  if(modelEditor.getSelected()?.id===item.id && modelPlacementPending)modelLoadController?.abort();
+  modelPlacementBounds.delete(item.id);
   subsurfaceTools.detachImport(item);
   if (item.kind === "3D Tiles") {
     disposeModelQuality(item.id, item.resource as Cesium3DTileset);
@@ -2062,6 +2073,8 @@ bindDropzone("#gisDropzone", "#gisFile", (file) => { selectedGis = file; showSel
 bindDropzone("#modelDropzone", "#modelFile", (file) => {
   if (modelLoadBusy) return toast("模型正在上传或转换，请先取消当前任务或等待完成", true);
   selectedModelFile = file;
+  $<HTMLSelectElement>("#modelPlacement").value="mapPick";
+  $("#modelPlacement").dispatchEvent(new Event("change"));
   showSelected($("#modelDropzone"), file);
   updateModelLoadUi(`${file.name} 已选择；加载前将先检查格式与本机转换器。`);
 });
@@ -2076,15 +2089,21 @@ type ConverterStatus = {
 };
 let modelLoadController: AbortController | null = null;
 let modelLoadBusy = false;
+let modelPlacementPending = false;
+let modelPlacementSaving = false;
+const modelPlacementBounds = new Map<string, ModelPlacementBounds | null>();
 
 function updateModelLoadUi(message?: string, error = false) {
   const button = $<HTMLButtonElement>("#loadModel");
   const cancel = $<HTMLButtonElement>("#cancelModelLoad");
   const fileInput = $<HTMLInputElement>("#modelFile");
   button.disabled = modelLoadBusy;
-  button.textContent = modelLoadBusy ? "正在处理模型…" : "转换并加载模型";
+  button.textContent = modelPlacementPending ? "请在场景中点选位置" : modelLoadBusy ? "正在处理模型…" : "导入并放置模型";
   cancel.classList.toggle("hidden", !modelLoadBusy);
-  cancel.disabled = !modelLoadBusy;
+  cancel.disabled = !modelLoadBusy || modelPlacementSaving;
+  cancel.textContent = modelPlacementPending ? "取消放置" : "取消当前任务";
+  $<HTMLButtonElement>("#relocateModel").disabled=modelLoadBusy;
+  $<HTMLSelectElement>("#modelPlacement").disabled=modelLoadBusy;
   fileInput.disabled = modelLoadBusy;
   $("#modelDropzone").classList.toggle("busy", modelLoadBusy);
   if (message !== undefined) {
@@ -2153,8 +2172,87 @@ async function refreshConverterStatus(signal?: AbortSignal) {
 }
 void refreshConverterStatus();
 
+async function pickModelLocation(model: Model, controller: AbortController): Promise<Cartesian3> {
+  const drawing = document.querySelector<HTMLButtonElement>("#markupCancelDrawing");
+  if (drawing && !drawing.disabled) throw new Error("请先完成或取消当前标绘，再放置模型");
+  if (managementWorkspace && !managementWorkspace.prepareWorkbenchNavigation()) throw new Error("请先保存或取消当前机械编辑，再放置模型");
+  const restores: Array<() => void> = [];
+  const wasShown = model.show;
+  try {
+    restores.push(modelEditor.suspendInteractions(), subsurfaceTools.suspendInteractions(), foundationPitMonitoring.suspendInteractions());
+    digitalTwinOverview.close(); electronicSandTable?.stopTour();
+    sandTablePresentation?.deactivate(); sandTableFacilities?.deactivate();
+    viewer.camera.cancelFlight();
+    // A temporary model must not intercept the user's click on the target surface.
+    model.show = false;
+    viewer.scene.requestRender();
+    modelPlacementPending = true;
+    $("#modelPlacementPrompt").hidden = false;
+    document.body.classList.add("model-placement-active");
+    updateModelLoadUi("请在场景中点击模型底部的放置位置；可先移动或缩放视图，Esc 取消。");
+    return await beginPickPlacement(viewer, {
+      signal: controller.signal,
+      onInvalidPick: () => updateModelLoadUi("未选中有效位置，请点击地面、地形或已有实景模型。", true),
+    });
+  } finally {
+    if (!model.isDestroyed()) model.show = wasShown;
+    for (const restore of restores.reverse()) restore();
+    modelPlacementPending = false;
+    $("#modelPlacementPrompt").hidden = true;
+    document.body.classList.remove("model-placement-active");
+    viewer.scene.requestRender();
+  }
+}
+
+$("#cancelModelPlacement").addEventListener("click", () => modelLoadController?.abort());
+window.addEventListener("pagehide", () => modelLoadController?.abort());
+$("#applyModelTransform").addEventListener("click", () => {
+  if (modelLoadBusy) return;
+  const values = ["East", "North", "Up", "Heading"].map(key => {
+    const text = value(`#modelEdit${key}`).trim();
+    return text === "" ? NaN : Number(text);
+  });
+  if (!values.every(Number.isFinite)) return toast("请输入有效的平移距离和旋转角度", true);
+  if (modelEditor.setTransform({ east: values[0], north: values[1], up: values[2], heading: CesiumMath.toRadians(values[3]) })) toast("位置已调整，正在自动保存");
+});
+$("#locateEditingModel").addEventListener("click", () => {
+  const selected = modelEditor.getSelected();
+  if (selected && !selected.model.isDestroyed()) viewer.camera.flyToBoundingSphere(selected.model.boundingSphere, { duration: 1 });
+});
+$("#relocateModel").addEventListener("click", async () => {
+  if (modelLoadBusy) return;
+  const selected = modelEditor.getSelected();
+  if (!selected || selected.model.isDestroyed()) return;
+  const controller = new AbortController();
+  modelLoadController = controller; modelLoadBusy = true;
+  updateModelLoadUi("正在准备重新放置模型…");
+  try {
+    let bounds = modelPlacementBounds.get(selected.id);
+    if (bounds === undefined) {
+      const record = projectLibrary?.records.get(selected.id);
+      const url = record?.files.data?.url ?? record?.files.source?.url;
+      bounds = url ? await fetchGlbPlacementBounds(url, { signal: controller.signal }) : null;
+      modelPlacementBounds.set(selected.id, bounds);
+    }
+    const target = await pickModelLocation(selected.model, controller);
+    if (controller.signal.aborted || selected.model.isDestroyed()) throw new DOMException("放置已取消", "AbortError");
+    const matrix = createAnchoredModelMatrix(selected.model, target, 0, bounds);
+    const oldCenter = Matrix4.multiplyByPoint(Matrix4.inverse(selected.model.modelMatrix, new Matrix4()), selected.model.boundingSphere.center, new Cartesian3());
+    const center = Matrix4.multiplyByPoint(matrix, oldCenter, new Cartesian3());
+    if (!modelEditor.relocate(selected.id, matrix, center)) throw new Error("模型已移除，无法重新放置");
+    viewer.camera.flyToBoundingSphere(selected.model.boundingSphere, { duration: 1 });
+    updateModelLoadUi("模型已重新放置，调整数值已归零，正在自动保存。");
+  } catch (error) {
+    const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
+    updateModelLoadUi(cancelled ? "已取消重新放置，模型位置保持不变" : error instanceof Error ? error.message : "重新放置失败", !cancelled);
+  } finally {
+    if (modelLoadController === controller) modelLoadController = null;
+    modelLoadBusy = false; updateModelLoadUi();
+  }
+});
+
 $("#cancelModelLoad").addEventListener("click", () => {
-  if (!modelLoadController) return;
+  if (!modelLoadController || modelPlacementSaving) return;
   modelLoadController.abort();
   updateModelLoadUi("正在取消上传或转换任务…");
 });
@@ -2162,6 +2260,7 @@ $("#cancelModelLoad").addEventListener("click", () => {
 $("#modelPlacement").addEventListener("change", () => {
   const placement = value("#modelPlacement");
   $("#modelCustomFields").classList.toggle("hidden", placement !== "customGeo");
+  $("#modelPickHint").classList.toggle("hidden", placement !== "mapPick");
   $("#modelGaussFields").classList.toggle("hidden", placement !== "customGauss");
   $("#modelCoordinateHint").classList.toggle("hidden", placement !== "coordinates");
 });
@@ -2181,14 +2280,17 @@ $("#loadModel").addEventListener("click", async () => {
   if (!selectedModelFile) return toast("请先选择 DWG、RVT、SKP 或 GLB 文件", true);
   const extension = selectedModelFile.name.split(".").pop()?.toLowerCase() ?? "";
   if (!["dwg", "rvt", "skp", "glb"].includes(extension)) return toast("仅支持 DWG、RVT、SKP 和 GLB", true);
+  const sourceFile=selectedModelFile;
+  const selectedPlacement=value("#modelPlacement");
   const controller = new AbortController();
+  let stagedModel: Model | undefined;
   modelLoadController = controller;
   modelLoadBusy = true;
   updateModelLoadUi("正在检查本机模型转换能力…");
   try {
     const converterStatus = await refreshConverterStatus(controller.signal);
     const maxUploadBytes = converterStatus?.maxUploadBytes ?? 1024 * 1024 * 1024;
-    if (selectedModelFile.size > maxUploadBytes) {
+    if (sourceFile.size > maxUploadBytes) {
       throw new Error(`模型文件超过 ${(maxUploadBytes / 1024 / 1024 / 1024).toFixed(0)}GB 限制，未开始上传`);
     }
     if (extension !== "glb") {
@@ -2205,19 +2307,21 @@ $("#loadModel").addEventListener("click", async () => {
     if (controller.signal.aborted) throw new DOMException("模型任务已取消", "AbortError");
     setStatus(extension === "glb" ? "正在加载三维模型…" : `正在转换 ${extension.toUpperCase()}…`);
     updateModelLoadUi(extension === "glb" ? "正在校验并加载 GLB…" : `正在上传并转换 ${extension.toUpperCase()}；可随时取消。`);
-    const response = await fetch(`/__models/import?extension=${encodeURIComponent(extension)}&name=${encodeURIComponent(selectedModelFile.name)}`, {
+    const response = await fetch(`/__models/import?extension=${encodeURIComponent(extension)}&name=${encodeURIComponent(sourceFile.name)}`, {
       method: "POST",
       headers: { "Content-Type": "application/octet-stream" },
-      body: selectedModelFile,
+      body: sourceFile,
       signal: controller.signal,
     });
-    const result = await response.json().catch(() => ({ ok: false, error: `模型服务返回了无法识别的结果（HTTP ${response.status}）` })) as { ok: boolean; url?: string; converted?: boolean; error?: string };
+    const result = await response.json().catch(() => ({ ok: false, error: `模型服务返回了无法识别的结果（HTTP ${response.status}）` })) as { ok: boolean; url?: string; converted?: boolean; error?: string; warnings?: string[] };
     if (!result.ok || !result.url) throw new Error(result.error || "模型转换失败");
     if (controller.signal.aborted) throw new DOMException("模型任务已取消", "AbortError");
-    const placement = value("#modelPlacement");
+    const placement = selectedPlacement;
     let modelMatrix = Matrix4.clone(Matrix4.IDENTITY);
     let modelScale = numeric("#modelScale", 1);
-    if (placement === "customGeo") {
+    if (placement === "mapPick") {
+      modelMatrix=Transforms.eastNorthUpToFixedFrame(getPlacementPreviewPosition(viewer));
+    } else if (placement === "customGeo") {
       modelMatrix = Transforms.headingPitchRollToFixedFrame(Cartesian3.fromDegrees(numeric("#modelLon"), numeric("#modelLat"), numeric("#modelHeight")), new HeadingPitchRoll(CesiumMath.toRadians(numeric("#modelHeading")), 0, 0));
     } else if (placement === "customGauss") {
       const centralMeridian = parseLongitude(value("#modelCentralMeridian"));
@@ -2231,30 +2335,47 @@ $("#loadModel").addEventListener("click", async () => {
       modelMatrix = Transforms.headingPitchRollToFixedFrame(Cartesian3.fromDegrees(longitude, latitude, numeric("#modelGaussHeight")), new HeadingPitchRoll(CesiumMath.toRadians(numeric("#modelGaussHeading")), 0, 0));
       modelScale = numeric("#modelGaussScale", 1);
     }
+    if(!Number.isFinite(modelScale)||modelScale<=0)throw new Error("模型比例必须是大于 0 的有效数字");
+    const bounds=placement==="mapPick" ? await fetchGlbPlacementBounds(extension === "glb" ? sourceFile : result.url,{signal:controller.signal}) : null;
     const id = crypto.randomUUID();
     const model = await Model.fromGltfAsync({ url: result.url, modelMatrix, scale: modelScale, minimumPixelSize: 0, id: { engineeringModelId: id } });
+    stagedModel=model;
+    if(controller.signal.aborted){model.destroy();stagedModel=undefined;throw new DOMException("模型任务已取消","AbortError");}
     viewer.scene.primitives.add(model);
     try { await waitForModelReady(model, 30_000, controller.signal); }
-    catch (error) { viewer.scene.primitives.remove(model); throw error; }
+    catch (error) { throw error; }
+    if(placement==="mapPick") {
+      const target=await pickModelLocation(model,controller);
+      model.modelMatrix=createAnchoredModelMatrix(model,target,0,bounds);
+      viewer.scene.requestRender();
+    }
+    if(controller.signal.aborted)throw new DOMException("模型任务已取消","AbortError");
+    modelPlacementSaving=true;updateModelLoadUi("位置已选定，正在保存模型和放置位置…");
     try {
-      await projectLibrary!.save(id, selectedModelFile.name, "Model", {
+      await projectLibrary!.save(id, sourceFile.name, "Model", {
         matrix: Matrix4.toArray(model.modelMatrix), scale: model.scale,
-      }, { source: { name: selectedModelFile.name, blob: selectedModelFile } },
+      }, { source: { name: sourceFile.name, blob: sourceFile } },
       extension === "glb" ? undefined : { type: "model", url: result.url });
-    } catch (error) { viewer.scene.primitives.remove(model); throw error; }
-    addImport(selectedModelFile.name, "Model", model, id);
-    modelEditor.add(id, selectedModelFile.name, model);
+    } catch (error) { throw error; }
+    stagedModel=undefined;
+    modelPlacementBounds.set(id,bounds);
+    addImport(sourceFile.name, "Model", model, id);
+    modelEditor.add(id, sourceFile.name, model);
     viewer.camera.flyToBoundingSphere(model.boundingSphere, { duration: 1.5 });
-    updateModelLoadUi(`${selectedModelFile.name} 已成功加载。`);
-    toast(result.converted ? `${extension.toUpperCase()} 已自动转换并加载` : "模型已加载，可用鼠标调整位置");
+    const warnings = Array.isArray(result.warnings) ? result.warnings.filter(item => typeof item === "string").join("；") : "";
+    updateModelLoadUi(`${sourceFile.name} 已放置并保存，可直接平移、升降或旋转调整。${warnings ? ` 转换提示：${warnings}` : ""}`);
+    toast(result.converted ? `${extension.toUpperCase()} 已转换并放置，可继续调整位置` : "模型已加载，可用鼠标调整位置");
   } catch (error) {
     const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
-    const message = cancelled ? "模型上传或转换已取消，临时文件已清理" : error instanceof Error ? error.message : "模型加载失败";
+    const message = cancelled ? "模型导入或放置已取消，未加入场景资料" : error instanceof Error ? error.message : "模型加载失败";
     updateModelLoadUi(message, !cancelled);
     toast(message, !cancelled);
   }
   finally {
     if (modelLoadController === controller) modelLoadController = null;
+    if(stagedModel&&!stagedModel.isDestroyed())viewer.scene.primitives.remove(stagedModel);
+    modelPlacementPending=false;modelPlacementSaving=false;
+    $("#modelPlacementPrompt").hidden=true;
     modelLoadBusy = false;
     updateModelLoadUi();
     setStatus("Cesium 已就绪");
@@ -2268,6 +2389,7 @@ let requestedMachineryRecord: string | undefined;
 let requestedRailDisplayObject: {kind: string; id: string} | undefined;
 document.addEventListener('click', event => {
   const target = (event.target as Element).closest<HTMLElement>('.tab,#openSafetyWorkspace,#openMarkupWorkspace,#openWorkbenchMachinery,[data-machinery-action="edit"]');
+  if (target && target.dataset.tab!=="models" && modelLoadBusy && !modelPlacementSaving)modelLoadController?.abort();
   if (!target || managementWorkspace?.isOpen) return;
   setWorkbenchDock('editor');
   const machineryEntry = ['machinery', 'rail-safety'].includes(target.dataset.tab || '') || target.id === 'openWorkbenchMachinery' || target.dataset.machineryAction === 'edit';
@@ -2892,22 +3014,37 @@ function syncSceneDisplay(): void {
   if (!sceneDisplayPanel) return;
   const state = managementWorkspace?.getWorkbenchMachineryState();
   const items: SceneDisplayItem[] = [];
+  const context = JSON.stringify([state?.projectId, state?.actorId]);
+  const localRemoval = (action: {remove: () => void | Promise<void>; detail: string} | undefined) => {
+    if (!action || (state && !state.canEdit)) return undefined;
+    return { detail: action.detail, remove: async () => {
+      const current = managementWorkspace?.getWorkbenchMachineryState();
+      if (context !== JSON.stringify([current?.projectId, current?.actorId]) || (current && !current.canEdit)) throw new Error('项目或账号权限已变化，请刷新后再删除');
+      await action.remove(); syncSceneDisplay();
+    } };
+  };
   foundationPitMonitoring.setDisplayContext(JSON.stringify([state?.projectId ?? 'workbench-local', state?.actorId ?? null]));
   const layerTypes = { 'CAD': 'CAD 图纸', '3D Tiles': '实景模型', 'GIS': 'GIS 数据', 'Model': '工程模型', 'Drone Video': '无人机视频' };
   for (const layer of imports.filter(isImportAllowed)) items.push({ id: `layer:${layer.id}`, name: layer.name, category: layerTypes[layer.kind], visible: layer.visible,
     detail: layer.kind === '3D Tiles' ? modelQualityTrackers.get(layer.id)?.getState().label : undefined,
     locate: () => { locateImport(layer); },
+    remove: async () => {
+      if(!isImportAllowed(layer))throw new Error('当前账号无法删除此资源');
+      if(projectLibrary?.records.has(layer.id)){if(!await projectLibrary.delete(layer.id,false))throw new Error('删除未完成，请检查资料库提示后重试');}
+      else if(imports.includes(layer))removeImport(layer);
+      syncSceneDisplay();
+    },
     edit: layer.kind === 'Model' ? () => { if (managementWorkspace?.isOpen && !managementWorkspace.openEngineeringTool('models')) return; setWorkbenchDock('editor'); document.querySelector<HTMLButtonElement>('.tab[data-tab="models"]')?.click(); modelEditor.select(layer.id); } : undefined });
-  for (const record of state?.records ?? []) items.push({ id: `machine:${record.id}`, name: record.name, category: '施工机械', visible: (record.machinery as {visible?:boolean})?.visible !== false,
+  for (const record of state?.records ?? []) items.push({ ...managementWorkspace?.getDisplayObjectRemoval('machine', record.id), id: `machine:${record.id}`, name: record.name, category: '施工机械', visible: (record.machinery as {visible?:boolean})?.visible !== false,
     locate: async () => { await managementWorkspace?.locateWorkbenchMachinery(record.id); },
     edit: async () => { if (managementWorkspace?.isOpen) { await managementWorkspace.editFieldObject('machine', record.id); return; } requestedMachineryRecord = record.id; document.querySelector<HTMLButtonElement>('.tab[data-tab="machinery"]')?.click(); } });
   const categories: Record<string,string> = { personnel: '防护人员', responsibility: '防护责任区', workArea: '人员工作区', limit: '铁路安全限界', envelope: '机械倾覆范围' };
-  for (const object of managementWorkspace?.getWorkbenchDisplayObjects() ?? []) items.push({ id: object.key, name: object.name, category: categories[object.kind] ?? object.kind, visible: true,
+  for (const object of managementWorkspace?.getWorkbenchDisplayObjects() ?? []) items.push({ ...managementWorkspace?.getDisplayObjectRemoval(object.kind, object.id), id: object.key, name: object.name, category: categories[object.kind] ?? object.kind, visible: true,
     locate: async () => { await managementWorkspace?.locateRailDisplayObject(object.id); },
     edit: async () => { if (managementWorkspace?.isOpen) { await managementWorkspace.editFieldObject(object.kind, object.id); return; } requestedRailDisplayObject = { kind: object.kind, id: object.id }; document.querySelector<HTMLButtonElement>('.tab[data-tab="rail-safety"]')?.click(); } });
-  for (const object of managementWorkspace?.isOpen && !state?.canView ? [] : markupTools?.getDisplayItems() ?? []) items.push({ id: `markup:${object.id}`, name: object.name, category: '标绘对象', visible: object.defaultVisible,
+  for (const object of managementWorkspace?.isOpen && !state?.canView ? [] : markupTools?.getDisplayItems() ?? []) items.push({ ...localRemoval(markupTools?.getDisplayObjectRemoval(object.id)), id: `markup:${object.id}`, name: object.name, category: '标绘对象', visible: object.defaultVisible,
     edit: () => { if (managementWorkspace?.isOpen && !managementWorkspace.openEngineeringTool('markup')) return; document.querySelector<HTMLButtonElement>('.tab[data-tab="markup"]')?.click(); } });
-  for (const object of managementWorkspace?.isOpen && !state?.canView ? [] : foundationPitMonitoring.getDisplayItems()) items.push({ id: object.id, name: object.name, category: object.kind === 'model' ? '基坑模型' : object.kind === 'marker' ? '基坑中心提示' : '基坑监测点', visible: object.defaultVisible, edit: () => { if (managementWorkspace?.isOpen && !managementWorkspace.openEngineeringTool('monitoring')) return; document.querySelector<HTMLButtonElement>('.tab[data-tab="monitoring"]')?.click(); } });
+  for (const object of managementWorkspace?.isOpen && !state?.canView ? [] : foundationPitMonitoring.getDisplayItems()) items.push({ ...localRemoval(foundationPitMonitoring.getDisplayObjectRemoval(object.id)), id: object.id, name: object.name, category: object.kind === 'model' ? '基坑模型' : object.kind === 'marker' ? '基坑中心提示' : '基坑监测点', visible: object.defaultVisible, edit: () => { if (managementWorkspace?.isOpen && !managementWorkspace.openEngineeringTool('monitoring')) return; document.querySelector<HTMLButtonElement>('.tab[data-tab="monitoring"]')?.click(); } });
   sceneDisplayPanel.setContext(state?.projectId ?? 'workbench-local', state?.actorId, items);
   for (const layer of imports) applyImportDisplay(layer);
 }
@@ -2991,3 +3128,4 @@ $("#basemap").addEventListener("change", () => projectLibrary?.saveView());
 
 $("#videoArClear").textContent = "关闭回放";
 $("#videoArClear").title = "关闭当前回放，已保存资料仍保留；永久删除请使用本机资料库";
+

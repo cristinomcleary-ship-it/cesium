@@ -197,3 +197,17 @@ body.sand-table-immersive .shell { grid-template-columns:0 minmax(0,1fr); grid-t
 .rail-safety-panel .rs-display-tabs{grid-template-columns:repeat(2,minmax(0,1fr))}
 @media(max-width:1180px){.shell.workbench-right-dock{--workbench-dock-width:370px}}
 @media(max-width:760px){.shell.workbench-right-dock{--workbench-dock-width:min(340px,65vw);grid-template-rows:54px minmax(0,1fr)}.workbench-right-dock>.sidebar{grid-column:2;grid-row:2;border-bottom:0}.workbench-right-dock>.viewport{grid-column:1;grid-row:2}.workbench-dock-tabs button{font-size:11px;padding:6px 3px}.workbench-right-dock>.sidebar>footer{padding:0 8px;font-size:9px}}
+
+
+/* Model placement keeps navigation available and gives the click a clear purpose. */
+.model-placement-prompt { position:absolute;z-index:20;top:72px;left:50%;transform:translateX(-50%);width:min(640px,calc(100% - 32px));box-sizing:border-box;display:flex;align-items:center;gap:14px;padding:13px 16px;border:1px solid #46c9d5;border-radius:10px;background:#0b2738f2;color:#ddf8fc;font-size:13px;box-shadow:0 8px 28px #0006; }
+.model-placement-prompt[hidden] { display:none; }
+.model-placement-prompt span { flex:1;line-height:1.6; }
+.model-placement-prompt button { flex:none;cursor:pointer;padding:8px 12px;border:1px solid #5c9aaf;border-radius:6px;background:#183d50;color:#e8faff; }
+.model-placement-active .model-tools { visibility:hidden;pointer-events:none; }
+.model-transform-fields { display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0 9px; }
+.model-transform-fields label { display:flex;flex-direction:column;gap:5px;font-size:11px;color:#adc5d6; }
+.model-transform-fields input { box-sizing:border-box;width:100%;min-width:0;padding:8px;border:1px solid #34576d;border-radius:5px;background:#071b29;color:#e9f6ff;font:inherit; }
+.model-transform-fields input:focus { outline:2px solid #46c9d5;outline-offset:1px; }
+.model-transform-actions { grid-template-columns:repeat(3,minmax(0,1fr)); }
+@media(max-width:600px) { .model-transform-fields { grid-template-columns:repeat(2,minmax(0,1fr)); } .model-placement-prompt { top:50px;font-size:12px; } .model-tools { bottom:12px;max-height:55vh;overflow:auto; } }

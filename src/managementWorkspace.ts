@@ -11,6 +11,7 @@ import type { ManagementSession, ManagementSnapshot } from './managementTypes';
 import type { ManagementFieldContext, ManagementSceneContext } from './managementSceneTypes';
 import type { FieldObjectReference } from './railwayWorkflowTypes';
 import type { RailSafetyRiskSnapshot } from './railSafetyRiskTypes';
+import type { RailSafetyGuard } from './railSafetyTypes';
 import type { SafetyWorkspace } from './safetyWorkspace';
 import { strictModelSurfacePick, type SurfacePickResult } from './safetyModelSurfacePicker';
 import './managementWorkspace.css';
@@ -235,7 +236,43 @@ export class ManagementWorkspace {
   /** Match the existing scene resource gate; personal display overrides cannot grant access. */
   getWorkbenchLayerAccess() { return this.safety.getManagementResourceAccess(); }
 
-  getWorkbenchDisplayObjects() { return this.railSafety.getDisplayObjects(); }
+  getWorkbenchDisplayObjects() {
+    const placed = new Set(this.getWorkbenchMachineryState().records.map(record => record.id));
+    return this.railSafety.getDisplayObjects().filter(object => object.kind !== 'envelope' || placed.has(object.id));
+  }
+
+  /** Capture the displayed revision so a stale row cannot delete a newer or different-project object. */
+  getDisplayObjectRemoval(kind: string, id: string): { remove: () => Promise<void>; detail: string } | undefined {
+    const state = this.getWorkbenchMachineryState();
+    if (this.disposed || !state.canEdit) return;
+    const projectId = this.data!.projectId, actorId = this.session!.userId, generation = this.machineryContextGeneration;
+    const collection = kind === 'machine' ? 'resources' : 'railSafety';
+    const record = this.data!.collections[collection].find(item => item.id === id && item.projectId === projectId && item.status !== 'deleted' && !item.deletedAt);
+    if (!record) return;
+    const definition = record.definition as RailSafetyGuard | { kind: string } | undefined;
+    // Responsibility polygons and fall envelopes are derived parts, not independently deletable resources.
+    if (!(kind === 'machine' && !!readMachineryState(record.machinery)
+      || kind === 'limit' && definition?.kind === 'limit'
+      || kind === 'workArea' && definition?.kind === 'guard' && !!(definition as RailSafetyGuard).workArea)) return;
+    const revision = record.revision;
+    const detail = kind === 'machine' ? '删除三维机械模型，保留设备台账和关联任务'
+      : kind === 'workArea' ? '删除人员工作区，保留防护人员与责任区' : '删除该限界，保留历史记录';
+    return { detail, remove: async () => {
+      if (this.disposed || generation !== this.machineryContextGeneration || projectId !== this.data?.projectId || actorId !== this.session?.userId || !this.getWorkbenchMachineryState().canEdit) throw new Error('项目或账号权限已变化，请刷新后重新选择要删除的对象。');
+      const current = this.data.collections[collection].find(item => item.id === id && item.projectId === projectId && item.status !== 'deleted' && !item.deletedAt);
+      if (!current || current.revision !== revision) throw new Error('对象已更新或删除，请刷新显示列表后重试。');
+      if (!this.guardNavigation()) throw new Error('请先保存或取消当前编辑，再删除显示对象。');
+      if (kind === 'workArea') {
+        const next = { ...(current.definition as RailSafetyGuard) };
+        delete next.workArea;
+        await this.mutateMachinery('railSafety.save', id, revision, { name: current.name, definition: next, taskId: current.taskId, reason: '从显示设置删除人员工作区' });
+      } else {
+        await this.mutateMachinery(kind === 'machine' ? 'machinery.remove' : 'railSafety.remove', id, revision, { reason: detail });
+      }
+      this.workbench.onChange?.();
+      this.queueFieldUpdate();
+    } };
+  }
   setWorkbenchDisplayVisibility(overrides: Record<string, boolean>, labelsVisible: boolean) {
     const machines: Record<string, boolean> = Object.create(null);
     for (const [key, value] of Object.entries(overrides)) if (key.startsWith('machine:')) machines[key.slice(8)] = value;
@@ -850,3 +887,4 @@ export class ManagementWorkspace {
   debugStats() {return{active:this.active,mode:this.mode,selection:this.selection,measurement:!!this.measurement,backViews:this.backViews.length,viewerCount:document.querySelectorAll('#cesiumContainer canvas').length,videoCount:document.querySelectorAll('video').length,listeners:{preRender:this.viewer.scene.preRender.numberOfListeners,postRender:this.viewer.scene.postRender.numberOfListeners,clock:this.viewer.clock.onTick.numberOfListeners,cameraChanged:this.viewer.camera.changed.numberOfListeners},scene:this.safety.debugStats()};}
   dispose():void {if(this.disposed)return;this.disposed=true;this.close();clearInterval(this.machineryRefreshTimer);clearTimeout(this.sessionExpiryTimer);this.events.abort();clearTimeout(this.messageTimer);this.ui.dispose();this.anchorSelector.destroy();this.feedback.remove();this.layersDialog.remove();this.videoDiagnostics.dispose();this.machinery.dispose();this.railSafety.dispose();}
 }
+

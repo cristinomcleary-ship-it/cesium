@@ -274,10 +274,11 @@ export class SceneLibrary {
 
   markVideo(id: string) { this.activeVideoId = id; this.render(); this.saveView(); }
   markImagery(id: string) { this.activeImageryId = id; this.render(); this.saveView(); }
-  async delete(id: string, confirm = true) {
-    if (this.restoring.has(id) || this.pending) return;
+  async delete(id: string, confirm = true): Promise<boolean> {
+    if (this.restoring.has(id) || this.pending) { this.hooks.notify("请等待当前资料保存或恢复完成后再删除",true); return false; }
     const name = this.records.get(id)?.name ?? this.drafts.get(id)?.name ?? id;
-    if (confirm && !window.confirm("删除“" + name + "”及其本机保存副本？原始导入文件不会被删除。")) return;
+    if (confirm && !window.confirm("删除“" + name + "”及其本机保存副本？原始导入文件不会被删除。")) return false;
+    const unsaved = this.updates.get(id);
     this.deleting.add(id); this.updates.delete(id); this.pending++; this.render();
     try {
       await libraryRequest("/records/" + id, { method: "DELETE" });
@@ -288,9 +289,16 @@ export class SceneLibrary {
         this.hooks.setBasemap("street"); this.activeImageryId = "";
         const select = document.querySelector<HTMLSelectElement>("#basemap"); if (select) select.value = "street";
       }
-      this.saveView();
-    } catch (error) { this.error = "删除未完成，资料保留：" + this.message(error); this.hooks.notify(this.error, true); }
-    finally { this.deleting.delete(id); this.pending--; this.render(); }
+      this.error = ""; this.saveView();return true;
+    } catch (error) {
+      if (unsaved) this.updates.set(id, unsaved);
+      this.error = "删除未完成，资料保留：" + this.message(error); this.hooks.notify(this.error, true);return false;
+    }
+    finally {
+      this.deleting.delete(id); this.pending--;
+      if (this.updates.has(id) && !this.updateTimer) this.updateTimer = window.setTimeout(() => { this.updateTimer = 0; void this.flush(); }, 120);
+      this.render();
+    }
   }
   async clear() {
     if (this.busy) return this.hooks.notify("请等待资料保存或恢复完成", true);
@@ -329,3 +337,4 @@ export class SceneLibrary {
     const clear = document.querySelector<HTMLButtonElement>("#clearAll"); if (clear) clear.disabled = this.busy;
   }
 }
+

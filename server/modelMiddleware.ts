@@ -15,6 +15,7 @@ import { basename, extname, isAbsolute, join, relative, resolve } from "node:pat
 import { spawn, type ChildProcess } from "node:child_process";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { findSketchupSdk } from "../tools/sketchup-sdk-runtime.mjs";
 
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
 const MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
@@ -26,7 +27,7 @@ const FORMATS = ["dwg", "rvt", "skp"] as const;
 const supported = new Set(["glb", ...FORMATS]);
 
 type ConverterFormat = typeof FORMATS[number];
-type Converter = { executable: string; args: string[]; timeoutMinutes?: number; validated?: boolean };
+type Converter = { executable?: string; args?: string[]; timeoutMinutes?: number; validated?: boolean; headless?: boolean; provider?: "sketchup-sdk"; sdkDirectory?: string };
 type ConverterConfig = Partial<Record<ConverterFormat, Converter>>;
 type ReadyConverter = { executable: string; args: string[]; timeoutMs: number };
 type ConverterInspection = {
@@ -85,16 +86,44 @@ function loadConfig(configPath: string): { config: ConverterConfig; error?: stri
   }
 }
 
-function inspectConverter(format: ConverterFormat, loaded: ReturnType<typeof loadConfig>): ConverterInspection {
+function inspectConverter(format: ConverterFormat, loaded: ReturnType<typeof loadConfig>, projectRoot: string): ConverterInspection {
   const details: string[] = [];
-  if (loaded.error) return { available: false, reason: loaded.error, details };
   const configured = loaded.config[format];
+  const bundledLauncher = typeof configured?.executable === "string" && resolve(configured.executable).toLowerCase() === resolve(projectRoot, "tools/sketchup-to-glb.cmd").toLowerCase();
+  if (format === "skp" && (!configured || configured.provider === "sketchup-sdk" || bundledLauncher)) {
+    if (loaded.error && loaded.error !== "未找到 model-converters.json") return { available: false, reason: loaded.error, details };
+    if (configured?.sdkDirectory !== undefined && (typeof configured.sdkDirectory !== "string" || !configured.sdkDirectory.trim())) return {
+      available: false, reason: "skp.sdkDirectory 必须是有效目录字符串；使用默认位置时请省略该项", details: [],
+    };
+    const runtime = findSketchupSdk(projectRoot, { sdkDirectory: configured?.sdkDirectory });
+    const script = resolve(projectRoot, "tools/sketchup-headless.mjs");
+    if (!runtime.available || !runtime.directory) return runtime;
+    if (!existsSync(script)) return { available: false, reason: "SKP 后台转换脚本缺失，请完整更新 tools 文件夹", details: [] };
+    return {
+      ...runtime,
+      converter: {
+        executable: process.execPath,
+        args: [script, "{input}", "{output}", "--sdk", runtime.directory],
+        timeoutMs: DEFAULT_TIMEOUT_MINUTES * 60_000,
+      },
+    };
+  }
+  if (loaded.error) return { available: false, reason: loaded.error, details };
   if (!configured) return { available: false, reason: `${format.toUpperCase()} 转换器尚未配置`, details };
+  if (format === "skp") {
+    const legacyDesktop = /(?:^|[\\/])sketchup(?:\.exe)?$/i.test(configured.executable ?? "")
+      || (Array.isArray(configured.args) && configured.args.some((arg) => /RubyStartup|sketchup_export_glb\.rb/i.test(String(arg))));
+    if (legacyDesktop || configured.headless !== true) return {
+      available: false,
+      reason: "旧 SKP 转换配置需要启动 SketchUp 窗口，已停用",
+      details: ["将 skp 配置改为 {\"provider\":\"sketchup-sdk\"} 并安装独立 C SDK，或为已验证的第三方后台转换器设置 headless: true", "导入过程不会自动打开本地 SketchUp"],
+    };
+  }
   if (configured.validated !== true) {
     return {
       available: false,
       reason: `${format.toUpperCase()} 转换器尚未通过本机验证`,
-      details: ["请先完成转换器许可、首次启动和测试转换，再将 validated 设为 true"],
+      details: ["请先完成转换器依赖和测试转换，再将 validated 设为 true"],
     };
   }
   if (typeof configured.executable !== "string" || !configured.executable.trim()) {
@@ -296,7 +325,7 @@ export function createModelMiddleware(projectRoot: string) {
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
     if (requestUrl.pathname === "/__models/status") {
       const loaded = loadConfig(configPath);
-      const inspections = Object.fromEntries(FORMATS.map((format) => [format, inspectConverter(format, loaded)])) as Record<ConverterFormat, ConverterInspection>;
+      const inspections = Object.fromEntries(FORMATS.map((format) => [format, inspectConverter(format, loaded, projectRoot)])) as Record<ConverterFormat, ConverterInspection>;
       return sendJson(response, 200, {
         native: ["glb"],
         converters: Object.fromEntries(FORMATS.map((format) => [format, inspections[format].available])),
@@ -318,7 +347,7 @@ export function createModelMiddleware(projectRoot: string) {
       let converter: ReadyConverter | undefined;
       let ownsConversionSlot = false;
       if (extension !== "glb") {
-        const inspection = inspectConverter(extension as ConverterFormat, loadConfig(configPath));
+        const inspection = inspectConverter(extension as ConverterFormat, loadConfig(configPath), projectRoot);
         if (!inspection.available || !inspection.converter) {
           return sendJson(response, 422, {
             ok: false,
@@ -379,11 +408,22 @@ export function createModelMiddleware(projectRoot: string) {
         }
         if (controller.signal.aborted || response.destroyed) throw controller.signal.reason ?? new ClientDisconnectedError();
         validateGlb(output);
+        let conversionWarnings: string[] = [];
+        if (extension === "skp" && existsSync(`${output}.conversion.json`)) {
+          try {
+            const metadataPath = `${output}.conversion.json`;
+            if (statSync(metadataPath).size <= 64 * 1024) {
+              const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as { warnings?: unknown };
+              if (Array.isArray(metadata.warnings)) conversionWarnings = metadata.warnings.filter((item): item is string => typeof item === "string").slice(0, 12);
+            }
+          } catch { /* Optional diagnostic metadata never makes a valid GLB fail. */ }
+        }
         keepJob = true;
         return sendJson(response, 200, {
           ok: true,
           url: `/__models/files/${id}/${encodeURIComponent(basename(output))}`,
           converted: extension !== "glb",
+          warnings: conversionWarnings,
         });
       } catch (error) {
         if (error instanceof ClientDisconnectedError || controller.signal.aborted || response.destroyed) return;
@@ -418,3 +458,4 @@ export function createModelMiddleware(projectRoot: string) {
     createReadStream(requested).pipe(response);
   };
 }
+

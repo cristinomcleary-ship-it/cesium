@@ -9,6 +9,8 @@ export type SceneDisplayItem = {
   detail?: string;
   locate?: () => void | Promise<void>;
   edit?: () => void | Promise<void>;
+  /** Remove this resource from its owning project and persist the change; reject on failure. */
+  remove?: () => void | Promise<void>;
 };
 export type SceneDisplayPanelOptions = {
   onApply: (overrides: Record<string, boolean>, labelsVisible: boolean) => void;
@@ -36,6 +38,8 @@ export class SceneDisplayPanel {
   private disposed = false;
   private directorySignature = "";
   private appliedSignature = "";
+  private contextRevision = 0;
+  private readonly removing = new Set<string>();
 
   constructor(host: HTMLElement, private readonly options: SceneDisplayPanelOptions) {
     this.root.setAttribute("aria-label", "场景显示管理");
@@ -50,7 +54,7 @@ export class SceneDisplayPanel {
       <div class="sdp-selection" data-role="selection-bar"></div>
       <div class="sdp-group-editor" data-role="group-editor" hidden></div>
       <div class="sdp-scroll" data-role="list"></div>
-      <footer class="sdp-footer"><p>勾选对象可跨类型建组。分组开关批量调整成员显示，解散分组不会删除对象。</p><p>显示调整不会改变业务数据、侵限筛查或定位统计。</p><p class="sdp-status" data-role="status" role="status" hidden></p></footer>`;
+      <footer class="sdp-footer"><p>勾选对象可跨类型建组。分组开关批量调整成员显示，解散分组不会删除对象。</p><p>显示开关只调整个人视图；删除会从当前项目移除对应资源。</p><p class="sdp-status" data-role="status" role="status" hidden></p></footer>`;
     host.append(this.root);
     this.root.addEventListener("click", event => {
       const button = (event.target as Element).closest<HTMLButtonElement>("button[data-action]");
@@ -96,10 +100,11 @@ export class SceneDisplayPanel {
     this.items = items.filter(item => typeof item.id === "string" && item.id.length > 0 && item.id.length <= 500 && !seen.has(item.id) && !!seen.add(item.id)).map(item => ({ ...item, name: item.name || "未命名对象", category: item.category || "其他", visible: item.visible !== false }));
     this.store.setItems(this.items);
     if (changed) {
+      this.contextRevision++;
       this.query = ""; this.selected.clear(); this.editor = undefined; this.message = ""; this.error = false;
       this.find<HTMLInputElement>('[data-role="search"]').value = "";
     } else this.selected = new Set([...this.selected].filter(id => seen.has(id)));
-    const signature = JSON.stringify([this.store.scopeKey, this.items.map(item => [item.id, item.name, item.category, item.visible, item.detail, !!item.locate, !!item.edit])]);
+    const signature = JSON.stringify([this.store.scopeKey, this.items.map(item => [item.id, item.name, item.category, item.visible, item.detail, !!item.locate, !!item.edit, !!item.remove])]);
     if (changed || signature !== this.directorySignature) { this.directorySignature = signature; this.render(); }
     // Hosts may rebuild an underlying renderer while retaining the same logical IDs.
     // Re-publish the current scope on every host update; apply() guards reentrant callbacks.
@@ -114,6 +119,7 @@ export class SceneDisplayPanel {
   private button(action: string, title: string): HTMLButtonElement { const node = element("button", "", title); node.type = "button"; node.dataset.action = action; return node; }
   private matches(item: SceneDisplayItem): boolean { const query = this.query.trim().toLocaleLowerCase(); return !query || `${item.name} ${item.category} ${item.detail || ""}`.toLocaleLowerCase().includes(query); }
   private item(id: string) { return this.items.find(item => item.id === id); }
+  private removalKey(id: string): string { return JSON.stringify([this.store.scopeKey, id]); }
   private setMessage(message: string, error = false): void { this.message = message; this.error = error; this.renderStatus(); if (error) this.options.onError?.(message); }
 
   private apply(force = false): void {
@@ -188,14 +194,16 @@ export class SceneDisplayPanel {
   }
   private itemRow(item: SceneDisplayItem, showCategory = false): HTMLElement {
     const row = element("div", "sdp-item"); row.dataset.displayId = item.id; row.classList.toggle("is-hidden", !this.store.isVisible(item.id));
-    const select = element("input", "sdp-item-select"); select.type = "checkbox"; select.dataset.selectItem = item.id; select.checked = this.selected.has(item.id); select.setAttribute("aria-label", `选择${item.name}加入分组`);
+    const removing = this.removing.has(this.removalKey(item.id)); row.classList.toggle("is-removing", removing); row.setAttribute("aria-busy", String(removing));
+    const select = element("input", "sdp-item-select"); select.type = "checkbox"; select.dataset.selectItem = item.id; select.checked = this.selected.has(item.id); select.disabled = removing; select.setAttribute("aria-label", `选择${item.name}加入分组`);
     const name = element("div", "sdp-item-name"); name.append(element("strong", "", item.name)); name.title = item.name;
     const detail = [showCategory ? item.category : "", item.detail || ""].filter(Boolean).join(" · "); if (detail) name.append(element("small", "", detail));
-    const visible = this.store.isVisible(item.id), toggle = this.button("item-visibility", visible ? "显示" : "隐藏"); toggle.dataset.itemId = item.id; toggle.className = "sdp-item-visibility"; toggle.setAttribute("aria-pressed", String(visible)); toggle.setAttribute("aria-label", `${visible ? "隐藏" : "显示"}${item.name}`);
+    const visible = this.store.isVisible(item.id), toggle = this.button("item-visibility", visible ? "显示" : "隐藏"); toggle.dataset.itemId = item.id; toggle.className = "sdp-item-visibility"; toggle.disabled = removing; toggle.setAttribute("aria-pressed", String(visible)); toggle.setAttribute("aria-label", `${visible ? "隐藏" : "显示"}${item.name}`);
     row.append(select, name, toggle);
     const tools = element("div", "sdp-item-tools");
-    if (item.locate) { const button = this.button("item-locate", "定位"); button.dataset.itemId = item.id; button.title = visible ? "定位此对象" : "先显示此对象再定位"; button.disabled = !visible; tools.append(button); }
-    if (item.edit) { const button = this.button("item-edit", "配置"); button.dataset.itemId = item.id; tools.append(button); }
+    if (item.locate) { const button = this.button("item-locate", "定位"); button.dataset.itemId = item.id; button.title = visible ? "定位此对象" : "先显示此对象再定位"; button.disabled = !visible || removing; tools.append(button); }
+    if (item.edit) { const button = this.button("item-edit", "配置"); button.dataset.itemId = item.id; button.disabled = removing; tools.append(button); }
+    if (item.remove) { const button = this.button("item-remove", removing ? "删除中…" : "删除"); button.dataset.itemId = item.id; button.className = "sdp-item-remove"; button.disabled = removing; button.title = `从当前项目删除${item.name}`; button.setAttribute("aria-label", `删除${item.name}`); tools.append(button); }
     if (tools.children.length) row.append(tools); return row;
   }
   private renderGroups(host: HTMLElement): void {
@@ -230,6 +238,30 @@ export class SceneDisplayPanel {
     else if (input.dataset.toggleGroup) { this.store.setGroupVisibility(input.dataset.toggleGroup, input.checked); this.render(); this.apply(); }
   }
   private group(id: string): SceneDisplayGroup | undefined { return this.store.getGroups().find(group => group.id === id); }
+  private async removeItem(id: string): Promise<void> {
+    const item = this.item(id), key = this.removalKey(id);
+    if (!item?.remove || this.removing.has(key)) return;
+    const scope = this.store.scopeKey, revision = this.contextRevision;
+    const sameContext = () => !this.disposed && this.store.scopeKey === scope && this.contextRevision === revision;
+    this.removing.add(key); this.renderList(); this.setMessage(`正在删除“${item.name}”…`);
+    try {
+      // The host owns data and renderer teardown. Only update this directory after it succeeds.
+      await item.remove();
+      this.store.removeItems([id], scope);
+      if (!sameContext()) return;
+      this.items = this.items.filter(current => current.id !== id);
+      this.selected.delete(id);
+      this.store.setItems(this.items);
+      this.directorySignature = "";
+      this.render(); this.apply(); this.setMessage(`已删除“${item.name}”。`);
+    } catch (error) {
+      if (sameContext()) this.setMessage(`删除“${item.name}”失败：${errorText(error)}`, true);
+    } finally {
+      this.removing.delete(key);
+      // Returning to this project during a pending delete must not leave stale busy controls.
+      if (!this.disposed && this.store.scopeKey === scope) this.render();
+    }
+  }
   private saveGroupEditor(): void {
     if (!this.editor) return;
     try {
@@ -259,6 +291,7 @@ export class SceneDisplayPanel {
       } else if (action === "dissolve-group") { this.store.removeGroup(button.dataset.groupId!); this.render(); this.setMessage("已解散分组，场景对象与当前显隐保持不变。"); }
       else if (action === "cancel-group") { this.editor = undefined; this.render(); }
       else if (action === "save-group") this.saveGroupEditor();
+      else if (action === "item-remove") await this.removeItem(button.dataset.itemId!);
       else if (action === "item-locate" || action === "item-edit") {
         const item = this.item(button.dataset.itemId!); button.disabled = true;
         try { await (action === "item-locate" ? item?.locate?.() : item?.edit?.()); } finally { if (!this.disposed) this.render(); }
@@ -266,3 +299,4 @@ export class SceneDisplayPanel {
     } catch (error) { this.setMessage(errorText(error), true); }
   }
 }
+
