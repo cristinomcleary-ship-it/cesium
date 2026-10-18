@@ -705,7 +705,7 @@ function updateModelTools(item: EditableModel | null, mode: EditMode) {
 const modelEditor = new ModelEditor(viewer, updateModelTools);
 let resumeVideoOverlayInteractions: (() => void) | undefined;
 videoModelOverlay = new VideoModelOverlay(viewer, {
-  getImports: () => imports,
+  getImports: () => imports.filter(isImportAllowed),
   getRecord: id => projectLibrary?.records.get(id),
   notify: toast,
   onEnter: () => {
@@ -3083,7 +3083,11 @@ function setWorkbenchMachineryPanelOpen(open: boolean): void {
   document.body.classList.add('workbench-machinery-open');
 }
 
-function renderWorkbenchMachinery(): void { scheduleSceneDisplay(); }
+function renderWorkbenchMachinery(): void {
+  // Session changes must also revoke paused AR copies before another frame renders.
+  videoModelOverlay?.refreshResources();
+  scheduleSceneDisplay();
+}
 
 function setWorkbenchDock(mode: 'display' | 'editor'): void {
   document.getElementById('workbenchDisplayHost')!.hidden = mode !== 'display';
@@ -3136,7 +3140,11 @@ function syncSceneDisplay(): void {
 }
 function applySceneDisplay(overrides: Record<string,boolean>, labelsVisible: boolean): void {
   sceneDisplayOverrides = overrides;
-  if (videoModelOverlay?.active) return;
+  if (videoModelOverlay?.active) {
+    videoModelOverlay.refreshResources();
+    for (const layer of imports) applyImportDisplay(layer);
+    return;
+  }
   for (const layer of imports) applyImportDisplay(layer);
   const markups: Record<string,boolean> = Object.create(null);
   for (const [key, visible] of Object.entries(overrides)) if (key.startsWith('markup:')) markups[key.slice(7)] = visible;
@@ -3159,9 +3167,10 @@ function isImportDisplayed(layer: ImportRecord): boolean {
   return isImportAllowed(layer) && (sceneDisplayOverrides[`layer:${layer.id}`] ?? layer.visible);
 }
 function applyImportDisplay(layer: ImportRecord): void {
-  if (videoModelOverlay?.active) return;
   const resource = layer.resource as {show:boolean;isDestroyed?:()=>boolean};
   if (resource.isDestroyed?.()) return;
+  // AR owns display preferences, but never the account's access permissions.
+  if (videoModelOverlay?.active && isImportAllowed(layer)) return;
   const visible = isImportDisplayed(layer);
   if (resource.show === visible) return;
   resource.show = visible;

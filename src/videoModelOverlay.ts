@@ -299,7 +299,9 @@ export class VideoModelOverlay {
   }
   refreshResources() {
     if (this.destroyed) return;
-    const items = this.resources?.list() ?? this.options.getImports().filter(r => ['CAD', 'Model', '3D Tiles'].includes(r.kind)).map(r => ({ id: r.id, name: r.name, kind: r.kind, available: true, description: '', error: undefined }));
+    const imports = this.options.getImports(), allowedIds = new Set(imports.map(item => item.id));
+    const items = this.resources?.list().filter(item => allowedIds.has(item.id)) ?? imports.filter(r => ['CAD', 'Model', '3D Tiles'].includes(r.kind)).map(r => ({ id: r.id, name: r.name, kind: r.kind, available: true, description: '', error: undefined }));
+    this.selected = new Set([...this.selected].filter(id => allowedIds.has(id)));
     if (!this.selectionInitialized && items.length) { for (const item of items) if (item.kind !== '3D Tiles') this.selected.add(item.id); this.selectionInitialized = true; }
     const list = this.el('ccResources'); list.replaceChildren();
     for (const item of items) {
