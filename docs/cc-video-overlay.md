@@ -25,7 +25,7 @@
 - 无时间戳的空三照片必须有可靠的抽帧时间对应关系。不等间隔、重新编号或多段拼接的数据不能用一个固定间隔推算，本版需先整理成可核对的等间隔抽帧序列后使用。
 - 稀疏空三相机之间采用插值，快速运动、变焦、滚动快门、时间误差和镜头畸变均可能造成局部偏移。整体位置微调不能消除这些误差。
 - 二维 CAD 需要正确的空间定位及工程标高。贴地或贴模型显示的图纸应检查其真实三维几何是否满足视频融合用途。
-- 这是透视叠加。现场建筑、树木和车辆对工程模型的真实遮挡，需要另外提供可用于遮挡的现状几何或深度数据。
+- 现场遮挡使用已加载的网格倾斜摄影提供深度，需在“地表与建筑遮挡”中启用并指定参照。视频中的实时车辆、人员及成果采集后发生变化的物体，没有对应几何时不能产生准确遮挡。
 - 本版接收单一透视相机组、`XRightYDown` 相机坐标和 WGS84 经纬度 XML（EPSG:4326／4979）。其他投影坐标系、多相机组或非零 Skew 会明确提示，不会静默套用相机参数。
 
 ## 模型在地图中对齐、在视频中错位时
@@ -48,6 +48,18 @@ CC 对地理参考系默认采用相应 datum 的椭球高；这属于 [CC 的�
 
 仍有偏差时，在问题画面暂停，点击“导出配准诊断”。JSON 包含视频时间、原始空三相机、成果关联后的相机、相机校正参数／固定基准／变换矩阵、最终校正相机、内参、畸变，以及有权访问的所选对象／倾斜摄影的保存矩阵、显示矩阵、比例和微调值，不包含原视频或模型文件。关联过期时仍可导出诊断。凭这些实际数值排查，不以修改已对齐的模型定位来补偿未知相机误差。
 
+## 地下构件与实景遮挡
+
+视频画面本身没有三维深度。未开启实景遮挡时，工程模型中的桩基、地下构件和被建筑挡住的部分仍会渲染；隐藏地图底图并不会自动识别地下部分。
+
+在“地表与建筑遮挡”勾选启用，选择同一现场、已定位并已与视频校准的网格倾斜摄影，重新点击“开始融合”。也可点击“使用相机关联的倾斜摄影”明确采用当前关联成果。参照只提供遮挡深度，地表和建筑前方的工程几何保留，后方几何被遮住，视频颜色仍然可见。无需在“叠加对象”里再勾选参照纹理。
+
+遮挡选择与相机坐标关联、叠加图层选择分别保存。旧方案默认关闭，避免自动采用另一份同名或不同航次成果。遮挡参照使用地图原定位，不参加对象整体平移；如这份倾斜摄影已有非零视频对象微调，需先关闭遮挡并核实、恢复该图层微调后再启用。模型和 CAD 的原定位、已有微调及相机校正不会被自动改变。
+
+参照瓦片尚未加载完成或加载失败时，暂时隐藏全部工程叠加，避免露出尚未被遮挡的地下部分。参照被卸载或失去访问权限后需重新加载或关闭遮挡，不会替换为另一份成果。退出融合会恢复参照原有材质、样式和地图显示状态。
+
+遮挡的精度与范围取决于参照几何及视频配准。需要覆盖相应地表的连续三角网；缺失地面、网格孔洞、年代不同或坐标偏移仍可能造成漏遮或误遮。本版不将点云当作连续地表，不自动使用零米高程切割；参照存在剖切或自定义顶点形变时会提示先处理冲突。地下构件仍保留在原模型中，地图查看和后续分析不受此次视频遮挡影响。
+
 ## 本次验收范围
 
 本次开发依据现有 Cesium 工程、用户提供的空三 XML 和位置 CSV。尚未取得对应原视频，不宣称已经通过该航次的实景贴合或精度验收。正式验收应提供原视频及可核对的抽帧时间，选取分布在不同位置与深度的同名点，在首、中、尾和转向片段检查偏移；同时验证暂停、拖动进度、离开恢复和保存重开。
@@ -58,7 +70,7 @@ CC 对地理参考系默认采用相应 datum 的椭球高；这属于 [CC 的�
 
 ```bash
 npm run build
-node --experimental-transform-types --test src/ccCameraTrack.test.ts src/ccSceneRegistration.test.ts src/ccCameraRegistration.test.ts src/videoOverlayResources.test.ts src/videoArCamera.test.ts src/videoArCameraFrame.test.ts src/videoArHeight.test.ts
+node --experimental-transform-types --test src/ccCameraTrack.test.ts src/ccSceneRegistration.test.ts src/ccCameraRegistration.test.ts src/videoOverlayResources.test.ts src/videoOverlayOcclusion.test.ts src/videoArCamera.test.ts src/videoArCameraFrame.test.ts src/videoArHeight.test.ts
 node tests/video-overlay-access-regression.mjs
 ```
 
@@ -68,6 +80,9 @@ node tests/video-overlay-access-regression.mjs
 # 需已安装 Playwright、Chromium 和 ffmpeg。
 # START_VITE=1 在同一测试进程启动本地开发服务。
 START_VITE=1 node tools/verify-cc-video-overlay.mjs
+START_VITE=1 node tools/verify-cc-video-occlusion.mjs
 ```
 
 可通过 `PLAYWRIGHT_MODULE`、`BROWSER_EXECUTABLE`、`OUTPUT_DIR` 指定测试环境。设置 `CC_XML_PATH` 可增加实际 XML 的只读解析检查；测试不会上传该文件或将它写入仓库。主页面冒烟测试隔离了外部底图网络，不替代底图服务可用性验收。
+
+独立遮挡回归使用真实 3D Tiles 网格、原材质含 alpha MASK 的地表，以及位于地面上下的不透明和半透明工程构件，实际检查像素隐藏、地上对象和 CAD 保留、遮挡源颜色不进入视频、加载门控、保存重开、退出还原及访问权限变化。该合成场景证明渲染与状态管理行为，不代替现场成果的覆盖完整性和配准验收。

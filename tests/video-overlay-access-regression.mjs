@@ -42,6 +42,7 @@ try {
   const viewer = { container, clock: { currentTime: JulianDate.now() }, scene: { primitives: new PrimitiveCollection(), requestRender() {} }, isDestroyed: () => false, resize() {} };
   const owner = Object.assign(Object.create(VideoModelOverlay.prototype), {
     viewer, selected: new Set(), selectionInitialized: false, destroyed: false, epoch: 0,
+    occlusion: { enabled: false, sourceId: '' },
     video: { pause() {} }, updateTargets() {},
   });
   const host = new Function('managementWorkspace', 'imports', 'videoModelOverlay', 'viewer', 'scheduleSceneDisplay', 'modelEditor', 'projectLibrary', 'sceneDisplayPanel', 'document', `
@@ -127,3 +128,4 @@ try {
   globalThis.document = oldDocument; globalThis.fetch = oldFetch;
   await rm(directory, { recursive: true, force: true });
 }
+
