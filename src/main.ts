@@ -74,7 +74,8 @@ import {
   type DigitalTwinOverviewSnapshot,
   type DigitalTwinResourceRecord,
 } from "./digitalTwinOverview";
-import { VideoArFusion, videoArFusionPanelHtml } from "./videoArFusion";
+import { VideoArFusion, videoArFusionPanelHtml, type SavedReplaySettings } from "./videoArFusion";
+import { VideoModelOverlay, videoModelOverlayPanelHtml, type SavedVideoOverlaySettings } from "./videoModelOverlay";
 import type { CadCoordinateOptions, CadDisplayMode, ImportRecord, TilesetOptions } from "./types";
 import "./style.css";
 
@@ -284,7 +285,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
           <button class="primary" id="loadGis">加载 GIS 数据</button>
         </section>
-        ${videoArFusionPanelHtml}
+        ${videoModelOverlayPanelHtml}
+        <div hidden style="display:none" aria-hidden="true">${videoArFusionPanelHtml.replace('data-panel="videoar"', 'data-panel="legacyvideoar"')}</div>
         ${markupPanelHtml}
         ${foundationPitMonitoringPanelHtml}
         ${threeDReportPanelHtml}
@@ -607,6 +609,7 @@ let safetyWorkspaceLoading: Promise<SafetyWorkspace> | undefined;
 let managementWorkspace: ManagementWorkspace | undefined;
 let managementWorkspaceLoading: Promise<ManagementWorkspace> | undefined;
 let projectLibrary: SceneLibrary | undefined;
+let videoModelOverlay: VideoModelOverlay | undefined;
 const tilesetSourceIds = new Map<string, string>();
 const modelQualityTrackers = new Map<string, ModelQualityTracker>();
 const modelQualityResources = new Map<Cesium3DTileset, ModelQualityTracker>();
@@ -684,7 +687,7 @@ videoArFusion.onShowProjectionModels = () => {
 function updateModelTools(item: EditableModel | null, mode: EditMode) {
   $("#modelTools").classList.toggle("hidden", !item);
   document.querySelectorAll<HTMLButtonElement>("[data-edit-mode]").forEach((button) => button.classList.toggle("active", button.dataset.editMode === mode));
-  if (!item) return;
+  if (!item || videoModelOverlay?.active) return;
   videoArFusion.invalidateProjection("model-transform-changed");
   projectLibrary?.queueUpdate(item.id, { settings: {
     matrix: Matrix4.toArray(item.model.modelMatrix), scale: item.model.scale,
@@ -700,12 +703,82 @@ function updateModelTools(item: EditableModel | null, mode: EditMode) {
 }
 
 const modelEditor = new ModelEditor(viewer, updateModelTools);
+let resumeVideoOverlayInteractions: (() => void) | undefined;
+videoModelOverlay = new VideoModelOverlay(viewer, {
+  getImports: () => imports,
+  getRecord: id => projectLibrary?.records.get(id),
+  notify: toast,
+  onEnter: () => {
+    videoArFusion.setPanelActive(false);
+    videoArFusion.clear();
+    viewer.camera.cancelFlight();
+    const restores: Array<() => void> = [];
+    const resume = () => {
+      for (const restore of restores.splice(0).reverse()) {
+        try { restore(); } catch (error) { console.warn("[CC video overlay] Interaction restore failed", error); }
+      }
+    };
+    try {
+      restores.push(modelEditor.suspendInteractions());
+      restores.push(subsurfaceTools.suspendInteractions());
+      restores.push(foundationPitMonitoring.suspendInteractions());
+      const resumeMarkup = markupTools?.suspendInteractions();
+      if (resumeMarkup) restores.push(resumeMarkup);
+      resumeVideoOverlayInteractions = resume;
+    } catch (error) { resume(); throw error; }
+  },
+  onExit: () => {
+    resumeVideoOverlayInteractions?.(); resumeVideoOverlayInteractions = undefined;
+    applySceneDisplay(sceneDisplayOverrides, sceneDisplayPanel?.labelsVisible ?? true);
+    projectLibrary?.saveView();
+    viewer.scene.requestRender();
+  },
+});
 projectLibrary = new SceneLibrary({
   viewer, getImports: () => imports, addImport, removeImport, modelEditor,
   waitForModelReady, cacheGisBoundingSphere, replaceImagery: replaceLocalImagery,
   setBasemap, getBasemap: () => activeBasemapKey, notify: toast,
-  restoreVideo: (files, settings) => videoArFusion.restoreReplay(files, settings), clearVideo: () => videoArFusion.clear(), layersChanged: renderLayers,
+  restoreVideo: async (files, settings, recordId) => {
+    if ((settings as SavedVideoOverlaySettings)?.mode === "cc-overlay") {
+      videoArFusion.setPanelActive(false); videoArFusion.clear();
+      await videoModelOverlay!.restoreReplay(files, settings as SavedVideoOverlaySettings, recordId);
+    } else {
+      videoModelOverlay!.clear();
+      await videoArFusion.restoreReplay(files, settings as SavedReplaySettings);
+      videoArFusion.setPanelActive(false);
+    }
+  },
+  clearVideo: () => { videoModelOverlay!.clear(); videoArFusion.clear(); },
+  shouldSaveView: () => !videoModelOverlay?.active,
+  layersChanged: renderLayers,
 });
+// Keep a failed first-save ID associated with these files. Retrying from the AR
+// panel must recover the same upload/record, including a lost success response.
+let videoOverlaySaveDraft: { id: string; video: File; source: File } | undefined;
+videoModelOverlay.onSave = async (snapshot, existingId) => {
+  await projectLibrary!.ready;
+  if (existingId) {
+    await projectLibrary!.updateVideoOverlaySettings(existingId, snapshot.settings);
+    return existingId;
+  }
+  const previous = videoOverlaySaveDraft;
+  const retrying = previous?.video === snapshot.files.video && previous.source === snapshot.files.source;
+  const id = retrying ? previous.id : crypto.randomUUID();
+  videoOverlaySaveDraft = { id, video: snapshot.files.video, source: snapshot.files.source };
+  if (projectLibrary!.records.has(id)) {
+    await projectLibrary!.updateVideoOverlaySettings(id, snapshot.settings);
+  } else {
+    const files = Object.fromEntries(Object.entries(snapshot.files).map(([slot, file]) => [slot, { name: file.name, blob: file }]));
+    await projectLibrary!.save(id, snapshot.name, "Drone Video",
+      { video: snapshot.settings as unknown as Record<string, unknown> }, files);
+    // SceneLibrary may recover the previous successful PUT after a lost response;
+    // persist any subsequent edits before reporting this retry as saved.
+    if (retrying) await projectLibrary!.updateVideoOverlaySettings(id, snapshot.settings);
+  }
+  if (videoOverlaySaveDraft?.id === id) videoOverlaySaveDraft = undefined;
+  return id;
+};
+videoModelOverlay.onSaved = id => projectLibrary!.markVideo(id);
 videoArFusion.onReplaySettingsChanged = (controls, sessions, requireSaved) => projectLibrary?.updateVideoControls(controls, sessions, requireSaved);
 videoArFusion.onReplayLoaded = async snapshot => {
   await projectLibrary!.ready;
@@ -838,12 +911,14 @@ document.querySelectorAll<HTMLButtonElement>("[data-edit-mode]").forEach((button
 $("#resetModelTransform").addEventListener("click", () => modelEditor.reset());
 
 function locateImport(item: ImportRecord) {
+  videoModelOverlay?.setPanelActive(false);
   if (item.kind === "Model") viewer.camera.flyToBoundingSphere((item.resource as Model).boundingSphere, { duration: 1.2 });
   else if (item.kind === "CAD" && item.representation === "primitive" && item.boundingSphere) viewer.camera.flyToBoundingSphere(item.boundingSphere, { duration: 1.2 });
   else void viewer.flyTo(item.resource as never);
 }
 
 function renderLayers() {
+  videoModelOverlay?.refreshResources();
   scheduleSceneDisplay();
   projectLibrary?.render();
   safetyWorkspace?.layersChanged();
@@ -866,7 +941,7 @@ function renderLayers() {
     }
     row.querySelector(".visibility")?.addEventListener("click", () => setImportVisibility(item, !item.visible));
     row.querySelector(".fly")?.addEventListener("click", () => locateImport(item));
-    name.addEventListener("click", () => item.kind === "Model" && item.visible && modelEditor.select(item.id));
+    name.addEventListener("click", () => !videoModelOverlay?.active && item.kind === "Model" && item.visible && modelEditor.select(item.id));
     row.querySelector(".remove")?.addEventListener("click", () => {
       if (projectLibrary?.records.has(item.id)) void projectLibrary.delete(item.id);
       else removeImport(item);
@@ -878,7 +953,10 @@ function setImportVisibility(item: ImportRecord, visible: boolean, options: { si
   item.visible = visible;
   sceneDisplayPanel?.setVisibility([`layer:${item.id}`], visible);
   projectLibrary?.queueUpdate(item.id, { visible });
-  if (item.kind === "3D Tiles") {
+  if (videoModelOverlay?.active) {
+    // Map display preferences are retained; the fusion selection owns live visibility.
+    videoModelOverlay.refreshResources();
+  } else if (item.kind === "3D Tiles") {
     (item.resource as Cesium3DTileset).show = visible;
     modelQualityTrackers.get(item.id)?.invalidateView();
     videoArFusion.invalidateProjection("model-visibility-changed");
@@ -1936,6 +2014,7 @@ if (sandTableProjectControl) {
 digitalTwinSyncReady = true;
 syncDigitalTwinDataCenter();
 
+window.addEventListener("beforeunload", () => { videoModelOverlay?.destroy(); videoArFusion.destroy(); }, { once: true });
 window.addEventListener("beforeunload", () => {
   if (electronicSandTableRefreshFrame) window.cancelAnimationFrame(electronicSandTableRefreshFrame);
   electronicSandTableRefreshFrame = 0;
@@ -1947,7 +2026,6 @@ window.addEventListener("beforeunload", () => {
 window.addEventListener("beforeunload", () => foundationPitMonitoring.dispose(), { once: true });
 window.addEventListener("beforeunload", () => markupTools?.dispose(), { once: true });
 window.addEventListener("beforeunload", () => threeDReport?.dispose(), { once: true });
-window.addEventListener("beforeunload", () => videoArFusion.destroy(), { once: true });
 window.addEventListener("beforeunload", () => {
   for (const tracker of modelQualityTrackers.values()) tracker.dispose();
   modelQualityTrackers.clear(); modelQualityResources.clear(); modelQualitySubscribers.clear();
@@ -2400,6 +2478,7 @@ document.addEventListener('click', event => {
   if (!machineryEntry && managementWorkspace && !managementWorkspace.prepareWorkbenchNavigation()) {
     event.preventDefault(); event.stopImmediatePropagation(); return;
   }
+  if (target.dataset.tab !== "videoar") videoModelOverlay?.setPanelActive(false);
   ++workbenchNavigationGeneration;
 }, true);
 
@@ -2438,7 +2517,8 @@ document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => tab.addEve
     sandTableFacilities?.activate();
     sandTablePresentation?.refresh();
   }
-  videoArFusion.setPanelActive(tab.dataset.tab === "videoar");
+  videoArFusion.setPanelActive(false);
+  videoModelOverlay?.setPanelActive(tab.dataset.tab === "videoar");
   document.querySelectorAll(".tab,.panel").forEach((element) => element.classList.remove("active"));
   document.querySelectorAll<HTMLButtonElement>(".tab").forEach((item) => item.removeAttribute("aria-current"));
   tab.classList.add("active");
@@ -2878,10 +2958,13 @@ $("#clearAll").addEventListener("click", async () => {
   await projectLibrary?.ready;
   await projectLibrary?.clear();
 });
-$("#homeView").addEventListener("click", () => viewer.camera.flyTo({
+$("#homeView").addEventListener("click", () => {
+  videoModelOverlay?.setPanelActive(false);
+  viewer.camera.flyTo({
   destination: Cartesian3.fromDegrees(105, 35, 18_000_000),
   orientation: { heading: 0, pitch: CesiumMath.toRadians(-90), roll: 0 },
-}));
+  });
+});
 
 const pointer = new ScreenSpaceEventHandler(viewer.scene.canvas);
 pointer.setInputAction((movement: { endPosition: Cartesian2 }) => {
@@ -2909,15 +2992,17 @@ async function ensureManagementWorkspace(): Promise<ManagementWorkspace> {
           const item = imports.find(record => record.id === id);
           if (item) setImportVisibility(item, visible, { silent: true });
         },
-        setVideoPanelActive: active => videoArFusion.setPanelActive(active),
+        setVideoPanelActive: active => { if (active) videoModelOverlay?.setPanelActive(false); videoArFusion.setPanelActive(active); },
         getPlaybackSource: () => ({ ...videoArFusion.getSharedPlaybackSource(), recordId: projectLibrary!.activeVideoRecordId }),
         syncVideoPlayback: () => videoArFusion.synchronizeSharedPlayback(),
-        clearVideoSource: () => videoArFusion.clear(),
+        clearVideoSource: () => { videoModelOverlay?.clear(); videoArFusion.clear(); },
         loadVideoSource: async recordId => {
+          if (projectLibrary!.records.get(recordId)?.settings.video?.mode === "cc-overlay") throw new Error("这是 CC 空三融合录像，请在“视频 AR”中打开并选择工程对象");
           await projectLibrary!.restore(recordId);
           if (projectLibrary!.activeVideoRecordId !== recordId) throw new Error("视频来源未能加载，请重试");
         },
         prepareOpen: () => {
+          videoModelOverlay?.setPanelActive(false);
           digitalTwinOverview.close();
           electronicSandTable?.stopTour();
           sandTablePresentation?.deactivate();
@@ -2989,6 +3074,7 @@ function setWorkbenchMachineryPanelOpen(open: boolean): void {
   if (cancelMarkup && !cancelMarkup.disabled) throw new Error('请先完成或取消当前标绘，再打开施工机械。');
   digitalTwinOverview.close(); electronicSandTable?.stopTour();
   sandTablePresentation?.deactivate(); sandTableFacilities?.deactivate();
+  videoModelOverlay?.setPanelActive(false);
   viewer.camera.cancelFlight(); videoArFusion.setPanelActive(false);
   const restores: Array<() => void> = [];
   try { restores.push(modelEditor.suspendInteractions(), subsurfaceTools.suspendInteractions(), foundationPitMonitoring.suspendInteractions()); }
@@ -3050,6 +3136,7 @@ function syncSceneDisplay(): void {
 }
 function applySceneDisplay(overrides: Record<string,boolean>, labelsVisible: boolean): void {
   sceneDisplayOverrides = overrides;
+  if (videoModelOverlay?.active) return;
   for (const layer of imports) applyImportDisplay(layer);
   const markups: Record<string,boolean> = Object.create(null);
   for (const [key, visible] of Object.entries(overrides)) if (key.startsWith('markup:')) markups[key.slice(7)] = visible;
@@ -3072,6 +3159,7 @@ function isImportDisplayed(layer: ImportRecord): boolean {
   return isImportAllowed(layer) && (sceneDisplayOverrides[`layer:${layer.id}`] ?? layer.visible);
 }
 function applyImportDisplay(layer: ImportRecord): void {
+  if (videoModelOverlay?.active) return;
   const resource = layer.resource as {show:boolean;isDestroyed?:()=>boolean};
   if (resource.isDestroyed?.()) return;
   const visible = isImportDisplayed(layer);
@@ -3086,6 +3174,7 @@ async function openSafetyWorkspace(): Promise<void> {
   try {
     const workspace = await ensureManagementWorkspace();
     if (!workspace.prepareWorkbenchNavigation()) return;
+    videoModelOverlay?.setPanelActive(false);
     if (new URLSearchParams(window.location.search).get('interface') === 'legacy') await safetyWorkspace!.open();
     else await workspace.open();
   } catch (error) { toast(`现场工作台打开失败：${error instanceof Error ? error.message : String(error)}`, true); }

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CC video overlay browser regression</title>
+  <style>
+    html,body{margin:0;width:100%;height:100%;background:#0d1724;color:#e5f0fa;font-family:sans-serif}
+    #fixture{display:grid;grid-template-columns:340px 1fr;height:100vh}
+    #panel{overflow:auto;padding:16px;box-sizing:border-box;background:#142134}
+    #stage{position:relative;overflow:hidden;min-width:0}
+    #viewer{position:absolute;inset:0;z-index:1}
+    h2{font-size:19px}h3{font-size:15px}
+    input,select,button{padding:6px;border:1px solid #45617d;border-radius:4px;background:#1c3046;color:#e5f0fa}
+    button{cursor:pointer}.cc-hint{font-size:12px}
+  </style>
+</head>
+<body><main id="fixture"><aside id="panel"></aside><section id="stage"><div id="viewer"></div></section></main>
+<script type="module" src="./cc-video-overlay.ts"></script></body>
+</html>

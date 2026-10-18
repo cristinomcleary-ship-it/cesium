@@ -1,4 +1,5 @@
 import type { SavedReplaySettings } from "./videoArFusion";
+import type { SavedVideoOverlaySettings } from "./videoModelOverlay";
 import {
   Cartesian3, Cesium3DTileset, Color, CzmlDataSource, GeoJsonDataSource, IonResource,
   KmlDataSource, Matrix4, Model, UrlTemplateImageryProvider, type Viewer,
@@ -20,7 +21,8 @@ type Hooks = {
   replaceImagery: (result: LocalImageryResult) => void;
   setBasemap: (kind: string) => void; getBasemap: () => string;
   notify: (message: string, error?: boolean) => void;
-  restoreVideo: (files: Record<string, File>, settings: SavedReplaySettings) => Promise<void>;
+  restoreVideo: (files: Record<string, File>, settings: SavedReplaySettings | SavedVideoOverlaySettings, recordId?: string) => Promise<void>;
+  shouldSaveView?: () => boolean;
   clearVideo: () => void;
   layersChanged: () => void;
 };
@@ -41,6 +43,7 @@ export class SceneLibrary {
   private deleting = new Set<string>();
   private cameraTimer = 0;
   private viewReady = false;
+  private lastMapView?: SceneView;
   ready: Promise<void> = Promise.resolve();
   constructor(private hooks: Hooks) {
     window.addEventListener("beforeunload", event => {
@@ -77,6 +80,7 @@ export class SceneLibrary {
         const select = document.querySelector<HTMLSelectElement>("#basemap");
         if (select) select.value = this.hooks.getBasemap();
       }
+      this.lastMapView = this.captureView();
       this.viewReady = true;
     } catch (error) { this.error = this.message(error); }
     finally { this.starting = false; this.render(); }
@@ -146,13 +150,20 @@ export class SceneLibrary {
       } finally { this.pending--; this.render(); }
     }
   }
+  private captureView(): SceneView {
+    const camera = this.hooks.viewer.camera;
+    const v = (p: Cartesian3) => [p.x, p.y, p.z];
+    return { position: v(camera.positionWC), direction: v(camera.directionWC), up: v(camera.upWC), basemap: this.hooks.getBasemap(), activeImageryId: this.activeImageryId, activeVideoId: this.activeVideoId };
+  }
   saveView() {
     if (!this.viewReady || this.starting || this.restoring.size) return;
     window.clearTimeout(this.cameraTimer);
+    // Capture before the delayed write. A CC video camera must never replace the
+    // user's map view, while selecting/saving a video still persists its record ID.
+    if (this.hooks.shouldSaveView?.() !== false) this.lastMapView = this.captureView();
+    if (!this.lastMapView) return;
+    const view: SceneView = { ...this.lastMapView, activeImageryId: this.activeImageryId, activeVideoId: this.activeVideoId };
     this.cameraTimer = window.setTimeout(() => {
-      const camera = this.hooks.viewer.camera;
-      const v = (p: Cartesian3) => [p.x, p.y, p.z];
-      const view: SceneView = { position: v(camera.positionWC), direction: v(camera.directionWC), up: v(camera.upWC), basemap: this.hooks.getBasemap(), activeImageryId: this.activeImageryId, activeVideoId: this.activeVideoId };
       void libraryRequest("/view", { ...jsonRequest("PUT", view), keepalive: true }).catch(error => {
         this.error = "视角未保存：" + this.message(error); this.render();
       });
@@ -241,7 +252,7 @@ export class SceneLibrary {
       } else if (record.kind === "Drone Video") {
         const files: Record<string, File> = {};
         for (const slot of Object.keys(record.files)) files[slot] = await this.file(record, slot);
-        await h.restoreVideo(files, s.video as unknown as SavedReplaySettings);
+        await h.restoreVideo(files, s.video as unknown as SavedReplaySettings | SavedVideoOverlaySettings, record.id);
         this.activeVideoId = id;
       }
       const item = h.getImports().find(i => i.id === id); if (item) item.visible = record.visible;
@@ -259,7 +270,7 @@ export class SceneLibrary {
 
   async updateVideoControls(controls: Record<string, string | boolean>, calibrationSessions?: SavedReplaySettings["calibrationSessions"], requireSaved = false) {
     const record = this.records.get(this.activeVideoId);
-    if (!record || record.kind !== "Drone Video") {
+    if (!record || record.kind !== "Drone Video" || record.settings.video?.mode === "cc-overlay") {
       if (requireSaved) throw new Error("视频尚未保存到资料库，请先完成加载保存再记录校准");
       return;
     }
@@ -270,6 +281,16 @@ export class SceneLibrary {
       await this.flush();
       if (this.failures.has(record.id)) throw new Error(this.failures.get(record.id));
     }
+  }
+
+  async updateVideoOverlaySettings(id: string, settings: SavedVideoOverlaySettings): Promise<void> {
+    const record = this.records.get(id);
+    if (!record || record.kind !== "Drone Video" || record.settings.video?.mode !== "cc-overlay") throw new Error("找不到对应的 CC 融合录像，请重新保存录像");
+    if (this.restoring.has(id) || this.deleting.has(id)) throw new Error("录像正在恢复或删除，请稍后保存");
+    this.queueUpdate(id, { settings: { video: structuredClone(settings) as unknown as Record<string, unknown> } });
+    await this.flush();
+    if (this.failures.has(id)) throw new Error(this.failures.get(id));
+    if (!this.records.has(id)) throw new Error("录像已被删除，融合参数未能保存");
   }
 
   markVideo(id: string) { this.activeVideoId = id; this.render(); this.saveView(); }
