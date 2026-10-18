@@ -3,6 +3,7 @@ import { createCcCameraTrack, parseCcCameraXml, type CcCameraDataset, type CcCam
 import { VideoOverlayResources, type VideoOverlayAdjustment } from './videoOverlayResources';
 import { containVideoRect, overlayLensBounds, OVERLAY_LENS_SHADER } from './videoOverlayLens';
 import { transformCcCameraSample, validateCcSceneTransform } from './ccSceneRegistration';
+import { createCcCameraRegistrationMatrix, defaultCcCameraRegistration, validateCcCameraRegistration, type CcCameraRegistration, type CcCameraRegistrationAnchor } from './ccCameraRegistration';
 import type { LibraryRecord } from './projectLibrary';
 import type { ImportRecord } from './types';
 import './videoModelOverlay.css';
@@ -12,6 +13,7 @@ export type SavedVideoOverlaySettings = {
   adjustments: Record<string, VideoOverlayAdjustment>; opacity: number; currentTime: number;
   videoName: string; videoSize: number; width: number; height: number;
   sceneReference?: { recordId: string; matrix: number[] };
+  cameraRegistration?: CcCameraRegistration & { anchor?: CcCameraRegistrationAnchor };
 };
 type Options = {
   getImports: () => readonly ImportRecord[]; getRecord: (id: string) => LibraryRecord | undefined;
@@ -44,14 +46,22 @@ export const videoModelOverlayPanelHtml = `
     <button id="ccReferenceUpdate" type="button">重新读取成果定位</button><small id="ccReferenceInfo">未关联倾斜摄影成果。</small>
     <small>XML 高程基准换算与成果位置校正是两项独立设置，同一高差不要重复填写。</small>
   </details>
+  <details open><summary>视频相机校正</summary>
+    <label><input id="ccCameraEnabled" type="checkbox">启用整段相机轨迹校正</label>
+    <small>先只显示倾斜摄影，对照视频中的建筑和道路校正公共偏差。以首个空三相机为固定基准，整段轨迹一起平移、旋转。</small>
+    <div class="cc-fields"><label>相机东移（米）<input id="ccCameraEast" type="number" min="-100000" max="100000" step="0.1" value="0"></label><label>相机北移（米）<input id="ccCameraNorth" type="number" min="-100000" max="100000" step="0.1" value="0"></label><label>相机升高（米）<input id="ccCameraUp" type="number" min="-100000" max="100000" step="0.1" value="0"></label><label>航向顺时针（度）<input id="ccCameraHeading" type="number" min="-180" max="180" step="0.01" value="0"></label><label>俯仰抬头（度）<input id="ccCameraPitch" type="number" min="-180" max="180" step="0.01" value="0"></label><label>横滚右倾（度）<input id="ccCameraRoll" type="number" min="-180" max="180" step="0.01" value="0"></label></div>
+    <small>数值确认后更新暂停画面；取消勾选可对比校正前后。旋转也会改变后续相机的位置，请检查首、中、尾及转向片段。</small>
+    <button id="ccCameraReset" type="button">重置相机校正</button><small id="ccCameraInfo">未启用相机校正。</small>
+    <small>相机校正随录像保存，已有 CAD／模型微调会保留。更改空三高程或成果关联后请重新核验；需要新的首帧基准时，先重置相机校正。</small>
+  </details>
   <div class="cc-actions"><button id="ccStart" class="primary" type="button">开始融合</button><button id="ccStop" type="button">返回地图</button></div>
   <h3>叠加对象</h3><div id="ccResources"><small>先在 CAD／工程模型中导入并定位对象。</small></div>
-  <h3>位置微调</h3><label>调整范围<select id="ccTarget"><option value="*">勾选对象整体平移</option></select></label>
+  <h3>叠加对象位置微调</h3><label>调整范围<select id="ccTarget"><option value="*">勾选对象整体平移</option></select></label>
   <div class="cc-fields"><label>向东（米）<input id="ccEast" type="number" step="0.1" value="0"></label><label>向北（米）<input id="ccNorth" type="number" step="0.1" value="0"></label><label>升高（米）<input id="ccUp" type="number" step="0.1" value="0"></label><label>按钮步长（米）<input id="ccStep" type="number" min="0.001" step="any" value="0.1"></label></div>
   <div class="cc-nudges"><button data-cc-nudge="east:-1" type="button">向西</button><button data-cc-nudge="north:1" type="button">向北</button><button data-cc-nudge="up:1" type="button">升高</button><button data-cc-nudge="east:1" type="button">向东</button><button data-cc-nudge="north:-1" type="button">向南</button><button data-cc-nudge="up:-1" type="button">降低</button></div>
   <label>画面拖动<select id="ccDragMode"><option value="off">关闭</option><option value="horizontal">拖动平移所选对象</option><option value="vertical">拖动升降所选对象</option></select></label>
   <details><summary>单个对象方向微调</summary><label>顺时针旋转（度）<input id="ccHeading" type="number" step="0.1" value="0"></label><small>先在调整范围中选择一个对象。</small></details>
-  <div class="cc-actions"><button id="ccUndo" type="button">撤销</button><button id="ccRedo" type="button">重做</button><button id="ccReset" type="button">恢复初始</button></div>
+  <div class="cc-actions"><button id="ccUndo" type="button">撤销</button><button id="ccRedo" type="button">重做</button><button id="ccReset" type="button">重置对象微调</button></div>
   <label>叠加透明度<input id="ccOpacity" type="range" min="0" max="1" step="0.01" value="0.8"></label>
   <small>位置微调对整段视频生效，保存在当前视频方案中。</small>
   <div class="cc-actions"><button id="ccSave" class="primary" type="button">保存融合方案</button></div><small id="ccSavedState">尚未保存</small>
@@ -68,6 +78,9 @@ export class VideoModelOverlay {
   private track?: CcCameraTrack;
   private timing?: CcTrackOptions;
   private sceneReference?: SavedVideoOverlaySettings['sceneReference'];
+  private cameraRegistration = defaultCcCameraRegistration();
+  private cameraAnchor?: CcCameraRegistrationAnchor;
+  private cameraCorrection: readonly number[] = Matrix4.toArray(Matrix4.IDENTITY);
   private resources?: VideoOverlayResources;
   private adjustments: Record<string, VideoOverlayAdjustment> = {};
   private selected = new Set<string>();
@@ -111,6 +124,13 @@ export class VideoModelOverlay {
     this.bind('ccTarget', 'change', () => this.syncAdjustmentInputs());
     this.bind('ccSceneReference', 'change', () => this.changeSceneReference());
     this.bind('ccReferenceUpdate', 'click', () => this.changeSceneReference());
+    for (const id of ['ccCameraEnabled', 'ccCameraEast', 'ccCameraNorth', 'ccCameraUp', 'ccCameraHeading', 'ccCameraPitch', 'ccCameraRoll']) {
+      this.bind(id, 'change', () => this.editCameraRegistration());
+    }
+    this.bind('ccCameraReset', 'click', () => {
+      this.cameraRegistration = defaultCcCameraRegistration(); this.cameraAnchor = undefined;
+      this.prepareCameraRegistration(); this.syncCameraInputs(); this.dirty(); this.renderFrame(this.lastFrameTime);
+    });
     this.bind('ccDiagnostics', 'click', () => { void this.exportDiagnostics().catch(e => this.fail(e)); });
     for (const id of ['ccFirstTime', 'ccInterval', 'ccTimeMode', 'ccFilenameStep', 'ccHeightReference', 'ccHeightOffset']) {
       this.bind(id, 'input', () => { ++this.inputGeneration; this.exit(); this.track = undefined; this.syncHeightInputs(); this.dirty(); });
@@ -160,6 +180,7 @@ export class VideoModelOverlay {
   private pickFile(slot: string, file?: File) {
     if (!file) return; ++this.sessionGeneration; ++this.inputGeneration; this.exit(); this.mediaLoad?.cancel(); this.files = { ...this.files, [slot]: file }; this.savedId = undefined; this.dataset = undefined; this.track = undefined;
     this.sceneReference = undefined; this.refreshSceneReferences();
+    this.cameraRegistration = defaultCcCameraRegistration(); this.cameraAnchor = undefined; this.cameraCorrection = Matrix4.toArray(Matrix4.IDENTITY); this.syncCameraInputs();
     this.adjustments = {}; this.undo = []; this.redo = []; this.syncAdjustmentInputs(); this.dirty();
     this.el('ccOverlayInfo').textContent = Object.values(this.files).map(f => f.name).join(' · ');
   }
@@ -170,6 +191,38 @@ export class VideoModelOverlay {
       filenameStep: this.number('ccFilenameStep'), heightReference: height, heightOffsetMeters: height === 'ellipsoid' ? 0 : this.number('ccHeightOffset') };
   }
   private syncHeightInputs() { this.el<HTMLInputElement>('ccHeightOffset').disabled = this.el<HTMLSelectElement>('ccHeightReference').value === 'ellipsoid'; }
+  private syncCameraInputs() {
+    this.el<HTMLInputElement>('ccCameraEnabled').checked = this.cameraRegistration.enabled;
+    for (const [id, key] of Object.entries({ ccCameraEast: 'east', ccCameraNorth: 'north', ccCameraUp: 'up', ccCameraHeading: 'heading', ccCameraPitch: 'pitch', ccCameraRoll: 'roll' }) as [string, Exclude<keyof CcCameraRegistration, 'enabled'>][]) {
+      this.el<HTMLInputElement>(id).value = String(this.cameraRegistration[key]);
+    }
+    this.el('ccCameraInfo').textContent = this.cameraRegistration.enabled
+      ? (this.cameraAnchor ? '已启用；使用方案中固定的首帧基准，作用于所有叠加图层。' : '已启用；载入有效视频与空三后建立首帧基准。')
+      : '未启用相机校正；已填写数值保留，可重新勾选对比。';
+  }
+  private prepareCameraRegistration() {
+    if (!this.cameraAnchor && this.track) {
+      const raw = this.track.sample(this.track.startTime);
+      if (!raw) throw new Error('无法建立相机校正的首帧基准');
+      const first = this.sceneReference ? transformCcCameraSample(raw, this.sceneReference.matrix) : raw;
+      // Freeze this basis across seeks, re-entry, and changes to timing/reference.
+      // A saved correction must never acquire a new pivot silently.
+      this.cameraAnchor = structuredClone({ position: first.position, orientation: first.orientation });
+    }
+    this.cameraCorrection = this.cameraAnchor ? createCcCameraRegistrationMatrix(this.cameraAnchor, this.cameraRegistration) : Matrix4.toArray(Matrix4.IDENTITY);
+  }
+  private editCameraRegistration() {
+    try {
+      const next = validateCcCameraRegistration({ enabled: this.el<HTMLInputElement>('ccCameraEnabled').checked,
+        east: this.number('ccCameraEast'), north: this.number('ccCameraNorth'), up: this.number('ccCameraUp'),
+        heading: this.number('ccCameraHeading'), pitch: this.number('ccCameraPitch'), roll: this.number('ccCameraRoll') });
+      const matrix = this.cameraAnchor ? createCcCameraRegistrationMatrix(this.cameraAnchor, next) : Matrix4.toArray(Matrix4.IDENTITY);
+      this.cameraRegistration = next; this.cameraCorrection = matrix; this.dirty();
+      // Re-evaluate the original sample; never apply a correction to the live camera.
+      this.renderFrame(this.lastFrameTime);
+    } catch (error) { this.fail(error); }
+    this.syncCameraInputs();
+  }
   private sourceMatrix(recordId: string): number[] {
     const item = this.options.getImports().find(item => item.id === recordId && item.kind === '3D Tiles');
     const record = item && this.options.getRecord(recordId);
@@ -248,6 +301,7 @@ export class VideoModelOverlay {
     if (Math.abs(this.video.videoWidth / this.video.videoHeight - k.width / k.height) > .001) throw new Error('视频与 CC 影像画幅比例不一致，请使用同源未裁切视频');
     if (!Number.isFinite(this.video.duration) || track.startTime > this.video.duration || track.endTime > this.video.duration + .1) throw new Error('空三时间超出视频，请检查首张时间、抽帧间隔和编号增量');
     this.dataset = dataset; this.timing = timing; this.track = track;
+    this.prepareCameraRegistration(); this.syncCameraInputs();
     this.el('ccOverlayInfo').textContent = `${dataset.photos.length} 张空三影像 · ${k.width} × ${k.height} · 覆盖 ${clock(track.startTime)}–${clock(track.endTime)}`;
   }
   async enter() {
@@ -361,7 +415,8 @@ export class VideoModelOverlay {
     if (!this.active || !this.track || this.seeking) return;
     if (this.sceneReference) { try { this.checkSceneReference(); } catch (error) { this.exit(); this.fail(error); return; } }
     this.lastFrameTime = time; const rawSample = this.track.sample(time);
-    const sample = rawSample && (this.sceneReference ? transformCcCameraSample(rawSample, this.sceneReference.matrix) : rawSample);
+    const registered = rawSample && (this.sceneReference ? transformCcCameraSample(rawSample, this.sceneReference.matrix) : rawSample);
+    const sample = registered && (this.cameraRegistration.enabled ? transformCcCameraSample(registered, this.cameraCorrection) : registered);
     this.resources?.setVisible(!!sample);
     if (sample) this.viewer.camera.setView({ destination: v3(sample.position), orientation: { direction: v3(sample.direction), up: v3(sample.up) } });
     if (this.badge) this.badge.textContent = sample ? `${sample.interpolation === 0 || sample.interpolation === 1 ? '空三关键帧' : '关键帧间估计'} · ${clock(time)} · 透视叠加` : '当前时间没有空三定位，已隐藏工程叠加';
@@ -453,7 +508,8 @@ export class VideoModelOverlay {
       const revision = this.editRevision, files = { ...this.files };
       const settings: SavedVideoOverlaySettings = { mode: 'cc-overlay', version: 1, timing: this.timing!, selectedIds: [...this.selected], adjustments: structuredClone(this.adjustments), opacity: this.opacity,
         currentTime: this.video.currentTime, videoName: this.files.video.name, videoSize: this.files.video.size, width: this.video.videoWidth, height: this.video.videoHeight,
-        ...(this.sceneReference ? { sceneReference: structuredClone(this.sceneReference) } : {}) };
+        ...(this.sceneReference ? { sceneReference: structuredClone(this.sceneReference) } : {}),
+        cameraRegistration: structuredClone({ ...this.cameraRegistration, anchor: this.cameraAnchor }) };
       const savedId = await this.onSave({ name: `${files.video.name} · CC 融合`, files, settings }, this.savedId);
       if (session !== this.sessionGeneration || this.destroyed) return;
       this.savedId = savedId;
@@ -470,6 +526,12 @@ export class VideoModelOverlay {
       if (!settings.sceneReference.recordId || typeof settings.sceneReference.recordId !== 'string') throw new Error('保存的相机坐标关联无效');
       this.sceneReference = { recordId: settings.sceneReference.recordId, matrix: [...validateCcSceneTransform(settings.sceneReference.matrix)] };
     }
+    this.cameraRegistration = validateCcCameraRegistration(settings.cameraRegistration);
+    if (settings.cameraRegistration?.anchor) {
+      this.cameraCorrection = createCcCameraRegistrationMatrix(settings.cameraRegistration.anchor, this.cameraRegistration);
+      this.cameraAnchor = structuredClone(settings.cameraRegistration.anchor);
+    } else if (this.cameraRegistration.enabled) throw new Error('保存的相机校正缺少首帧基准，请重置相机校正后重新保存');
+    this.syncCameraInputs();
     this.refreshSceneReferences();
     const t = settings.timing;
     for (const [id, value] of Object.entries({ ccFirstTime: t.firstTimeSeconds, ccInterval: t.intervalSeconds, ccTimeMode: t.mode, ccFilenameStep: t.filenameStep ?? 1, ccHeightReference: t.heightReference, ccHeightOffset: t.heightOffsetMeters ?? 0 })) this.el<HTMLInputElement>(id).value = String(value);
@@ -484,6 +546,7 @@ export class VideoModelOverlay {
     let referenceError: string | null = null;
     try { this.checkSceneReference(); } catch (error) { referenceError = error instanceof Error ? error.message : String(error); }
     const raw = this.track!.sample(time), rendered = raw && !referenceError ? (this.sceneReference ? transformCcCameraSample(raw, this.sceneReference.matrix) : raw) : null;
+    const corrected = rendered && (this.cameraRegistration.enabled ? transformCcCameraSample(rendered, this.cameraCorrection) : rendered);
     return {
       format: 'cesium-cc-registration-diagnostic', version: 1, createdAt: new Date().toISOString(),
       video: { name: this.files.video.name, width: this.video.videoWidth, height: this.video.videoHeight, duration: this.video.duration,
@@ -491,6 +554,7 @@ export class VideoModelOverlay {
       xml: { name: this.files.source.name, photos: this.dataset!.photos.length, referenceSystems: this.dataset!.photogroups.map(group => group.referenceSystem),
         intrinsics: this.track!.intrinsics, distortion: this.track!.distortion, startTime: this.track!.startTime, endTime: this.track!.endTime },
       timing: this.timing, sceneReference: this.sceneReference ?? null, referenceError, rawCamera: raw, registeredCamera: rendered,
+      cameraRegistration: { ...this.cameraRegistration, anchor: this.cameraAnchor ?? null, matrix: [...this.cameraCorrection] }, correctedCamera: corrected,
       liveCamera: this.active ? { position: this.viewer.camera.positionWC, direction: this.viewer.camera.directionWC, up: this.viewer.camera.upWC,
         projection: Matrix4.toArray(this.viewer.camera.frustum.projectionMatrix) } : null,
       viewport: { width: this.viewer.canvas.clientWidth, height: this.viewer.canvas.clientHeight, pixelWidth: this.viewer.canvas.width, pixelHeight: this.viewer.canvas.height },
@@ -533,6 +597,7 @@ export class VideoModelOverlay {
     ++this.sessionGeneration; ++this.inputGeneration; this.mediaLoad?.cancel(); this.exit(); this.video.removeAttribute('src'); this.video.load(); if (this.mediaUrl) URL.revokeObjectURL(this.mediaUrl);
     this.mediaUrl = undefined; this.videoFile = undefined; this.files = {}; this.savedId = undefined; this.dataset = undefined; this.track = undefined;
     this.sceneReference = undefined;
+    this.cameraRegistration = defaultCcCameraRegistration(); this.cameraAnchor = undefined; this.cameraCorrection = Matrix4.toArray(Matrix4.IDENTITY); this.syncCameraInputs();
     this.adjustments = {}; this.undo = []; this.redo = []; this.selected.clear(); this.selectionInitialized = false;
     this.el<HTMLInputElement>('ccVideoFile').value = ''; this.el<HTMLInputElement>('ccXmlFile').value = ''; this.refreshResources();
     this.el('ccOverlayInfo').textContent = '选择视频与 CC 空三 XML，无需 SRT。'; this.el('ccSavedState').textContent = '尚未保存';

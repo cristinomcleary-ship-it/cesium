@@ -64,18 +64,19 @@ const sameNumbers = (actual, expected, tolerance = 1e-7) => {
   assert.equal(actual.length, expected.length); actual.forEach((value, index) => approx(value, expected[index], tolerance));
 };
 const record = (name, details) => { checks.push({ name, pass: true, ...details }); process.stdout.write(`PASS ${name}\n`); };
-async function seek(time) {
+async function seek(time, correctionMatrix = null) {
   await page.locator('[data-cc-seek]').evaluate((element, value) => { element.value = String(value); element.dispatchEvent(new Event('input', { bubbles: true })); }, time);
-  await waitForSeek(time);
+  await waitForSeek(time, correctionMatrix);
 }
-async function waitForSeek(time) {
-  await page.waitForFunction(target => {
+async function waitForSeek(time, correctionMatrix = null) {
+  await page.waitForFunction(({ target, matrix }) => {
     const h = window.__ccOverlayHarness, s = h.snapshot();
     if (s.mediaTime === null || Math.abs(s.mediaTime - target) > .03) return false;
     if (target > 4) return !s.modelShow && /没有空三/.test(s.badge);
-    const expected = h.expected(target);
+    let expected = h.expected(target);
+    if (matrix) expected = [0, 1, 2].map(row => matrix[row] * expected[0] + matrix[4 + row] * expected[1] + matrix[8 + row] * expected[2] + matrix[12 + row]);
     return s.modelShow && Math.hypot(...s.position.map((value, index) => value - expected[index])) < .1;
-  }, time, { timeout: 25000 });
+  }, { target: time, matrix: correctionMatrix }, { timeout: 25000 });
 }
 let report;
 try {
@@ -327,6 +328,171 @@ try {
   assert.equal(browserErrors.length, 0, browserErrors.join('\n'));
   record('changed saved reference blocks fusion, remains diagnosable and resumes only after explicit reread');
 
+  // Camera registration is independent of the object offsets and uses a single
+  // fixed transform after the selected production's saved world transform.
+  await page.evaluate(() => window.__ccOverlayHarness.changeSavedReference(3, -2, 15));
+  const cameraResourceBaseline = await page.evaluate(() => window.__ccOverlayHarness.moveToReferenceFrame());
+  await page.locator('#ccVideoFile').setInputFiles(videoPath);
+  // CC's 4326 export permits the explicit height-correction control exercised
+  // below; 4979 correctly rejects a second vertical correction.
+  await page.locator('#ccXmlFile').setInputFiles({ name: 'synthetic-camera-registration.xml', mimeType: 'application/xml', buffer: Buffer.from(xml.replace('EPSG:4979', 'EPSG:4326')) });
+  await page.locator('#ccInterval').fill('2');
+  await page.locator('#ccHeightReference').selectOption('ellipsoid');
+  await page.locator('#ccSceneReference').selectOption('synthetic-reference');
+  await page.locator('#ccStart').click();
+  await wait(() => window.__ccOverlayHarness.snapshot().active);
+  await seek(0);
+  const firstCameraDiagnostic = await page.evaluate(() => window.__ccOverlayHarness.diagnostics());
+  const cameraAnchorSample = firstCameraDiagnostic.registeredCamera;
+  const cameraAnchor = firstCameraDiagnostic.cameraRegistration.anchor;
+  assert.ok(cameraAnchor, 'prepare must establish the first registered camera as the fixed anchor');
+  sameNumbers(xyz(cameraAnchor.position), xyz(cameraAnchorSample.position), 1e-7);
+  sameNumbers(Object.values(cameraAnchor.orientation), Object.values(cameraAnchorSample.orientation), 1e-10);
+  await seek(1);
+  await page.locator('#ccTarget').selectOption('synthetic-cad');
+  await page.locator('#ccUp').fill('29');
+  const objectAdjustedForCamera = await state();
+  const objectAdjustmentDiagnostic = await page.evaluate(() => window.__ccOverlayHarness.diagnostics());
+  assert.equal(objectAdjustmentDiagnostic.resources.find(item => item.id === 'synthetic-cad').adjustment.up, 29);
+  assert.ok(distance(objectAdjustedForCamera.cadFirst, cameraResourceBaseline.cadFirst) > 28.9);
+  const cameraValues = { enabled: true, east: 6, north: -4, up: 8, heading: 3, pitch: -2, roll: 1.5 };
+  await page.locator('#ccCameraEnabled').evaluate(element => { const details = element.closest('details'); if (details) details.open = true; });
+  const setCameraValues = async values => {
+    await page.locator('#ccCameraEnabled').setChecked(values.enabled);
+    for (const [key, value] of Object.entries(values)) {
+      if (key === 'enabled') continue;
+      const id = `ccCamera${key[0].toUpperCase()}${key.slice(1)}`;
+      await page.locator(`#${id}`).fill(String(value));
+      await page.locator(`#${id}`).dispatchEvent('change');
+    }
+  };
+  const oracleFor = async (sample, values = cameraValues) => page.evaluate(({ sample, anchor, controls }) => window.__ccOverlayHarness.cameraOracle(sample, anchor, controls), { sample, anchor: cameraAnchorSample, controls: values });
+  const assertCameraCorrection = async (values = cameraValues, restored = false) => {
+    const diag = await page.evaluate(() => window.__ccOverlayHarness.diagnostics());
+    const expected = await oracleFor(diag.registeredCamera, values), current = await state();
+    sameNumbers(diag.cameraRegistration.matrix, expected.matrix, 1e-7);
+    sameNumbers(xyz(diag.correctedCamera.position), expected.position, 1e-5);
+    sameNumbers(xyz(diag.correctedCamera.direction), expected.direction, 1e-8);
+    sameNumbers(xyz(diag.correctedCamera.up), expected.up, 1e-8);
+    sameNumbers(current.position, expected.position, 1e-5);
+    sameNumbers(current.direction, expected.direction, 1e-8); sameNumbers(current.up, expected.up, 1e-8);
+    assert.deepEqual(diag.cameraRegistration.anchor, cameraAnchor);
+    assert.deepEqual(diag.correctedCamera.intrinsics, diag.rawCamera.intrinsics);
+    assert.deepEqual(diag.correctedCamera.distortion, diag.rawCamera.distortion);
+    // Recreating a resource session recomputes its display ENU transform; allow
+    // only 10-nanometre roundoff while requiring the library matrix unchanged.
+    if (restored) {
+      sameNumbers(current.modelMatrix, objectAdjustedForCamera.modelMatrix, 1e-8);
+      sameNumbers(current.cadCorners.flat(), objectAdjustedForCamera.cadCorners.flat(), 1e-8);
+    } else {
+      assert.deepEqual(current.modelMatrix, objectAdjustedForCamera.modelMatrix);
+      assert.deepEqual(current.cadCorners, objectAdjustedForCamera.cadCorners);
+    }
+    assert.deepEqual(current.modelSavedMatrix, cameraResourceBaseline.modelSavedMatrix);
+    assert.equal(diag.resources.find(item => item.id === 'synthetic-cad').adjustment.up, 29);
+    return { diag, expected, current };
+  };
+  await setCameraValues(cameraValues);
+  const cameraOracle = await oracleFor(objectAdjustmentDiagnostic.registeredCamera);
+  await waitForSeek(1, cameraOracle.matrix);
+  const pausedCamera = await assertCameraCorrection();
+  assert.equal(pausedCamera.current.paused, true); approx(pausedCamera.current.mediaTime, 1, .001);
+  assert.ok(distance(pausedCamera.current.position, objectAdjustedForCamera.position) > 5);
+  assert.ok(distance(pausedCamera.current.direction, objectAdjustedForCamera.direction) > .01);
+  await page.locator('#ccCameraEast').fill('7'); await page.locator('#ccCameraEast').dispatchEvent('change');
+  const editedCameraValues = { ...cameraValues, east: 7 };
+  const editedCameraOracle = await oracleFor(objectAdjustmentDiagnostic.registeredCamera, editedCameraValues);
+  await waitForSeek(1, editedCameraOracle.matrix);
+  await assertCameraCorrection(editedCameraValues);
+  await setCameraValues(cameraValues);
+  await waitForSeek(1, cameraOracle.matrix);
+  const cameraPixels = await page.evaluate(() => window.__ccOverlayHarness.pixelStats());
+  assert.ok(cameraPixels.orange > 100 && cameraPixels.cyan > 25); assert.equal(cameraPixels.glError, 0);
+  record('paused camera ENU and nonzero heading/pitch/roll edits immediately update the live camera without moving objects');
+
+  const correctedSamples = [];
+  for (const time of [0, 1, 2, 3.5]) {
+    await seek(time, cameraOracle.matrix);
+    const checked = await assertCameraCorrection();
+    sameNumbers(checked.diag.cameraRegistration.matrix, cameraOracle.matrix, 1e-7);
+    correctedSamples.push({ time, original: xyz(checked.diag.registeredCamera.position), corrected: checked.current.position });
+  }
+  approx(distance(correctedSamples[0].corrected, correctedSamples[3].corrected), distance(correctedSamples[0].original, correctedSamples[3].original), 1e-6);
+  await seek(1, cameraOracle.matrix);
+  await page.locator('#ccCameraEnabled').uncheck();
+  await waitForSeek(1);
+  assert.deepEqual((await state()).cameraControls, { ...cameraValues, enabled: false });
+  sameNumbers((await state()).position, await page.evaluate(() => window.__ccOverlayHarness.expected(1)));
+  await page.locator('#ccCameraEnabled').check();
+  await waitForSeek(1, cameraOracle.matrix); await assertCameraCorrection();
+  record('whole-trajectory camera correction composes after scene reference and toggles without accumulated transforms', { correctedSamples });
+
+  await page.locator('#ccCameraReset').click();
+  await waitForSeek(1);
+  const resetCamera = await state(), resetDiagnostic = await page.evaluate(() => window.__ccOverlayHarness.diagnostics());
+  assert.deepEqual(resetCamera.cameraControls, { enabled: false, east: 0, north: 0, up: 0, heading: 0, pitch: 0, roll: 0 });
+  assert.deepEqual(resetCamera.modelMatrix, objectAdjustedForCamera.modelMatrix);
+  assert.deepEqual(resetCamera.cadCorners, objectAdjustedForCamera.cadCorners);
+  assert.equal(resetDiagnostic.resources.find(item => item.id === 'synthetic-cad').adjustment.up, 29);
+  assert.deepEqual(resetDiagnostic.cameraRegistration.anchor, cameraAnchor);
+  record('reset camera correction leaves the existing 29-metre CAD adjustment and model placement intact');
+
+  await setCameraValues(cameraValues);
+  await seek(2, cameraOracle.matrix);
+  const saveCountBeforeCamera = (await state()).saveCount;
+  await page.locator('#ccSave').click();
+  await page.waitForFunction(count => window.__ccOverlayHarness.snapshot().saveCount === count, saveCountBeforeCamera + 1);
+  const savedCameraState = await state();
+  assert.deepEqual(savedCameraState.saved.cameraRegistration.anchor, cameraAnchor);
+  for (const [key, value] of Object.entries(cameraValues)) assert.equal(savedCameraState.saved.cameraRegistration[key], value);
+  assert.equal(savedCameraState.saved.adjustments['synthetic-cad'].up, 29);
+  await page.locator('#ccStop').click();
+  for (let iteration = 0; iteration < 2; iteration++) {
+    await page.evaluate(() => window.__ccOverlayHarness.restoreSaved());
+    assert.deepEqual((await state()).cameraControls, cameraValues);
+    await page.locator('#ccStart').click(); await wait(() => window.__ccOverlayHarness.snapshot().active);
+    await seek(2, cameraOracle.matrix); await assertCameraCorrection(cameraValues, true);
+    await seek(0, cameraOracle.matrix); await assertCameraCorrection(cameraValues, true);
+    await page.locator('#ccStop').click();
+    const after = await state(); sameNumbers(after.position, initial.position);
+    assert.deepEqual(after.modelMatrix, cameraResourceBaseline.modelMatrix);
+    assert.deepEqual(after.cadCorners, cameraResourceBaseline.cadCorners);
+    assert.deepEqual(after.modelSavedMatrix, cameraResourceBaseline.modelSavedMatrix);
+  }
+  record('saved camera controls and first-frame anchor survive nonzero-time restore and repeated entry without drift');
+
+  await page.evaluate(() => window.__ccOverlayHarness.restoreSaved());
+  await page.locator('#ccFirstTime').fill('0.5');
+  await page.locator('#ccHeightReference').selectOption('offset-to-ellipsoid');
+  await page.locator('#ccHeightOffset').fill('2');
+  const changedTimingDiagnostic = await page.evaluate(() => window.__ccOverlayHarness.diagnostics());
+  assert.deepEqual(changedTimingDiagnostic.cameraRegistration.anchor, cameraAnchor);
+  sameNumbers(changedTimingDiagnostic.cameraRegistration.matrix, cameraOracle.matrix, 1e-7);
+  await page.locator('#ccSceneReference').selectOption('');
+  const changedSceneDiagnostic = await page.evaluate(() => window.__ccOverlayHarness.diagnostics());
+  assert.deepEqual(changedSceneDiagnostic.cameraRegistration.anchor, cameraAnchor);
+  sameNumbers(changedSceneDiagnostic.cameraRegistration.matrix, cameraOracle.matrix, 1e-7);
+  record('timing, height and scene-reference changes preserve the explicitly saved camera anchor');
+
+  await page.evaluate(() => window.__ccOverlayHarness.restoreLegacySaved());
+  assert.deepEqual((await state()).cameraControls, { enabled: false, east: 0, north: 0, up: 0, heading: 0, pitch: 0, roll: 0 });
+  await page.locator('#ccStart').click(); await wait(() => window.__ccOverlayHarness.snapshot().active);
+  await seek(2);
+  const legacyDiagnostic = await page.evaluate(() => window.__ccOverlayHarness.diagnostics());
+  sameNumbers(xyz(legacyDiagnostic.correctedCamera.position), xyz(legacyDiagnostic.registeredCamera.position));
+  assert.equal(legacyDiagnostic.resources.find(item => item.id === 'synthetic-cad').adjustment.up, 29);
+  await page.locator('#ccStop').click();
+  await page.evaluate(() => window.__ccOverlayHarness.restoreSaved());
+  await page.locator('#ccXmlFile').setInputFiles(xmlPath);
+  const newFileState = await state(), newFileDiagnostic = await page.evaluate(() => window.__ccOverlayHarness.diagnostics());
+  assert.deepEqual(newFileState.cameraControls, { enabled: false, east: 0, north: 0, up: 0, heading: 0, pitch: 0, roll: 0 });
+  assert.equal(newFileState.referenceSelection, '');
+  assert.ok(distance(xyz(newFileDiagnostic.cameraRegistration.anchor.position), xyz(cameraAnchor.position)) > 10, 'new input must establish a fresh raw-frame anchor');
+  const cameraFinal = await state();
+  assert.equal(cameraFinal.renderErrors.length, 0, cameraFinal.renderErrors.join('\n'));
+  assert.equal(browserErrors.length, 0, browserErrors.join('\n'));
+  record('legacy plans without camera registration remain compatible and new input clears prior correction');
+
   const mainPage = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const mainErrors = [], mainConsoleErrors = [];
   mainPage.on('pageerror', error => mainErrors.push(String(error.stack || error)));
@@ -342,7 +508,7 @@ try {
   await mainPage.screenshot({ path: path.join(output, 'cc-overlay-main-page.png'), fullPage: true });
   record('actual main page initializes and opens the new AR panel without JS exceptions', { mainErrors, ignoredBasemapNetworkErrors: mainConsoleErrors.filter(message => /ERR_BLOCKED_BY_CLIENT|basemap|瓦片|底图/.test(message)).length });
   await mainPage.close();
-  report = { pass: true, checks, browserErrors, consoleErrors, final, referenceFinal, screenshots: ['cc-overlay-visible.png', 'cc-overlay-outside-coverage.png', 'cc-overlay-reference-unregistered.png', 'cc-overlay-reference-registered.png', 'cc-overlay-main-page.png'] };
+  report = { pass: true, checks, browserErrors, consoleErrors, final, referenceFinal, cameraFinal, screenshots: ['cc-overlay-visible.png', 'cc-overlay-outside-coverage.png', 'cc-overlay-reference-unregistered.png', 'cc-overlay-reference-registered.png', 'cc-overlay-main-page.png'] };
 } catch (error) {
   report = { pass: false, error: String(error.stack || error), checks, browserErrors, consoleErrors, diagnostic: await state().catch(() => null), pixels: await page.evaluate(() => window.__ccOverlayHarness?.pixelStats()).catch(() => null) };
   await page.screenshot({ path: path.join(output, 'cc-overlay-failure.png'), fullPage: true }).catch(() => undefined);
