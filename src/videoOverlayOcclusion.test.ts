@@ -16,7 +16,12 @@ import type { ImportRecord } from './types.ts';
 const center = Cartesian3.fromDegrees(120, 30, 25);
 const base = Transforms.eastNorthUpToFixedFrame(center);
 const mesh = () => ({ pointsLength: 0, trianglesLength: 12, geometryByteLength: 144, ready: true });
-function tile(content: unknown = mesh()): Cesium3DTile { return { content, children: [] } as unknown as Cesium3DTile; }
+const empty = () => ({ pointsLength: 0, trianglesLength: 0, geometryByteLength: 0, ready: true });
+function tile(content: unknown = mesh(), children: Cesium3DTile[] = [], overrides: Record<string, unknown> = {}): Cesium3DTile {
+  return { content, children, _updatedVisibilityFrame: 0, _visibilityPlaneMask: 0, _inRequestVolume: true,
+    refine: 1, hasRenderableContent: (content as { trianglesLength?: number })?.trianglesLength !== 0,
+    hasTilesetContent: false, hasImplicitContent: false, commandsLength: 1, ...overrides } as unknown as Cesium3DTile;
+}
 function source(overrides: Record<string, unknown> = {}): Cesium3DTileset {
   // A prototype-backed test double exercises the real instanceof guard without
   // creating WebGL state. Ordinary structurally similar resources are rejected.
@@ -27,6 +32,8 @@ function source(overrides: Record<string, unknown> = {}): Cesium3DTileset {
     clippingPlanes: undefined, clippingPolygons: undefined, customShader: undefined,
     style: undefined, colorBlendMode: 2, splitDirection: -1, edgeDisplayMode: 0,
     pointCloudShading: new PointCloudShading(), tilesLoaded: true,
+    _updatedVisibilityFrame: 0, _pass: 0, skipLevelOfDetail: true, debugFreezeFrame: true,
+    cullRequestsWhileMoving: true, foveatedTimeDelay: .1, memoryAdjustedScreenSpaceError: 16,
     statistics: { numberOfPendingRequests: 0, numberOfTilesProcessing: 0, numberOfAttemptedRequests: 0 },
     tileLoad: new CesiumEvent(), tileVisible: new CesiumEvent(), tileFailed: new CesiumEvent(),
     debugColorizeTiles: true, debugWireframe: true, debugShowBoundingVolume: true,
@@ -42,7 +49,18 @@ function source(overrides: Record<string, unknown> = {}): Cesium3DTileset {
 }
 function mutate(value: object, key: string, next: unknown) { (value as Record<string, unknown>)[key] = next; }
 function viewer(): Viewer {
-  return { clock: { currentTime: JulianDate.now() }, scene: { primitives: new PrimitiveCollection(), requestRender() {} } } as unknown as Viewer;
+  return { clock: { currentTime: JulianDate.now() }, scene: {
+    primitives: new PrimitiveCollection(), preRender: new CesiumEvent(), frameState: { frameNumber: 0 }, requestRender() {},
+  } } as unknown as Viewer;
+}
+function render(view: Viewer, value: Cesium3DTileset, selected: Cesium3DTile[] = [value.root]) {
+  const state = (view.scene as unknown as { frameState: { frameNumber: number } }).frameState;
+  state.frameNumber += 1; view.scene.preRender.raiseEvent(view.scene, JulianDate.now());
+  const epoch = state.frameNumber * 3;
+  mutate(value, '_updatedVisibilityFrame', epoch); mutate(value, '_pass', 0);
+  const visit = (node: Cesium3DTile) => { mutate(node, '_updatedVisibilityFrame', epoch); node.children.forEach(visit); };
+  visit(value.root);
+  selected.forEach(node => value.tileVisible.raiseEvent(node));
 }
 function record(id: string, resource: unknown, kind: ImportRecord['kind'] = '3D Tiles'): ImportRecord {
   return { id, name: id, resource, kind, visible: true } as ImportRecord;
@@ -78,7 +96,7 @@ test('depth role uses an opaque replace shader and restores exact material/debug
   const originalShading = new PointCloudShading({ attenuation: true });
   const value = source({ customShader: originalShader, style, pointCloudShading: originalShading });
   const matrix = value.modelMatrix;
-  const owner = new VideoOverlayOcclusion('survey', value);
+  const view = viewer(), owner = new VideoOverlayOcclusion('survey', value, view.scene);
   const depthShader = value.customShader!;
   assert.notEqual(depthShader, originalShader);
   assert.equal(depthShader.mode, CustomShaderMode.REPLACE_MATERIAL);
@@ -89,59 +107,146 @@ test('depth role uses an opaque replace shader and restores exact material/debug
   assert.equal(value.showOutline, false); assert.equal(value.splitDirection, 0);
   assert.equal(value.modelMatrix, matrix); assert.equal(value.show, true);
   assert.doesNotThrow(() => assertVideoOverlayOccluder(value));
+  assert.equal(owner.getStatus().ready, false);
+  assert.equal(value.skipLevelOfDetail, false); assert.equal(value.debugFreezeFrame, false);
+  assert.equal(value.cullRequestsWhileMoving, false); assert.equal(value.foveatedTimeDelay, 0);
+  render(view, value);
   assert.equal(owner.getStatus().ready, true);
   assert.equal(value.tileLoad.numberOfListeners, 1);
   owner.restore(); owner.restore();
   assert.equal(value.customShader, originalShader); assert.equal(value.style, style);
   assert.equal(value.pointCloudShading, originalShading); assert.equal(value.debugWireframe, true);
   assert.equal(value.showOutline, true); assert.equal(value.splitDirection, -1);
+  assert.equal(value.skipLevelOfDetail, true); assert.equal(value.debugFreezeFrame, true);
+  assert.equal(value.cullRequestsWhileMoving, true); assert.equal(value.foveatedTimeDelay, .1);
   assert.equal(depthShader.isDestroyed(), true); assert.equal(originalShader.isDestroyed(), false);
   assert.equal(value.tileLoad.numberOfListeners, 0); assert.equal(value.tileVisible.numberOfListeners, 0);
   assert.equal(value.tileFailed.numberOfListeners, 0);
+  assert.equal(view.scene.preRender.numberOfListeners, 0);
   assert.equal(owner.getStatus().ready, false);
   originalShader.destroy();
 });
 
-test('readiness checks current traversal counters before tilesLoaded catches up and fails closed', () => {
+test('a drawn replacement parent stays ready during pending/processing/preload detail refinement', () => {
   const value = source({ tilesLoaded: false });
-  const owner = new VideoOverlayOcclusion('survey', value);
+  value.root.children.push(tile(undefined));
+  const view = viewer(), owner = new VideoOverlayOcclusion('survey', value, view.scene);
   assert.equal(owner.getStatus().ready, false);
-  mutate(value, 'tilesLoaded', true);
+  render(view, value);
   assert.equal(owner.getStatus().ready, true);
+  assert.equal(owner.getStatus().refining, true);
   for (const key of ['numberOfPendingRequests', 'numberOfTilesProcessing', 'numberOfAttemptedRequests']) {
     const counters = { numberOfPendingRequests: 0, numberOfTilesProcessing: 0, numberOfAttemptedRequests: 0, [key]: 1 };
     mutate(value, 'statistics', counters);
-    assert.equal(owner.getStatus().ready, false, key);
+    render(view, value);
+    assert.equal(owner.getStatus().ready, true, key);
   }
   mutate(value, 'statistics', undefined);
-  assert.equal(owner.getStatus().ready, false);
+  assert.equal(owner.getStatus().ready, true);
+  owner.restore();
+});
+
+test('empty-root siblings, request volumes and camera/pass changes require complete current coverage', () => {
+  const a = tile(), b = tile(), value = source({ root: tile(empty(), [a, b]) });
+  const view = viewer(), owner = new VideoOverlayOcclusion('survey', value, view.scene);
+  render(view, value, [a]);
+  assert.equal(owner.getStatus().ready, false, 'one visible branch cannot cover the missing sibling');
+  render(view, value, [a, b]); assert.equal(owner.getStatus().ready, true);
+  render(view, value, []); assert.equal(owner.getStatus().ready, false, 'previous-frame coverage is never latched');
+  render(view, value, [a]);
+  mutate(b, '_visibilityPlaneMask', 0xffffffff); assert.equal(owner.getStatus().ready, true);
+  mutate(b, '_updatedVisibilityFrame', -1); assert.equal(owner.getStatus().ready, false, 'stale outside status is unsafe');
+  render(view, value, [a]);
+  mutate(b, '_visibilityPlaneMask', 0); mutate(b, '_inRequestVolume', false);
+  assert.equal(owner.getStatus().ready, false, 'request-volume culling is not outside the image');
+  mutate(b, '_inRequestVolume', true); render(view, value, [a, b]);
+  mutate(b, 'commandsLength', 0); assert.equal(owner.getStatus().ready, false, 'tileVisible precedes actual draw submission');
+  mutate(b, 'commandsLength', 1); assert.equal(owner.getStatus().ready, true);
+  mutate(value, '_pass', 1); assert.equal(owner.getStatus().ready, false, 'a pick/preload traversal cannot prove render coverage');
+  render(view, value, [a, b]);
+  mutate(value, '_updatedVisibilityFrame', -1); assert.equal(owner.getStatus().ready, false);
+  render(view, value, [a, b]);
+  mutate(view.scene, 'frameState', undefined); assert.equal(owner.getStatus().ready, false);
+  owner.restore();
+});
+
+test('real empty leaves and outside content can be skipped but unopened external branches cannot', () => {
+  const a = tile(), b = tile(empty(), [], { hasEmptyContent: true, hasRenderableContent: false });
+  const value = source({ root: tile(empty(), [a, b]) });
+  const view = viewer(), owner = new VideoOverlayOcclusion('survey', value, view.scene);
+  render(view, value, [a]); assert.equal(owner.getStatus().ready, true);
+  mutate(b, 'hasTilesetContent', true); assert.equal(owner.getStatus().ready, false);
+  const c = tile(); b.children.push(c);
+  render(view, value, [a, c]); assert.equal(owner.getStatus().ready, true);
+  b.children.length = 0; mutate(b, 'hasTilesetContent', false); mutate(b, 'hasEmptyContent', false);
+  mutate(b, 'content', mesh()); mutate(b, 'hasRenderableContent', true);
+  mutate(b, 'contentVisibility', () => -1);
+  render(view, value, [a]); assert.equal(owner.getStatus().ready, true);
+  mutate(b, 'contentVisibility', () => 0); assert.equal(owner.getStatus().ready, false);
+  owner.restore();
+});
+
+test('ADD respects explicit SSE exclusions but retains required visible children', () => {
+  const child = tile(), root = tile(mesh(), [child], { refine: 0, _screenSpaceError: 8 });
+  const value = source({ root }), view = viewer(), owner = new VideoOverlayOcclusion('survey', value, view.scene);
+  render(view, value, [root]); mutate(child, '_updatedVisibilityFrame', -1);
+  assert.equal(owner.getStatus().ready, true, 'low SSE does not require unvisited descendants');
+  mutate(root, '_screenSpaceError', 32); assert.equal(owner.getStatus().ready, false);
+  render(view, value, [root]); assert.equal(owner.getStatus().ready, false);
+  mutate(child, 'getScreenSpaceError', () => 8); assert.equal(owner.getStatus().ready, true, 'matches explicit ADD-child SSE cull');
+  child.children.push(tile()); mutate(child, 'hasTilesetContent', true);
+  render(view, value, [root]);
+  assert.equal(owner.getStatus().ready, false, 'expanded external wrappers traverse their missing child before ADD SSE culling');
+  child.children.length = 0; mutate(child, 'hasTilesetContent', false);
+  mutate(child, 'getScreenSpaceError', () => 32); assert.equal(owner.getStatus().ready, false);
+  render(view, value, [root, child]); assert.equal(owner.getStatus().ready, true);
+  owner.restore();
+});
+
+test('partially failed multiple content and external branches cannot bypass missing content', () => {
+  const child = tile(), content = { ...empty(), innerContents: [mesh()], _innerContentHeaders: [{}, {}] };
+  const root = tile(content, [child], { hasRenderableContent: true, hasTilesetContent: true });
+  const value = source({ root }), view = viewer(), owner = new VideoOverlayOcclusion('survey', value, view.scene);
+  render(view, value, [root, child]); assert.equal(owner.getStatus().ready, false);
+  render(view, value, [child]); assert.equal(owner.getStatus().ready, false, 'missing external header cannot be hidden by surviving children');
+  content._innerContentHeaders.pop();
+  render(view, value, [root]); assert.equal(owner.getStatus().ready, false, 'mixed parent mesh does not replace external child coverage');
+  render(view, value, [root, child]); assert.equal(owner.getStatus().ready, true);
+  mutate(root, 'commandsLength', 0); assert.equal(owner.getStatus().ready, false);
+  render(view, value, [child]); assert.equal(owner.getStatus().ready, true, 'replacement descendants may replace a complete external parent');
   owner.restore();
 });
 
 test('empty/external containers wait for a mesh; nested point clouds and unsupported geometry fail', () => {
-  const empty = { pointsLength: 0, trianglesLength: 0, geometryByteLength: 0 };
-  const value = source({ root: tile(empty) });
-  const owner = new VideoOverlayOcclusion('survey', value);
+  const value = source({ root: tile(empty()) });
+  const view = viewer(), owner = new VideoOverlayOcclusion('survey', value, view.scene);
   assert.equal(owner.getStatus().ready, false);
-  value.tileLoad.raiseEvent(tile({ ...empty, innerContents: [mesh()] }));
+  const loaded = tile({ ...empty(), innerContents: [mesh()] });
+  value.tileLoad.raiseEvent(loaded);
+  assert.equal(owner.getStatus().ready, false, 'loaded/cached mesh alone proves no current coverage');
+  value.root.children.push(loaded); render(view, value, [loaded]);
   assert.equal(owner.getStatus().ready, true);
-  value.tileVisible.raiseEvent(tile({ ...empty, innerContents: [mesh(), { ...empty, pointsLength: 10 }] }));
+  value.tileVisible.raiseEvent(tile({ ...empty(), innerContents: [mesh(), { ...empty(), pointsLength: 10 }] }));
   assert.match(owner.getStatus().error!, /点云/);
   owner.restore();
-  assert.throws(() => new VideoOverlayOcclusion('bad', source({ root: tile({ ...empty, innerContents: [mesh(), { ...empty, pointsLength: 1 }] }) })), /点云/);
-  assert.throws(() => new VideoOverlayOcclusion('bad', source({ root: tile({ ...empty, geometryByteLength: 123 }) })), /不支持/);
+  assert.throws(() => new VideoOverlayOcclusion('bad', source({ root: tile({ ...empty(), innerContents: [mesh(), { ...empty(), pointsLength: 1 }] }) }), view.scene), /点云/);
+  assert.throws(() => new VideoOverlayOcclusion('bad', source({ root: tile({ ...empty(), geometryByteLength: 123 }) }), view.scene), /不支持/);
 });
 
-test('loading failures and external material ownership never reveal an unmasked overlay', () => {
+test('network failures remain warnings while current coverage recovers; shader conflicts remain fatal', () => {
   const value = source();
-  const owner = new VideoOverlayOcclusion('survey', value);
+  const view = viewer(), owner = new VideoOverlayOcclusion('survey', value, view.scene);
+  render(view, value);
   value.tileFailed.raiseEvent({ message: 'network failed' });
-  assert.equal(owner.getStatus().ready, false); assert.match(owner.getStatus().error!, /加载失败/);
+  assert.equal(owner.getStatus().ready, true); assert.equal(owner.getStatus().error, undefined);
+  assert.match(owner.getStatus().warning!, /加载失败/);
+  render(view, value, []); assert.equal(owner.getStatus().ready, false);
+  render(view, value); assert.equal(owner.getStatus().ready, true);
   owner.restore();
   const originalStyle = new Cesium3DTileStyle({ color: "color('red')" });
   const externalStyle = new Cesium3DTileStyle({ color: "color('blue')" });
   const other = source({ style: originalStyle });
-  const second = new VideoOverlayOcclusion('survey', other);
+  const second = new VideoOverlayOcclusion('survey', other, view.scene);
   const owned = other.customShader!;
   const external = new CustomShader({});
   other.customShader = external; other.style = externalStyle;
@@ -155,16 +260,20 @@ test('loading failures and external material ownership never reveal an unmasked 
 
 test('resource depth role wins over texture selection and respects global visibility', async () => {
   const value = source(), depth = record('survey', value);
-  const session = await VideoOverlayResources.create({ viewer: viewer(), imports: () => [depth], getRecord: () => undefined });
+  const view = viewer(), session = await VideoOverlayResources.create({ viewer: view, imports: () => [depth], getRecord: () => undefined });
   session.applyAdjustments({ survey: { east: 0, north: 0, up: 0, heading: 0 } });
   assert.ok(Matrix4.equals(value.modelMatrix, base));
   session.setOcclusion('survey');
   const matrix = value.modelMatrix, shader = value.customShader;
   session.setSelection([]);
   assert.equal(value.show, true); assert.equal(session.get('survey')?.selected, false);
+  render(view, value);
   assert.equal(session.get('survey')?.occluder, true); assert.equal(session.getOcclusionStatus().ready, true);
   session.setSelection(['survey']);
   assert.equal(value.customShader, shader); assert.equal(value.show, true);
+  value.tileFailed.raiseEvent({ message: 'one detail tile failed' }); session.setVisible(true);
+  assert.equal(value.show, true); assert.equal(session.getOcclusionStatus().ready, true);
+  assert.match(session.getOcclusionStatus().warning!, /加载失败/);
   session.applyAdjustments({ survey: { east: 0, north: 0, up: 0, heading: 0 } });
   assert.equal(value.modelMatrix, matrix);
   session.setVisible(false); assert.equal(value.show, false);
