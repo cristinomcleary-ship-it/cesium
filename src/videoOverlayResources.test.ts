@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  BoundingSphere, Cartesian3, CustomDataSource, GroundPolylinePrimitive,
-  JulianDate, Matrix4, PolygonHierarchy, PrimitiveCollection, Transforms, type Viewer,
+  BoundingSphere, Cartesian3, CustomDataSource, Event, GroundPolylinePrimitive,
+  JulianDate, Matrix4, PolygonHierarchy, Primitive, PrimitiveCollection, Transforms, type Viewer,
 } from "cesium";
 import { VideoOverlayResources } from "./videoOverlayResources.ts";
 import type { CadImportPackage } from "./cadImport.ts";
@@ -11,8 +11,19 @@ import type { ImportRecord } from "./types.ts";
 
 const center = Cartesian3.fromDegrees(120, 30, 25);
 const base = Transforms.eastNorthUpToFixedFrame(center);
-function viewer(primitives = new PrimitiveCollection()): Viewer {
-  return { clock: { currentTime: JulianDate.now() }, scene: { primitives, requestRender() {} } } as unknown as Viewer;
+function viewer(primitives = new PrimitiveCollection(), autoCompile = true): Viewer {
+  const postRender = new Event();
+  let queued = false;
+  const compile = (resource: unknown) => {
+    if (resource instanceof PrimitiveCollection) {
+      if (resource.show) for (let index = 0; index < resource.length; index++) compile(resource.get(index));
+    } else if (resource instanceof Primitive) (resource as unknown as { _ready: boolean })._ready = true;
+  };
+  return { clock: { currentTime: JulianDate.now() }, scene: { primitives, postRender, requestRender() {
+    if (!autoCompile || queued || !postRender.numberOfListeners) return;
+    queued = true;
+    queueMicrotask(() => { queued = false; compile(primitives); postRender.raiseEvent(); });
+  } } } as unknown as Viewer;
 }
 function model(id: string, show = true) {
   const resource = { show, modelMatrix: Matrix4.clone(base), boundingSphere: new BoundingSphere(center, 20), isDestroyed: () => false };
@@ -173,4 +184,84 @@ test("invalid offsets fail before touching any valid object", async () => {
   assert.throws(() => session.applyAdjustments({ a: { east: 1 }, b: { up: Number.NaN } }), /有限数值/);
   assert.ok(Matrix4.equals(first.resource.modelMatrix, base));
   session.restore();
+});
+
+
+test("restored CAD waits for the geometry worker before snapshotting and applying offsets", async () => {
+  const root = new PrimitiveCollection(), nested = new PrimitiveCollection({ show: false });
+  const leaf = new Primitive(), originallyHidden = new Primitive({ show: false });
+  (originallyHidden as unknown as { _ready: boolean })._ready = true;
+  nested.add(leaf); nested.add(originallyHidden); root.add(nested);
+  const sceneRoot = new PrimitiveCollection(); sceneRoot.add(root);
+  const record: ImportRecord = { id: "cad", name: "restored", kind: "CAD", representation: "primitive", resource: root, visible: true, boundingSphere: new BoundingSphere(center, 20) };
+  const view = viewer(sceneRoot, false);
+  let resolved = false;
+  const creating = VideoOverlayResources.create({ viewer: view, imports: () => [record], getRecord: () => undefined }).then(value => { resolved = true; return value; });
+  await Promise.resolve();
+  assert.equal(resolved, false, "ready library records alone do not mean GPU geometry has compiled");
+  assert.equal(root.show, true); assert.equal(nested.show, true);
+  assert.equal(leaf.show, false); assert.equal(originallyHidden.show, false, "compilation cannot expose CAD");
+  // Match Cesium's asynchronous combine callback, which writes its captured matrix.
+  leaf.modelMatrix = Matrix4.clone(Matrix4.IDENTITY);
+  (leaf as unknown as { _ready: boolean })._ready = true;
+  view.scene.postRender.raiseEvent(view.scene, view.clock.currentTime);
+  const session = await creating;
+  assert.equal(root.show, false); assert.equal(nested.show, false);
+  assert.equal(leaf.show, true); assert.equal(originallyHidden.show, false);
+  session.setSelection(["cad"]); session.applyAdjustments({ cad: { east: 3, north: -2, up: 29 } });
+  const moved = localDisplacement(Matrix4.multiplyByPoint(leaf.modelMatrix, center, new Cartesian3()));
+  close(moved.x, 3); close(moved.y, -2); close(moved.z, 29);
+  assert.equal(view.scene.postRender.numberOfListeners, 0);
+  session.restore();
+  assert.equal(root.show, true); assert.equal(nested.show, false); assert.equal(leaf.show, true);
+  assert.ok(Matrix4.equals(leaf.modelMatrix, Matrix4.IDENTITY));
+  sceneRoot.destroy();
+});
+
+test("cancelling CAD compilation restores the user's layer and removes readiness listeners", async () => {
+  const root = new PrimitiveCollection(), leaf = new Primitive(); root.add(leaf);
+  const controller = new AbortController(), view = viewer(new PrimitiveCollection(), false);
+  const record: ImportRecord = { id: "cad", name: "pending", kind: "CAD", representation: "primitive", resource: root, visible: true, boundingSphere: new BoundingSphere(center, 20) };
+  const creating = VideoOverlayResources.create({ viewer: view, imports: () => [record], getRecord: () => undefined, signal: controller.signal });
+  controller.abort();
+  await assert.rejects(creating, { name: "AbortError" });
+  assert.equal(root.show, true); assert.equal(leaf.show, true);
+  assert.equal(view.scene.postRender.numberOfListeners, 0);
+  root.destroy();
+});
+
+test("CAD removed or denied during compilation stays unavailable and hidden", async () => {
+  for (const destroy of [false, true]) {
+    const root = new PrimitiveCollection(), leaf = new Primitive(); root.add(leaf);
+    const view = viewer(new PrimitiveCollection(), false);
+    const record: ImportRecord = { id: "cad", name: "pending", kind: "CAD", representation: "primitive", resource: root, visible: true, boundingSphere: new BoundingSphere(center, 20) };
+    let imports = [record];
+    const creating = VideoOverlayResources.create({ viewer: view, imports: () => imports, getRecord: () => undefined });
+    if (destroy) root.destroy(); else imports = [];
+    view.scene.postRender.raiseEvent(view.scene, view.clock.currentTime);
+    const session = await creating;
+    assert.equal(session.get("cad")?.available, false);
+    session.setSelection(["cad"]);
+    if (!destroy) assert.equal(root.show, false);
+    assert.equal(view.scene.postRender.numberOfListeners, 0);
+    session.restore();
+    if (!destroy) root.destroy();
+  }
+});
+
+
+test("CAD compilation timeout is bounded and restores temporary visibility", async context => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const root = new PrimitiveCollection(), leaf = new Primitive(); root.add(leaf);
+  const view = viewer(new PrimitiveCollection(), false);
+  const record: ImportRecord = { id: "cad", name: "pending", kind: "CAD", representation: "primitive", resource: root, visible: true, boundingSphere: new BoundingSphere(center, 20) };
+  const creating = VideoOverlayResources.create({ viewer: view, imports: () => [record], getRecord: () => undefined });
+  context.mock.timers.tick(60_000);
+  const session = await creating;
+  assert.equal(session.get("cad")?.available, false);
+  assert.match(session.get("cad")?.error ?? "", /准备超时/);
+  assert.equal(root.show, false); assert.equal(leaf.show, true);
+  assert.equal(view.scene.postRender.numberOfListeners, 0);
+  session.restore(); assert.equal(root.show, true);
+  root.destroy();
 });

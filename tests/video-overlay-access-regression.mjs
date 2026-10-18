@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { resolve, sep } from 'node:path';
 import { build } from 'esbuild';
 import ts from 'typescript';
-import { BoundingSphere, Cartesian3, GroundPolylinePrimitive, JulianDate, Matrix4, PrimitiveCollection, Transforms } from 'cesium';
+import { BoundingSphere, Cartesian3, Event, GroundPolylinePrimitive, JulianDate, Matrix4, Primitive, PrimitiveCollection, Transforms } from 'cesium';
 
 // Exercise the production host callbacks and AR resource owner together, without WebGL.
 const workspace = resolve(process.cwd());
@@ -39,7 +39,17 @@ try {
   }
   globalThis.document = { createElement: () => new Element(), createTextNode: text => text, getElementById: id => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); }, querySelector: () => null };
   const container = new Element(); container.parentElement = new Element();
-  const viewer = { container, clock: { currentTime: JulianDate.now() }, scene: { primitives: new PrimitiveCollection(), requestRender() {} }, isDestroyed: () => false, resize() {} };
+  const postRender = new Event();
+  const compile = primitive => {
+    if (primitive instanceof PrimitiveCollection) { if (primitive.show) for (let i = 0; i < primitive.length; i++) compile(primitive.get(i)); }
+    else if (primitive instanceof Primitive) primitive._ready = true;
+  };
+  let renderQueued = false;
+  const viewer = { container, clock: { currentTime: JulianDate.now() }, scene: { primitives: new PrimitiveCollection(), postRender, requestRender() {
+    if (renderQueued || !postRender.numberOfListeners) return;
+    renderQueued = true;
+    queueMicrotask(() => { renderQueued = false; compile(viewer.scene.primitives); postRender.raiseEvent(); });
+  } }, isDestroyed: () => false, resize() {} };
   const owner = Object.assign(Object.create(VideoModelOverlay.prototype), {
     viewer, selected: new Set(), selectionInitialized: false, destroyed: false, epoch: 0,
     occlusion: { enabled: false, sourceId: '' },

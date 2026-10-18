@@ -1,7 +1,7 @@
 import {
   BoundingSphere, Cartesian3, ConstantPositionProperty, ConstantProperty, GroundPolylinePrimitive,
   GroundPrimitive, HeightReference, LabelCollection, Matrix3, Matrix4, PolygonHierarchy,
-  PrimitiveCollection, Transforms, type CustomDataSource, type JulianDate, type Viewer,
+  Primitive, PrimitiveCollection, Transforms, type CustomDataSource, type JulianDate, type Viewer,
 } from "cesium";
 import { readCadImport } from "./cadImport.ts";
 import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader.ts";
@@ -209,6 +209,58 @@ export class VideoOverlayResources {
     if (this.restored || this.controller.signal.aborted) throw new DOMException("AR 加载已取消", "AbortError");
   }
 
+  /** Cesium's geometry worker can replace modelMatrix until a Primitive is ready. */
+  private async waitForCadReady(entry: Entry, root: VisibleResource) {
+    const collections: PrimitiveCollection[] = [], leaves: VisibleResource[] = [];
+    const visit = (resource: VisibleResource) => {
+      if (resource instanceof PrimitiveCollection) {
+        collections.push(resource);
+        for (let index = 0; index < resource.length; index++) visit(resource.get(index));
+      } else leaves.push(resource);
+    };
+    visit(root);
+    const pending = leaves.filter((leaf): leaf is Primitive => leaf instanceof Primitive && !leaf.ready);
+    if (!pending.length) return;
+    await new Promise<void>((resolve, reject) => {
+      const visibility = new Map<VisibleResource, boolean>();
+      let settled = false, removeRender: (() => void) | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true; clearTimeout(timer); removeRender?.();
+        this.controller.signal.removeEventListener('abort', abort);
+        // Run synchronously on abort, before restore() restores the user's root
+        // visibility. A later promise-finally must not hide that restored layer.
+        for (const [resource, show] of visibility) if (alive(resource)) resource.show = show;
+        if (error) reject(error); else resolve();
+      };
+      const abort = () => finish(new DOMException('AR 加载已取消', 'AbortError'));
+      const check = () => {
+        try {
+          this.throwIfCancelled();
+          if (!alive(root) || !alive(entry.original) || pending.some(leaf => !alive(leaf))) throw new Error('CAD 图层已移除，请重新加载后进入 AR');
+          if (!this.options.imports().some(record => record.id === entry.record.id && record.resource === entry.original)) throw new Error('CAD 图层已移除或当前账号无权访问');
+          if (pending.every(leaf => leaf.ready)) finish();
+          else {
+            for (const leaf of leaves) if (alive(leaf)) leaf.show = false;
+            for (const collection of collections) if (alive(collection)) collection.show = true;
+            this.options.viewer.scene.requestRender();
+          }
+        } catch (error) { finish(error); }
+      };
+      try {
+        // Hidden collections skip child updates. Hidden Primitive leaves still
+        // compile, so open the collection tree without drawing any CAD content.
+        for (const leaf of leaves) { visibility.set(leaf, leaf.show); leaf.show = false; }
+        for (const collection of collections) { visibility.set(collection, collection.show); collection.show = true; }
+        this.controller.signal.addEventListener('abort', abort, { once: true });
+        removeRender = this.options.viewer.scene.postRender.addEventListener(check);
+        timer = setTimeout(() => finish(new Error('CAD 图元准备超时，请等待图纸加载完成后重新进入 AR')), 60_000);
+        check();
+      } catch (error) { finish(error); }
+    });
+  }
+
   private async prepare(entry: Entry) {
     const { record } = entry;
     if (record.kind === "Model" || record.kind === "3D Tiles") {
@@ -223,6 +275,7 @@ export class VideoOverlayResources {
       if (isGroundCad(entry.original) || saved?.settings.displayMode && saved.settings.displayMode !== "absolute") {
         await this.prepareAbsoluteCopy(entry, saved);
       } else {
+        await this.waitForCadReady(entry, entry.original);
         entry.matrices = collectMatrices(entry.original);
         entry.center = record.boundingSphere?.center ? Cartesian3.clone(record.boundingSphere.center) : undefined;
       }
@@ -263,6 +316,7 @@ export class VideoOverlayResources {
     });
     this.throwIfCancelled();
     entry.target = result.collection;
+    await this.waitForCadReady(entry, result.collection);
     entry.matrices = collectMatrices(result.collection);
     entry.center = result.boundingSphere?.center ? Cartesian3.clone(result.boundingSphere.center) : undefined;
     entry.description = "按图纸标高叠加，可用高程微调（原贴附图层保持不变）";
