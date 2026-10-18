@@ -89,7 +89,9 @@ export class ManagementWorkspace {
       onSelect: selection => this.select(selection),
       onLocate: selection => this.locate(selection),
       onSceneAction: (action, args) => this.sceneAction(action, args).catch(e => {this.message(e instanceof Error ? e.message : String(e), true);return false;}),
-      onSessionChange: session => this.sessionChanged(session),
+      // Authenticated sessions arrive with onSnapshot; apply their project and
+      // permissions together there. A null session still revokes access immediately.
+      onSessionChange: session => { if (!session) this.sessionChanged(null); },
       onSnapshot: data => this.acceptSharedSnapshot(data),
       onContextInvalidated: () => { this.data = undefined; this.machineryContextGeneration++; this.machineryStatus = '请通过“现场工作台”登录或核对当前项目权限。'; this.syncMachinery(); },
       onExit: () => { this.exitToWorkbench(); },
