@@ -4,6 +4,7 @@ import { VideoOverlayResources, type VideoOverlayAdjustment } from './videoOverl
 import { containVideoRect, overlayLensBounds, OVERLAY_LENS_SHADER } from './videoOverlayLens';
 import { transformCcCameraSample, validateCcSceneTransform } from './ccSceneRegistration';
 import { createCcCameraRegistrationMatrix, defaultCcCameraRegistration, validateCcCameraRegistration, type CcCameraRegistration, type CcCameraRegistrationAnchor } from './ccCameraRegistration';
+import { assertVideoOverlayOccluder, validateVideoOverlayOcclusion, type SavedVideoOverlayOcclusion } from './videoOverlayOcclusion';
 import type { LibraryRecord } from './projectLibrary';
 import type { ImportRecord } from './types';
 import './videoModelOverlay.css';
@@ -14,6 +15,7 @@ export type SavedVideoOverlaySettings = {
   videoName: string; videoSize: number; width: number; height: number;
   sceneReference?: { recordId: string; matrix: number[] };
   cameraRegistration?: CcCameraRegistration & { anchor?: CcCameraRegistrationAnchor };
+  occlusion?: SavedVideoOverlayOcclusion;
 };
 type Options = {
   getImports: () => readonly ImportRecord[]; getRecord: (id: string) => LibraryRecord | undefined;
@@ -54,6 +56,14 @@ export const videoModelOverlayPanelHtml = `
     <button id="ccCameraReset" type="button">重置相机校正</button><small id="ccCameraInfo">未启用相机校正。</small>
     <small>相机校正随录像保存，已有 CAD／模型微调会保留。更改空三高程或成果关联后请重新核验；需要新的首帧基准时，先重置相机校正。</small>
   </details>
+  <details open><summary>地表与建筑遮挡</summary>
+    <label><input id="ccOcclusionEnabled" type="checkbox">启用实景遮挡，隐藏地下及被遮住的构件</label>
+    <label>遮挡参照<select id="ccOcclusionSource"><option value="">请选择已加载的倾斜摄影</option></select></label>
+    <button id="ccOcclusionUseReference" type="button">使用相机关联的倾斜摄影</button>
+    <small>选择同一现场、已与视频对齐的网格倾斜摄影。它只提供遮挡深度，原视频仍然可见；无需在“叠加对象”中显示这份成果。</small>
+    <small>遮挡取决于成果的覆盖与完整程度。加载中暂时隐藏叠加；更改参照后请重新开始融合。此设置不改变模型定位或 CAD 微调。</small>
+    <small id="ccOcclusionInfo">未启用实景遮挡，视频本身不含深度。</small>
+  </details>
   <div class="cc-actions"><button id="ccStart" class="primary" type="button">开始融合</button><button id="ccStop" type="button">返回地图</button></div>
   <h3>叠加对象</h3><div id="ccResources"><small>先在 CAD／工程模型中导入并定位对象。</small></div>
   <h3>叠加对象位置微调</h3><label>调整范围<select id="ccTarget"><option value="*">勾选对象整体平移</option></select></label>
@@ -81,6 +91,8 @@ export class VideoModelOverlay {
   private cameraRegistration = defaultCcCameraRegistration();
   private cameraAnchor?: CcCameraRegistrationAnchor;
   private cameraCorrection: readonly number[] = Matrix4.toArray(Matrix4.IDENTITY);
+  private occlusion = validateVideoOverlayOcclusion();
+  private removeOcclusionStatus?: () => void;
   private resources?: VideoOverlayResources;
   private adjustments: Record<string, VideoOverlayAdjustment> = {};
   private selected = new Set<string>();
@@ -124,6 +136,13 @@ export class VideoModelOverlay {
     this.bind('ccTarget', 'change', () => this.syncAdjustmentInputs());
     this.bind('ccSceneReference', 'change', () => this.changeSceneReference());
     this.bind('ccReferenceUpdate', 'click', () => this.changeSceneReference());
+    this.bind('ccOcclusionEnabled', 'change', () => this.changeOcclusion());
+    this.bind('ccOcclusionSource', 'change', () => this.changeOcclusion());
+    this.bind('ccOcclusionUseReference', 'click', () => {
+      if (!this.sceneReference) return;
+      this.el<HTMLSelectElement>('ccOcclusionSource').value = this.sceneReference.recordId;
+      this.el<HTMLInputElement>('ccOcclusionEnabled').checked = true; this.changeOcclusion();
+    });
     for (const id of ['ccCameraEnabled', 'ccCameraEast', 'ccCameraNorth', 'ccCameraUp', 'ccCameraHeading', 'ccCameraPitch', 'ccCameraRoll']) {
       this.bind(id, 'change', () => this.editCameraRegistration());
     }
@@ -181,7 +200,9 @@ export class VideoModelOverlay {
     if (!file) return; ++this.sessionGeneration; ++this.inputGeneration; this.exit(); this.mediaLoad?.cancel(); this.files = { ...this.files, [slot]: file }; this.savedId = undefined; this.dataset = undefined; this.track = undefined;
     this.sceneReference = undefined; this.refreshSceneReferences();
     this.cameraRegistration = defaultCcCameraRegistration(); this.cameraAnchor = undefined; this.cameraCorrection = Matrix4.toArray(Matrix4.IDENTITY); this.syncCameraInputs();
+    this.occlusion = validateVideoOverlayOcclusion(); this.refreshOcclusionSources();
     this.adjustments = {}; this.undo = []; this.redo = []; this.syncAdjustmentInputs(); this.dirty();
+    this.refreshResources();
     this.el('ccOverlayInfo').textContent = Object.values(this.files).map(f => f.name).join(' · ');
   }
   private readTiming(): CcTrackOptions {
@@ -232,6 +253,57 @@ export class VideoModelOverlay {
     // never be applied again to an XML camera that is already in ECEF.
     return [...validateCcSceneTransform(record.settings.matrix ?? Matrix4.toArray(Matrix4.IDENTITY))];
   }
+  private isOcclusionSource(id: string) { return this.occlusion.enabled && this.occlusion.sourceId === id; }
+  private checkOcclusionAdjustment(settings = this.occlusion, values = this.adjustments) {
+    if (!settings.enabled) return;
+    const value = values[settings.sourceId];
+    if (value && ((['east', 'north', 'up'] as const).some(key => Math.abs(value[key]) > 1e-9)
+      || Math.abs(value.heading % 360) > 1e-9)) {
+      throw new Error('遮挡参照需使用地图原定位；请先关闭遮挡并恢复这份倾斜摄影的对象微调，再启用遮挡');
+    }
+  }
+  private checkOcclusionSource(settings = this.occlusion) {
+    if (!settings.enabled) return;
+    const item = this.options.getImports().find(item => item.id === settings.sourceId && item.kind === '3D Tiles');
+    if (!item || this.options.getRecord(item.id)?.kind !== '3D Tiles') throw new Error('遮挡参照尚未加载或不可用，请加载对应倾斜摄影或关闭实景遮挡');
+    assertVideoOverlayOccluder(item.resource);
+    this.checkOcclusionAdjustment(settings);
+  }
+  private changeOcclusion() {
+    try {
+      const next = validateVideoOverlayOcclusion({ enabled: this.el<HTMLInputElement>('ccOcclusionEnabled').checked, sourceId: this.el<HTMLSelectElement>('ccOcclusionSource').value });
+      ++this.inputGeneration; this.exit(); this.checkOcclusionSource(next);
+      this.occlusion = next; this.dirty();
+    } catch (error) { this.fail(error); }
+    this.refreshResources();
+  }
+  private refreshOcclusionSources() {
+    const select = this.el<HTMLSelectElement>('ccOcclusionSource'), selectedId = this.occlusion.sourceId;
+    select.replaceChildren();
+    const add = (label: string, value: string) => { const option = document.createElement('option'); option.textContent = label; option.value = value; select.append(option); };
+    add('请选择已加载的倾斜摄影', '');
+    const eligible = this.options.getImports().filter(item => item.kind === '3D Tiles' && this.options.getRecord(item.id)?.kind === '3D Tiles');
+    for (const item of eligible) add(item.name, item.id);
+    if (selectedId && !eligible.some(item => item.id === selectedId)) add('已选遮挡参照尚未加载或不可用', selectedId);
+    select.value = selectedId;
+    this.el<HTMLInputElement>('ccOcclusionEnabled').checked = this.occlusion.enabled;
+    this.el<HTMLButtonElement>('ccOcclusionUseReference').disabled = !this.sceneReference;
+    this.updateOcclusionStatus();
+  }
+  private updateOcclusionStatus() {
+    let info = '未启用实景遮挡，视频本身不含深度。';
+    if (this.occlusion.enabled) {
+      try {
+        this.checkOcclusionSource();
+        const status = this.resources?.getOcclusionStatus();
+        info = !this.active ? '已选择遮挡参照；点击“开始融合”应用。'
+          : status?.error ? `遮挡不可用，已隐藏叠加：${status.error}`
+          : status?.ready ? '实景遮挡已生效；地表和建筑遮住后方构件，参照纹理不显示。'
+          : '正在加载遮挡参照，暂时隐藏叠加。';
+      } catch (error) { info = error instanceof Error ? error.message : String(error); }
+    }
+    const element = this.el('ccOcclusionInfo'); if (element.textContent !== info) element.textContent = info;
+  }
   private checkSceneReference() {
     const reference = this.sceneReference; if (!reference) return;
     validateCcSceneTransform(reference.matrix);
@@ -247,7 +319,7 @@ export class VideoModelOverlay {
       this.sceneReference = recordId ? { recordId, matrix: this.sourceMatrix(recordId) } : undefined;
       this.dirty();
     } catch (error) { this.fail(error); }
-    this.refreshSceneReferences();
+    this.refreshSceneReferences(); this.refreshOcclusionSources();
   }
   private refreshSceneReferences() {
     const select = this.el<HTMLSelectElement>('ccSceneReference'), selectedId = this.sceneReference?.recordId ?? '';
@@ -291,13 +363,13 @@ export class VideoModelOverlay {
   }
   private async prepare(validateReference = true) {
     if (!this.files.video || !this.files.source) throw new Error('请选择原视频和同一视频的 CC 空三 XML');
-    const generation = this.inputGeneration, timing = this.readTiming(); if (validateReference) this.checkSceneReference();
+    const generation = this.inputGeneration, timing = this.readTiming(); if (validateReference) { this.checkSceneReference(); this.checkOcclusionSource(); }
     const check = () => { if (generation !== this.inputGeneration || this.destroyed) throw new DOMException('融合输入已切换', 'AbortError'); };
     const dataset = this.dataset ?? parseCcCameraXml(await this.files.source.text()); check();
     const track = createCcCameraTrack(dataset, timing);
     if (Math.abs(track.intrinsics.skew) > 1e-8) throw new Error('当前叠加不支持非零相机 Skew，请使用无 skew 的 CC 相机标定');
     await this.loadMedia();
-    check(); if (validateReference) this.checkSceneReference(); const k = track.intrinsics;
+    check(); if (validateReference) { this.checkSceneReference(); this.checkOcclusionSource(); } const k = track.intrinsics;
     if (Math.abs(this.video.videoWidth / this.video.videoHeight - k.width / k.height) > .001) throw new Error('视频与 CC 影像画幅比例不一致，请使用同源未裁切视频');
     if (!Number.isFinite(this.video.duration) || track.startTime > this.video.duration || track.endTime > this.video.duration + .1) throw new Error('空三时间超出视频，请检查首张时间、抽帧间隔和编号增量');
     this.dataset = dataset; this.timing = timing; this.track = track;
@@ -316,8 +388,9 @@ export class VideoModelOverlay {
       const resources = await VideoOverlayResources.create({ viewer: this.viewer, imports: this.options.getImports, getRecord: this.options.getRecord, signal: this.controller.signal });
       if (epoch !== this.epoch || this.destroyed) { resources.restore(); return; }
       this.resources = resources;
-      this.resources.applyAdjustments(this.adjustments); this.resources.setSelection([...this.selected]);
+      this.resources.applyAdjustments(this.adjustments); this.resources.setOcclusion(this.occlusion.enabled ? this.occlusion.sourceId : undefined); this.resources.setSelection([...this.selected]);
       this.mountStage(); this.installLens(); this.refreshResources();
+      this.removeOcclusionStatus = this.viewer.scene.postRender.addEventListener(() => this.updateOcclusionStatus());
       if (this.video.currentTime < this.track!.startTime || this.video.currentTime > this.track!.endTime) this.video.currentTime = this.track!.startTime;
       if (!this.video.seeking) this.renderFrame(this.video.currentTime);
       else this.resources?.setVisible(false);
@@ -377,7 +450,10 @@ export class VideoModelOverlay {
     this.removeProjectionGuard = this.viewer.scene.preUpdate.addEventListener(() => { if (this.viewer.camera.frustum === frustum) frustum.aspectRatio = aspectRatio; });
     this.lensStage = new PostProcessStage({ name: `cc-video-overlay-${crypto.randomUUID()}`, fragmentShader: OVERLAY_LENS_SHADER,
       uniforms: { cameraK: new Cartesian4(k.fx, k.fy, k.cx, k.cy), imageSize: new Cartesian2(k.width, k.height),
-        opticalBounds: new Cartesian4(bounds.left, bounds.right, bounds.top, bounds.bottom), radialLens: new Cartesian3(d.k1, d.k2, d.k3), tangentLens: new Cartesian2(d.p1, d.p2), overlayOpacity: () => this.opacity } });
+        opticalBounds: new Cartesian4(bounds.left, bounds.right, bounds.top, bounds.bottom), radialLens: new Cartesian3(d.k1, d.k2, d.k3), tangentLens: new Cartesian2(d.p1, d.p2),
+        // Evaluate after this frame's tileset traversal. Unloaded/failed occluders
+        // must not briefly expose underground geometry during playback or seeks.
+        overlayOpacity: () => this.opacity * (!this.occlusion.enabled || this.resources?.getOcclusionStatus().ready ? 1 : 0) } });
     this.viewer.scene.postProcessStages.add(this.lensStage);
   }
   private originalContainerStyle = '';
@@ -414,6 +490,7 @@ export class VideoModelOverlay {
   private renderFrame(time: number) {
     if (!this.active || !this.track || this.seeking) return;
     if (this.sceneReference) { try { this.checkSceneReference(); } catch (error) { this.exit(); this.fail(error); return; } }
+    if (this.occlusion.enabled) { try { this.checkOcclusionSource(); } catch (error) { this.exit(); this.fail(error); return; } }
     this.lastFrameTime = time; const rawSample = this.track.sample(time);
     const registered = rawSample && (this.sceneReference ? transformCcCameraSample(rawSample, this.sceneReference.matrix) : rawSample);
     const sample = registered && (this.cameraRegistration.enabled ? transformCcCameraSample(registered, this.cameraCorrection) : registered);
@@ -431,20 +508,21 @@ export class VideoModelOverlay {
   refreshResources() {
     if (this.destroyed) return;
     const imports = this.options.getImports(), allowedIds = new Set(imports.map(item => item.id));
-    if (this.active && this.sceneReference) {
-      try { this.checkSceneReference(); }
+    if (this.active && (this.sceneReference || this.occlusion.enabled)) {
+      try { this.checkSceneReference(); this.checkOcclusionSource(); }
       catch (error) { this.exit(); this.fail(error); return; }
     }
-    this.refreshSceneReferences();
+    this.refreshSceneReferences(); this.refreshOcclusionSources();
     const items = this.resources?.list().filter(item => allowedIds.has(item.id)) ?? imports.filter(r => ['CAD', 'Model', '3D Tiles'].includes(r.kind)).map(r => ({ id: r.id, name: r.name, kind: r.kind, available: true, description: '', error: undefined }));
     this.selected = new Set([...this.selected].filter(id => allowedIds.has(id)));
     if (!this.selectionInitialized && items.length) { for (const item of items) if (item.kind !== '3D Tiles') this.selected.add(item.id); this.selectionInitialized = true; }
     const list = this.el('ccResources'); list.replaceChildren();
     for (const item of items) {
       const row = document.createElement('div'); row.className = 'cc-resource'; const label = document.createElement('label'), check = document.createElement('input');
-      check.type = 'checkbox'; check.checked = this.selected.has(item.id); check.disabled = !item.available; check.dataset.ccResource = item.id;
+      const occluder = this.isOcclusionSource(item.id);
+      check.type = 'checkbox'; check.checked = !occluder && this.selected.has(item.id); check.disabled = !item.available || occluder; check.dataset.ccResource = item.id;
       check.addEventListener('change', () => { if (check.checked) this.selected.add(item.id); else this.selected.delete(item.id); this.resources?.setSelection([...this.selected]); this.updateTargets(); this.dirty(); });
-      label.append(check, document.createTextNode(`${item.name} · ${item.kind}`)); row.append(label);
+      label.append(check, document.createTextNode(`${item.name} · ${occluder ? '遮挡参照（仅深度）' : item.kind}`)); row.append(label);
       if (item.description || item.error) { const small = document.createElement('small'); small.textContent = item.error || item.description; row.append(small); } list.append(row);
     }
     if (!items.length) list.textContent = '请先导入并定位 CAD 或工程模型。';
@@ -454,10 +532,10 @@ export class VideoModelOverlay {
   private updateTargets() {
     const select = this.el<HTMLSelectElement>('ccTarget'), previous = select.value;
     select.replaceChildren(new Option('勾选对象整体平移', '*'));
-    for (const item of this.options.getImports()) if (this.selected.has(item.id)) select.add(new Option(item.name, item.id));
+    for (const item of this.options.getImports()) if (this.selected.has(item.id) && !this.isOcclusionSource(item.id)) select.add(new Option(item.name, item.id));
     select.value = [...select.options].some(o => o.value === previous) ? previous : '*'; this.syncAdjustmentInputs();
   }
-  private targetIds() { const target = this.el<HTMLSelectElement>('ccTarget').value; return target === '*' ? [...this.selected] : this.selected.has(target) ? [target] : []; }
+  private targetIds() { const target = this.el<HTMLSelectElement>('ccTarget').value; return (target === '*' ? [...this.selected] : this.selected.has(target) ? [target] : []).filter(id => !this.isOcclusionSource(id)); }
   private syncAdjustmentInputs() {
     this.groupValues = zero(); const target = this.el<HTMLSelectElement>('ccTarget').value;
     const value = target === '*' ? this.groupValues : this.adjustments[target] ?? zero();
@@ -475,7 +553,9 @@ export class VideoModelOverlay {
   }
   private applyAdjustments() { try { const all = Object.fromEntries(this.options.getImports().map(item => [item.id, this.adjustments[item.id] ?? zero()])); this.resources?.applyAdjustments(all); this.viewer.scene.requestRender(); this.dirty(); } catch (e) { this.fail(e); } }
   private history(forward: boolean) {
-    const from = forward ? this.redo : this.undo, to = forward ? this.undo : this.redo, value = from.pop(); if (!value) return;
+    const from = forward ? this.redo : this.undo, to = forward ? this.undo : this.redo, value = from.at(-1); if (!value) return;
+    try { this.checkOcclusionAdjustment(this.occlusion, value); } catch (error) { this.fail(error); return; }
+    from.pop();
     to.push(structuredClone(this.adjustments)); this.adjustments = value; this.applyAdjustments(); this.syncAdjustmentInputs();
   }
   private startDrag(event: PointerEvent) {
@@ -509,7 +589,7 @@ export class VideoModelOverlay {
       const settings: SavedVideoOverlaySettings = { mode: 'cc-overlay', version: 1, timing: this.timing!, selectedIds: [...this.selected], adjustments: structuredClone(this.adjustments), opacity: this.opacity,
         currentTime: this.video.currentTime, videoName: this.files.video.name, videoSize: this.files.video.size, width: this.video.videoWidth, height: this.video.videoHeight,
         ...(this.sceneReference ? { sceneReference: structuredClone(this.sceneReference) } : {}),
-        cameraRegistration: structuredClone({ ...this.cameraRegistration, anchor: this.cameraAnchor }) };
+        cameraRegistration: structuredClone({ ...this.cameraRegistration, anchor: this.cameraAnchor }), occlusion: { ...this.occlusion } };
       const savedId = await this.onSave({ name: `${files.video.name} · CC 融合`, files, settings }, this.savedId);
       if (session !== this.sessionGeneration || this.destroyed) return;
       this.savedId = savedId;
@@ -522,6 +602,7 @@ export class VideoModelOverlay {
     if (settings.mode !== 'cc-overlay' || settings.version !== 1 || !settings.timing) throw new Error('不支持的 CC 融合方案');
     if (!files.video || files.video.name !== settings.videoName || files.video.size !== settings.videoSize) throw new Error('保存的视频与融合方案不一致');
     this.files = { ...files }; this.savedId = recordId; this.adjustments = structuredClone(settings.adjustments ?? {}); this.selected = new Set(settings.selectedIds ?? []); this.selectionInitialized = true;
+    this.occlusion = validateVideoOverlayOcclusion(settings.occlusion);
     if (settings.sceneReference) {
       if (!settings.sceneReference.recordId || typeof settings.sceneReference.recordId !== 'string') throw new Error('保存的相机坐标关联无效');
       this.sceneReference = { recordId: settings.sceneReference.recordId, matrix: [...validateCcSceneTransform(settings.sceneReference.matrix)] };
@@ -532,7 +613,7 @@ export class VideoModelOverlay {
       this.cameraAnchor = structuredClone(settings.cameraRegistration.anchor);
     } else if (this.cameraRegistration.enabled) throw new Error('保存的相机校正缺少首帧基准，请重置相机校正后重新保存');
     this.syncCameraInputs();
-    this.refreshSceneReferences();
+    this.refreshSceneReferences(); this.refreshOcclusionSources();
     const t = settings.timing;
     for (const [id, value] of Object.entries({ ccFirstTime: t.firstTimeSeconds, ccInterval: t.intervalSeconds, ccTimeMode: t.mode, ccFilenameStep: t.filenameStep ?? 1, ccHeightReference: t.heightReference, ccHeightOffset: t.heightOffsetMeters ?? 0 })) this.el<HTMLInputElement>(id).value = String(value);
     this.syncHeightInputs();
@@ -545,6 +626,8 @@ export class VideoModelOverlay {
     const time = this.active ? this.lastFrameTime : this.video.currentTime;
     let referenceError: string | null = null;
     try { this.checkSceneReference(); } catch (error) { referenceError = error instanceof Error ? error.message : String(error); }
+    let occlusionError: string | null = null;
+    try { this.checkOcclusionSource(); } catch (error) { occlusionError = error instanceof Error ? error.message : String(error); }
     const raw = this.track!.sample(time), rendered = raw && !referenceError ? (this.sceneReference ? transformCcCameraSample(raw, this.sceneReference.matrix) : raw) : null;
     const corrected = rendered && (this.cameraRegistration.enabled ? transformCcCameraSample(rendered, this.cameraCorrection) : rendered);
     return {
@@ -555,6 +638,7 @@ export class VideoModelOverlay {
         intrinsics: this.track!.intrinsics, distortion: this.track!.distortion, startTime: this.track!.startTime, endTime: this.track!.endTime },
       timing: this.timing, sceneReference: this.sceneReference ?? null, referenceError, rawCamera: raw, registeredCamera: rendered,
       cameraRegistration: { ...this.cameraRegistration, anchor: this.cameraAnchor ?? null, matrix: [...this.cameraCorrection] }, correctedCamera: corrected,
+      occlusion: { ...this.occlusion, status: this.resources?.getOcclusionStatus() ?? null, error: occlusionError },
       liveCamera: this.active ? { position: this.viewer.camera.positionWC, direction: this.viewer.camera.directionWC, up: this.viewer.camera.upWC,
         projection: Matrix4.toArray(this.viewer.camera.frustum.projectionMatrix) } : null,
       viewport: { width: this.viewer.canvas.clientWidth, height: this.viewer.canvas.clientHeight, pixelWidth: this.viewer.canvas.width, pixelHeight: this.viewer.canvas.height },
@@ -562,7 +646,7 @@ export class VideoModelOverlay {
         const resource = item.resource as unknown as { modelMatrix?: Matrix4; scale?: number; minimumPixelSize?: number; boundingSphere?: { center: Cartesian3; radius: number } };
         const record = this.options.getRecord(item.id); let sphere: { center: Cartesian3; radius: number } | undefined = item.boundingSphere;
         try { sphere ??= resource.boundingSphere; } catch { /* A not-yet-ready model has no evaluated sphere. */ }
-        return { id: item.id, name: item.name, kind: item.kind, selected: this.selected.has(item.id),
+        return { id: item.id, name: item.name, kind: item.kind, selected: this.selected.has(item.id), occluder: this.isOcclusionSource(item.id),
           savedMatrix: record?.settings.matrix ?? null, displayedMatrix: resource.modelMatrix ? Matrix4.toArray(resource.modelMatrix) : null,
           scale: resource.scale ?? null, minimumPixelSize: resource.minimumPixelSize ?? null,
           bounds: sphere ? { center: sphere.center, radius: sphere.radius } : null, adjustment: this.adjustments[item.id] ?? zero() };
@@ -582,6 +666,7 @@ export class VideoModelOverlay {
     if (this.animationHandle !== undefined) cancelAnimationFrame(this.animationHandle); this.animationHandle = undefined;
     this.resize?.disconnect(); this.resize = undefined;
     this.removeProjectionGuard?.(); this.removeProjectionGuard = undefined;
+    this.removeOcclusionStatus?.(); this.removeOcclusionStatus = undefined;
     if (this.lensStage && !this.viewer.isDestroyed()) this.viewer.scene.postProcessStages.remove(this.lensStage); this.lensStage = undefined;
     this.resources?.restore(); this.resources = undefined;
     const restore = this.restoreScene; this.restoreScene = undefined;
@@ -597,6 +682,7 @@ export class VideoModelOverlay {
     ++this.sessionGeneration; ++this.inputGeneration; this.mediaLoad?.cancel(); this.exit(); this.video.removeAttribute('src'); this.video.load(); if (this.mediaUrl) URL.revokeObjectURL(this.mediaUrl);
     this.mediaUrl = undefined; this.videoFile = undefined; this.files = {}; this.savedId = undefined; this.dataset = undefined; this.track = undefined;
     this.sceneReference = undefined;
+    this.occlusion = validateVideoOverlayOcclusion();
     this.cameraRegistration = defaultCcCameraRegistration(); this.cameraAnchor = undefined; this.cameraCorrection = Matrix4.toArray(Matrix4.IDENTITY); this.syncCameraInputs();
     this.adjustments = {}; this.undo = []; this.redo = []; this.selected.clear(); this.selectionInitialized = false;
     this.el<HTMLInputElement>('ccVideoFile').value = ''; this.el<HTMLInputElement>('ccXmlFile').value = ''; this.refreshResources();

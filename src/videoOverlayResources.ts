@@ -7,12 +7,13 @@ import { readCadImport } from "./cadImport.ts";
 import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader.ts";
 import type { LibraryRecord } from "./projectLibrary.ts";
 import type { ImportRecord } from "./types.ts";
+import { assertVideoOverlayOccluder, VideoOverlayOcclusion, type VideoOverlayOcclusionStatus } from './videoOverlayOcclusion.ts';
 
 /** Metres in the object's fixed local ENU frame; heading is clockwise degrees. */
 export type VideoOverlayAdjustment = { east: number; north: number; up: number; heading: number };
 export type VideoOverlayResourceItem = {
   id: string; name: string; kind: ImportRecord["kind"]; description: string;
-  available: boolean; selected: boolean; error?: string;
+  available: boolean; selected: boolean; occluder?: boolean; error?: string;
 };
 export type VideoOverlayResourcesOptions = {
   viewer: Viewer;
@@ -161,6 +162,7 @@ export class VideoOverlayResources {
   private readonly visibilitySnapshots = new Map<VisibleResource, boolean>();
   private readonly controller = new AbortController();
   private readonly adjustments = new Map<string, VideoOverlayAdjustment>();
+  private occlusion?: VideoOverlayOcclusion;
   private selected = new Set<string>();
   private visible = true;
   private restored = false;
@@ -272,12 +274,48 @@ export class VideoOverlayResources {
       const available = !this.restored && !entry.error && exists && alive(entry.original) && alive(entry.target);
       return { id: entry.record.id, name: entry.record.name, kind: entry.record.kind,
         description: entry.description, available, selected: this.selected.has(entry.record.id),
+        ...(this.occlusion?.sourceId === entry.record.id ? { occluder: true } : {}),
         ...(!available ? { error: entry.error ?? "工程图层已移除，请重新进入 AR" } : {}),
       };
     });
   }
 
   get(id: string): VideoOverlayResourceItem | undefined { return this.list().find(item => item.id === id); }
+
+  /** A separate depth role; it does not edit texture selection or persisted positioning. */
+  setOcclusion(sourceId?: string): void {
+    this.throwIfCancelled();
+    if (sourceId === this.occlusion?.sourceId) return;
+    if (sourceId) {
+      const entry = this.entries.get(sourceId);
+      if (!entry || entry.record.kind !== '3D Tiles' || !this.get(sourceId)?.available) {
+        throw new Error('地表遮挡源尚未加载或不可用，请选择已授权的倾斜摄影');
+      }
+      assertVideoOverlayOccluder(entry.original);
+      if (Object.values(this.adjustments.get(sourceId) ?? noAdjustment()).some(value => value !== 0)) {
+        throw new Error('此遮挡源已有独立 AR 位置微调，请先明确重置该对象微调或选择其他遮挡源');
+      }
+      this.occlusion?.restore(); this.occlusion = undefined;
+      this.occlusion = new VideoOverlayOcclusion(sourceId, entry.original);
+    } else {
+      this.occlusion?.restore(); this.occlusion = undefined;
+    }
+    this.updateVisibility();
+  }
+
+  getOcclusionStatus(): VideoOverlayOcclusionStatus {
+    if (!this.occlusion) return { enabled: false, ready: true };
+    const { sourceId, source } = this.occlusion;
+    const entry = this.entries.get(sourceId);
+    const allowed = !this.restored && !!entry && this.options.imports().some(record =>
+      record.id === sourceId && record.kind === '3D Tiles' && record.resource === source);
+    if (!allowed || !alive(source)) {
+      this.occlusion.restore();
+      if (alive(source)) source.show = false;
+      return { enabled: true, sourceId, ready: false, error: '地表遮挡源已移除或不可用，请重新选择已授权的倾斜摄影' };
+    }
+    return this.occlusion.getStatus();
+  }
 
   setSelection(ids: readonly string[]): void {
     this.throwIfCancelled();
@@ -302,8 +340,10 @@ export class VideoOverlayResources {
       resource.show = false;
     }
     const available = new Set(this.list().filter(item => item.available).map(item => item.id));
+    const occlusion = this.getOcclusionStatus();
     for (const [id, entry] of this.entries) {
-      if (alive(entry.target)) entry.target.show = this.visible && this.selected.has(id) && available.has(id);
+      if (alive(entry.target)) entry.target.show = this.visible && available.has(id)
+        && (id === occlusion.sourceId ? !occlusion.error : this.selected.has(id));
     }
     this.options.viewer.scene.requestRender();
   }
@@ -313,11 +353,21 @@ export class VideoOverlayResources {
     this.throwIfCancelled();
     const normalized = Object.entries(values).map(([id, value]) => [id, normalizedAdjustment({ ...this.adjustments.get(id), ...value })] as const);
     for (const [id, adjustment] of normalized) {
+      if (id === this.occlusion?.sourceId && Object.values(adjustment).some(value => value !== 0)) {
+        throw new Error('地表遮挡源使用原地图定位，不能同时进行对象位置微调');
+      }
+    }
+    for (const [id, adjustment] of normalized) {
       const entry = this.entries.get(id);
       if (!entry || !this.get(id)?.available || !entry.center) continue;
-      const transform = videoOverlayAdjustmentMatrix(entry.center, adjustment);
+      // A source's exact map matrix is also its depth reference. Never replace
+      // it with the numerically approximate ENU * inverse(ENU) for a zero edit.
+      if (id === this.occlusion?.sourceId) continue;
+      const unchanged = Object.values(adjustment).every(value => value === 0);
+      const transform = unchanged ? Matrix4.IDENTITY : videoOverlayAdjustmentMatrix(entry.center, adjustment);
       for (const binding of entry.matrices) {
-        if (alive(binding.resource)) binding.resource.modelMatrix = Matrix4.multiply(transform, binding.original, new Matrix4());
+        if (alive(binding.resource)) binding.resource.modelMatrix = unchanged
+          ? Matrix4.clone(binding.original) : Matrix4.multiply(transform, binding.original, new Matrix4());
       }
       entry.dataSource?.entities.suspendEvents();
       try { for (const binding of entry.positions) binding.apply(transform); }
@@ -346,6 +396,7 @@ export class VideoOverlayResources {
     this.restored = true;
     this.controller.abort();
     this.removeAbortListener?.();
+    this.occlusion?.restore(); this.occlusion = undefined;
     for (const entry of this.entries.values()) {
       if (alive(entry.original)) {
         for (const binding of entry.matrices) {
