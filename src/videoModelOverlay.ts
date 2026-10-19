@@ -182,6 +182,7 @@ export class VideoModelOverlay {
   private sourceTime?: number;
   private sourceTarget?: number;
   private pendingTime?: number;
+  private deferredFrame?: { time?: number };
   private presentedTime?: number;
   private seekFrameTime?: number;
   private buffering = false;
@@ -643,7 +644,7 @@ export class VideoModelOverlay {
     ++this.frameGeneration;
     if (this.frameHandle !== undefined) this.video.cancelVideoFrameCallback?.(this.frameHandle); this.frameHandle = undefined;
     if (this.animationHandle !== undefined) cancelAnimationFrame(this.animationHandle); this.animationHandle = undefined;
-    this.seekTarget = time; this.seeking = true; this.seekFrameTime = undefined; this.pendingTime = undefined;
+    this.seekTarget = time; this.seeking = true; this.seekFrameTime = undefined; this.pendingTime = undefined; this.deferredFrame = undefined;
     clearTimeout(this.seekWaitTimer);
     if (this.active) this.seekWaitTimer = window.setTimeout(() => {
       if (this.active && this.seekTarget !== undefined && this.badge) this.badge.textContent = '浏览器尚未提交定位后的画面，请点击播放；若仍无响应，请使用新版 Chrome 或 Edge。';
@@ -678,7 +679,9 @@ export class VideoModelOverlay {
     // One immutable in-flight pair. Let the native decoder keep its cadence;
     // once the renderer finishes, the next callback captures the newest PTS.
     // Repeated pause/play here used to restart decoding on every LOD wait.
-    if (this.pendingTime !== undefined && this.presentedTime !== this.pendingTime && !this.seeking) return false;
+    if (this.pendingTime !== undefined && this.presentedTime !== this.pendingTime && !this.seeking) {
+      this.deferredFrame = { time: time ?? this.deferredFrame?.time }; return false;
+    }
     let frame: VideoFrame | undefined;
     try {
       // WebCodecs copies the playback frame's real PTS when timestamp is omitted.
@@ -728,6 +731,10 @@ export class VideoModelOverlay {
       if (this.wantedPlaying && this.video.paused && !this.exportAbort) void this.video.play().catch(e => this.fail(e));
     }
     this.updatePlayback();
+    // A paused/ended decoder may never deliver another callback. Consume the
+    // latest rejected frame only after the current camera/source pair completes.
+    const deferred = this.deferredFrame; this.deferredFrame = undefined;
+    if (deferred) this.captureDecodedFrame(deferred.time);
   }
   private sceneFrameNumber() { return (this.viewer.scene as unknown as { frameState: { frameNumber: number } }).frameState.frameNumber; }
   private installCachedPreview(blob: Blob, start: number, end: number) {
@@ -1127,7 +1134,7 @@ export class VideoModelOverlay {
     if (this.presentation) { this.presentation.width = 0; this.presentation.height = 0; this.presentation.remove(); } this.presentation = undefined;
     release(() => this.compositor?.dispose()); this.compositor = undefined;
     if (this.annotationFrame) { this.annotationFrame.width = 0; this.annotationFrame.height = 0; } this.annotationFrame = undefined; this.annotationKey = '';
-    this.sourceTime = undefined; this.sourceTarget = undefined; this.pendingTime = undefined; this.presentedTime = undefined; this.lastPresentationKey = '';
+    this.sourceTime = undefined; this.sourceTarget = undefined; this.pendingTime = undefined; this.deferredFrame = undefined; this.presentedTime = undefined; this.lastPresentationKey = '';
     this.controls?.remove(); this.controls = undefined; this.badge?.remove(); this.badge = undefined;
     this.viewer.container.parentElement?.classList.remove('cc-video-active'); delete this.container.dataset.ccDrag;
     release(() => this.mediaLoad?.cancel()); release(() => this.video.removeAttribute('src')); release(() => this.video.load());
