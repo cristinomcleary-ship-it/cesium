@@ -132,6 +132,11 @@ export class VideoOverlayOcclusion {
       this.replace('debugFreezeFrame', false);
       this.replace('cullRequestsWhileMoving', false);
       this.replace('foveatedTimeDelay', 0);
+      // Depth-only preview does not need texture-level detail. Coarser parents
+      // cover a moving view sooner and are restored with all other AR overrides.
+      if (Number.isFinite(source.maximumScreenSpaceError)) this.replace('maximumScreenSpaceError', Math.max(32, source.maximumScreenSpaceError));
+      if (typeof source.foveatedScreenSpaceError === 'boolean') this.replace('foveatedScreenSpaceError', false);
+      if (typeof source.preloadWhenHidden === 'boolean') this.replace('preloadWhenHidden', false);
       for (const key of debugFlags) this.replace(key, false);
       this.removers.push(scene.preRender.addEventListener(() => {
         this.renderFrame = frameNumber(scene); this.renderPass = undefined; this.visibleMeshes.clear(); this.coverageCache = undefined;

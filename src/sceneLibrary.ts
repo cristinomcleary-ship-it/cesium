@@ -407,10 +407,22 @@ export class SceneLibrary {
     }
   }
 
-  async updateVideoOverlaySettings(id: string, settings: SavedVideoOverlaySettings): Promise<void> {
+  async updateVideoOverlaySettings(id: string, settings: SavedVideoOverlaySettings, pos?: File): Promise<void> {
     const record = this.records.get(id);
     if (!record || record.kind !== "Drone Video" || record.settings.video?.mode !== "cc-overlay") throw new Error("找不到对应的 CC 融合录像，请重新保存录像");
     if (this.restoring.has(id) || this.deleting.has(id)) throw new Error("录像正在恢复或删除，请稍后保存");
+    const metadata = (record.settings.video.fileMetadata as Record<string, { name: string; size: number; lastModified: number }> | undefined)?.pos;
+    if (pos && (!record.files.pos || !metadata || metadata.name !== pos.name || metadata.size !== pos.size || metadata.lastModified !== pos.lastModified)) {
+      await this.flush();
+      this.pending++; this.render();
+      try {
+        const attachment = await this.uploadVideoFile(id, "pos", { name: pos.name, blob: pos }, () => {});
+        const current = this.records.get(id); if (!current || this.deleting.has(id)) throw new Error("方案正在删除，未保存 POS 附件");
+        const saved = await libraryRequest<LibraryRecord>("/records/" + id, jsonRequest("PUT", { ...current,
+          files: { ...current.files, pos: attachment }, settings: { ...current.settings, video: structuredClone(settings) as unknown as Record<string, unknown> } }));
+        this.records.set(id, saved);
+      } finally { this.pending--; this.render(); }
+    }
     this.queueUpdate(id, { settings: { video: structuredClone(settings) as unknown as Record<string, unknown> } });
     await this.flush();
     if (this.failures.has(id)) throw new Error(this.failures.get(id));

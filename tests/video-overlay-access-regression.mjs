@@ -90,8 +90,22 @@ try {
   owner.restoreScene = () => {}; owner.enterHooksActive = true; owner.refreshResources();
   assert.equal(model.resource.show, true);
   owner.resources.applyAdjustments({ [model.id]: { east: 10 } });
+  let presentedPixels = '';
+  const sourceFrame = { width: 2, height: 2 };
+  viewer.canvas = {};
+  owner.sourceFrame = sourceFrame; owner.pendingTime = 0; owner.editRevision = 0; owner.track = { sample: () => ({}) };
+  owner.presentation = { width: 2, height: 2, remove() {}, getContext: () => ({ drawImage(image) {
+    presentedPixels = image === sourceFrame ? 'source-video' : model.resource.show ? 'source-video+restricted-model' : 'source-video';
+  } }) };
+  owner.commitPresentation();
+  assert.equal(presentedPixels, 'source-video+restricted-model');
+  assert.ok(owner.lastPresentationKey, 'the paused composition is cached');
   permissions.models = false;
   host.renderWorkbenchMachinery(); // Existing session-change callback; no playback frame is delivered.
+  assert.equal(presentedPixels, 'source-video', 'revocation removes cached restricted pixels before another render');
+  assert.equal(owner.lastPresentationKey, '', 'resource refresh invalidates the paused composition cache');
+  owner.commitPresentation();
+  assert.equal(presentedPixels, 'source-video', 'the next completed frame cannot reuse the old restricted composition');
   assert.ok(scheduled > 0);
   assert.equal(model.resource.show, false, 'revocation hides a paused AR object synchronously');
   assert.equal(cad.resource.show, true);
@@ -161,11 +175,22 @@ try {
   permissions.media = false; finishManifest('not parsed after revocation');
   await assert.rejects(waitingImport, /没有录像权限/);
   assert.equal(owner.files, cachedFiles); assert.equal(owner.savedId, 'saved-private-video');
+  const previousPos = { text: async () => 'retained-position-data' }; cachedFiles.pos = previousPos;
+  assert.throws(() => owner.pickPosFile(new File(['replacement'], 'new-pos.csv')), /没有录像权限/);
+  assert.equal(cachedFiles.pos, previousPos, 'revoked POS selection must not replace the existing attachment');
+  permissions.media = true;
+  let finishPos;
+  cachedFiles.pos = { text: () => new Promise(resolve => { finishPos = resolve; }) };
+  const waitingExtraction = owner.extractFrames(false);
+  permissions.media = false; finishPos('not parsed after revocation');
+  await assert.rejects(waitingExtraction, /没有录像权限/, 'revocation during POS reading stops before parsing or video decoding');
+  assert.equal(owner.files, cachedFiles); assert.equal(owner.savedId, 'saved-private-video');
+  assert.equal(owner.extraction, undefined, 'the denied extraction releases its controller');
   const mediaGate = owner.options.canAccessVideo; delete owner.options.canAccessVideo;
   assert.doesNotThrow(() => owner.assertVideoAccess(), 'standalone fixtures without a permission hook keep their prior behavior');
   owner.options.canAccessVideo = mediaGate;
   viewer.scene.primitives.destroy(); cadResource.destroy();
-  console.log('PASS: AR resource/media permissions, cached-video entry/export/extraction guards, saved selections, revocation, CAD copies, and exit restoration');
+  console.log('PASS: AR resource/media permissions, paused-pixel invalidation, cached-video/POS guards, saved selections, CAD copies, and exit restoration');
 } finally {
   globalThis.document = oldDocument; globalThis.fetch = oldFetch;
   await rm(directory, { recursive: true, force: true });
