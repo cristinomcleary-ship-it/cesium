@@ -26,7 +26,7 @@ try {
   }
   visit(source);
   const property = name => overlayOptions.properties.find(node => node.name?.getText(source) === name).initializer.getText(source);
-  const hostCode = ts.transpileModule(`${declarations.map(node => node.getText(source)).join('\n')}\nreturn { ${names.join(',')}, getImports: ${property('getImports')}, onExit: ${property('onExit')} };`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const hostCode = ts.transpileModule(`${declarations.map(node => node.getText(source)).join('\n')}\nreturn { ${names.join(',')}, getImports: ${property('getImports')}, canAccessVideo: ${property('canAccessVideo')}, onExit: ${property('onExit')} };`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   let permissions = { models: true, files: true, media: true }, scheduled = 0;
   const imports = [], nodes = new Map();
   class Element {
@@ -60,7 +60,7 @@ try {
     const markupTools = undefined, foundationPitMonitoring = { setDisplayVisibility() {} }, modelQualityTrackers = new Map(), videoArFusion = { invalidateProjection() {} };
     ${hostCode}`)(
     { getWorkbenchLayerAccess: () => permissions, setWorkbenchDisplayVisibility() {} }, imports, owner, viewer, () => scheduled++, { select() {} }, { saveView() {}, render() {} }, { labelsVisible: true }, globalThis.document);
-  owner.options = { getImports: host.getImports, getRecord: () => undefined, onExit: host.onExit };
+  owner.options = { getImports: host.getImports, getRecord: () => undefined, onExit: host.onExit, canAccessVideo: host.canAccessVideo };
   const anchor = Cartesian3.fromDegrees(120, 30, 25), base = Transforms.eastNorthUpToFixedFrame(anchor);
   const model = { id: 'restricted-model', name: 'Private model', kind: 'Model', visible: true, resource: { show: false, modelMatrix: Matrix4.clone(base), boundingSphere: new BoundingSphere(anchor, 20), isDestroyed: () => false } };
   const cadLeaf = { show: true, modelMatrix: Matrix4.clone(Matrix4.IDENTITY), isDestroyed: () => false, destroy() {} };
@@ -134,8 +134,38 @@ try {
   owner.setPanelActive(false);
   assert.equal(root.show, false, 'exit cannot reveal the original ground layer after revocation');
   assert.equal(copy.isDestroyed(), true);
+  // A revoked account must not reopen cached video through any alternate entry.
+  let sourceReads = 0, manifestReads = 0;
+  const cachedFiles = { video: new File(['cached-video'], 'private.mp4'), source: { text: async () => { sourceReads++; return 'unread XML'; } } };
+  const manifestFile = { text: async () => { manifestReads++; return 'unread manifest'; } };
+  owner.files = cachedFiles; owner.savedId = 'saved-private-video'; owner.inputGeneration = 0; owner.manifestImportGeneration = 0;
+  permissions.media = false; host.renderWorkbenchMachinery();
+  assert.equal(host.canAccessVideo(), false, 'the host uses the existing media permission, independently of model/file access');
+  for (const invoke of [() => owner.prepare(), () => owner.loadMedia(), () => owner.enter(),
+    () => owner.createDiagnostics(), () => owner.exportVideo(), () => owner.extractFrames(false),
+    () => owner.extractFrames(true), () => owner.importManifest(manifestFile), () => owner.restoreReplay(cachedFiles, {}, 'other')]) {
+    await assert.rejects(invoke(), /没有录像权限/);
+  }
+  assert.equal(sourceReads, 0, 'revoked prepare does not read cached XML');
+  assert.equal(manifestReads, 0, 'revoked import does not read manifests or hash the cached video');
+  assert.equal(owner.files, cachedFiles, 'revocation preserves original files for an authorized session');
+  assert.equal(owner.savedId, 'saved-private-video', 'revocation preserves the saved scheme identity');
+  owner.restoreScene = () => {};
+  await assert.rejects(owner.exportVideo(), /没有录像权限/, 'an already active exporter entry also checks the live gate');
+  owner.restoreScene = undefined;
+
+  // Permission changes during an awaited manifest read cannot proceed to video hashing.
+  permissions.media = true; owner.assertVideoAccess();
+  let finishManifest;
+  const waitingImport = owner.importManifest({ text: () => new Promise(resolve => { finishManifest = resolve; }) });
+  permissions.media = false; finishManifest('not parsed after revocation');
+  await assert.rejects(waitingImport, /没有录像权限/);
+  assert.equal(owner.files, cachedFiles); assert.equal(owner.savedId, 'saved-private-video');
+  const mediaGate = owner.options.canAccessVideo; delete owner.options.canAccessVideo;
+  assert.doesNotThrow(() => owner.assertVideoAccess(), 'standalone fixtures without a permission hook keep their prior behavior');
+  owner.options.canAccessVideo = mediaGate;
   viewer.scene.primitives.destroy(); cadResource.destroy();
-  console.log('PASS: AR permissions on entry, saved selections, playing/paused revocation, CAD copies, display overrides, late loads, and exit restoration');
+  console.log('PASS: AR resource/media permissions, cached-video entry/export/extraction guards, saved selections, revocation, CAD copies, and exit restoration');
 } finally {
   globalThis.document = oldDocument; globalThis.fetch = oldFetch;
   await rm(directory, { recursive: true, force: true });

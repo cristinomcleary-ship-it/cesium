@@ -717,6 +717,7 @@ function updateModelTools(item: EditableModel | null, mode: EditMode) {
 const modelEditor = new ModelEditor(viewer, updateModelTools);
 let resumeVideoOverlayInteractions: (() => void) | undefined;
 videoModelOverlay = new VideoModelOverlay(viewer, {
+  canAccessVideo: () => isLibraryRecordAllowed({ kind: "Drone Video" }),
   getImports: () => imports.filter(isImportAllowed),
   getRecord: id => {
     const record = projectLibrary?.records.get(id);

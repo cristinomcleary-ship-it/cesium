@@ -26,6 +26,7 @@ type OverlaySnapshot = { name: string; files: Record<string, File>; settings: Sa
 type Options = {
   getImports: () => readonly ImportRecord[]; getRecord: (id: string) => LibraryRecord | undefined;
   notify: (message: string, error?: boolean) => void; onEnter?: () => void; onExit?: () => void;
+  canAccessVideo?: () => boolean;
 };
 type Visible = { show: boolean; isDestroyed?: () => boolean };
 const zero = (): VideoOverlayAdjustment => ({ east: 0, north: 0, up: 0, heading: 0 });
@@ -418,7 +419,11 @@ export class VideoModelOverlay {
     }
     this.el('ccReferenceInfo').textContent = info;
   }
+  private assertVideoAccess() {
+    if (this.options.canAccessVideo?.() === false) throw new Error('当前账号没有录像权限，融合方案已保留');
+  }
   private async loadMedia() {
+    this.assertVideoAccess();
     if (this.mediaLoad?.file === this.files.video) return this.mediaLoad.promise;
     if (this.videoFile === this.files.video && this.video.readyState >= 2) return;
     this.mediaLoad?.cancel(); this.seeking = false;
@@ -437,9 +442,10 @@ export class VideoModelOverlay {
     try { await promise; if (this.resumeTime > 0 && this.resumeTime < this.video.duration) this.seekVideo(this.resumeTime); } finally { if (this.mediaLoad === load) this.mediaLoad = undefined; }
   }
   private async prepare(validateReference = true) {
+    this.assertVideoAccess();
     if (!this.files.video || !this.files.source) throw new Error('请选择原视频和同一视频的 CC 空三 XML');
     const generation = this.inputGeneration, timing = this.readTiming(); if (validateReference) { this.checkSceneReference(); this.checkOcclusionSource(); }
-    const check = () => { if (generation !== this.inputGeneration || this.destroyed) throw new DOMException('融合输入已切换', 'AbortError'); };
+    const check = () => { this.assertVideoAccess(); if (generation !== this.inputGeneration || this.destroyed) throw new DOMException('融合输入已切换', 'AbortError'); };
     const dataset = this.dataset ?? parseCcCameraXml(await this.files.source.text()); check();
     const track = createCcCameraTrack(dataset, timing);
     if (Math.abs(track.intrinsics.skew) > 1e-8) throw new Error('当前叠加不支持非零相机 Skew，请使用无 skew 的 CC 相机标定');
@@ -646,15 +652,18 @@ export class VideoModelOverlay {
     const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url; link.download = name; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   private async importManifest(file: File) {
+    this.assertVideoAccess();
     if (!this.files.video) throw new Error('请先选择原视频');
     const generation = this.inputGeneration, importGeneration = ++this.manifestImportGeneration, video = this.files.video;
-    const manifest = parseVideoFrameManifest(await file.text()); await verifyVideoFrameSource(manifest, video);
+    const text = await file.text(); this.assertVideoAccess();
+    const manifest = parseVideoFrameManifest(text); await verifyVideoFrameSource(manifest, video); this.assertVideoAccess();
     if (generation !== this.inputGeneration || importGeneration !== this.manifestImportGeneration || this.files.video !== video) return;
     this.leave(); this.autoSaveReady = false; this.savedId = undefined; ++this.sessionGeneration; this.exit(); ++this.inputGeneration; this.manifest = manifest; this.files.manifest = file; this.track = undefined;
     this.el<HTMLSelectElement>('ccTimeMode').value = 'photo-times'; this.el<HTMLInputElement>('ccFirstTime').value = '0'; this.el<HTMLInputElement>('ccInterval').value = '1';
     this.dirty(); this.el('ccExtractStatus').textContent = `已关联 ${manifest.frames.length} 张照片的实际视频帧时间。导入对应 CC XML 后即可融合。`;
   }
   private async extractFrames(toDirectory: boolean) {
+    this.assertVideoAccess();
     if (!this.files.video) throw new Error('请先选择要抽帧的原视频');
     if (this.extraction) return;
     const file = this.files.video, generation = this.inputGeneration;
@@ -662,12 +671,14 @@ export class VideoModelOverlay {
     this.el<HTMLButtonElement>('ccExtract').disabled = true; this.el<HTMLButtonElement>('ccExtractZip').disabled = true; this.el<HTMLButtonElement>('ccExtractCancel').disabled = false;
     try {
       const directory = toDirectory ? await pickVideoFrameDirectory() : undefined;
+      this.assertVideoAccess();
       const end = this.el<HTMLInputElement>('ccExtractEnd').value.trim();
       const result = await extractVideoFrames(file, { start: this.number('ccExtractStart'), ...(end ? { end: Number(end) } : {}),
         ...(this.el<HTMLSelectElement>('ccExtractMode').value === 'count' ? { count: this.number('ccExtractCount') } : { intervalSeconds: this.number('ccExtractInterval') }),
         signal: controller.signal, onProgress: progress => { this.el('ccExtractStatus').textContent = `已抽取 ${progress.completed} / ${progress.total} 张 · ${clock(progress.time)}`; },
       }, directory);
       if (controller.signal.aborted || generation !== this.inputGeneration) return;
+      this.assertVideoAccess();
       if (result.output.kind === 'zip') this.downloadBlob(result.output.blob, result.output.name);
       const manifestFile = new File([JSON.stringify(result.manifest, null, 2)], 'video-frame-manifest.json', { type: 'application/json' });
       // Import after releasing the extraction owner; exit() must not cancel completed work.
@@ -696,6 +707,7 @@ export class VideoModelOverlay {
     });
   }
   private async exportVideo() {
+    this.assertVideoAccess();
     if (this.exportAbort) return;
     if (!this.active) await this.enter();
     if (!this.active || !this.track) return;
@@ -874,12 +886,13 @@ export class VideoModelOverlay {
     const submitted = this.queueSave().catch(() => {});
     await this.autosave.retry(String(this.sessionGeneration)); await submitted;
   }
-  async flushPendingSave() { if (this.autoSaveReady && (this.autosaveTimer !== undefined || this.editRevision > this.persistedRevision)) await this.queueSave(); await this.autosave.flush(); }
+  async flushPendingSave() { if (this.autoSaveReady && (this.autosaveTimer !== undefined || this.editRevision > this.persistedRevision)) await this.queueSave(); await this.autosave.flush(String(this.sessionGeneration)); }
   private leave() {
     if (this.autoSaveReady && (this.active || this.autosaveTimer !== undefined || this.editRevision > this.persistedRevision)) { if (this.active) ++this.editRevision; void this.queueSave().catch(() => {}); }
     this.exit();
   }
   async restoreReplay(files: Record<string, File>, settings: SavedVideoOverlaySettings, recordId?: string) {
+    this.assertVideoAccess();
     this.leave(); this.clear();
     const restoreGeneration = this.inputGeneration;
     const checkRestore = () => { if (restoreGeneration !== this.inputGeneration || this.destroyed) throw new DOMException('融合方案已切换', 'AbortError'); };
@@ -899,7 +912,7 @@ export class VideoModelOverlay {
     this.syncCameraInputs();
     this.refreshSceneReferences(); this.refreshOcclusionSources();
     this.el<HTMLInputElement>('ccSchemeName').value = settings.schemeName || `${files.video.name} · CC 融合`;
-    if (files.manifest) { const manifest = parseVideoFrameManifest(await files.manifest.text()); checkRestore(); await verifyVideoFrameSource(manifest, files.video); checkRestore(); this.manifest = manifest; }
+    if (files.manifest) { const text = await files.manifest.text(); this.assertVideoAccess(); const manifest = parseVideoFrameManifest(text); checkRestore(); await verifyVideoFrameSource(manifest, files.video); this.assertVideoAccess(); checkRestore(); this.manifest = manifest; }
     const t = settings.timing;
     if (t.mode === 'photo-times' && !this.manifest) throw new Error('方案缺少平台抽帧清单，请重新导入');
     this.el<HTMLInputElement>('ccSmooth').checked = t.smoothing === 'cubic';
