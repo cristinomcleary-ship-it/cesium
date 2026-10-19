@@ -87,11 +87,13 @@ test("CAD entity lines, polygons including holes, and text retain sampled height
   assert.match(session.get("cad")!.description, /已采样/);
   session.applyAdjustments({ cad: { up: 5 } });
   const once = line.polyline!.positions!.getValue(time) as Cartesian3[];
+  const adjustedLineProperty = line.polyline!.positions;
   assert.ok(Math.abs(Cartesian3.distance(once[0], originalLine[0]) - 5) < 1e-6);
   const hierarchy = polygon.polygon!.hierarchy!.getValue(time) as PolygonHierarchy;
   assert.equal(hierarchy.holes.length, 1);
   assert.ok(Cartesian3.distance(hierarchy.holes[0].positions[0], hierarchyProperty!.getValue(time).holes[0].positions[0]) > 4.99);
   session.applyAdjustments({ cad: { up: 5 } });
+  assert.equal(line.polyline!.positions, adjustedLineProperty, 'repeating an offset must not replace every CAD property');
   assert.deepEqual(line.polyline!.positions!.getValue(time), once);
   session.restore();
   assert.equal(line.polyline!.positions, lineProperty);
@@ -264,4 +266,47 @@ test("CAD compilation timeout is bounded and restores temporary visibility", asy
   assert.equal(view.scene.postRender.numberOfListeners, 0);
   session.restore(); assert.equal(root.show, true);
   root.destroy();
+});
+
+test('resource lookup stays linear and unchanged frames never rewrite visibility or zero transforms', async () => {
+  const models = Array.from({ length: 80 }, (_, index) => model(`model-${index}`));
+  const imports = models.map(item => item.record);
+  let reads = 0, shows = 0, matrices = 0, renders = 0;
+  for (const { resource } of models) {
+    let show = resource.show, matrix = resource.modelMatrix;
+    Object.defineProperty(resource, 'show', { get: () => show, set: value => { shows++; show = value; }, configurable: true });
+    Object.defineProperty(resource, 'modelMatrix', { get: () => matrix, set: value => { matrices++; matrix = value; }, configurable: true });
+  }
+  const view = viewer(); view.scene.requestRender = () => { renders++; };
+  const session = await VideoOverlayResources.create({ viewer: view, imports: () => { reads++; return imports; }, getRecord: () => undefined });
+  session.setSelection(imports.map(item => item.id));
+  reads = shows = matrices = renders = 0;
+  assert.equal(session.list().length, imports.length); assert.equal(reads, 1);
+  assert.equal(session.get('model-40')?.available, true); assert.equal(reads, 2);
+  reads = 0;
+  for (let frame = 0; frame < 30; frame++) session.setVisible(true);
+  assert.equal(reads, 30, 'one import snapshot per frame, independent of layer count');
+  assert.equal(shows, 0); assert.equal(renders, 0);
+  reads = 0;
+  session.applyAdjustments(Object.fromEntries(imports.map(item => [item.id, { east: 0, north: 0, up: 0, heading: 0 }])));
+  assert.equal(reads, 1); assert.equal(matrices, 0); assert.equal(renders, 0);
+  session.restore();
+  assert.equal(shows, 0); assert.equal(matrices, 0, 'untouched map matrices need no restoration setter');
+});
+
+test('unchanged entity CAD playback emits no per-entity visibility changes and still applies revocation', async () => {
+  const data = new CustomDataSource('entity-cad');
+  let events = 0;
+  for (let index = 0; index < 40; index++) {
+    const entity = data.entities.add({ polyline: { positions: [center, Cartesian3.add(center, new Cartesian3(index + 1, 2, 3), new Cartesian3())], clampToGround: false } });
+    entity.definitionChanged.addEventListener((_entity, property) => { if (property === 'isShowing') events++; });
+  }
+  let imports = [{ id: 'cad', name: 'entity-cad', kind: 'CAD', representation: 'dataSource', resource: data, visible: true } as ImportRecord];
+  const session = await VideoOverlayResources.create({ viewer: viewer(), imports: () => imports, getRecord: () => undefined });
+  session.setSelection(['cad']); events = 0;
+  for (let frame = 0; frame < 30; frame++) session.setVisible(true);
+  assert.equal(events, 0, 'selected CAD must not be hidden and re-shown each video frame');
+  imports = []; session.setVisible(true);
+  assert.equal(data.show, false); assert.equal(events, data.entities.values.length);
+  session.restore();
 });

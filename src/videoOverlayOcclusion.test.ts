@@ -127,6 +127,39 @@ test('depth role uses an opaque replace shader and restores exact material/debug
   originalShader.destroy();
 });
 
+test('entry avoids a full cached tree scan and leaves unchanged style/debug setters alone', () => {
+  const root = tile(); let branches = 0, styleWrites = 0, debugWrites = 0;
+  Object.defineProperty(root, 'children', { get: () => { branches++; return []; }, configurable: true });
+  const value = source({ root, debugWireframe: false });
+  Object.defineProperty(value, 'style', { get: () => undefined, set: () => { styleWrites++; }, configurable: true });
+  Object.defineProperty(value, 'debugWireframe', { get: () => false, set: () => { debugWrites++; }, configurable: true });
+  const view = viewer(), owner = new VideoOverlayOcclusion('survey', value, view.scene);
+  assert.equal(branches, 0);
+  owner.restore();
+  assert.equal(styleWrites, 0, 'reassigning undefined style would unnecessarily dirty Cesium styling');
+  assert.equal(debugWrites, 0);
+});
+
+test('coverage is reused only after complete commands and never across a new view or material owner', () => {
+  const child = tile(), root = tile(empty(), [child]);
+  let coverageReads = 0;
+  Object.defineProperty(root, '_visibilityPlaneMask', { get: () => { coverageReads++; return 0; }, configurable: true });
+  const statistics = { numberOfCommands: 0, numberOfPendingRequests: 0, numberOfTilesProcessing: 0, numberOfAttemptedRequests: 0 };
+  const value = source({ root, statistics }), view = viewer(), owner = new VideoOverlayOcclusion('survey', value, view.scene);
+  render(view, value, [child]);
+  owner.getStatus(); const duringUpdate = coverageReads;
+  owner.getStatus(); assert.ok(coverageReads > duringUpdate, 'pre-submission status is never cached');
+  statistics.numberOfCommands = 1;
+  assert.equal(owner.getStatus().ready, true); const afterSubmission = coverageReads;
+  for (let read = 0; read < 20; read++) assert.equal(owner.getStatus().ready, true);
+  assert.equal(coverageReads, afterSubmission, 'uniform/UI/postRender share the completed frame coverage');
+  render(view, value, []); assert.equal(owner.getStatus().ready, false);
+  render(view, value, [child]); assert.equal(owner.getStatus().ready, true);
+  const external = new CustomShader({}); value.customShader = external;
+  assert.equal(owner.getStatus().ready, false); assert.match(owner.getStatus().error!, /其他功能/);
+  owner.restore(); external.destroy();
+});
+
 test('a drawn replacement parent stays ready during pending/processing/preload detail refinement', () => {
   const value = source({ tilesLoaded: false });
   value.root.children.push(tile(undefined));

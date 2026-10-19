@@ -35,18 +35,6 @@ function contentHasMesh(content: Cesium3DTileContent | undefined): boolean {
   throw new Error('此倾斜摄影包含暂不支持的遮挡内容类型');
 }
 
-function loadedMeshes(source: Cesium3DTileset): boolean {
-  const pending = [source.root];
-  let mesh = false;
-  while (pending.length) {
-    const tile = pending.pop();
-    if (!tile) continue;
-    mesh = contentHasMesh(tile.content) || mesh;
-    for (const child of tile.children) pending.push(child);
-  }
-  return mesh;
-}
-
 // These traversal fields are deliberately isolated to the pinned Cesium 1.144 /
 // engine 26.2 adapter. Missing fields fail closed rather than accepting old-view
 // geometry. Frame numbers and visibility epochs have different lifetimes.
@@ -106,13 +94,17 @@ export class VideoOverlayOcclusion {
   private readonly visibleMeshes = new Set<Cesium3DTile>();
   private renderFrame?: number;
   private renderPass?: number;
+  private coverageCache?: { frame: number; pass: number; commands: number; ready: boolean };
   private warning?: string;
   private error?: string;
   private restored = false;
 
   constructor(readonly sourceId: string, readonly source: Cesium3DTileset, private readonly scene: Scene) {
     assertVideoOverlayOccluder(source);
-    loadedMeshes(source);
+    // Do not traverse the entire cached hierarchy on entry. The root is cheap
+    // to inspect; loaded and visible descendants are checked by their events
+    // before they can contribute to the current frame's coverage.
+    contentHasMesh(source.root.content);
     this.shader = new CustomShader({
       mode: CustomShaderMode.REPLACE_MATERIAL,
       lightingModel: LightingModel.UNLIT,
@@ -142,9 +134,10 @@ export class VideoOverlayOcclusion {
       this.replace('foveatedTimeDelay', 0);
       for (const key of debugFlags) this.replace(key, false);
       this.removers.push(scene.preRender.addEventListener(() => {
-        this.renderFrame = frameNumber(scene); this.renderPass = undefined; this.visibleMeshes.clear();
+        this.renderFrame = frameNumber(scene); this.renderPass = undefined; this.visibleMeshes.clear(); this.coverageCache = undefined;
       }));
       const inspect = (tile: Cesium3DTile, visible: boolean) => {
+        this.coverageCache = undefined;
         try {
           const mesh = contentHasMesh(tile.content);
           if (visible && mesh && this.renderFrame !== undefined && this.renderFrame === frameNumber(scene)) {
@@ -157,6 +150,7 @@ export class VideoOverlayOcclusion {
       };
       this.removers.push(source.tileLoad.addEventListener(tile => inspect(tile, false)), source.tileVisible.addEventListener(tile => inspect(tile, true)));
       this.removers.push(source.tileFailed.addEventListener(() => {
+        this.coverageCache = undefined;
         // A failed detail request may be offscreen or covered by its parent.
         // Keep traversal running; current-frame coverage decides visibility.
         this.warning = '部分遮挡瓦片加载失败；使用当前可用地表，缺少覆盖时隐藏叠加';
@@ -166,7 +160,8 @@ export class VideoOverlayOcclusion {
 
   private replace(key: string, value: unknown) {
     const object = this.source as unknown as Record<string, unknown>;
-    this.previous.set(key, object[key]); this.applied.set(key, value); object[key] = value;
+    this.previous.set(key, object[key]); this.applied.set(key, value);
+    if (object[key] !== value) object[key] = value;
   }
 
   private hasCurrentCoverage(): boolean {
@@ -176,6 +171,14 @@ export class VideoOverlayOcclusion {
     if (!this.source.show || this.renderFrame === undefined || this.renderFrame !== frameNumber(this.scene)
       || !Number.isFinite(epoch) || epoch !== this.renderPass || source._pass !== RENDER_PASS
       || !this.visibleMeshes.size) return false;
+    // Cesium clears this counter at traversal start and sets it only after all
+    // selected tiles have submitted commands. Never cache inside tileVisible,
+    // which fires before tile.update; uniforms and postRender can safely reuse
+    // the same completed traversal without walking the hierarchy again.
+    const commands = (this.source as unknown as { statistics?: { numberOfCommands?: number } }).statistics?.numberOfCommands;
+    const cacheable = typeof commands === 'number' && commands > 0;
+    const cached = this.coverageCache;
+    if (cacheable && cached?.frame === this.renderFrame && cached.pass === epoch && cached.commands === commands) return cached.ready;
     const covered = (tile: CoverageTile, parent?: CoverageTile): boolean => {
       if (tile._updatedVisibilityFrame !== epoch || typeof tile._visibilityPlaneMask !== 'number') return false;
       if (tile._visibilityPlaneMask === MASK_OUTSIDE) return true;
@@ -208,7 +211,9 @@ export class VideoOverlayOcclusion {
       }
       return tile.children.every(child => covered(child as CoverageTile, tile));
     };
-    return covered(this.source.root as CoverageTile);
+    const ready = covered(this.source.root as CoverageTile);
+    if (cacheable) this.coverageCache = { frame: this.renderFrame, pass: epoch!, commands, ready };
+    return ready;
   }
 
   getStatus(): VideoOverlayOcclusionStatus {
@@ -235,14 +240,16 @@ export class VideoOverlayOcclusion {
     if (this.restored) return;
     this.restored = true;
     for (const remove of this.removers.splice(0)) remove();
+    this.visibleMeshes.clear(); this.coverageCache = undefined;
     if (!this.source.isDestroyed()) {
       const object = this.source as unknown as Record<string, unknown>;
       // Each property has independent ownership. Preserve a new shader/style
       // owner while still restoring debug/point-cloud state left in our care.
       for (const [key, value] of this.previous) {
-        if (object[key] === this.applied.get(key)) object[key] = value;
+        if (object[key] === this.applied.get(key) && object[key] !== value) object[key] = value;
       }
     }
+    this.previous.clear(); this.applied.clear();
     if (!this.shader.isDestroyed()) this.shader.destroy();
   }
 }

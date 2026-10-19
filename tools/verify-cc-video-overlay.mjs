@@ -161,7 +161,7 @@ try {
   adjusted.modelDelta.forEach((value, index) => approx(value, [2, 3, 4][index]));
   record('ENU edits and first-edit undo/redo affect actual geometry');
   await page.locator('#ccSave').click();
-  await wait(() => window.__ccOverlayHarness.snapshot().saveCount === 1);
+  await wait(() => window.__ccOverlayHarness.snapshot().saved?.adjustments['synthetic-model']?.east === 2 && window.__ccOverlayHarness.snapshot().saved?.adjustments['synthetic-model']?.up === 4);
   const saved = await state();
   assert.equal(saved.saved.adjustments['synthetic-model'].east, 2);
   assert.equal(saved.saved.adjustments['synthetic-model'].north, 3);
@@ -279,7 +279,7 @@ try {
   record('downloaded registration diagnostic reports raw/live cameras and saved/displayed matrices without original file contents');
 
   await page.locator('#ccSave').click();
-  await wait(() => window.__ccOverlayHarness.snapshot().saveCount === 2);
+  await wait(() => window.__ccOverlayHarness.snapshot().saved?.sceneReference?.recordId === 'synthetic-reference');
   const referenceSaved = await state();
   assert.deepEqual(referenceSaved.saved.sceneReference, diagnostic.sceneReference);
   await page.locator('#ccStop').click();
@@ -441,7 +441,7 @@ try {
   await seek(2, cameraOracle.matrix);
   const saveCountBeforeCamera = (await state()).saveCount;
   await page.locator('#ccSave').click();
-  await page.waitForFunction(count => window.__ccOverlayHarness.snapshot().saveCount === count, saveCountBeforeCamera + 1);
+  await page.waitForFunction(count => window.__ccOverlayHarness.snapshot().saveCount >= count, saveCountBeforeCamera + 1);
   const savedCameraState = await state();
   assert.deepEqual(savedCameraState.saved.cameraRegistration.anchor, cameraAnchor);
   for (const [key, value] of Object.entries(cameraValues)) assert.equal(savedCameraState.saved.cameraRegistration[key], value);
@@ -476,6 +476,8 @@ try {
 
   await page.evaluate(() => window.__ccOverlayHarness.restoreLegacySaved());
   assert.deepEqual((await state()).cameraControls, { enabled: false, east: 0, north: 0, up: 0, heading: 0, pitch: 0, roll: 0 });
+  // Timing edits now auto-save; return to the fixed synthetic oracle for this independent legacy-camera check.
+  await page.locator('#ccFirstTime').fill('0'); await page.locator('#ccHeightReference').selectOption('ellipsoid');
   await page.locator('#ccStart').click(); await wait(() => window.__ccOverlayHarness.snapshot().active);
   await seek(2);
   const legacyDiagnostic = await page.evaluate(() => window.__ccOverlayHarness.diagnostics());

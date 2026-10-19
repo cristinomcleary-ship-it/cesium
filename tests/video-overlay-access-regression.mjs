@@ -16,7 +16,7 @@ try {
     outfile: `${directory}/fixture.mjs`, bundle: true, platform: 'node', format: 'esm', packages: 'external', loader: { '.css': 'empty' } });
   const { VideoModelOverlay, VideoOverlayResources } = await import(pathToFileURL(`${directory}/fixture.mjs`).href);
   const source = ts.createSourceFile('main.ts', await readFile('src/main.ts', 'utf8'), ts.ScriptTarget.Latest, true);
-  const names = ['isImportAllowed', 'isImportDisplayed', 'applyImportDisplay', 'applySceneDisplay', 'renderWorkbenchMachinery'];
+  const names = ['isLibraryRecordAllowed', 'isImportAllowed', 'isImportDisplayed', 'applyImportDisplay', 'applySceneDisplay', 'renderWorkbenchMachinery'];
   const declarations = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text));
   assert.equal(declarations.length, names.length);
   let overlayOptions;
@@ -53,13 +53,13 @@ try {
   const owner = Object.assign(Object.create(VideoModelOverlay.prototype), {
     viewer, selected: new Set(), selectionInitialized: false, destroyed: false, epoch: 0,
     occlusion: { enabled: false, sourceId: '' },
-    video: { pause() {} }, updateTargets() {},
+    video: { pause() {}, removeAttribute() {}, load() {} }, updateTargets() {},
   });
   const host = new Function('managementWorkspace', 'imports', 'videoModelOverlay', 'viewer', 'scheduleSceneDisplay', 'modelEditor', 'projectLibrary', 'sceneDisplayPanel', 'document', `
     let sceneDisplayOverrides = {}, resumeVideoOverlayInteractions;
     const markupTools = undefined, foundationPitMonitoring = { setDisplayVisibility() {} }, modelQualityTrackers = new Map(), videoArFusion = { invalidateProjection() {} };
     ${hostCode}`)(
-    { getWorkbenchLayerAccess: () => permissions, setWorkbenchDisplayVisibility() {} }, imports, owner, viewer, () => scheduled++, { select() {} }, { saveView() {} }, { labelsVisible: true }, globalThis.document);
+    { getWorkbenchLayerAccess: () => permissions, setWorkbenchDisplayVisibility() {} }, imports, owner, viewer, () => scheduled++, { select() {} }, { saveView() {}, render() {} }, { labelsVisible: true }, globalThis.document);
   owner.options = { getImports: host.getImports, getRecord: () => undefined, onExit: host.onExit };
   const anchor = Cartesian3.fromDegrees(120, 30, 25), base = Transforms.eastNorthUpToFixedFrame(anchor);
   const model = { id: 'restricted-model', name: 'Private model', kind: 'Model', visible: true, resource: { show: false, modelMatrix: Matrix4.clone(base), boundingSphere: new BoundingSphere(anchor, 20), isDestroyed: () => false } };
@@ -73,7 +73,8 @@ try {
   owner.refreshResources();
   assert.deepEqual(host.getImports().map(item => item.id), [cad.id], 'AR entry uses the existing account resource gate');
   assert.equal(nodes.get('ccResources').textContent.includes(model.name), false, 'restricted names are not listed');
-  assert.deepEqual([...owner.selected], [cad.id], 'a saved selection cannot grant resource access');
+  assert.deepEqual([...owner.selected], [model.id, cad.id], 'revocation must preserve saved dependencies instead of overwriting the original scheme');
+  assert.equal(owner.accessInvalid, true, 'inaccessible dependencies block automatic persistence while rendered resources remain filtered');
   owner.resources = await VideoOverlayResources.create({ viewer, imports: host.getImports, getRecord: () => undefined });
   owner.restoreScene = () => {}; owner.enterHooksActive = true;
   owner.refreshResources();
@@ -95,7 +96,8 @@ try {
   assert.equal(model.resource.show, false, 'revocation hides a paused AR object synchronously');
   assert.equal(cad.resource.show, true);
   assert.equal(nodes.get('ccResources').textContent.includes(model.name), false);
-  assert.equal(owner.selected.has(model.id), false);
+  assert.equal(owner.selected.has(model.id), true, 'saved selection survives revocation without granting rendering access');
+  assert.equal(owner.accessInvalid, true);
   host.applySceneDisplay({ [`layer:${model.id}`]: true }, true);
   assert.equal(model.resource.show, false, 'personal display overrides cannot bypass access while AR is active');
   model.resource.show = true; host.applyImportDisplay(model);

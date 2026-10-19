@@ -236,8 +236,9 @@ const harness = {
     return snapshot();
   },
   diagnostics() { return overlay.createDiagnostics(); },
-  async restoreSaved() { if (!saved) throw new Error('No saved scheme'); await overlay.restoreReplay(saved.files, structuredClone(saved.settings), saved.id); },
+  async restoreSaved() { overlay.setPanelActive(false); await overlay.flushPendingSave(); if (!saved) throw new Error('No saved scheme'); await overlay.restoreReplay(saved.files, structuredClone(saved.settings), saved.id); },
   async restoreLegacySaved() {
+    overlay.setPanelActive(false); await overlay.flushPendingSave();
     if (!saved) throw new Error('No saved scheme');
     const legacy = structuredClone(saved.settings); delete legacy.cameraRegistration;
     await overlay.restoreReplay(saved.files, legacy, saved.id);

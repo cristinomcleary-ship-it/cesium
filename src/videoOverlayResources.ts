@@ -30,7 +30,7 @@ type Entry = {
   record: ImportRecord; original: VisibleResource;
   target: VisibleResource; center?: Cartesian3; matrices: MatrixBinding[];
   positions: PositionBinding[]; dataSource?: CustomDataSource; copy?: PrimitiveCollection;
-  description: string; error?: string;
+  description: string; error?: string; transformed?: boolean;
 };
 
 function alive(resource: VisibleResource): boolean {
@@ -43,6 +43,13 @@ function validAnchor(point: Cartesian3 | undefined): point is Cartesian3 {
   return finitePoint(point) && Cartesian3.magnitude(point) > 1;
 }
 function noAdjustment(): VideoOverlayAdjustment { return { east: 0, north: 0, up: 0, heading: 0 }; }
+function sameAdjustment(a: VideoOverlayAdjustment | undefined, b: VideoOverlayAdjustment): boolean {
+  return !!a && a.east === b.east && a.north === b.north && a.up === b.up && a.heading === b.heading;
+}
+function setShow(resource: VisibleResource, show: boolean): boolean {
+  if (!alive(resource) || resource.show === show) return false;
+  resource.show = show; return true;
+}
 function normalizedAdjustment(value: Partial<VideoOverlayAdjustment>): VideoOverlayAdjustment {
   const result = noAdjustment();
   for (const key of Object.keys(result) as Array<keyof VideoOverlayAdjustment>) {
@@ -323,18 +330,30 @@ export class VideoOverlayResources {
   }
 
   list(): VideoOverlayResourceItem[] {
-    return [...this.entries.values()].map(entry => {
-      const exists = this.options.imports().some(record => record.id === entry.record.id && record.resource === entry.original);
-      const available = !this.restored && !entry.error && exists && alive(entry.original) && alive(entry.target);
-      return { id: entry.record.id, name: entry.record.name, kind: entry.record.kind,
-        description: entry.description, available, selected: this.selected.has(entry.record.id),
-        ...(this.occlusion?.sourceId === entry.record.id ? { occluder: true } : {}),
-        ...(!available ? { error: entry.error ?? "工程图层已移除，请重新进入 AR" } : {}),
-      };
-    });
+    const current = this.importIndex();
+    return [...this.entries.values()].map(entry => this.item(entry, current));
   }
 
-  get(id: string): VideoOverlayResourceItem | undefined { return this.list().find(item => item.id === id); }
+  private importIndex(imports = this.options.imports()): Map<string, ImportRecord> {
+    return new Map(imports.map(record => [record.id, record]));
+  }
+  private available(entry: Entry, current: ReadonlyMap<string, ImportRecord>): boolean {
+    const record = current.get(entry.record.id);
+    return !this.restored && !entry.error && record?.kind === entry.record.kind
+      && record.resource === entry.original && alive(entry.original) && alive(entry.target);
+  }
+  private item(entry: Entry, current: ReadonlyMap<string, ImportRecord>): VideoOverlayResourceItem {
+    const available = this.available(entry, current);
+    return { id: entry.record.id, name: entry.record.name, kind: entry.record.kind,
+      description: entry.description, available, selected: this.selected.has(entry.record.id),
+      ...(this.occlusion?.sourceId === entry.record.id ? { occluder: true } : {}),
+      ...(!available ? { error: entry.error ?? "工程图层已移除，请重新进入 AR" } : {}),
+    };
+  }
+  get(id: string): VideoOverlayResourceItem | undefined {
+    const entry = this.entries.get(id);
+    return entry ? this.item(entry, this.importIndex()) : undefined;
+  }
 
   /** A separate depth role; it does not edit texture selection or persisted positioning. */
   setOcclusion(sourceId?: string): void {
@@ -354,18 +373,21 @@ export class VideoOverlayResources {
     } else {
       this.occlusion?.restore(); this.occlusion = undefined;
     }
-    this.updateVisibility();
+    this.updateVisibility(undefined, true);
   }
 
   getOcclusionStatus(): VideoOverlayOcclusionStatus {
+    return this.occlusionStatus();
+  }
+  private occlusionStatus(current?: ReadonlyMap<string, ImportRecord>): VideoOverlayOcclusionStatus {
     if (!this.occlusion) return { enabled: false, ready: true };
     const { sourceId, source } = this.occlusion;
     const entry = this.entries.get(sourceId);
-    const allowed = !this.restored && !!entry && this.options.imports().some(record =>
-      record.id === sourceId && record.kind === '3D Tiles' && record.resource === source);
+    const record = (current ?? this.importIndex()).get(sourceId);
+    const allowed = !this.restored && !!entry && record?.kind === '3D Tiles' && record.resource === source;
     if (!allowed || !alive(source)) {
       this.occlusion.restore();
-      if (alive(source)) source.show = false;
+      setShow(source, false);
       return { enabled: true, sourceId, ready: false, error: '地表遮挡源已移除或不可用，请重新选择已授权的倾斜摄影' };
     }
     return this.occlusion.getStatus();
@@ -373,9 +395,11 @@ export class VideoOverlayResources {
 
   setSelection(ids: readonly string[]): void {
     this.throwIfCancelled();
-    const available = new Set(this.list().filter(item => item.available).map(item => item.id));
-    this.selected = new Set(ids.filter(id => available.has(id)));
-    this.updateVisibility();
+    const imports = this.options.imports(), current = this.importIndex(imports);
+    this.selected = new Set(ids.filter(id => {
+      const entry = this.entries.get(id); return !!entry && this.available(entry, current);
+    }));
+    this.updateVisibility(imports);
   }
 
   /** Used while seeking / outside the CC time range without losing the user's selection. */
@@ -385,21 +409,25 @@ export class VideoOverlayResources {
     this.updateVisibility();
   }
 
-  private updateVisibility() {
+  private updateVisibility(imports = this.options.imports(), forceRender = false) {
     // Newly loaded unrelated layers also stay out of the video and are restored on exit.
-    for (const record of this.options.imports()) {
+    // Compute final visibility before writing. Toggling an entity CAD off/on
+    // would walk every entity twice and invalidate its display on every frame.
+    const desired = new Map<VisibleResource, boolean>();
+    for (const record of imports) {
       const resource = record.resource as VisibleResource;
       if (!resource || !alive(resource) || typeof resource.show !== "boolean") continue;
       if (!this.visibilitySnapshots.has(resource)) this.visibilitySnapshots.set(resource, resource.show);
-      resource.show = false;
+      desired.set(resource, false);
     }
-    const available = new Set(this.list().filter(item => item.available).map(item => item.id));
-    const occlusion = this.getOcclusionStatus();
+    const current = this.importIndex(imports), occlusion = this.occlusionStatus(current);
     for (const [id, entry] of this.entries) {
-      if (alive(entry.target)) entry.target.show = this.visible && available.has(id)
-        && (id === occlusion.sourceId ? !occlusion.error : this.selected.has(id));
+      desired.set(entry.target, this.visible && this.available(entry, current)
+        && (id === occlusion.sourceId ? !occlusion.error : this.selected.has(id)));
     }
-    this.options.viewer.scene.requestRender();
+    let changed = false;
+    for (const [resource, show] of desired) changed = setShow(resource, show) || changed;
+    if (changed || forceRender) this.options.viewer.scene.requestRender();
   }
 
   /** A patch of absolute per-object offsets, not incremental deltas. Omitted objects retain their offsets. */
@@ -411,24 +439,32 @@ export class VideoOverlayResources {
         throw new Error('地表遮挡源使用原地图定位，不能同时进行对象位置微调');
       }
     }
+    const current = this.importIndex();
+    let changed = false;
     for (const [id, adjustment] of normalized) {
       const entry = this.entries.get(id);
-      if (!entry || !this.get(id)?.available || !entry.center) continue;
+      if (!entry || !this.available(entry, current) || !entry.center
+        || sameAdjustment(this.adjustments.get(id), adjustment)) continue;
       // A source's exact map matrix is also its depth reference. Never replace
       // it with the numerically approximate ENU * inverse(ENU) for a zero edit.
       if (id === this.occlusion?.sourceId) continue;
       const unchanged = Object.values(adjustment).every(value => value === 0);
       const transform = unchanged ? Matrix4.IDENTITY : videoOverlayAdjustmentMatrix(entry.center, adjustment);
+      entry.transformed = true;
       for (const binding of entry.matrices) {
-        if (alive(binding.resource)) binding.resource.modelMatrix = unchanged
-          ? Matrix4.clone(binding.original) : Matrix4.multiply(transform, binding.original, new Matrix4());
+        const next = unchanged ? binding.original : Matrix4.multiply(transform, binding.original, new Matrix4());
+        if (alive(binding.resource) && !Matrix4.equals(binding.resource.modelMatrix, next)) {
+          binding.resource.modelMatrix = Matrix4.clone(next);
+        }
       }
       entry.dataSource?.entities.suspendEvents();
-      try { for (const binding of entry.positions) binding.apply(transform); }
+      try { for (const binding of entry.positions) { if (unchanged) binding.restore(); else binding.apply(transform); } }
       finally { entry.dataSource?.entities.resumeEvents(); }
+      entry.transformed = !unchanged;
       this.adjustments.set(id, adjustment);
+      changed = true;
     }
-    this.options.viewer.scene.requestRender();
+    if (changed) this.options.viewer.scene.requestRender();
   }
 
   getAdjustments(): Record<string, VideoOverlayAdjustment> {
@@ -452,9 +488,11 @@ export class VideoOverlayResources {
     this.removeAbortListener?.();
     this.occlusion?.restore(); this.occlusion = undefined;
     for (const entry of this.entries.values()) {
-      if (alive(entry.original)) {
+      if (entry.transformed && !entry.copy && alive(entry.original)) {
         for (const binding of entry.matrices) {
-          if (alive(binding.resource)) binding.resource.modelMatrix = Matrix4.clone(binding.original);
+          if (alive(binding.resource) && !Matrix4.equals(binding.resource.modelMatrix, binding.original)) {
+            binding.resource.modelMatrix = Matrix4.clone(binding.original);
+          }
         }
         entry.dataSource?.entities.suspendEvents();
         try { for (const binding of entry.positions) binding.restore(); }
@@ -462,7 +500,7 @@ export class VideoOverlayResources {
       }
       this.disposeCopy(entry);
     }
-    for (const [resource, show] of this.visibilitySnapshots) if (alive(resource)) resource.show = show;
+    for (const [resource, show] of this.visibilitySnapshots) setShow(resource, show);
     this.selected.clear();
     this.options.viewer.scene.requestRender();
   }
