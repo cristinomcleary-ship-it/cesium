@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Actual Chromium MediaRecorder export, checked with ffprobe and decoded pixels. */
+/** Legacy recorder and production offline WebCodecs export, verified with ffprobe. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
@@ -115,6 +115,27 @@ try {
   await page.locator('[data-cc-speed]').selectOption('2');
   await page.locator('#ccExport').evaluate(element => { element.closest('details').open = true; });
   await page.locator('#ccExportStart').fill('1'); await page.locator('#ccExportEnd').fill('3');
+  await page.evaluate(async () => {
+    const { VideoModelOverlay } = await import('/src/videoModelOverlay.ts');
+    const { VideoOverlayPlaybackCompositor } = await import('/src/videoOverlayPlaybackCompositor.ts');
+    const wait = VideoModelOverlay.prototype.waitForPresentedStart;
+    VideoModelOverlay.prototype.waitForPresentedStart = async function(...args) { window.__offlineController=this; await wait.apply(this,args); await new Promise(resolve=>setTimeout(resolve,45)); };
+    const seek = VideoModelOverlay.prototype.seekVideo;
+    window.__sameTargetExportHits=0;
+    VideoModelOverlay.prototype.seekVideo = function(time) {
+      if (this.exportAbort && !this.seeking && !this.video.seeking && this.video.paused && this.sourceTime !== undefined && this.sourceTarget === time && this.video.currentTime === time) window.__sameTargetExportHits++;
+      return seek.call(this,time);
+    };
+    const NativeFrame=window.VideoFrame, encode=VideoEncoder.prototype.encode;
+    window.__offlineSourcePts=[]; window.__offlineDetails=[]; window.__gpuEncoded=[]; window.__controllerCpuCopies=0; let sourceTime, detail, compositor;
+    const capture = VideoOverlayPlaybackCompositor.prototype.captureSource;
+    VideoOverlayPlaybackCompositor.prototype.captureSource = function(...args) { const result = capture.apply(this, args); if (result) compositor=this; return result; };
+    const draw = CanvasRenderingContext2D.prototype.drawImage;
+    CanvasRenderingContext2D.prototype.drawImage = function(image,...args) { if (image instanceof HTMLVideoElement || image instanceof VideoFrame || image instanceof HTMLCanvasElement && image.classList.contains('cesium-widget')) window.__controllerCpuCopies++; return draw.call(this,image,...args); };
+    window.VideoFrame=new Proxy(NativeFrame,{construct(target,args) { const frame=Reflect.construct(target,args); if(args[0] instanceof HTMLVideoElement) { sourceTime=frame.timestamp/1e6; detail={pts:sourceTime,target:args[0].currentTime,duration:frame.duration}; } return frame; }});
+    VideoEncoder.prototype.encode=function(frame,options) { window.__offlineSourcePts.push(sourceTime); window.__offlineDetails.push(detail); window.__gpuEncoded.push({ pts: frame.timestamp/1e6, sourcePts: compositor?.sourceTime, presentedPts: compositor?.presentedTime, width: frame.displayWidth, height: frame.displayHeight }); return encode.call(this,frame,options); };
+    window.__offlineStartedAt=performance.now();
+  });
   const controllerDownload = page.waitForEvent('download');
   void controllerDownload.catch(() => undefined);
   await page.locator('#ccExport').click();
@@ -133,24 +154,42 @@ try {
   assert.equal(await page.locator('[data-cc-seek]').isDisabled(), false);
   const controllerProbe = JSON.parse(execFileSync(ffprobe, ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', controllerFile], { encoding: 'utf8' }));
   assert.ok(controllerProbe.streams.some(stream => stream.codec_type === 'audio'));
+  const counted = JSON.parse(execFileSync(ffprobe, ['-v','error','-count_frames','-select_streams','v:0','-show_entries','stream=nb_read_frames','-of','json',controllerFile], {encoding:'utf8'}));
+  assert.equal(Number(counted.streams[0].nb_read_frames), 60, 'two seconds at 30 fps must contain all 60 frames');
+  const pts = JSON.parse(execFileSync(ffprobe, ['-v','error','-select_streams','v:0','-show_frames','-show_entries','frame=best_effort_timestamp_time','-of','json',controllerFile], {encoding:'utf8'})).frames.map(f=>Number(f.best_effort_timestamp_time));
+  for (let i=1;i<pts.length;i++) assert.ok(Math.abs(pts[i]-pts[i-1]-1/30)<.0011, 'constant frame cadence');
+  const sourcePts=await page.evaluate(()=>window.__offlineSourcePts);
+  assert.equal(sourcePts.length,60); assert.equal(new Set(sourcePts).size,60,'30 fps source frames must not be duplicated or skipped: '+JSON.stringify(await page.evaluate(()=>window.__offlineDetails)));
+  sourcePts.forEach((time,i)=>assert.ok(Math.abs(time-(1+i/30))<.001,`source frame mismatch ${i}: ${time}`));
+  const gpuEncoded = await page.evaluate(() => window.__gpuEncoded);
+  assert.equal(gpuEncoded.length,60);
+  gpuEncoded.forEach((frame,index)=> { assert.ok(Math.abs(frame.pts-index/30)<1e-6); assert.equal(frame.sourcePts,sourcePts[index]); assert.equal(frame.presentedPts,sourcePts[index]); assert.equal(frame.width,640); assert.equal(frame.height,360); });
+  assert.equal(await page.evaluate(() => window.__controllerCpuCopies),0,'controller export must consume the GPU canvas without CPU source-frame copies');
+  const wallTime=await page.evaluate(()=>(performance.now()-window.__offlineStartedAt)/1000); assert.ok(wallTime>2.7,'slow renderer must be exercised');
   const pixels = execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-ss', '0.5', '-i', controllerFile, '-frames:v', '1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', 'pipe:1']);
   let orange = 0, cyan = 0, background = 0;
   for (let i = 0; i < pixels.length; i += 3) {
     const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
-    if (r > 90 && r > g * 1.4 && r > b * 1.6) orange += 1;
+    // Unlit [1,.45,.14] is converted to sRGB, then blended at the
+    // controller's .8 opacity over [20,60,160]. Correct OIT alpha must
+    // preserve that orange (~[208,154,115]), rather than oversaturating it.
+    if (Math.abs(r - 208) < 25 && Math.abs(g - 154) < 25 && Math.abs(b - 115) < 25) orange += 1;
     if (r < 100 && g > 90 && b > 90 && g > r * 1.5 && b > r * 1.5) cyan += 1;
     if (Math.abs(r - 20) < 15 && Math.abs(g - 60) < 15 && Math.abs(b - 160) < 15) background += 1;
   }
   assert.ok(orange > 50 && cyan > 25 && background > 10000, `missing source/Cesium pixels: ${JSON.stringify({ orange, cyan, background })}`);
-  check('controller exports actual Cesium Model/CAD pixels and restores time, pause state and 2× speed', { file: controllerFile, orange, cyan, background });
+  // Spatial and temporal source oracle catches VideoFrame upload flips as well
+  // as stale texture reuse. These probes run after encoding, outside playback.
+  near(pixel(controllerFile,.5,500,50),[20,60,160]);
+  near(pixel(controllerFile,1.5,500,50),[255,255,0]);
+  near(pixel(controllerFile,1.5,500,300),[20,60,160]);
+  check('offline export preserves all 60 frames and constant 30 fps under delayed rendering, with paired GPU Model/CAD pixels and audio', { file: controllerFile, frames:60, frameRate:30, wallTime, orange, cyan, background });
   await page.evaluate(async () => {
-    const { VideoOverlayExportSession } = await import('/src/videoOverlayExport.ts');
-    const original = VideoOverlayExportSession.prototype.commitFrame;
+    const original = VideoEncoder.prototype.encode;
     window.__ccExportAcceptedTimes = [];
-    VideoOverlayExportSession.prototype.commitFrame = function(time, ...frames) {
-      const accepted = original.call(this, time, ...frames);
-      if (accepted) window.__ccExportAcceptedTimes.push(time);
-      return accepted;
+    VideoEncoder.prototype.encode = function(frame, options) {
+      window.__ccExportAcceptedTimes.push(frame.timestamp / 1e6);
+      return original.call(this, frame, options);
     };
   });
   // Force seeked to precede delivery of a paused decoded-frame callback. This
@@ -160,7 +199,7 @@ try {
   await page.waitForFunction(() => { const v = document.querySelector('.cc-video-backdrop video'); return v && !v.seeking && v.paused && Math.abs(v.currentTime - 1.15) < .001 && document.querySelector('.cc-clock')?.textContent.startsWith('0:01.13'); });
   await page.locator('[data-cc-seek]').evaluate(element => { element.value = '2'; element.dispatchEvent(new Event('input', { bubbles: true })); });
   await page.waitForFunction(() => document.querySelector('.cc-clock')?.textContent.startsWith('0:02.00'));
-  await page.locator('#ccExportStart').fill('0.15'); await page.locator('#ccExportEnd').fill('1.15');
+  await page.locator('#ccExportStart').fill('0.15'); await page.locator('#ccExportEnd').fill('1.165');
   const fractionalDownload = page.waitForEvent('download'); void fractionalDownload.catch(() => undefined);
   await page.locator('#ccExport').click(); const fractional = await fractionalDownload;
   await fractional.saveAs(path.join(output, `fractional-${fractional.suggestedFilename()}`));
@@ -171,6 +210,24 @@ try {
   const delayedCallbacks = await page.evaluate(() => { window.__ccExportDelayPaused = false; return window.__ccExportDelayedCallbacks; });
   assert.ok(delayedCallbacks >= 3);
   check('delayed paused callbacks preserve actual decoded PTS, fractional export and paused seek without hanging', { acceptedTimes, delayedCallbacks });
+  // A paused frame already sought to the exporter's precise first target
+  // must be recaptured after presentedTime invalidation, rather than rejected
+  // by the normal immutable in-flight-frame guard.
+  await page.locator('[data-cc-seek]').evaluate(element => { element.step='0.0001'; element.value='2.0001'; element.dispatchEvent(new Event('input',{bubbles:true})); });
+  await page.waitForFunction(() => { const c=window.__offlineController; return c && c.sourceTarget === 2.0001 && c.video.currentTime === 2.0001 && c.video.paused && !c.video.seeking && !c.seeking && !c.buffering && c.presentedTime === 2; });
+  await page.locator('#ccExportStart').fill('2'); await page.locator('#ccExportEnd').fill('2.2');
+  await page.evaluate(() => { window.__sameTargetExportHits=0; window.__offlineSourcePts=[]; window.__offlineDetails=[]; window.__gpuEncoded=[]; });
+  const sameTargetStarted=Date.now(), sameTargetDownload=page.waitForEvent('download',{timeout:15000}); void sameTargetDownload.catch(()=>undefined);
+  await page.locator('#ccExport').click(); const sameTarget=await sameTargetDownload;
+  const sameTargetFile=path.join(output,`same-target-${sameTarget.suggestedFilename()}`); await sameTarget.saveAs(sameTargetFile);
+  const sameTargetFrames=JSON.parse(execFileSync(ffprobe,['-v','error','-count_frames','-select_streams','v:0','-show_entries','stream=nb_read_frames','-of','json',sameTargetFile],{encoding:'utf8'}));
+  assert.equal(Number(sameTargetFrames.streams[0].nb_read_frames),6);
+  const sameTargetMeta=await page.evaluate(()=>({ hits:window.__sameTargetExportHits, sourcePts:window.__offlineSourcePts, frames:window.__gpuEncoded }));
+  assert.ok(sameTargetMeta.hits>=1,'must exercise the exact same-target export seek branch'); assert.equal(sameTargetMeta.frames.length,6);
+  sameTargetMeta.frames.forEach((frame,index)=>{ assert.ok(Math.abs(frame.pts-index/30)<1e-6); assert.ok(Math.abs(frame.sourcePts-(2+index/30))<.000001); assert.equal(frame.presentedPts,frame.sourcePts); });
+  const sameTargetWallSeconds=(Date.now()-sameTargetStarted)/1000; assert.ok(sameTargetWallSeconds<15,'same-target export must finish without the 45-second readiness timeout');
+  await page.waitForFunction(()=>{ const c=window.__offlineController; return c && c.video.paused && !c.video.seeking && !c.seeking && !c.buffering && c.presentedTime===2 && c.video.playbackRate===2; });
+  check('paused exact same-target export recaptures its first frame and completes all six GPU frames without a readiness deadlock',{file:sameTargetFile,frames:6,sameTargetHits:sameTargetMeta.hits,wallSeconds:sameTargetWallSeconds});
   await page.locator('#ccExportStart').fill('1'); await page.locator('#ccExportEnd').fill('3');
   await page.locator('#ccExport').click();
   await page.waitForFunction(() => !document.querySelector('#ccExportCancel').disabled);

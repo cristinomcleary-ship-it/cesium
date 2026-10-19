@@ -1,6 +1,7 @@
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { BoundingSphere, Cartesian3, Cesium3DTileset, Cesium3DTileStyle, Color, CustomDataSource, CustomShader, CustomShaderMode, LightingModel, Matrix3, Matrix4, Model, Transforms, Viewer } from 'cesium';
 import { VideoModelOverlay, videoModelOverlayPanelHtml, type SavedVideoOverlaySettings } from '../../src/videoModelOverlay';
+import { VideoOverlayPlaybackCompositor } from '../../src/videoOverlayPlaybackCompositor';
 import type { ImportRecord } from '../../src/types';
 import type { LibraryRecord } from '../../src/projectLibrary';
 
@@ -93,55 +94,102 @@ const overlay = new VideoModelOverlay(viewer, { getImports: () => imports, getRe
   notify: (message, error = false) => messages.push({ message, error }),
   onEnter: () => { enterCount++; }, onExit: () => { exitCount++; } });
 type Internal = {
-  video: HTMLVideoElement; presentation?: HTMLCanvasElement; sourceFrame?: HTMLCanvasElement;
+  video: HTMLVideoElement; presentation?: HTMLCanvasElement; compositor?: VideoOverlayPlaybackCompositor;
   pendingTime?: number; presentedTime?: number; lastFrameTime: number; buffering: boolean; wantedPlaying: boolean;
-  resources?: { getOcclusionStatus(): unknown }; frameHandle?: number; animationHandle?: number;
+  resources?: { getOcclusionStatus(): { ready: boolean; [key: string]: unknown } }; frameHandle?: number; animationHandle?: number;
+  cachedPreview?: { video: HTMLVideoElement; start: number; end: number }; editorCanvas?: HTMLCanvasElement;
+  editRevision: number; annotations: unknown[]; effects: unknown[];
   captureSnapshot(): { settings: SavedVideoOverlaySettings };
 };
 const internal = overlay as unknown as Internal;
 const video = internal.video, callbackHandles = new Set<number>();
-let callbackCount = 0, callbacksAfterExit = 0, callbackTime: number | undefined;
+let depthMode: 'actual' | 'pending' | 'alternate' = 'actual';
+let originalDepth: (() => { ready: boolean; [key: string]: unknown }) | undefined;
+let patchedResources: Internal['resources'];
+function patchDepth() {
+  if (!internal.resources || patchedResources === internal.resources) return;
+  patchedResources = internal.resources; originalDepth = internal.resources.getOcclusionStatus.bind(internal.resources);
+  internal.resources.getOcclusionStatus = () => {
+    const status = originalDepth!();
+    const frameNumber = (viewer.scene as unknown as { frameState: { frameNumber: number } }).frameState.frameNumber;
+    return depthMode === 'actual' ? status : { ...status, ready: depthMode === 'alternate' && frameNumber % 2 === 0, refining: true };
+  };
+}
+
+let callbackCount = 0, callbacksAfterExit = 0, pauseCalls = 0, playCalls = 0;
+const pause = video.pause.bind(video), play = video.play.bind(video);
+video.pause = () => { if (overlay.active) pauseCalls++; pause(); };
+video.play = () => { if (overlay.active) playCalls++; return play(); };
 const request = video.requestVideoFrameCallback.bind(video), cancel = video.cancelVideoFrameCallback.bind(video);
 video.requestVideoFrameCallback = callback => {
   const id = request((now, metadata) => {
     callbackHandles.delete(id); callbackCount++; if (!overlay.active) callbacksAfterExit++;
-    callbackTime = metadata.mediaTime;
-    try { callback(now, metadata); } finally { callbackTime = undefined; }
+    callback(now, metadata);
   });
   callbackHandles.add(id); return id;
 };
 video.cancelVideoFrameCallback = id => { callbackHandles.delete(id); cancel(id); };
 const xyz = (point: Cartesian3) => [point.x, point.y, point.z];
-const longitude = [120, 120.00006218, 120.00012436, 120.003109, 120.00317118];
+const longitude = new URLSearchParams(location.search).get('native') === '1' ? [120, 120, 120, 120, 120] : [120, 120.00006218, 120.00012436, 120.003109, 120.00317118];
 function expectedPosition(time: number) {
   const index = Math.min(3, Math.max(0, Math.floor(time / 2))), amount = Math.max(0, Math.min(1, (time - index * 2) / 2));
   return Cartesian3.lerp(Cartesian3.fromDegrees(longitude[index], 30, 80), Cartesian3.fromDegrees(longitude[index + 1], 30, 80), amount, new Cartesian3());
 }
-type FrameCopy = { time: number; rgb: number[]; sequence: number };
-const frameCopies = new WeakMap<HTMLCanvasElement, FrameCopy>();
-const pairs: Array<{ time: number; pendingTime?: number; cameraError: number; rgbError: number; sequence: number; buffered: boolean }> = [];
-let decodedCopies = 0;
+function classify(data: Uint8ClampedArray | Uint8Array) {
+  let orange = 0, cyan = 0, green = 0, yellow = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
+    if (r > 80 && r > 1.6 * g && g > 2 * b && a > 20) orange++;
+    if (r < 80 && g > 150 && b > 150 && a > 20) cyan++;
+    if (r < 100 && b < 100 && g > 100 && g > 1.8 * r && g > 1.8 * b && a > 20) green++;
+    if (r > 150 && g > 150 && b < .8 * Math.min(r, g) && r / g > .7 && r / g < 1.3 && a > 20) yellow++;
+  }
+  return { orange, cyan, green, yellow };
+}
+
+// Metadata-only instrumentation: no readPixels, Canvas2D transfer or video copy
+// occurs in the playback callback. Pixel assertions are explicit paused probes.
+const pairs: Array<{ time: number; pendingTime?: number; cameraError: number; sourcePtsError: number; sourceTime?: number; sequence: number; buffered: boolean; depthReady: boolean }> = [];
+let decodedCopies = 0, cpuVideoCopies = 0;
+const capture = VideoOverlayPlaybackCompositor.prototype.captureSource;
+const commit = VideoOverlayPlaybackCompositor.prototype.commit;
+const dispose = VideoOverlayPlaybackCompositor.prototype.dispose;
+const captured = new WeakMap<VideoOverlayPlaybackCompositor, { sequence: number; ptsError: number }>();
+const released: Array<{ disposed: boolean; width: number; height: number }> = [];
+VideoOverlayPlaybackCompositor.prototype.captureSource = function (image, time) {
+  const result = capture.call(this, image, time);
+  if (result && this === internal.compositor) captured.set(this, { sequence: ++decodedCopies,
+    ptsError: image instanceof VideoFrame ? Math.abs(image.timestamp / 1e6 - time) : Math.abs(video.currentTime - time) });
+  return result;
+};
+VideoOverlayPlaybackCompositor.prototype.commit = function (image, time, annotations) {
+  const result = commit.call(this, image, time, annotations), metadata = captured.get(this);
+  if (result && this === internal.compositor) {
+    if (!metadata) throw new Error('GPU presentation has no captured source frame');
+    pairs.push({ time, pendingTime: internal.pendingTime, sourceTime: this.sourceTime,
+      cameraError: Cartesian3.distance(viewer.camera.positionWC, expectedPosition(time)), sourcePtsError: metadata.ptsError,
+      sequence: metadata.sequence, buffered: internal.buffering, depthReady: !!internal.resources?.getOcclusionStatus().ready });
+    if (pairs.length > 1000) pairs.shift();
+  }
+  return result;
+};
+VideoOverlayPlaybackCompositor.prototype.dispose = function () {
+  dispose.call(this); released.push({ disposed: this.isDisposed, width: this.canvas.width, height: this.canvas.height });
+};
 const draw = CanvasRenderingContext2D.prototype.drawImage;
-CanvasRenderingContext2D.prototype.drawImage = function (this: CanvasRenderingContext2D, image: CanvasImageSource, ...args: number[]) {
+CanvasRenderingContext2D.prototype.drawImage = function (image, ...args) {
+  if (image === video || image === viewer.canvas || image instanceof VideoFrame) cpuVideoCopies++;
   Reflect.apply(draw, this, [image, ...args]);
-  const isFrame = typeof VideoFrame !== 'undefined' && image instanceof VideoFrame;
-  if (image === video || isFrame) {
-    frameCopies.set(this.canvas, { time: isFrame ? image.timestamp / 1e6 : callbackTime ?? video.currentTime,
-      rgb: [...this.getImageData(8, 8, 1, 1).data].slice(0, 3), sequence: ++decodedCopies });
-  } else if (image instanceof HTMLCanvasElement && frameCopies.has(image)) {
-    frameCopies.set(this.canvas, frameCopies.get(image)!);
-  }
-  if (image === viewer.canvas && this.canvas.classList.contains('cc-video-presentation')) {
-    const copy = frameCopies.get(this.canvas);
-    if (!copy) throw new Error('Presentation has no decoded video frame');
-    const rgb = [...this.getImageData(8, 8, 1, 1).data].slice(0, 3);
-    pairs.push({ time: copy.time, pendingTime: internal.pendingTime,
-      cameraError: Cartesian3.distance(viewer.camera.positionWC, expectedPosition(copy.time)),
-      rgbError: Math.max(...rgb.map((value, index) => Math.abs(value - copy.rgb[index]))),
-      sequence: copy.sequence, buffered: internal.buffering });
-    if (pairs.length > 400) pairs.shift();
-  }
 } as typeof draw;
+function presentationPixels(x = 0, y = 0, width = internal.presentation?.width ?? 0, height = internal.presentation?.height ?? 0) {
+  const canvas = internal.presentation;
+  if (!canvas?.width || !canvas.height) return null;
+  const gl = canvas.getContext('webgl2') ?? canvas.getContext('webgl');
+  if (!gl) throw new Error('Presentation must use a GPU canvas');
+  const data = new Uint8Array(width * height * 4);
+  gl.readPixels(x, canvas.height - y - height, width, height, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  return data;
+}
 let saved: { name: string; files: Record<string, File>; settings: SavedVideoOverlaySettings; id: string } | undefined;
 let saveCount = 0, initialUploads = 0, settingsUpdates = 0;
 const savedIds: string[] = [];
@@ -163,41 +211,58 @@ function geometry() {
     cad: cadLines.map(line => line.polyline!.positions!.getValue(viewer.clock.currentTime).map(xyz)), tilesMatrix: Matrix4.toArray(tiles.modelMatrix) };
 }
 function presentationHash() {
-  const canvas = internal.presentation;
-  if (!canvas?.width || !canvas.height) return null;
-  const data = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data;
+  const data = presentationPixels(); if (!data) return null;
   let hash = 2166136261;
   for (let i = 0; i < data.length; i += 31) hash = Math.imul(hash ^ data[i], 16777619);
   return hash >>> 0;
 }
 function pixels() {
-  const gl = viewer.canvas.getContext('webgl2')!, data = new Uint8Array(viewer.canvas.width * viewer.canvas.height * 4);
-  gl.readPixels(0, 0, viewer.canvas.width, viewer.canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, data);
-  let orange = 0, cyan = 0, green = 0, yellow = 0;
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
-    if (r > 60 && r > 1.6 * g && g > 2 * b && a > 20) orange++;
-    if (r < 30 && g > 60 && b > 60 && a > 20) cyan++;
-    if (r < 30 && g > 60 && b < 30 && a > 20) green++;
-    if (r > 60 && g > 60 && b < 30 && r / g > .7 && r / g < 1.3 && a > 20) yellow++;
-  }
-  return { orange, cyan, green, yellow, glError: gl.getError() };
+  const data = presentationPixels(); if (!data) return null;
+  return { ...classify(data), glError: viewer.canvas.getContext('webgl2')!.getError() };
+}
+function renderer() {
+  const statistics = (tiles as unknown as { _statistics: { numberOfTilesWithContentReady: number } })._statistics;
+  return { resolutionScale: viewer.resolutionScale, useDefaultRenderLoop: viewer.useDefaultRenderLoop,
+    requestRenderMode: viewer.scene.requestRenderMode, maximumRenderTimeChange: String(viewer.scene.maximumRenderTimeChange),
+    shadows: viewer.shadows, highDynamicRange: viewer.scene.highDynamicRange,
+    cameraInputs: viewer.scene.screenSpaceCameraController.enableInputs,
+    width: viewer.canvas.width, height: viewer.canvas.height,
+    loadedTiles: statistics.numberOfTilesWithContentReady, tileBytes: tiles.totalMemoryUsageInBytes };
+}
+function dimensions() {
+  const cached = internal.cachedPreview?.video;
+  const texture = (internal.compositor as unknown as { sourceTexture?: { width: number; height: number } } | undefined)?.sourceTexture;
+  return { source: [video.videoWidth, video.videoHeight], gpuSource: texture ? [texture.width, texture.height] : [0, 0],
+    presentation: [internal.presentation?.width ?? 0, internal.presentation?.height ?? 0],
+    cached: cached ? [cached.videoWidth, cached.videoHeight] : null,
+    cachedTime: cached ? cached.currentTime : null, cachedPaused: cached?.paused ?? null,
+    cachedSrc: cached?.getAttribute('src') ?? null, cachedDom: document.querySelectorAll('.cc-cached-preview').length,
+    editorDom: document.querySelectorAll('.cc-video-editor').length };
 }
 function snapshot() {
-  return { active: overlay.active, modelReady: models.every(model => model.ready), lifecycle: lifecycle(), geometry: geometry(),
+  return { active: overlay.active, modelStates: models.map((model, index) => ({ id: imports[index].id, show: model.show, ready: model.ready,
+      color: model.color ? [model.color.red, model.color.green, model.color.blue, model.color.alpha] : null,
+      commandsBuilt: (model as unknown as { _drawCommandsBuilt: boolean })._drawCommandsBuilt,
+      shader: model.customShader ? { translucencyMode: model.customShader.translucencyMode,
+        uniforms: Object.fromEntries(Object.entries(model.customShader.uniforms).map(([key, value]) => [key, value.value])) } : null })), renderer: renderer(), dimensions: dimensions(), editRevision: internal.editRevision, annotations: structuredClone(internal.annotations), effects: structuredClone(internal.effects), modelReady: models.every(model => model.ready), lifecycle: lifecycle(), geometry: geometry(),
     mediaTime: video.currentTime, mediaSrc: video.getAttribute('src'), paused: video.paused, seeking: video.seeking,
     presentedTime: internal.presentedTime ?? null, pendingTime: internal.pendingTime ?? null,
     buffering: internal.buffering, wantedPlaying: internal.wantedPlaying, status: internal.resources?.getOcclusionStatus() ?? null,
-    hasResources: !!internal.resources, hasSourceFrame: !!internal.sourceFrame, hasPresentation: !!internal.presentation,
+    hasResources: !!internal.resources, hasSourceFrame: !!internal.compositor && internal.compositor.sourceTime !== undefined, hasPresentation: !!internal.presentation,
     sourceShow: tiles.show, shaderRestored: tiles.customShader === originalShader, styleRestored: tiles.style === originalStyle,
     frameHandle: internal.frameHandle ?? null, animationHandle: internal.animationHandle ?? null,
-    pendingCallbacks: callbackHandles.size, callbackCount, callbacksAfterExit, decodedCopies, pairs: pairs.slice(-30),
-    presentationHash: presentationHash(), presentationDom: document.querySelectorAll('.cc-video-presentation').length,
+    pendingCallbacks: callbackHandles.size, callbackCount, callbacksAfterExit, decodedCopies, pauseCalls, playCalls, cpuVideoCopies, released: [...released], pairs: pairs.slice(-30),
+    compositor: internal.compositor ? { sourceTime: internal.compositor.sourceTime, presentedTime: internal.compositor.presentedTime, disposed: internal.compositor.isDisposed, lost: internal.compositor.isContextLost } : null, presentationDom: document.querySelectorAll('.cc-video-presentation').length,
     saveCount, initialUploads, settingsUpdates, savedIds: [...savedIds], saved: saved ? { name: saved.name, id: saved.id, settings: structuredClone(saved.settings) } : null,
     enterCount, exitCount, messages: [...messages], renderErrors: [...renderErrors] };
 }
 (window as unknown as { __workflow: unknown }).__workflow = {
-  snapshot, pixels, lifecycle, geometry, planeGltf: () => JSON.stringify(planeGltf),
+  snapshot, pixels, lifecycle, geometry, presentationHash,
+  resetMediaStats() { pauseCalls = 0; playCalls = 0; cpuVideoCopies = 0; },
+  sample(x: number, y: number) { const canvas = internal.presentation!; return [...presentationPixels(Math.floor(x * canvas.width), Math.floor(y * canvas.height), 1, 1)!]; },
+  setDepthMode(mode: typeof depthMode) { depthMode = mode; patchDepth(); viewer.scene.requestRender(); },
+  async cachedBlob() { const response = await fetch(internal.cachedPreview!.video.src); return [...new Uint8Array(await response.arrayBuffer())]; },
+  planeGltf: () => JSON.stringify(planeGltf),
   async restoreSaved() { if (!saved) throw new Error('No saved workflow'); await overlay.restoreReplay(saved.files, structuredClone(saved.settings), saved.id); },
   waitOutsideFrames(count: number) {
     return new Promise<void>((resolve, reject) => {

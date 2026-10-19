@@ -1,7 +1,7 @@
-import { Cartesian2, Cartesian3, Cartesian4, Color, Matrix4, PerspectiveFrustum, PostProcessStage, SceneMode, Transforms, type Viewer } from 'cesium';
+import { Cartesian3, Color, Matrix4, PerspectiveFrustum, SceneMode, Transforms, type PostProcessStage, type Viewer } from 'cesium';
 import { createCcCameraTrack, parseCcCameraXml, type CcCameraDataset, type CcCameraTrack, type CcTrackOptions } from './ccCameraTrack';
 import { VideoOverlayResources, type VideoOverlayAdjustment } from './videoOverlayResources';
-import { containVideoRect, overlayLensBounds, overlayTransparencyUniforms, OVERLAY_LENS_SHADER } from './videoOverlayLens';
+import { containVideoRect, overlayLensBounds, overlayTransparencyUniforms, createVideoOverlayLensStage } from './videoOverlayLens';
 import { transformCcCameraSample, validateCcSceneTransform } from './ccSceneRegistration';
 import { createCcCameraRegistrationMatrix, defaultCcCameraRegistration, validateCcCameraRegistration, type CcCameraRegistration, type CcCameraRegistrationAnchor } from './ccCameraRegistration';
 import { assertVideoOverlayOccluder, validateVideoOverlayOcclusion, type SavedVideoOverlayOcclusion } from './videoOverlayOcclusion';
@@ -12,10 +12,14 @@ import { downloadVideoOverlayExport, planVideoOverlayExport, type VideoOverlayEx
 import { exportVideoOverlayOffline } from './videoOverlayOfflineExport';
 import { parseVideoPosCsv } from './videoFramePos';
 import { VideoOverlayAutosave } from './videoOverlayAutosave';
-import { drawVideoOverlayAnnotations, validateVideoOverlayAnnotation, type VideoOverlayAnnotation } from './videoOverlayAnnotations';
+import { drawVideoOverlayAnnotations, videoOverlayAnnotationState, validateVideoOverlayAnnotation, type VideoOverlayAnnotation } from './videoOverlayAnnotations';
 import { evaluateVideoOverlayEffects, validateVideoOverlayEffects, type SavedVideoOverlayEffect } from './videoOverlayEffects';
 import { VideoOverlayPresentationEditor } from './videoOverlayPresentationEditor';
+import { VideoOverlayPlaybackCompositor } from './videoOverlayPlaybackCompositor';
+import { captureVideoOverlayRenderTargets } from './videoOverlayRenderTargets';
 import './videoModelOverlay.css';
+
+export const VIDEO_OVERLAY_BUILD = '2026.10.19-R3';
 
 export type SavedVideoOverlaySettings = {
   schemeName?: string;
@@ -43,7 +47,7 @@ const clock = (v: number) => Number.isFinite(v) ? `${Math.floor(v / 60)}:${(v % 
 
 export const videoModelOverlayPanelHtml = `
 <section class="panel cc-overlay-panel" data-panel="videoar">
-  <h2>视频 AR · 工程叠加</h2><button id="ccExit" class="cc-exit" type="button">退出 AR 融合（释放资源）</button><p class="cc-hint">导入原视频与同源 CC 空三结果，将已定位的 CAD、工程模型叠加到实景视频。</p>
+  <h2>视频 AR · 工程叠加</h2><small data-cc-build>版本 ${VIDEO_OVERLAY_BUILD}</small><button id="ccExit" class="cc-exit" type="button">退出 AR 融合（释放资源）</button><p class="cc-hint">导入原视频与同源 CC 空三结果，将已定位的 CAD、工程模型叠加到实景视频。</p>
   <details open><summary>融合方案</summary><label>方案名称<input id="ccSchemeName" maxlength="120" placeholder="按视频名称自动命名"></label><label>已保存方案<select id="ccSchemeList"><option value="">请选择融合方案</option></select></label><div class="cc-actions"><button id="ccSchemeOpen" type="button">打开</button><button id="ccSchemeCopy" type="button">另存副本</button><button id="ccSchemeRefresh" type="button">刷新</button><button id="ccSchemeDelete" type="button">删除方案</button></div><small>开始融合后自动保存；首次视频上传完成后，方案才可在下次打开。</small></details>
   <label>航拍视频<input id="ccVideoFile" type="file" accept="video/*,.mp4,.mov,.webm"></label>
   <details><summary>从视频抽帧 → CC 空三</summary><div class="cc-fields"><label>开始（秒）<input id="ccExtractStart" type="number" min="0" step="0.001" value="0"></label><label>结束（秒，空白为片尾）<input id="ccExtractEnd" type="number" min="0" step="0.001"></label></div><label>抽帧方式<select id="ccExtractMode"><option value="interval">按间隔</option><option value="count">按数量均匀分布</option></select></label><div class="cc-fields"><label>间隔（秒）<input id="ccExtractInterval" type="number" min="0.001" step="any" value="1"></label><label>数量<input id="ccExtractCount" type="number" min="2" max="5000" value="60"></label></div><div class="cc-actions"><button id="ccExtract" type="button">抽帧到文件夹</button><button id="ccExtractZip" type="button">抽帧为 ZIP</button><button id="ccExtractCancel" type="button" disabled>取消</button></div><small id="ccExtractStatus">默认每秒一张，原始分辨率。同时输出照片、时间清单和 POS 表。导入真实 POS 后生成 All_Pos.csv；未提供定位数据则生成待填模板。</small></details>
@@ -171,7 +175,10 @@ export class VideoModelOverlay {
   private resumeRenderLoop?: boolean;
   private sampleVisible?: boolean;
   private presentation?: HTMLCanvasElement;
-  private sourceFrame?: HTMLCanvasElement;
+  private compositor?: VideoOverlayPlaybackCompositor;
+  private annotationFrame?: HTMLCanvasElement;
+  private annotationKey = '';
+  private releaseRenderTargets?: () => void;
   private sourceTime?: number;
   private sourceTarget?: number;
   private pendingTime?: number;
@@ -179,7 +186,6 @@ export class VideoModelOverlay {
   private seekFrameTime?: number;
   private buffering = false;
   private wantedPlaying = false;
-  private readyStreak = 0;
   private autoSaveReady = false;
   private accessInvalid = false;
   private readonly autosave = new VideoOverlayAutosave<OverlaySnapshot>({
@@ -530,6 +536,7 @@ export class VideoModelOverlay {
   }
   private captureScene() {
     const { scene, camera } = this.viewer;
+    this.releaseRenderTargets = captureVideoOverlayRenderTargets(scene);
     if (scene.mode !== SceneMode.SCENE3D) throw new Error('请先切换到三维场景，再开始视频融合');
     const cameraState = { position: Cartesian3.clone(camera.positionWC), direction: Cartesian3.clone(camera.directionWC), up: Cartesian3.clone(camera.upWC), frustum: camera.frustum.clone(), transform: Matrix4.clone(camera.transform) };
     const visibility: Array<[Visible, boolean]> = [];
@@ -586,23 +593,21 @@ export class VideoModelOverlay {
     // Widget resize writes the canvas aspect. The ideal lens render can have a
     // different aspect, so restore its calibration before each scene update.
     this.removeProjectionGuard = this.viewer.scene.preUpdate.addEventListener(() => { if (this.viewer.camera.frustum === frustum) frustum.aspectRatio = aspectRatio; });
-    this.lensStage = new PostProcessStage({ name: `cc-video-overlay-${crypto.randomUUID()}`, fragmentShader: OVERLAY_LENS_SHADER,
-      uniforms: { ...overlayTransparencyUniforms(this.viewer.scene), cameraK: new Cartesian4(k.fx, k.fy, k.cx, k.cy), imageSize: new Cartesian2(k.width, k.height),
-        opticalBounds: new Cartesian4(bounds.left, bounds.right, bounds.top, bounds.bottom), radialLens: new Cartesian3(d.k1, d.k2, d.k3), tangentLens: new Cartesian2(d.p1, d.p2),
-        // Evaluate current-view depth coverage after traversal. Background detail
-        // requests must not blink out overlays protected by rendered parent tiles.
-        overlayOpacity: () => {
-          const ready = !this.occlusion.enabled || !!this.resources?.getOcclusionStatus().ready;
-          this.lensFrame = { number: this.sceneFrameNumber(), time: this.pendingTime ?? -1, ready };
-          return this.opacity * (ready ? 1 : 0);
-        } } });
+    this.lensStage = createVideoOverlayLensStage(this.viewer.scene, k, d, {
+      ...overlayTransparencyUniforms(this.viewer.scene),
+      overlayOpacity: () => {
+        const ready = !this.occlusion.enabled || !!this.resources?.getOcclusionStatus().ready;
+        this.lensFrame = { number: this.sceneFrameNumber(), time: this.pendingTime ?? -1, ready };
+        return this.opacity * (ready ? 1 : 0);
+      },
+    }, `cc-video-overlay-${crypto.randomUUID()}`);
     this.viewer.scene.postProcessStages.add(this.lensStage);
   }
   private originalContainerStyle = '';
   private mountStage() {
     const parent = this.viewer.container.parentElement!;
     this.originalContainerStyle = this.container.style.cssText;
-    this.backdrop = document.createElement('div'); this.backdrop.className = 'cc-video-backdrop'; this.backdrop.append(this.video); this.presentation = document.createElement('canvas'); this.presentation.className = 'cc-video-presentation'; this.sourceFrame = document.createElement('canvas'); this.backdrop.append(this.presentation); parent.prepend(this.backdrop);
+    this.backdrop = document.createElement('div'); this.backdrop.className = 'cc-video-backdrop'; this.backdrop.append(this.video); this.compositor = new VideoOverlayPlaybackCompositor(this.video.videoWidth, this.video.videoHeight, { allowSourceScaling: true, allowOverlayRounding: true, onContextLost: () => { if (this.active) { this.leave(); this.fail(new Error('融合画面 GPU 上下文已丢失，请重新进入 AR')); } } }); this.presentation = this.compositor.canvas; this.presentation.className = 'cc-video-presentation'; this.backdrop.append(this.presentation); parent.prepend(this.backdrop);
     this.editorCanvas = document.createElement('canvas'); this.editorCanvas.className = 'cc-video-editor'; parent.append(this.editorCanvas); this.presentationEditor.mount(this.editorCanvas);
     parent.classList.add('cc-video-active');
     this.badge = document.createElement('div'); this.badge.className = 'cc-video-status'; parent.append(this.badge);
@@ -610,7 +615,7 @@ export class VideoModelOverlay {
     this.controls.innerHTML = '<button data-cc-play type="button">播放</button><button data-cc-back type="button">上一关键帧</button><button data-cc-next type="button">下一关键帧</button><input data-cc-seek aria-label="视频进度" type="range" min="0" step="0.001"><span class="cc-clock"></span><select data-cc-speed aria-label="倍速"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select><button data-cc-full type="button">全屏</button><button data-cc-exit type="button">退出 AR · 释放资源</button>';
     this.controls.querySelector('[data-cc-play]')!.addEventListener('click', () => {
       if (this.cachedPreview) { this.playCachedPreview(); return; }
-      if (this.wantedPlaying) { this.wantedPlaying = false; this.video.pause(); } else { this.wantedPlaying = true; if (!this.buffering) void this.video.play().catch(e => this.fail(e)); } this.updatePlayback();
+      if (this.wantedPlaying) { this.wantedPlaying = false; this.video.pause(); } else { this.wantedPlaying = true; void this.video.play().catch(e => this.fail(e)); } this.updatePlayback();
     });
     const seek = this.controls.querySelector<HTMLInputElement>('[data-cc-seek]')!; seek.max = String(this.video.duration);
     seek.addEventListener('input', () => { if (this.cachedPreview) { this.cachedPreview.video.currentTime = Math.max(0, Math.min(this.cachedPreview.end - this.cachedPreview.start, Number(seek.value) - this.cachedPreview.start)); this.updatePlayback(); return; } this.wantedPlaying = false; this.video.pause(); this.seekVideo(Number(seek.value)); });
@@ -627,8 +632,10 @@ export class VideoModelOverlay {
     const parent = this.viewer.container.parentElement!, rect = containVideoRect(Math.max(1, parent.clientWidth), Math.max(1, parent.clientHeight - 64), this.video.videoWidth, this.video.videoHeight);
     for (const e of [this.video, this.container, this.presentation!, this.editorCanvas!, ...(this.cachedPreview ? [this.cachedPreview.video] : [])]) Object.assign(e.style, { position: 'absolute', left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
     this.viewer.resolutionScale = 1; this.viewer.resize();
-    const targetWidth = this.exportPlan?.width ?? this.video.videoWidth;
-    this.viewer.resolutionScale = (targetWidth + 0.001) / Math.max(1, this.viewer.canvas.width); this.viewer.resize();
+    const targetWidth = this.exportPlan?.width ?? this.video.videoWidth, targetHeight = this.exportPlan?.height ?? this.video.videoHeight;
+    this.viewer.resolutionScale = Math.max((targetWidth + 0.001) / Math.max(1, this.viewer.canvas.width), (targetHeight + 0.001) / Math.max(1, this.viewer.canvas.height)); this.viewer.resize();
+    this.compositor?.resize(targetWidth, targetHeight);
+    this.compositor?.setOverlayRoundingPixels(Math.ceil(Math.max(targetWidth / Math.max(1, this.viewer.canvas.clientWidth), targetHeight / Math.max(1, this.viewer.canvas.clientHeight))) + 1);
     if (this.editorCanvas) { this.editorCanvas.width = this.video.videoWidth; this.editorCanvas.height = this.video.videoHeight; }
     this.viewer.scene.requestRender();
   }
@@ -636,7 +643,7 @@ export class VideoModelOverlay {
     ++this.frameGeneration;
     if (this.frameHandle !== undefined) this.video.cancelVideoFrameCallback?.(this.frameHandle); this.frameHandle = undefined;
     if (this.animationHandle !== undefined) cancelAnimationFrame(this.animationHandle); this.animationHandle = undefined;
-    this.seekTarget = time; this.seeking = true; this.seekFrameTime = undefined; this.pendingTime = undefined; this.readyStreak = 0;
+    this.seekTarget = time; this.seeking = true; this.seekFrameTime = undefined; this.pendingTime = undefined;
     clearTimeout(this.seekWaitTimer);
     if (this.active) this.seekWaitTimer = window.setTimeout(() => {
       if (this.active && this.seekTarget !== undefined && this.badge) this.badge.textContent = '浏览器尚未提交定位后的画面，请点击播放；若仍无响应，请使用新版 Chrome 或 Edge。';
@@ -647,7 +654,7 @@ export class VideoModelOverlay {
     // Chromium need not submit a new video frame when seeking to the already
     // decoded paused image. Reuse its actual timestamp instead of waiting forever.
     if (!this.seeking && !this.video.seeking && this.video.paused && this.sourceTime !== undefined && this.sourceTarget === time && this.video.currentTime === time) {
-      this.captureDecodedFrame(this.sourceTime); return;
+      this.pendingTime = undefined; this.captureDecodedFrame(this.sourceTime); return;
     }
     this.beginSeek(time);
     this.video.currentTime = time;
@@ -667,8 +674,11 @@ export class VideoModelOverlay {
     });
   }
   private captureDecodedFrame(time?: number): boolean {
-    if (!this.active || !this.sourceFrame || this.video.readyState < 2 || this.video.seeking || this.cachedPreview && !this.exportAbort) return false;
-    if (this.buffering && this.pendingTime !== undefined && this.presentedTime !== this.pendingTime) return false;
+    if (!this.active || !this.compositor || this.video.readyState < 2 || this.video.seeking || this.cachedPreview && !this.exportAbort) return false;
+    // One immutable in-flight pair. Let the native decoder keep its cadence;
+    // once the renderer finishes, the next callback captures the newest PTS.
+    // Repeated pause/play here used to restart decoding on every LOD wait.
+    if (this.pendingTime !== undefined && this.presentedTime !== this.pendingTime && !this.seeking) return false;
     let frame: VideoFrame | undefined;
     try {
       // WebCodecs copies the playback frame's real PTS when timestamp is omitted.
@@ -678,9 +688,7 @@ export class VideoModelOverlay {
         try { frame = new VideoFrame(this.video); time = frame.timestamp / 1e6; } catch { /* Use rVFC metadata on browsers without this constructor path. */ }
       }
       if (time === undefined) return false;
-      const width = this.exportPlan?.width ?? this.video.videoWidth, height = this.exportPlan?.height ?? this.video.videoHeight;
-      if (this.sourceFrame.width !== width || this.sourceFrame.height !== height) { this.sourceFrame.width = width; this.sourceFrame.height = height; }
-      this.sourceFrame.getContext('2d', { alpha: false })!.drawImage(frame ?? this.video, 0, 0, width, height);
+      if (!this.compositor.captureSource(frame ?? this.video, time)) return false;
       this.sourceTime = time; this.sourceTarget = this.video.currentTime;
       if (this.seeking) { this.seekFrameTime = time; return true; }
       this.seekTarget = undefined; clearTimeout(this.seekWaitTimer); this.renderFrame(time);
@@ -688,31 +696,36 @@ export class VideoModelOverlay {
     } finally { frame?.close(); }
   }
   private commitPresentation() {
-    if (!this.active || !this.presentation || !this.sourceFrame || this.pendingTime === undefined || this.seeking || this.video.seeking) return;
+    if (!this.active || !this.presentation || !this.compositor || this.pendingTime === undefined || this.seeking || this.video.seeking) return;
     const status = this.resources?.getOcclusionStatus();
     const hasSample = !!this.track?.sample(this.pendingTime);
     const stamped = this.lensFrame?.number === this.sceneFrameNumber() && this.lensFrame?.time === this.pendingTime && this.lensFrame.ready;
     if (hasSample && (!stamped || !this.renderReady || !this.resources?.isPresentationReady())) {
-      this.readyStreak = 0; this.buffering = true; this.video.pause();
+      this.buffering = true;
       if (this.badge) this.badge.textContent = status?.error || '正在准备当前帧的完整模型与遮挡，保留上一幅融合画面…';
       this.viewer.scene.requestRender(); this.updatePlayback(); return;
     }
-    const presentationKey = `${this.pendingTime}/${this.editRevision}/${!!status?.ready}/${this.sourceFrame.width}/${this.sourceFrame.height}`;
+    const presentationKey = `${this.pendingTime}/${this.editRevision}/${!!status?.ready}/${this.presentation.width}/${this.presentation.height}`;
     // Paused videos and hidden tools must not repeatedly copy multi-megapixel frames.
     if (this.lastPresentationKey === presentationKey && !this.buffering && !status?.refining && this.resources?.isPresentationReady()) return;
-    if (this.buffering && ++this.readyStreak < 2) { this.viewer.scene.requestRender(); return; }
+    const width = this.presentation.width, height = this.presentation.height;
+    let annotations: HTMLCanvasElement | undefined;
+    if (this.annotations.some(mark => videoOverlayAnnotationState(mark, this.pendingTime!).visible)) {
+      this.annotationFrame ??= document.createElement('canvas'); annotations = this.annotationFrame;
+      const key = `${this.pendingTime}/${this.editRevision}/${width}/${height}`;
+      if (this.annotationKey !== key) {
+        if (annotations.width !== width || annotations.height !== height) { annotations.width = width; annotations.height = height; }
+        const context = annotations.getContext('2d')!; context.clearRect(0, 0, width, height);
+        drawVideoOverlayAnnotations(context, this.annotations, { width, height, mediaTime: this.pendingTime }); this.annotationKey = key;
+      }
+    }
+    if (!this.compositor.commit(this.viewer.canvas, this.pendingTime, annotations)) return;
     this.lastPresentationKey = presentationKey;
-    const width = this.sourceFrame.width, height = this.sourceFrame.height;
-    if (this.presentation.width !== width || this.presentation.height !== height) { this.presentation.width = width; this.presentation.height = height; }
-    const context = this.presentation.getContext('2d', { alpha: false })!;
-    context.drawImage(this.sourceFrame, 0, 0);
-    context.drawImage(this.viewer.canvas, 0, 0, width, height);
-    drawVideoOverlayAnnotations(context, this.annotations, { width, height, mediaTime: this.pendingTime });
     this.presentedTime = this.pendingTime;
     if (this.buffering) {
       this.buffering = false;
       if (this.badge) this.badge.textContent = `融合画面 · ${clock(this.presentedTime)}`;
-      if (this.wantedPlaying && !this.exportAbort) void this.video.play().catch(e => this.fail(e));
+      if (this.wantedPlaying && this.video.paused && !this.exportAbort) void this.video.play().catch(e => this.fail(e));
     }
     this.updatePlayback();
   }
@@ -862,7 +875,7 @@ export class VideoModelOverlay {
     } finally {
       abort.abort();
       if (this.active && this.epoch === epoch && !this.viewer.isDestroyed()) { this.viewer.resolutionScale = originalResolutionScale; this.viewer.resize(); }
-      this.exportPlan = undefined; if (this.exportAbort === abort) this.exportAbort = undefined;
+      this.exportPlan = undefined; if (this.active && this.epoch === epoch) this.layout(); if (this.exportAbort === abort) this.exportAbort = undefined;
       for (const [item, value] of disabled) item.disabled = value;
       this.el<HTMLButtonElement>('ccExport').disabled = false; this.el<HTMLButtonElement>('ccExportCancel').disabled = true;
       if (this.active && this.epoch === epoch && this.editorCanvas) this.presentationEditor.mount(this.editorCanvas);
@@ -903,9 +916,7 @@ export class VideoModelOverlay {
     this.lastPresentationKey = '';
     // The presentation canvas holds pixels independently of Cesium visibility.
     // Remove revoked objects immediately, then redraw authorized layers next frame.
-    if (this.active && this.accessInvalid && this.presentation && this.sourceFrame) {
-      this.presentation.getContext('2d', { alpha: false })?.drawImage(this.sourceFrame, 0, 0, this.presentation.width, this.presentation.height);
-    }
+    if (this.active && this.accessInvalid && !this.compositor?.clearOverlay()) this.exit();
     if (this.active && (this.sceneReference || this.occlusion.enabled)) {
       try { this.checkSceneReference(); this.checkOcclusionSource(); }
       catch (error) { this.accessInvalid = true; this.exit(); this.fail(error); return; }
@@ -1065,7 +1076,7 @@ export class VideoModelOverlay {
     const raw = this.track!.sample(time), rendered = raw && !referenceError ? (this.sceneReference ? transformCcCameraSample(raw, this.sceneReference.matrix) : raw) : null;
     const corrected = rendered && (this.cameraRegistration.enabled ? transformCcCameraSample(rendered, this.cameraCorrection) : rendered);
     return {
-      format: 'cesium-cc-registration-diagnostic', version: 1, createdAt: new Date().toISOString(),
+      format: 'cesium-cc-registration-diagnostic', version: 1, runtimeBuild: VIDEO_OVERLAY_BUILD, createdAt: new Date().toISOString(),
       video: { name: this.files.video.name, width: this.video.videoWidth, height: this.video.videoHeight, duration: this.video.duration,
         currentTime: this.video.currentTime, renderedTime: this.active ? time : null, seeking: this.video.seeking },
       xml: { name: this.files.source.name, photos: this.dataset!.photos.length, referenceSystems: this.dataset!.photogroups.map(group => group.referenceSystem),
@@ -1099,7 +1110,7 @@ export class VideoModelOverlay {
     release(() => this.clearCachedPreview(false)); release(() => this.presentationEditor.unmount());
     if (this.editorCanvas) { this.editorCanvas.width = 0; this.editorCanvas.height = 0; this.editorCanvas.remove(); this.editorCanvas = undefined; }
     ++this.epoch; ++this.frameGeneration; this.sampleVisible = undefined; const restore = this.restoreScene; this.restoreScene = undefined;
-    release(() => this.exportAbort?.abort()); release(() => this.extraction?.abort()); this.wantedPlaying = false; this.buffering = false; this.readyStreak = 0;
+    release(() => this.exportAbort?.abort()); release(() => this.extraction?.abort()); this.wantedPlaying = false; this.buffering = false;
     if (this.video.readyState >= 1) this.resumeTime = this.presentedTime ?? this.video.currentTime;
     release(() => this.video.pause()); this.dragging = undefined; this.seeking = false; this.seekFrameTime = undefined; this.seekTarget = undefined;
     clearTimeout(this.seekWaitTimer); this.seekWaitTimer = undefined;
@@ -1114,7 +1125,8 @@ export class VideoModelOverlay {
     release(() => { if (restore && !this.viewer.isDestroyed()) restore(); });
     if (this.backdrop) { this.video.remove(); this.backdrop.remove(); this.backdrop = undefined; this.container.style.cssText = this.originalContainerStyle; }
     if (this.presentation) { this.presentation.width = 0; this.presentation.height = 0; this.presentation.remove(); } this.presentation = undefined;
-    if (this.sourceFrame) { this.sourceFrame.width = 0; this.sourceFrame.height = 0; } this.sourceFrame = undefined;
+    release(() => this.compositor?.dispose()); this.compositor = undefined;
+    if (this.annotationFrame) { this.annotationFrame.width = 0; this.annotationFrame.height = 0; } this.annotationFrame = undefined; this.annotationKey = '';
     this.sourceTime = undefined; this.sourceTarget = undefined; this.pendingTime = undefined; this.presentedTime = undefined; this.lastPresentationKey = '';
     this.controls?.remove(); this.controls = undefined; this.badge?.remove(); this.badge = undefined;
     this.viewer.container.parentElement?.classList.remove('cc-video-active'); delete this.container.dataset.ccDrag;
@@ -1123,6 +1135,7 @@ export class VideoModelOverlay {
     const entered = this.enterHooksActive; this.enterHooksActive = false;
     release(() => { if (entered) this.options.onExit?.(); });
     release(() => { if (restore && !this.viewer.isDestroyed()) { this.viewer.resize(); this.viewer.scene.requestRender(); } });
+    release(() => this.releaseRenderTargets?.()); this.releaseRenderTargets = undefined;
   }
   clear() {
     clearTimeout(this.autosaveTimer); this.autoSaveReady = false; this.accessInvalid = false; this.resumeTime = 0; this.metadata = undefined; this.manifest = undefined;

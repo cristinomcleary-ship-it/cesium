@@ -50,6 +50,7 @@ try {
     renderQueued = true;
     queueMicrotask(() => { renderQueued = false; compile(viewer.scene.primitives); postRender.raiseEvent(); });
   } }, isDestroyed: () => false, resize() {} };
+  const blankCompositor = () => ({ clearOverlay: () => true, dispose() {} });
   const owner = Object.assign(Object.create(VideoModelOverlay.prototype), {
     viewer, selected: new Set(), selectionInitialized: false, destroyed: false, epoch: 0,
     occlusion: { enabled: false, sourceId: '' },
@@ -77,7 +78,7 @@ try {
   assert.deepEqual([...owner.selected], [model.id, cad.id], 'revocation must preserve saved dependencies instead of overwriting the original scheme');
   assert.equal(owner.accessInvalid, true, 'inaccessible dependencies block automatic persistence while rendered resources remain filtered');
   owner.resources = await VideoOverlayResources.create({ viewer, imports: host.getImports, getRecord: () => undefined });
-  owner.restoreScene = () => {}; owner.enterHooksActive = true;
+  owner.restoreScene = () => {}; owner.enterHooksActive = true; owner.compositor ??= blankCompositor();
   owner.refreshResources();
   assert.equal(model.resource.show, false);
   assert.equal(cad.resource.show, true, 'an authorized overlay selection is independent of map display preferences');
@@ -88,17 +89,16 @@ try {
   permissions.models = true; model.resource.show = true;
   owner.selected = new Set([model.id, cad.id]);
   owner.resources = await VideoOverlayResources.create({ viewer, imports: host.getImports, getRecord: () => undefined });
-  owner.restoreScene = () => {}; owner.enterHooksActive = true; owner.refreshResources();
+  owner.restoreScene = () => {}; owner.enterHooksActive = true; owner.compositor ??= blankCompositor(); owner.refreshResources();
   assert.equal(model.resource.show, true);
   owner.resources.applyAdjustments({ [model.id]: { east: 10 } });
-  let presentedPixels = '';
-  const sourceFrame = { width: 2, height: 2 };
+  let presentedPixels = '', gpuClearCalls = 0;
   viewer.canvas = {};
-  owner.sourceFrame = sourceFrame; owner.pendingTime = 0; owner.editRevision = 0; owner.track = { sample: () => ({}) };
+  owner.pendingTime = 0; owner.editRevision = 0; owner.track = { sample: () => ({}) };
   viewer.scene.frameState = { frameNumber: 1 }; owner.lensFrame = { number: 1, time: 0, ready: true }; owner.renderReady = true;
-  owner.presentation = { width: 2, height: 2, style: {}, remove() {}, getContext: () => ({ save() {}, restore() {}, beginPath() {}, rect() {}, clip() {}, drawImage(image) {
-    presentedPixels = image === sourceFrame ? 'source-video' : model.resource.show ? 'source-video+restricted-model' : 'source-video';
-  } }) };
+  owner.presentation = { width: 2, height: 2, style: {}, remove() {}, getContext() { throw new Error('A WebGL presentation must not be redrawn through Canvas2D'); } };
+  owner.compositor = { commit() { presentedPixels = model.resource.show ? 'source-video+restricted-model' : 'source-video'; return true; },
+    clearOverlay() { gpuClearCalls++; presentedPixels = 'source-video'; return true; }, dispose() {} };
   owner.commitPresentation();
   assert.equal(presentedPixels, 'source-video+restricted-model');
   assert.ok(owner.lastPresentationKey, 'the paused composition is cached');
@@ -114,6 +114,7 @@ try {
   assert.equal(cachePaused, 1); assert.equal(cacheReleased, 1);
   assert.equal(viewer.useDefaultRenderLoop, true, 'revocation restores the original render loop');
   assert.equal(owner.presentation.style.visibility, '', 'the sanitized live composition replaces the restricted baked video');
+  assert.equal(gpuClearCalls, 1, 'revocation synchronously clears the compositor before another scene render');
   assert.equal(presentedPixels, 'source-video', 'revocation removes cached restricted pixels before another render');
   assert.equal(owner.lastPresentationKey, '', 'resource refresh invalidates the paused composition cache');
   owner.commitPresentation();
@@ -135,10 +136,15 @@ try {
   permissions.models = true; model.resource.show = true;
   owner.selected = new Set([model.id]);
   owner.resources = await VideoOverlayResources.create({ viewer, imports: host.getImports, getRecord: () => undefined });
-  owner.restoreScene = () => {}; owner.enterHooksActive = true; owner.refreshResources();
+  owner.restoreScene = () => {}; owner.enterHooksActive = true; owner.compositor ??= blankCompositor(); owner.refreshResources();
   permissions.models = false;
   owner.resources.setVisible(true);
   assert.equal(model.resource.show, false, 'playing-frame visibility checks the live gate even before host refresh');
+  owner.compositor.clearOverlay = () => false;
+  owner.refreshResources();
+  assert.equal(owner.active, false, 'failed or lost GPU sanitation safely exits the active overlay');
+  assert.equal(owner.resources, undefined); assert.equal(owner.selected.has(model.id), true);
+  assert.ok(Matrix4.equals(model.resource.modelMatrix, base), 'GPU loss fallback restores original model positioning');
   owner.setPanelActive(false);
   assert.equal(model.resource.show, false);
 
@@ -151,7 +157,7 @@ try {
   globalThis.fetch = async () => new Response(JSON.stringify({ format: 'cesium-cad-import', version: 2, source: { name: 'fixture', format: 'DWG', generatedAt: '' }, statistics: { sourceEntities: 1, displayEntities: 1, skippedEntities: 0, unknownEntities: 0, layers: ['0'] }, entities: [{ type: 'POLYLINE', sourceType: 'LINE', layer: '0', vertices: [{ x: 0, y: 0, z: 12 }, { x: 10, y: 0, z: 12 }] }], warnings: [] }));
   owner.selected = new Set([ground.id]);
   owner.resources = await VideoOverlayResources.create({ viewer, imports: host.getImports, getRecord: id => id === ground.id ? saved : undefined });
-  owner.restoreScene = () => {}; owner.enterHooksActive = true; owner.refreshResources();
+  owner.restoreScene = () => {}; owner.enterHooksActive = true; owner.compositor ??= blankCompositor(); owner.refreshResources();
   assert.equal(viewer.scene.primitives.length, 2);
   const copy = viewer.scene.primitives.get(1); assert.equal(copy.show, true);
   permissions.files = false; host.renderWorkbenchMachinery();
