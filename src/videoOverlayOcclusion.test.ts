@@ -203,6 +203,103 @@ test('empty-root siblings, request volumes and camera/pass changes require compl
   owner.restore();
 });
 
+test('empty routing tiles below the LOD threshold refine to real depth and restore method descriptors', async () => {
+  // Use the pinned engine's own traversal decision, not a duplicate of its SSE rule.
+  const engine = await import('cesium') as unknown as { Cesium3DTilesetTraversal: { canTraverse(tile: unknown): boolean } };
+  const canTraverse = engine.Cesium3DTilesetTraversal.canTraverse;
+  const sibling = tile(), missing = tile({ ...empty(), ready: false });
+  const original = function (_frameState: unknown, useParent: boolean, fraction?: number) { return useParent ? 2300 : fraction ? 3 : 8; };
+  const branch = tile(empty(), [missing], { hasEmptyContent: true, hasRenderableContent: false,
+    _screenSpaceError: 8, _visible: true, geometricError: 3, getScreenSpaceError: original });
+  const value = source({ root: tile(empty(), [sibling, branch]), memoryAdjustedScreenSpaceError: 32 });
+  mutate(branch, 'tileset', value);
+  const descriptor = Object.getOwnPropertyDescriptor(branch, 'getScreenSpaceError');
+  const view = viewer(); let renderRequests = 0;
+  view.scene.requestRender = () => { renderRequests++; };
+  const owner = new VideoOverlayOcclusion('survey', value, view.scene);
+  render(view, value, [sibling]); mutate(branch, '_visitedFrame', 1); mutate(missing, '_updatedVisibilityFrame', -1);
+  assert.equal(canTraverse(branch), false, 'the real engine stops at a coarse empty parent');
+  assert.equal(owner.getStatus().ready, false, 'installing a refinement request is never proof of coverage');
+  const patched = (branch as unknown as { getScreenSpaceError: typeof original }).getScreenSpaceError;
+  assert.notEqual(patched, original); assert.equal(renderRequests, 1);
+  assert.equal(patched.call(branch, {}, true), 2300, 'parent error queries retain their exact semantics');
+  assert.equal(patched.call(branch, {}, false, .3), 3, 'progressive detail/priority queries retain their exact semantics');
+  mutate(branch, '_screenSpaceError', patched.call(branch, {}, false));
+  assert.equal(canTraverse(branch), true, 'the next pinned traversal can descend into the required child');
+  assert.equal(branch.geometricError, 3, 'the original geometric error is never edited');
+  assert.equal(owner.getStatus().ready, false, 'missing child remains blocking after traversal is enabled');
+  render(view, value, [sibling]); mutate(branch, '_visitedFrame', 2);
+  assert.equal(owner.getStatus().ready, false, 'a visited but unloaded child still has no depth');
+  mutate(missing, 'content', mesh()); render(view, value, [sibling, missing]);
+  assert.equal(owner.getStatus().ready, true, 'only a current drawn child completes the depth coverage');
+  owner.restore(); owner.restore();
+  assert.deepEqual(Object.getOwnPropertyDescriptor(branch, 'getScreenSpaceError'), descriptor);
+  assert.equal(view.scene.preRender.numberOfListeners, 0);
+  // A second session reuses the same tile safely; inheritance is restored exactly.
+  delete (branch as unknown as { getScreenSpaceError?: typeof original }).getScreenSpaceError;
+  const prototype = { getScreenSpaceError: original }; Object.setPrototypeOf(branch, prototype);
+  mutate(branch, '_screenSpaceError', 8);
+  const second = new VideoOverlayOcclusion('survey', value, view.scene);
+  render(view, value, [sibling]); mutate(branch, '_visitedFrame', 4); mutate(missing, '_updatedVisibilityFrame', -1);
+  assert.equal(second.getStatus().ready, false);
+  assert.equal(Object.hasOwn(branch, 'getScreenSpaceError'), true);
+  second.restore();
+  assert.equal(Object.hasOwn(branch, 'getScreenSpaceError'), false);
+  assert.equal((branch as unknown as { getScreenSpaceError: typeof original }).getScreenSpaceError, original);
+  assert.equal(view.scene.preRender.numberOfListeners, 0);
+});
+
+test('empty refinement cannot bypass stale views, request volumes, external content or new method owners', () => {
+  const sibling = tile(), missing = tile({ ...empty(), ready: false });
+  const original = () => 8;
+  const branch = tile(empty(), [missing], { hasEmptyContent: true, hasRenderableContent: false,
+    _screenSpaceError: 8, _visible: true, getScreenSpaceError: original });
+  const value = source({ root: tile(empty(), [sibling, branch]) }), view = viewer(), owner = new VideoOverlayOcclusion('survey', value, view.scene);
+  render(view, value, [sibling]); mutate(missing, '_updatedVisibilityFrame', -1);
+  const method = () => (branch as unknown as { getScreenSpaceError: () => number }).getScreenSpaceError;
+  assert.equal(owner.getStatus().ready, false); assert.equal(method(), original, 'unvisited containers are not forced');
+  mutate(branch, '_visitedFrame', 1); mutate(branch, '_inRequestVolume', false);
+  assert.equal(owner.getStatus().ready, false); assert.equal(method(), original, 'viewer request limits remain blocking');
+  mutate(branch, '_inRequestVolume', true); mutate(branch, '_visible', false);
+  assert.equal(owner.getStatus().ready, false); assert.equal(method(), original, 'culled containers are not forced');
+  mutate(branch, '_visible', true); mutate(branch, 'hasTilesetContent', true);
+  assert.equal(owner.getStatus().ready, false); assert.equal(method(), original, 'external branches keep native traversal/loading rules');
+  mutate(branch, 'hasTilesetContent', false); mutate(branch, 'hasRenderableContent', true);
+  assert.equal(owner.getStatus().ready, false); assert.equal(method(), original, 'missing coarse geometry is not called an empty routing tile');
+  mutate(branch, 'hasRenderableContent', false); mutate(branch, '_updatedVisibilityFrame', -1);
+  assert.equal(owner.getStatus().ready, false); assert.equal(method(), original, 'old visibility cannot cause a refinement override');
+  render(view, value, [sibling]); mutate(branch, '_visitedFrame', 2); mutate(missing, '_updatedVisibilityFrame', -1);
+  assert.equal(owner.getStatus().ready, false); assert.notEqual(method(), original);
+  const otherOwner = () => 123; mutate(branch, 'getScreenSpaceError', otherOwner);
+  owner.restore(); assert.equal(method(), otherOwner, 'exit preserves a later method owner');
+});
+
+test('an empty-only current render can start refinement but cannot report depth coverage', () => {
+  const missing = tile({ ...empty(), ready: false }), original = () => 8;
+  const branch = tile(empty(), [missing], { hasEmptyContent: true, hasRenderableContent: false,
+    _screenSpaceError: 8, _visible: true, getScreenSpaceError: original });
+  const root = tile(empty(), [branch], { hasEmptyContent: true, hasRenderableContent: false, _screenSpaceError: 100, _visible: true });
+  const value = source({ root }), view = viewer(), owner = new VideoOverlayOcclusion('survey', value, view.scene);
+  render(view, value, []); mutate(root, '_visitedFrame', 1); mutate(branch, '_visitedFrame', 1); mutate(missing, '_updatedVisibilityFrame', -1);
+  assert.equal(owner.getStatus().ready, false, 'zero tileVisible/draw commands never proves depth');
+  const method = (branch as unknown as { getScreenSpaceError: typeof original }).getScreenSpaceError;
+  assert.notEqual(method, original, 'a completed current empty traversal can still request missing descendants');
+  mutate(branch, '_screenSpaceError', method.call(branch));
+  assert.equal(owner.getStatus().ready, false);
+  mutate(missing, 'content', mesh()); render(view, value, [missing]);
+  assert.equal(owner.getStatus().ready, true, 'readiness starts only after a descendant mesh is submitted');
+  owner.restore();
+  // A render callback alone is insufficient if the source did not traverse.
+  mutate(branch, '_screenSpaceError', 8);
+  const idle = new VideoOverlayOcclusion('survey', value, view.scene);
+  const state = (view.scene as unknown as { frameState: { frameNumber: number } }).frameState;
+  state.frameNumber++; view.scene.preRender.raiseEvent();
+  mutate(root, '_visitedFrame', state.frameNumber); mutate(branch, '_visitedFrame', state.frameNumber);
+  assert.equal(idle.getStatus().ready, false);
+  assert.equal((branch as unknown as { getScreenSpaceError: typeof original }).getScreenSpaceError, original, 'an unchanged pre-render epoch cannot prime stale geometry');
+  idle.restore();
+});
+
 test('real empty leaves and outside content can be skipped but unopened external branches cannot', () => {
   const a = tile(), b = tile(empty(), [], { hasEmptyContent: true, hasRenderableContent: false });
   const value = source({ root: tile(empty(), [a, b]) });

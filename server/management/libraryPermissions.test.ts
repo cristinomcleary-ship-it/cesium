@@ -26,6 +26,7 @@ test("real library metadata and bytes respect independently granted models, file
   const expectations:Record<string,string[]>={models:["imagery","model"],files:["cad","gis"],media:["scheme","video"],none:[]};
   for(const [name,allowed] of Object.entries(expectations)){
    const login=await request("/__management/session",{username:name,password:"Permission-Fixture-Only"});assert.equal(login.status,200);cookie=login.cookie!.split(";")[0];
+   assert.equal((await request("/__library/records/scheme/pos",{},"POST")).status,403,"POS attachment writes require admin even when this account may read media");
    const listing=await request("/__library/records");assert.equal(listing.status,200);assert.deepEqual((listing.data.records as {id:string}[]).map(r=>r.id).sort(),allowed);assert.deepEqual(listing.data.problems,[]);
    if(name==="models"){assert.equal((listing.data.view as Record<string,unknown>).activeVideoId,undefined);assert.equal((listing.data.view as Record<string,unknown>).activeImageryId,"imagery");}else assert.equal(listing.data.view,undefined);
    for(const id of ["model","imagery","cad","gis","video","scheme"]){const expected=allowed.includes(id)?200:403;const record=await request(`/__library/records/${id}`);assert.equal(record.status,expected,`${name} metadata ${id}`);if(expected===403)assert.equal(JSON.stringify(record.data).includes(`private ${id}`),false);assert.equal((await request(`/__library/files/${id}/data/secret.txt`)).status,expected,`${name} file ${id}`);}
@@ -37,7 +38,7 @@ test("real library metadata and bytes respect independently granted models, file
     assert.equal((await request("/__library/records/scheme-copy",{version:1,id:"scheme-copy",kind:"Drone Video",name:"copy",visible:true,files:{},settings:{video:{mode:"cc-overlay"}}},"PUT")).status,403,"creating a named copy retains the library write permission requirement");
    }
   }
-  cookie="";assert.equal((await request("/__library/records")).status,401);assert.equal((await request("/__library/records/model")).status,401);
+  cookie="";assert.equal((await request("/__library/records/scheme/pos",{},"POST")).status,401,"anonymous sessions cannot append POS attachments");assert.equal((await request("/__library/records")).status,401);assert.equal((await request("/__library/records/model")).status,401);
   for(const[file,value]of sources)assert.equal(readFileSync(file,"utf8"),value,"read filtering never rewrites original records/view");
  }finally{await new Promise<void>(done=>server.close(()=>done()));store.close();assert.ok(resolve(dir).startsWith(resolve(tmpdir())+sep+"cesium-library-permission-"));rmSync(dir,{recursive:true,force:true});}
 });

@@ -151,7 +151,6 @@ export class VideoModelOverlay {
   private exportPlan?: ReturnType<typeof planVideoOverlayExport>;
   private exportAbort?: AbortController;
   private lastPresentationKey = '';
-  private occlusionStatusAt = 0;
   private lastProgressAt = 0;
   private mapResolutionScale = 1;
   private sampleVisible?: boolean;
@@ -387,7 +386,8 @@ export class VideoModelOverlay {
     this.updateOcclusionStatus();
   }
   private updateOcclusionStatus() {
-    const now = performance.now(); if (this.active && now - this.occlusionStatusAt < 250) return; this.occlusionStatusAt = now;
+    // Paused request-render scenes may have no later frame; publish their final
+    // coverage state immediately. Unchanged text is deduplicated below.
     let info = '未启用实景遮挡，视频本身不含深度。';
     if (this.occlusion.enabled) {
       try {

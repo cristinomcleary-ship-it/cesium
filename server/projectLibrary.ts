@@ -13,6 +13,7 @@ type Options = { storageRoot?: string; resolveTiles?: (path: string) => TilesLoc
 const validId = /^[a-zA-Z0-9_-]{1,80}$/;
 const validSlot = /^[a-zA-Z0-9_-]{1,80}$/;
 const maxFileBytes = 16 * 1024 ** 3;
+const maxPosFileBytes = 16 * 1024 ** 2;
 const kinds = ["CAD", "3D Tiles", "GIS", "Model", "Imagery", "Drone Video"];
 class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
 function inside(root: string, path: string) {
@@ -159,6 +160,53 @@ export function createProjectLibrary(projectRoot: string, options: Options = {})
       return { name, url: "/__library/files/" + id + "/" + slot + "/" + encodeURIComponent(cleanName) };
     });
   }
+  async function appendVideoPos(id: string, request: IncomingMessage) {
+    return serial(id, async () => {
+      const record = await readRecord(id);
+      if (record.kind !== "Drone Video" || record.settings.video?.mode !== "cc-overlay") throw new HttpError(400, "POS 附件仅用于已保存的 CC 融合方案");
+      const contentType = request.headers["content-type"] ?? "";
+      if (!contentType.startsWith("multipart/form-data;")) throw new HttpError(400, "POS 保存请求格式无效");
+      const chunks: Buffer[] = []; let size = 0;
+      for await (const raw of request) {
+        const chunk = Buffer.from(raw); size += chunk.length;
+        if (size > maxPosFileBytes + 1024 * 1024) throw new HttpError(413, "POS CSV 不能超过 16MB");
+        chunks.push(chunk);
+      }
+      let form: FormData;
+      try { form = await new Response(Buffer.concat(chunks), { headers: { "Content-Type": contentType } }).formData(); }
+      catch { throw new HttpError(400, "POS 保存请求格式无效"); }
+      if ([...form.keys()].length !== 2 || form.getAll("pos").length !== 1 || form.getAll("settings").length !== 1) throw new HttpError(400, "POS 保存字段无效");
+      const file = form.get("pos"), encodedSettings = form.get("settings");
+      if (!file || typeof file === "string" || !file.name || file.name.length > 500 || extname(file.name).toLowerCase() !== ".csv" || !file.size) throw new HttpError(400, "请选择有效的 POS CSV 文件");
+      if (file.size > maxPosFileBytes) throw new HttpError(413, "POS CSV 不能超过 16MB");
+      if (typeof encodedSettings !== "string") throw new HttpError(400, "融合方案参数无效");
+      let value: unknown;
+      try { value = JSON.parse(encodedSettings); } catch { throw new HttpError(400, "融合方案参数不是有效 JSON"); }
+      const settings = settingsValue(value), video = settings.video;
+      if (Object.keys(settings).length !== 1 || !video || typeof video !== "object" || Array.isArray(video) || video.mode !== "cc-overlay" || video.version !== 1) throw new HttpError(400, "融合方案参数无效");
+      const metadata = (video.fileMetadata as Record<string, { name?: unknown; size?: unknown; lastModified?: unknown }> | undefined)?.pos;
+      if (!metadata || metadata.name !== file.name || metadata.size !== file.size || typeof metadata.lastModified !== "number" || !Number.isFinite(metadata.lastModified) || metadata.lastModified < 0) throw new HttpError(400, "POS 文件信息与融合方案不一致");
+      const dir = join(recordRoot(id), "pos");
+      await mkdir(dir, { recursive: true });
+      if (!inside(await realpath(recordRoot(id)), await realpath(dir))) throw new HttpError(400, "POS 附件路径无效");
+      const cleanName = randomUUID() + "_" + file.name.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").slice(-160);
+      const output = join(dir, cleanName), temp = output + ".pending";
+      try {
+        const handle = await open(temp, "wx");
+        try { await handle.writeFile(Buffer.from(await file.arrayBuffer())); await handle.sync(); }
+        finally { await handle.close(); }
+        await rename(temp, output);
+        const saved: LibraryRecord = { ...record, files: { ...record.files, pos: { name: file.name, url: "/__library/files/" + id + "/pos/" + encodeURIComponent(cleanName) } }, settings: { ...record.settings, ...settings }, updatedAt: new Date().toISOString() };
+        // Publish the new pointer and its matching settings together. Previous
+        // POS versions, video and XML remain immutable until the record is deleted.
+        await atomicJson(join(recordRoot(id), "record.json"), validateRecord(saved, id));
+        return saved;
+      } catch (error) {
+        await Promise.all([rm(temp, { force: true }), rm(output, { force: true })]);
+        throw error;
+      }
+    });
+  }
   async function copySource(id: string, value: Record<string, unknown>) {
     return serial(id, async () => {
       await active(id);
@@ -263,10 +311,11 @@ export function createProjectLibrary(projectRoot: string, options: Options = {})
       }
       const file = url.pathname.match(/^\/__library\/files\/([^/]+)\/(.+)$/);
       if (file && ["GET", "HEAD"].includes(method)) return await serve(file[1], file[2], req, res);
-      const match = url.pathname.match(/^\/__library\/records\/([^/]+)(?:\/(files\/([^/]+)|copy))?$/);
+      const match = url.pathname.match(/^\/__library\/records\/([^/]+)(?:\/(files\/([^/]+)|copy|pos))?$/);
       if (!match) throw new HttpError(404, "资料库接口不存在");
       const id = match[1]; recordRoot(id);
       if (match[3] && method === "POST") return send(res, 200, await upload(id, match[3], url.searchParams.get("name") ?? "data.bin", req));
+      if (match[2] === "pos" && method === "POST") return send(res, 200, await appendVideoPos(id, req));
       if (match[2] === "copy" && method === "POST") return send(res, 200, await copySource(id, await bodyJson(req)));
       if (!match[2] && method === "GET") {
         const record = await readRecord(id);

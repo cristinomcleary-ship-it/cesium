@@ -416,10 +416,11 @@ export class SceneLibrary {
       await this.flush();
       this.pending++; this.render();
       try {
-        const attachment = await this.uploadVideoFile(id, "pos", { name: pos.name, blob: pos }, () => {});
-        const current = this.records.get(id); if (!current || this.deleting.has(id)) throw new Error("方案正在删除，未保存 POS 附件");
-        const saved = await libraryRequest<LibraryRecord>("/records/" + id, jsonRequest("PUT", { ...current,
-          files: { ...current.files, pos: attachment }, settings: { ...current.settings, video: structuredClone(settings) as unknown as Record<string, unknown> } }));
+        const form = new FormData();
+        form.append("pos", pos, pos.name);
+        form.append("settings", JSON.stringify({ video: structuredClone(settings) }));
+        const saved = await libraryRequest<LibraryRecord>("/records/" + id + "/pos", { method: "POST", body: form });
+        if (!this.records.has(id) || this.deleting.has(id)) throw new Error("方案正在删除，未保存 POS 附件");
         this.records.set(id, saved);
       } finally { this.pending--; this.render(); }
     }

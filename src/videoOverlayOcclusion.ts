@@ -42,10 +42,10 @@ type FrameScene = { frameState?: { frameNumber?: number } };
 type TraversalSource = { _updatedVisibilityFrame?: number; _pass?: number; memoryAdjustedScreenSpaceError?: number };
 type CoverageTile = Cesium3DTile & {
   _updatedVisibilityFrame?: number; _visibilityPlaneMask?: number; _inRequestVolume?: boolean;
-  _screenSpaceError?: number; refine?: number; hasEmptyContent?: boolean;
+  _screenSpaceError?: number; _visible?: boolean; _visitedFrame?: number; refine?: number; hasEmptyContent?: boolean;
   hasRenderableContent?: boolean; hasTilesetContent?: boolean; hasImplicitContent?: boolean;
   commandsLength?: number; contentVisibility?: (frameState: unknown) => number;
-  getScreenSpaceError?: (frameState: unknown, useParentGeometricError: boolean) => number;
+  getScreenSpaceError?: (frameState: unknown, useParentGeometricError: boolean, progressiveResolutionHeightFraction?: number) => number;
 };
 const REPLACE = 1, ADD = 0, RENDER_PASS = 0, MASK_OUTSIDE = 0xffffffff, CONTENT_OUTSIDE = -1;
 function frameNumber(scene: Scene): number | undefined {
@@ -92,8 +92,10 @@ export class VideoOverlayOcclusion {
   private readonly applied = new Map<string, unknown>();
   private readonly removers: Array<() => void> = [];
   private readonly visibleMeshes = new Set<Cesium3DTile>();
+  private readonly emptyRefinements = new Map<CoverageTile, { descriptor?: PropertyDescriptor; applied: NonNullable<CoverageTile['getScreenSpaceError']> }>();
   private renderFrame?: number;
   private renderPass?: number;
+  private visibilityEpochBeforeRender?: number;
   private coverageCache?: { frame: number; pass: number; commands: number; ready: boolean };
   private warning?: string;
   private error?: string;
@@ -140,6 +142,7 @@ export class VideoOverlayOcclusion {
       for (const key of debugFlags) this.replace(key, false);
       this.removers.push(scene.preRender.addEventListener(() => {
         this.renderFrame = frameNumber(scene); this.renderPass = undefined; this.visibleMeshes.clear(); this.coverageCache = undefined;
+        this.visibilityEpochBeforeRender = (source as unknown as TraversalSource)._updatedVisibilityFrame;
       }));
       const inspect = (tile: Cesium3DTile, visible: boolean) => {
         this.coverageCache = undefined;
@@ -169,13 +172,55 @@ export class VideoOverlayOcclusion {
     if (object[key] !== value) object[key] = value;
   }
 
+  private refineEmptyRoutingTile(tile: CoverageTile, targetError: number | undefined): void {
+    // BaseTraversal may stop at a low-SSE empty tile even though it has children.
+    // It supplies no coarse depth mesh, so advance just this visited routing node
+    // and continue requiring actual descendant draw commands before reporting ready.
+    if (tile.hasEmptyContent !== true || tile.hasRenderableContent !== false || !tile.children.length
+      || tile.hasTilesetContent || tile.hasImplicitContent || tile._visible !== true
+      || tile._visitedFrame !== this.renderFrame || !Number.isFinite(tile._screenSpaceError)
+      || !Number.isFinite(targetError) || tile._screenSpaceError! > targetError! || this.emptyRefinements.has(tile)) return;
+    const original = tile.getScreenSpaceError;
+    if (typeof original !== 'function') return;
+    const descriptor = Object.getOwnPropertyDescriptor(tile, 'getScreenSpaceError');
+    if (descriptor && (!('value' in descriptor) || !descriptor.configurable && !descriptor.writable)
+      || !descriptor && !Object.isExtensible(tile)) return;
+    const source = this.source as unknown as TraversalSource;
+    const applied: typeof original = function (this: CoverageTile, frameState, useParent, fraction) {
+      const error = original.call(this, frameState, useParent, fraction);
+      const target = source.memoryAdjustedScreenSpaceError;
+      return !useParent && fraction === undefined && Number.isFinite(error) && Number.isFinite(target)
+        ? Math.max(error, target! + 1) : error;
+    };
+    Object.defineProperty(tile, 'getScreenSpaceError', descriptor ? { ...descriptor, value: applied }
+      : { value: applied, configurable: true, writable: true, enumerable: false });
+    this.emptyRefinements.set(tile, { descriptor, applied });
+    this.scene.requestRender();
+  }
+
+  private refineVisitedEmptyBranches(tile: CoverageTile, epoch: number, targetError: number | undefined): void {
+    if (tile._updatedVisibilityFrame !== epoch || tile._visitedFrame !== this.renderFrame
+      || tile._visible !== true || tile._inRequestVolume !== true
+      || typeof tile._visibilityPlaneMask !== 'number' || tile._visibilityPlaneMask === MASK_OUTSIDE) return;
+    this.refineEmptyRoutingTile(tile, targetError);
+    for (const child of tile.children) this.refineVisitedEmptyBranches(child as CoverageTile, epoch, targetError);
+  }
+
   private hasCurrentCoverage(): boolean {
     const source = this.source as unknown as TraversalSource;
     const epoch = source._updatedVisibilityFrame;
     const targetError = source.memoryAdjustedScreenSpaceError;
     if (!this.source.show || this.renderFrame === undefined || this.renderFrame !== frameNumber(this.scene)
-      || !Number.isFinite(epoch) || epoch !== this.renderPass || source._pass !== RENDER_PASS
-      || !this.visibleMeshes.size) return false;
+      || !Number.isFinite(epoch) || source._pass !== RENDER_PASS) return false;
+    if (epoch !== this.renderPass || !this.visibleMeshes.size) {
+      // A scene made only of coarse empty containers emits no tileVisible event.
+      // A newly completed render traversal may request descendants, but never
+      // establishes coverage until an actual mesh is submitted in a later frame.
+      if (!this.visibleMeshes.size && Number.isFinite(this.visibilityEpochBeforeRender) && epoch !== this.visibilityEpochBeforeRender) {
+        this.refineVisitedEmptyBranches(this.source.root as CoverageTile, epoch!, targetError);
+      }
+      return false;
+    }
     // Cesium clears this counter at traversal start and sets it only after all
     // selected tiles have submitted commands. Never cache inside tileVisible,
     // which fires before tile.update; uniforms and postRender can safely reuse
@@ -200,6 +245,7 @@ export class VideoOverlayOcclusion {
       if (missingDeclaredContent(tile.content)) return false;
       const mesh = this.visibleMeshes.has(tile) && (tile.commandsLength ?? 0) > 0 && completeContent(tile.content);
       const external = tile.hasTilesetContent || tile.hasImplicitContent;
+      if (!mesh && !external) this.refineEmptyRoutingTile(tile, targetError);
       if (this.visibleMeshes.has(tile) && !mesh) return false;
       if (mesh && tile.refine === REPLACE && !external) return true;
       if (tile.refine !== REPLACE && tile.refine !== ADD) return false;
@@ -246,6 +292,12 @@ export class VideoOverlayOcclusion {
     this.restored = true;
     for (const remove of this.removers.splice(0)) remove();
     this.visibleMeshes.clear(); this.coverageCache = undefined;
+    for (const [tile, { descriptor, applied }] of this.emptyRefinements) {
+      if (tile.getScreenSpaceError !== applied) continue;
+      if (descriptor) Object.defineProperty(tile, 'getScreenSpaceError', descriptor);
+      else delete tile.getScreenSpaceError;
+    }
+    this.emptyRefinements.clear();
     if (!this.source.isDestroyed()) {
       const object = this.source as unknown as Record<string, unknown>;
       // Each property has independent ownership. Preserve a new shader/style
