@@ -14,7 +14,7 @@ const viewer = new Viewer('viewer', { baseLayer: false, baseLayerPicker: false, 
 viewer.resolutionScale = 1;
 const frame = Transforms.eastNorthUpToFixedFrame(Cartesian3.fromDegrees(120, 30, 0));
 const world = (x: number, y: number, z: number) => Matrix4.multiplyByPoint(frame, new Cartesian3(x, y, z), new Cartesian3());
-viewer.camera.setView({ destination: world(0, 0, 100), orientation: {
+viewer.camera.setView({ destination: world(0, 0, 200), orientation: {
   direction: Matrix4.multiplyByPointAsVector(frame, new Cartesian3(0, 0, -1), new Cartesian3()),
   up: Matrix4.multiplyByPointAsVector(frame, new Cartesian3(0, 1, 0), new Cartesian3()) } });
 const axis = Matrix4.multiply(Matrix4.fromRotationTranslation(Matrix3.fromArray([1, 0, 0, 0, 0, 1, 0, -1, 0])),
@@ -36,9 +36,24 @@ function mesh(points: number[][], indices: number[], color: number[], mask = fal
     meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1, material: 0 }] }] };
 }
 const planeGltf = mesh([[-50, -50, 0], [50, -50, 0], [50, 50, 0], [-50, 50, 0]], [0, 1, 2, 0, 2, 3], [1, 0, 1, 1], true);
-const tilesJson = { asset: { version: '1.1' }, geometricError: 100, root: { boundingVolume: { box: [0, 0, 0, 55, 0, 0, 0, 55, 0, 0, 0, 1] },
-  transform: Matrix4.toArray(frame), geometricError: 0, refine: 'ADD', content: { uri: new URL('/__occlusion-fixture__/plane.gltf', location.href).href } } };
-const tiles = await Cesium3DTileset.fromUrl(URL.createObjectURL(new Blob([JSON.stringify(tilesJson)], { type: 'application/json' })), { maximumScreenSpaceError: 1 });
+const tileUri = (name: string) => new URL(`/__occlusion-fixture__/${name}.gltf`, location.href).href;
+const bounds = { box: [0, 0, 0, 55, 0, 0, 0, 55, 0, 0, 0, 1] };
+// A true REPLACE hierarchy: a coarse A surface can cover a missing detail tile.
+// B has no loaded ancestor surface, so jumping there must remain fail-closed.
+const tilesJson = { asset: { version: '1.1' }, geometricError: 1000, root: {
+  boundingVolume: { box: [150, 0, 0, 210, 0, 0, 0, 55, 0, 0, 0, 1] }, transform: Matrix4.toArray(frame), geometricError: 100,
+  refine: 'REPLACE', children: [
+    { boundingVolume: bounds, geometricError: 4, refine: 'REPLACE', content: { uri: tileUri('parent') },
+      children: [{ boundingVolume: bounds, geometricError: 0, content: { uri: tileUri('detail') } }] },
+    { boundingVolume: bounds, transform: Matrix4.toArray(Matrix4.fromTranslation(new Cartesian3(300, 0, 0))), geometricError: 0, content: { uri: tileUri('remote') } },
+  ] } };
+const tiles = await Cesium3DTileset.fromUrl(URL.createObjectURL(new Blob([JSON.stringify(tilesJson)], { type: 'application/json' })), {
+  maximumScreenSpaceError: 20, skipLevelOfDetail: false, cullRequestsWhileMoving: false, foveatedScreenSpaceError: false, progressiveResolutionHeightFraction: 0,
+});
+// Traversal sorts child arrays by camera distance; keep identities, not indices.
+const regionA = tiles.root.children[0], detailA = regionA.children[0], regionB = tiles.root.children[1];
+const failedTileUrls: string[] = [];
+tiles.tileFailed.addEventListener(failure => failedTileUrls.push(failure.url));
 tiles.show = false;
 const originalStyle = new Cesium3DTileStyle({ color: "color('white')" });
 const originalShader = new CustomShader({ mode: CustomShaderMode.MODIFY_MATERIAL, lightingModel: LightingModel.UNLIT,
@@ -55,7 +70,7 @@ const faces = [0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3,
 const models: Model[] = [], imports: ImportRecord[] = [], records = new Map<string, LibraryRecord>();
 const record = (id: string, kind: LibraryRecord['kind'], matrix: Matrix4): LibraryRecord => ({ version: 1, id, name: id, kind, visible: true,
   createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', files: {}, settings: { matrix: Matrix4.toArray(matrix) } });
-for (const item of modelDefinitions) {
+for (const item of [0, 300].flatMap(east => modelDefinitions.map(item => ({ ...item, id: `${east ? 'remote-' : ''}${item.id}`, x: item.x + east })))) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(mesh(cube, faces, item.color))], { type: 'model/gltf+json' }));
   const matrix = Matrix4.multiply(frame, Matrix4.fromTranslation(new Cartesian3(item.x, item.y, item.z)), new Matrix4());
   const model = await Model.fromGltfAsync({ url, modelMatrix: matrix, minimumPixelSize: 0 });
@@ -64,8 +79,8 @@ for (const item of modelDefinitions) {
   records.set(item.id, record(item.id, 'Model', matrix));
 }
 const cad = new CustomDataSource('CAD control line'); await viewer.dataSources.add(cad);
-const cadLine = cad.entities.add({ polyline: { positions: [world(-20, 24, 20), world(20, 24, 20)], width: 3, material: Color.WHITE, clampToGround: false } });
-imports.push({ id: 'cad', name: 'CAD control line', kind: 'CAD', representation: 'dataSource', resource: cad, visible: true, boundingSphere: new BoundingSphere(world(0, 24, 20), 25) });
+const cadLines = [0, 300].map(east => cad.entities.add({ polyline: { positions: [world(east - 20, 18, 20), world(east + 20, 18, 20)], width: 3, material: Color.WHITE, clampToGround: false } }));
+imports.push({ id: 'cad', name: 'CAD control lines', kind: 'CAD', representation: 'dataSource', resource: cad, visible: true, boundingSphere: new BoundingSphere(world(150, 18, 20), 180) });
 imports.push({ id: 'ground', name: 'Synthetic photogrammetry ground', kind: '3D Tiles', resource: tiles, visible: false, boundingSphere: tiles.boundingSphere });
 records.set('ground', record('ground', '3D Tiles', Matrix4.IDENTITY));
 let authorized = true;
@@ -77,14 +92,20 @@ let saved: { files: Record<string, File>; settings: SavedVideoOverlaySettings } 
 overlay.onSave = async snapshot => { saved = { files: { ...snapshot.files }, settings: structuredClone(snapshot.settings) }; return 'saved-occlusion'; };
 const xyz = (p: Cartesian3) => [p.x, p.y, p.z];
 const matrices = () => models.map(model => Matrix4.toArray(model.modelMatrix));
-const cadPositions = () => cadLine.polyline!.positions!.getValue(viewer.clock.currentTime).map(xyz);
+const cadPositions = () => cadLines.map(line => line.polyline!.positions!.getValue(viewer.clock.currentTime).map(xyz));
 const baseline = { matrices: matrices(), cad: cadPositions(), tilesMatrix: Matrix4.toArray(tiles.modelMatrix) };
 function snapshot() { return { active: overlay.active, matrices: matrices(), cad: cadPositions(), tilesMatrix: Matrix4.toArray(tiles.modelMatrix),
-  sourceShow: tiles.show, contentReady: !!tiles.root.content?.ready, tilesLoaded: tiles.tilesLoaded, shaderRestored: tiles.customShader === originalShader, styleRestored: tiles.style === originalStyle,
+  sourceShow: tiles.show, contentReady: !!regionA.content?.ready, detailReady: !!detailA.content?.ready, remoteReady: !!regionB.content?.ready,
+  detailFailed: detailA.contentFailed, failedTileUrls: [...failedTileUrls],
+  selectedContents: ((tiles as unknown as { _selectedTiles: Array<{ content?: { url?: string } }> })._selectedTiles ?? []).map(tile => tile.content?.url),
+  mediaTime: document.querySelector<HTMLVideoElement>('.cc-video-backdrop video')?.currentTime,
+  cameraPosition: xyz(viewer.camera.positionWC), tilesLoaded: tiles.tilesLoaded, shaderRestored: tiles.customShader === originalShader, styleRestored: tiles.style === originalStyle,
+  cameraLocal: xyz(Matrix4.multiplyByPoint(Matrix4.inverseTransformation(frame, new Matrix4()), viewer.camera.positionWC, new Cartesian3())),
   saved: saved ? structuredClone(saved.settings) : null, messages: [...messages], renderErrors: [...renderErrors], info: document.getElementById('ccOcclusionInfo')?.textContent,
   badge: document.querySelector('.cc-video-status')?.textContent, modelReady: models.every(model => model.ready) }; }
-function pixels() {
-  viewer.render(); const gl = viewer.canvas.getContext('webgl2')!, data = new Uint8Array(viewer.canvas.width * viewer.canvas.height * 4);
+function pixels(render = true) {
+  if (render) viewer.render();
+  const gl = viewer.canvas.getContext('webgl2')!, data = new Uint8Array(viewer.canvas.width * viewer.canvas.height * 4);
   gl.readPixels(0, 0, viewer.canvas.width, viewer.canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, data);
   let orange = 0, cyan = 0, green = 0, yellow = 0, magenta = 0, white = 0, transparent = 0, dirtyTransparent = 0;
   for (let i = 0; i < data.length; i += 4) {
@@ -99,7 +120,20 @@ function pixels() {
   }
   return { orange, cyan, green, yellow, magenta, white, transparent, dirtyTransparent, total: data.length / 4, glError: gl.getError() };
 }
+function capturePlaybackFrames(count: number) {
+  return new Promise((resolve, reject) => {
+    const samples: unknown[] = [], video = document.querySelector<HTMLVideoElement>('.cc-video-backdrop video')!;
+    const timer = window.setTimeout(() => { remove(); video.pause(); reject(new Error('No rendered playback frames')); }, 15000);
+    const remove = viewer.scene.postRender.addEventListener(() => {
+      // Inspect the actual completed frame; do not repair it with an extra render.
+      const p = pixels(false), s = snapshot();
+      samples.push({ time: s.mediaTime, position: s.cameraPosition, local: s.cameraLocal, tilesLoaded: s.tilesLoaded, selected: s.selectedContents, pixels: p });
+      if (samples.length === count) { remove(); clearTimeout(timer); video.pause(); resolve(samples); }
+    });
+  });
+}
 (window as unknown as { __occlusion: unknown }).__occlusion = { snapshot, pixels, baseline, planeGltf: () => JSON.stringify(planeGltf),
+  capturePlaybackFrames,
   async restoreSaved() { if (!saved) throw new Error('No saved scheme'); await overlay.restoreReplay(saved.files, structuredClone(saved.settings), 'saved-occlusion'); },
   revoke() { authorized = false; overlay.refreshResources(); }, restoreAuthorization() { authorized = true; overlay.refreshResources(); },
   diagnostics: () => overlay.createDiagnostics() };

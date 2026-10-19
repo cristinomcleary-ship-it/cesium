@@ -350,7 +350,7 @@ export class VideoOverlayResources {
         throw new Error('此遮挡源已有独立 AR 位置微调，请先明确重置该对象微调或选择其他遮挡源');
       }
       this.occlusion?.restore(); this.occlusion = undefined;
-      this.occlusion = new VideoOverlayOcclusion(sourceId, entry.original);
+      this.occlusion = new VideoOverlayOcclusion(sourceId, entry.original, this.options.viewer.scene);
     } else {
       this.occlusion?.restore(); this.occlusion = undefined;
     }

@@ -61,7 +61,7 @@ export const videoModelOverlayPanelHtml = `
     <label>遮挡参照<select id="ccOcclusionSource"><option value="">请选择已加载的倾斜摄影</option></select></label>
     <button id="ccOcclusionUseReference" type="button">使用相机关联的倾斜摄影</button>
     <small>选择同一现场、已与视频对齐的网格倾斜摄影。它只提供遮挡深度，原视频仍然可见；无需在“叠加对象”中显示这份成果。</small>
-    <small>遮挡取决于成果的覆盖与完整程度。加载中暂时隐藏叠加；更改参照后请重新开始融合。此设置不改变模型定位或 CAD 微调。</small>
+    <small>遮挡取决于成果的覆盖与完整程度。已有地表会在细节加载时继续遮挡；当前视角缺少可用地表时才暂时隐藏叠加。更改参照后请重新开始融合。</small>
     <small id="ccOcclusionInfo">未启用实景遮挡，视频本身不含深度。</small>
   </details>
   <div class="cc-actions"><button id="ccStart" class="primary" type="button">开始融合</button><button id="ccStop" type="button">返回地图</button></div>
@@ -298,8 +298,11 @@ export class VideoModelOverlay {
         const status = this.resources?.getOcclusionStatus();
         info = !this.active ? '已选择遮挡参照；点击“开始融合”应用。'
           : status?.error ? `遮挡不可用，已隐藏叠加：${status.error}`
-          : status?.ready ? '实景遮挡已生效；地表和建筑遮住后方构件，参照纹理不显示。'
-          : '正在加载遮挡参照，暂时隐藏叠加。';
+          : status?.ready ? status.warning ? '部分细节加载失败，正在使用已加载地表保持遮挡。'
+            : status.refining ? '实景遮挡已生效，正在补充细节；工程叠加保持显示。'
+            : '实景遮挡已生效；地表和建筑遮住后方构件，参照纹理不显示。'
+          : status?.warning ? '当前视角缺少可用遮挡，部分瓦片加载失败，暂时隐藏叠加。'
+          : '当前视角的遮挡参照尚未就绪，暂时隐藏叠加。';
       } catch (error) { info = error instanceof Error ? error.message : String(error); }
     }
     const element = this.el('ccOcclusionInfo'); if (element.textContent !== info) element.textContent = info;
@@ -451,8 +454,8 @@ export class VideoModelOverlay {
     this.lensStage = new PostProcessStage({ name: `cc-video-overlay-${crypto.randomUUID()}`, fragmentShader: OVERLAY_LENS_SHADER,
       uniforms: { cameraK: new Cartesian4(k.fx, k.fy, k.cx, k.cy), imageSize: new Cartesian2(k.width, k.height),
         opticalBounds: new Cartesian4(bounds.left, bounds.right, bounds.top, bounds.bottom), radialLens: new Cartesian3(d.k1, d.k2, d.k3), tangentLens: new Cartesian2(d.p1, d.p2),
-        // Evaluate after this frame's tileset traversal. Unloaded/failed occluders
-        // must not briefly expose underground geometry during playback or seeks.
+        // Evaluate current-view depth coverage after traversal. Background detail
+        // requests must not blink out overlays protected by rendered parent tiles.
         overlayOpacity: () => this.opacity * (!this.occlusion.enabled || this.resources?.getOcclusionStatus().ready ? 1 : 0) } });
     this.viewer.scene.postProcessStages.add(this.lensStage);
   }
