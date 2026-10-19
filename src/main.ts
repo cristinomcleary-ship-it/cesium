@@ -76,6 +76,7 @@ import {
 } from "./digitalTwinOverview";
 import { VideoArFusion, videoArFusionPanelHtml, type SavedReplaySettings } from "./videoArFusion";
 import { VideoModelOverlay, videoModelOverlayPanelHtml, type SavedVideoOverlaySettings } from "./videoModelOverlay";
+import type { LibraryRecord } from "./projectLibrary";
 import type { CadCoordinateOptions, CadDisplayMode, ImportRecord, TilesetOptions } from "./types";
 import "./style.css";
 
@@ -360,7 +361,9 @@ const viewer = new Viewer("cesiumContainer", {
   terrainProvider: undefined,
   useBrowserRecommendedResolution: false,
   showRenderLoopErrors: false,
-  contextOptions: { webgl: { alpha: true } },
+  // A preference lets the browser choose an available GPU without rejecting
+  // integrated/software fallback on devices without a high-performance GPU.
+  contextOptions: { webgl: { alpha: true, powerPreference: "high-performance", failIfMajorPerformanceCaveat: false } },
 });
 // Leave enough headroom for 3D Tiles/CAD interaction while online imagery is
 // filling. Excessive tile fan-out was causing large release bursts on switches.
@@ -373,7 +376,16 @@ const cameraNavigationPerformance = installCameraNavigationPerformance(viewer.sc
   enabled: detectsSoftwareRenderer(viewer.canvas),
   shouldUseLightweightNavigation: () => !viewer.trackedEntity && Matrix4.equals(viewer.camera.transform, Matrix4.IDENTITY),
 });
-window.addEventListener("beforeunload", () => cameraNavigationPerformance.dispose(), { once: true });
+function onPageDispose(dispose: () => void): void {
+  // beforeunload may be cancelled while an upload is still pending. Keep the
+  // live scene and drafts intact until navigation actually leaves this page.
+  const listener = (event: PageTransitionEvent) => {
+    if (event.persisted) return;
+    window.removeEventListener("pagehide", listener); dispose();
+  };
+  window.addEventListener("pagehide", listener);
+}
+onPageDispose(() => cameraNavigationPerformance.dispose());
 type CustomBasemap = { type: "xyz" | "tms" | "arcgis"; url: string; maximumLevel: number; credit: string };
 const CUSTOM_BASEMAP_KEY = "cesium-custom-basemap-v1";
 let localImagery: LocalImageryResult | null = null;
@@ -706,7 +718,10 @@ const modelEditor = new ModelEditor(viewer, updateModelTools);
 let resumeVideoOverlayInteractions: (() => void) | undefined;
 videoModelOverlay = new VideoModelOverlay(viewer, {
   getImports: () => imports.filter(isImportAllowed),
-  getRecord: id => projectLibrary?.records.get(id),
+  getRecord: id => {
+    const record = projectLibrary?.records.get(id);
+    return record && isLibraryRecordAllowed(record) ? record : undefined;
+  },
   notify: toast,
   onEnter: () => {
     videoArFusion.setPanelActive(false);
@@ -739,6 +754,7 @@ projectLibrary = new SceneLibrary({
   waitForModelReady, cacheGisBoundingSphere, replaceImagery: replaceLocalImagery,
   setBasemap, getBasemap: () => activeBasemapKey, notify: toast,
   restoreVideo: async (files, settings, recordId) => {
+    if (!isLibraryRecordAllowed({ kind: "Drone Video" })) throw new Error("当前账号没有录像权限，融合方案已保留");
     if ((settings as SavedVideoOverlaySettings)?.mode === "cc-overlay") {
       videoArFusion.setPanelActive(false); videoArFusion.clear();
       await videoModelOverlay!.restoreReplay(files, settings as SavedVideoOverlaySettings, recordId);
@@ -750,35 +766,82 @@ projectLibrary = new SceneLibrary({
   },
   clearVideo: () => { videoModelOverlay!.clear(); videoArFusion.clear(); },
   shouldSaveView: () => !videoModelOverlay?.active,
+  canReadRecord: isLibraryRecordAllowed,
+  libraryChanged: renderVideoOverlaySchemes,
   layersChanged: renderLayers,
 });
 // Keep a failed first-save ID associated with these files. Retrying from the AR
 // panel must recover the same upload/record, including a lost success response.
-let videoOverlaySaveDraft: { id: string; video: File; source: File } | undefined;
-videoModelOverlay.onSave = async (snapshot, existingId) => {
+let videoOverlaySaveDraft: { id: string; files: Record<string, File> } | undefined;
+videoModelOverlay.onSave = async (snapshot, existingId, reportProgress) => {
   await projectLibrary!.ready;
+  if (!isLibraryRecordAllowed({ kind: "Drone Video" })) throw new Error("当前账号没有录像权限，方案草稿已保留");
+  // Preserve File identity for saved frame manifests, including older manifests
+  // that bind to the source timestamp rather than a content fingerprint.
+  const settings = { ...snapshot.settings, fileMetadata: Object.fromEntries(Object.entries(snapshot.files).map(([slot, file]) => [slot,
+    { name: file.name, size: file.size, lastModified: file.lastModified, type: file.type }])) };
   if (existingId) {
-    await projectLibrary!.updateVideoOverlaySettings(existingId, snapshot.settings);
+    reportProgress?.({ phase: "committing", loaded: 0, total: 0 });
+    await projectLibrary!.updateVideoOverlaySettings(existingId, settings);
     return existingId;
   }
   const previous = videoOverlaySaveDraft;
-  const retrying = previous?.video === snapshot.files.video && previous.source === snapshot.files.source;
-  const id = retrying ? previous.id : crypto.randomUUID();
-  videoOverlaySaveDraft = { id, video: snapshot.files.video, source: snapshot.files.source };
+  const retrying = !!previous && Object.keys(previous.files).length === Object.keys(snapshot.files).length
+    && Object.entries(snapshot.files).every(([slot, file]) => previous.files[slot] === file);
+  const id = retrying && previous ? previous.id : crypto.randomUUID();
+  videoOverlaySaveDraft = { id, files: { ...snapshot.files } };
   if (projectLibrary!.records.has(id)) {
-    await projectLibrary!.updateVideoOverlaySettings(id, snapshot.settings);
+    await projectLibrary!.updateVideoOverlaySettings(id, settings);
   } else {
     const files = Object.fromEntries(Object.entries(snapshot.files).map(([slot, file]) => [slot, { name: file.name, blob: file }]));
     await projectLibrary!.save(id, snapshot.name, "Drone Video",
-      { video: snapshot.settings as unknown as Record<string, unknown> }, files);
+      { video: settings as unknown as Record<string, unknown> }, files, undefined, reportProgress);
     // SceneLibrary may recover the previous successful PUT after a lost response;
     // persist any subsequent edits before reporting this retry as saved.
-    if (retrying) await projectLibrary!.updateVideoOverlaySettings(id, snapshot.settings);
+    if (retrying) await projectLibrary!.updateVideoOverlaySettings(id, settings);
   }
   if (videoOverlaySaveDraft?.id === id) videoOverlaySaveDraft = undefined;
   return id;
 };
 videoModelOverlay.onSaved = id => projectLibrary!.markVideo(id);
+let videoSchemeActionBusy = false;
+function renderVideoOverlaySchemes(): void {
+  const select = document.querySelector<HTMLSelectElement>("#ccSchemeList");
+  if (!select) return;
+  const previous = select.value, schemes = projectLibrary?.listVideoOverlaySchemes() ?? [];
+  select.replaceChildren(new Option(schemes.length ? "选择已保存的融合方案" : "尚无已保存的融合方案", ""));
+  for (const scheme of schemes) select.add(new Option(`${scheme.name}${scheme.saving ? " · 正在保存" : scheme.error ? " · 需重试" : ""}`, scheme.id));
+  const selected = schemes.some(scheme => scheme.id === previous) ? previous : projectLibrary?.activeVideoRecordId;
+  select.value = selected && schemes.some(scheme => scheme.id === selected) ? selected : "";
+  select.disabled = videoSchemeActionBusy;
+  for (const id of ["ccSchemeOpen", "ccSchemeCopy"]) {
+    const button = document.querySelector<HTMLButtonElement>(`#${id}`); if (button) button.disabled = videoSchemeActionBusy || !select.value;
+  }
+  const refresh = document.querySelector<HTMLButtonElement>("#ccSchemeRefresh"); if (refresh) refresh.disabled = videoSchemeActionBusy;
+}
+async function openVideoOverlayScheme(copy: boolean): Promise<void> {
+  const id = document.querySelector<HTMLSelectElement>("#ccSchemeList")?.value;
+  if (!id || videoSchemeActionBusy) return;
+  videoSchemeActionBusy = true; renderVideoOverlaySchemes();
+  try {
+    videoModelOverlay?.setPanelActive(false);
+    await videoModelOverlay?.flushPendingSave();
+    const scheme = projectLibrary!.listVideoOverlaySchemes().find(item => item.id === id);
+    await projectLibrary!.openVideoOverlayScheme(id, copy ? { asCopy: true, name: `${(scheme?.name ?? "融合方案").slice(0, 490)} · 副本` } : {});
+    document.querySelector<HTMLButtonElement>('.tab[data-tab="videoar"]')?.click();
+    toast(copy ? "已载入新方案副本；可修改名称，开始融合后自动保存" : "融合方案已打开，点击开始融合继续");
+  } catch (error) { toast(error instanceof Error ? error.message : String(error), true); }
+  finally { videoSchemeActionBusy = false; renderVideoOverlaySchemes(); }
+}
+document.getElementById("ccSchemeList")?.addEventListener("change", renderVideoOverlaySchemes);
+document.getElementById("ccSchemeOpen")?.addEventListener("click", () => { void openVideoOverlayScheme(false); });
+document.getElementById("ccSchemeCopy")?.addEventListener("click", () => { void openVideoOverlayScheme(true); });
+document.getElementById("ccSchemeRefresh")?.addEventListener("click", () => {
+  if (videoSchemeActionBusy) return;
+  videoSchemeActionBusy = true; renderVideoOverlaySchemes();
+  void projectLibrary!.ready.then(() => projectLibrary!.refreshVideoOverlaySchemes()).catch(error => toast(error instanceof Error ? error.message : String(error), true))
+    .finally(() => { videoSchemeActionBusy = false; renderVideoOverlaySchemes(); });
+});
 videoArFusion.onReplaySettingsChanged = (controls, sessions, requireSaved) => projectLibrary?.updateVideoControls(controls, sessions, requireSaved);
 videoArFusion.onReplayLoaded = async snapshot => {
   await projectLibrary!.ready;
@@ -2014,30 +2077,30 @@ if (sandTableProjectControl) {
 digitalTwinSyncReady = true;
 syncDigitalTwinDataCenter();
 
-window.addEventListener("beforeunload", () => { videoModelOverlay?.destroy(); videoArFusion.destroy(); }, { once: true });
-window.addEventListener("beforeunload", () => {
+onPageDispose(() => { videoModelOverlay?.destroy(); videoArFusion.destroy(); });
+onPageDispose(() => {
   if (electronicSandTableRefreshFrame) window.cancelAnimationFrame(electronicSandTableRefreshFrame);
   electronicSandTableRefreshFrame = 0;
   sandTablePresentation?.dispose();
   sandTableFacilities?.dispose();
   electronicSandTable?.dispose();
   sandTableProjectControl?.dispose();
-}, { once: true });
-window.addEventListener("beforeunload", () => foundationPitMonitoring.dispose(), { once: true });
-window.addEventListener("beforeunload", () => markupTools?.dispose(), { once: true });
-window.addEventListener("beforeunload", () => threeDReport?.dispose(), { once: true });
-window.addEventListener("beforeunload", () => {
+});
+onPageDispose(() => foundationPitMonitoring.dispose());
+onPageDispose(() => markupTools?.dispose());
+onPageDispose(() => threeDReport?.dispose());
+onPageDispose(() => {
   for (const tracker of modelQualityTrackers.values()) tracker.dispose();
   modelQualityTrackers.clear(); modelQualityResources.clear(); modelQualitySubscribers.clear();
   if (modelQualityNotifyTimer !== undefined) clearTimeout(modelQualityNotifyTimer);
-}, { once: true });
-window.addEventListener("beforeunload", () => modelLoadController?.abort(), { once: true });
-window.addEventListener("beforeunload", () => {
+});
+onPageDispose(() => modelLoadController?.abort());
+onPageDispose(() => {
   digitalTwinSyncReady = false;
   window.clearTimeout(digitalTwinSyncTimer);
   for (const unsubscribe of digitalTwinUnsubscribers.splice(0)) unsubscribe();
   digitalTwinOverview.dispose();
-}, { once: true });
+});
 
 const recentDestroyedRenderErrors: number[] = [];
 viewer.scene.renderError.addEventListener((_scene, error) => {
@@ -2283,7 +2346,6 @@ async function pickModelLocation(model: Model, controller: AbortController): Pro
 }
 
 $("#cancelModelPlacement").addEventListener("click", () => modelLoadController?.abort());
-window.addEventListener("pagehide", () => modelLoadController?.abort());
 $("#applyModelTransform").addEventListener("click", () => {
   if (modelLoadBusy) return;
   const values = ["East", "North", "Up", "Heading"].map(key => {
@@ -3085,7 +3147,9 @@ function setWorkbenchMachineryPanelOpen(open: boolean): void {
 
 function renderWorkbenchMachinery(): void {
   // Session changes must also revoke paused AR copies before another frame renders.
+  if (!isLibraryRecordAllowed({ kind: "Drone Video" })) videoModelOverlay?.setPanelActive(false);
   videoModelOverlay?.refreshResources();
+  projectLibrary?.render();
   scheduleSceneDisplay();
 }
 
@@ -3163,6 +3227,11 @@ function isImportAllowed(layer: ImportRecord): boolean {
   const access = managementWorkspace?.getWorkbenchLayerAccess();
   return !access || (layer.kind === 'CAD' || layer.kind === 'GIS' ? access.files : access.models);
 }
+function isLibraryRecordAllowed(record: Pick<LibraryRecord, "kind">): boolean {
+  const access = managementWorkspace?.getWorkbenchLayerAccess();
+  if (!access) return true;
+  return record.kind === "Drone Video" ? access.media : record.kind === "CAD" || record.kind === "GIS" ? access.files : access.models;
+}
 function isImportDisplayed(layer: ImportRecord): boolean {
   return isImportAllowed(layer) && (sceneDisplayOverrides[`layer:${layer.id}`] ?? layer.visible);
 }
@@ -3215,7 +3284,7 @@ document.getElementById('pitMonitoringVisible')?.addEventListener('change', even
 }, true);
 markupTools?.subscribeOverview(scheduleSceneDisplay);
 foundationPitMonitoring.subscribeOverview(scheduleSceneDisplay);
-window.addEventListener('beforeunload', () => { sceneDisplayReady = false; sceneDisplayPanel?.dispose(); }, { once: true });
+onPageDispose(() => { sceneDisplayReady = false; sceneDisplayPanel?.dispose(); });
 scheduleSceneDisplay();
 void projectLibrary.start().then(() => {
   renderLayers(); viewer.scene.requestRender();

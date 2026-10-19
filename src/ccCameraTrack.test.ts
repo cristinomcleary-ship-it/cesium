@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ccGeodeticToEcef, ccSlerp, ccYawPitchRollToWorldToCamera,
-  createCcCameraTrack, mapCcPhotoTimes, parseCcCameraDocument, validateCcIntrinsics, validateCcRotation,
+  createCcCameraTrack, mapCcPhotoTimes, parseCcCameraDocument, validateCcIntrinsics, validateCcPhotoTimes, validateCcRotation,
   type CcCameraDataset, type CcPhoto, type CcTrackOptions, type CcVector3,
 } from './ccCameraTrack.ts';
 
@@ -97,6 +97,47 @@ test('numeric filename timing preserves dropped-photo gaps and sorts by the expl
   assert.throws(() => mapCcPhotoTimes([photo(0, { filenameNumber: null })], options), /数字编号/);
   assert.throws(() => mapCcPhotoTimes([photo(0)], { ...options, intervalSeconds: 0 }), /大于 0/);
   assert.throws(() => mapCcPhotoTimes([photo(0)], { ...options, firstTimeSeconds: -1 }), /不能小于 0/);
+});
+
+test('exact photo PTS preserves nonuniform timing and missing CC photos regardless of XML order', () => {
+  const photoTimes = [{ filename: 'frame_0.jpg', timeSeconds: .033 }, { filename: 'frame_60.jpg', timeSeconds: 1.902 },
+    { filename: 'frame_120.jpg', timeSeconds: 4.171 }, { filename: 'frame_180.jpg', timeSeconds: 9.084 }];
+  const exact = { ...options, mode: 'photo-times' as const, photoTimes, firstTimeSeconds: NaN, intervalSeconds: NaN };
+  const mapped = mapCcPhotoTimes([photo(180), photo(0), photo(60)], exact);
+  assert.deepEqual(mapped.map(entry => [entry.photo.id, entry.time]), [['0', .033], ['60', 1.902], ['180', 9.084]]);
+  const track = createCcCameraTrack(dataset([photo(180, { height: 190 }), photo(0), photo(60, { height: 120 })]), exact);
+  assert.equal(track.startTime, .033); assert.equal(track.endTime, 9.084);
+  const midpoint = track.sample((1.902 + 9.084) / 2)!;
+  close(midpoint.position.x, 6378292); close(midpoint.interpolation, .5);
+  assert.equal(midpoint.fromPhotoId, '60'); assert.equal(midpoint.toPhotoId, '180');
+  assert.equal(track.sample(.032), null); assert.equal(track.sample(9.085), null);
+  assert.match(track.warnings.join('\n'), /1 张照片未用于/);
+  const clone = validateCcPhotoTimes(photoTimes); assert.notEqual(clone, photoTimes); assert.notEqual(clone[0], photoTimes[0]);
+  assert.throws(() => mapCcPhotoTimes([photo(240)], exact), /缺少 CC 照片/);
+  assert.throws(() => mapCcPhotoTimes([photo(0), photo(0)], exact), /重复/);
+  for (const invalid of [undefined, [], [{ filename: 'a.jpg', timeSeconds: -1 }], [{ filename: '../a.jpg', timeSeconds: 0 }],
+    [{ filename: 'a.jpg', timeSeconds: 0 }, { filename: 'a.jpg', timeSeconds: 1 }],
+    [{ filename: 'a.jpg', timeSeconds: 0 }, { filename: 'b.jpg', timeSeconds: 0 }]]) {
+    assert.throws(() => validateCcPhotoTimes(invalid), /清单|时间|重复/);
+  }
+});
+
+test('optional continuous interpolation preserves all solved keyframes and leaves old/default tracks identical', () => {
+  const source = dataset([photo(0), photo(60, { height: 130, worldToCamera: ccYawPitchRollToWorldToCamera(7, -3, 1) }),
+    photo(180, { height: 140, worldToCamera: ccYawPitchRollToWorldToCamera(15, -8, 2) })]);
+  const original = createCcCameraTrack(source, options), explicit = createCcCameraTrack(source, { ...options, smoothing: 'none' });
+  const smooth = createCcCameraTrack(source, { ...options, smoothing: 'cubic' });
+  for (const time of [2, 2.3, 3, 3.7, 5]) assert.deepEqual(original.sample(time), explicit.sample(time));
+  assert.deepEqual(original.keyframes, smooth.keyframes);
+  for (const frame of original.keyframes) {
+    const sample = smooth.sample(frame.time)!;
+    vectorClose(sample.position, frame.position);
+    close(Math.abs(sample.orientation.x * frame.orientation.x + sample.orientation.y * frame.orientation.y
+      + sample.orientation.z * frame.orientation.z + sample.orientation.w * frame.orientation.w), 1);
+  }
+  assert.equal(smooth.sample(1), null); assert.equal(smooth.sample(6), null);
+  assert.deepEqual(smooth.sample(3.4), smooth.sample(3.4));
+  assert.throws(() => createCcCameraTrack(source, { ...options, smoothing: 'unknown' } as unknown as CcTrackOptions), /插值方式/);
 });
 
 test('geodetic position conversion uses WGS84 ellipsoid metres, including polar and antimeridian cases', () => {

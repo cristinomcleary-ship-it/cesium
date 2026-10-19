@@ -1,0 +1,6 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>Video frame extraction fixture</title></head><body>
+<input id="file" type="file"><video id="original" muted playsinline></video>
+<script type="module">
+import { extractVideoFrames } from '/src/videoFrameExtraction.ts';
+window.__frames = { extractVideoFrames };
+</script></body></html>

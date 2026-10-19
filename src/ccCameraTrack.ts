@@ -1,3 +1,5 @@
+import { createCcSmoothInterpolator, validateCcCameraSmoothing, type CcCameraSmoothing } from './ccCameraSmoothing.ts';
+
 /**
  * ContextCapture BlocksExchange camera import and video-time sampling.
  *
@@ -38,13 +40,20 @@ export type CcCameraDataset = Readonly<{
   name: string; photogroups: readonly CcPhotogroup[]; photos: readonly CcPhoto[];
   warnings: readonly string[];
 }>;
+/** Exact video presentation timestamp of the image, not the requested seek time. */
+export type CcPhotoTime = Readonly<{ filename: string; timeSeconds: number }>;
 export type CcTrackOptions = Readonly<{
+  /** Ignored in photo-times mode; retained for compatibility with older saves. */
   firstTimeSeconds: number;
   /** Time per XML photo (ordinal), or per filenameStep (filename-number). */
   intervalSeconds: number;
-  mode: 'ordinal' | 'filename-number';
+  mode: 'ordinal' | 'filename-number' | 'photo-times';
   /** Required in filename-number mode; provided by the operator, never inferred. */
   filenameStep?: number;
+  /** Exact basename -> video PTS; CC may contain only a subset of these photos. */
+  photoTimes?: readonly CcPhotoTime[];
+  /** Opt-in C1 interpolation. It retains all solved keyframes and does not denoise them. */
+  smoothing?: CcCameraSmoothing;
   heightReference: 'ellipsoid' | 'offset-to-ellipsoid';
   /** h_ellipsoid = z_XML + offset, in metres. Required for offset-to-ellipsoid. */
   heightOffsetMeters?: number;
@@ -232,13 +241,42 @@ export function parseCcCameraDocument(document: Document): CcCameraDataset {
   return { name: value(block, 'Name') ?? 'CC 空三', photogroups, photos, warnings };
 }
 
-export function mapCcPhotoTimes(photos: readonly CcPhoto[], options: Pick<CcTrackOptions, 'firstTimeSeconds' | 'intervalSeconds' | 'mode' | 'filenameStep'>): readonly Readonly<{ photo: CcPhoto; time: number }>[] {
+export function validateCcPhotoTimes(value: unknown): readonly CcPhotoTime[] {
+  if (!Array.isArray(value) || !value.length) throw new Error('精确照片时间清单不能为空');
+  const filenames = new Set<string>(), times = new Set<number>();
+  return value.map(entry => {
+    if (!entry || typeof entry !== 'object' || typeof entry.filename !== 'string' || !entry.filename.trim()
+      || /[/\\\u0000]/.test(entry.filename) || entry.filename === '.' || entry.filename === '..') {
+      throw new Error('照片时间清单必须使用不含路径的准确文件名');
+    }
+    if (typeof entry.timeSeconds !== 'number' || !Number.isFinite(entry.timeSeconds) || entry.timeSeconds < 0) {
+      throw new Error(`照片 ${entry.filename}的实际视频时间必须是非负有限数值`);
+    }
+    if (filenames.has(entry.filename)) throw new Error(`照片时间清单文件名 ${entry.filename}重复`);
+    if (times.has(entry.timeSeconds)) throw new Error(`照片时间清单含重复的视频帧时间 ${entry.timeSeconds}`);
+    filenames.add(entry.filename); times.add(entry.timeSeconds);
+    return { filename: entry.filename, timeSeconds: entry.timeSeconds };
+  });
+}
+
+export function mapCcPhotoTimes(photos: readonly CcPhoto[], options: Pick<CcTrackOptions, 'firstTimeSeconds' | 'intervalSeconds' | 'mode' | 'filenameStep' | 'photoTimes'>): readonly Readonly<{ photo: CcPhoto; time: number }>[] {
+  if (!photos.length) throw new Error('没有可关联的照片');
+  if (options.mode === 'photo-times') {
+    const times = new Map(validateCcPhotoTimes(options.photoTimes).map(entry => [entry.filename, entry.timeSeconds]));
+    const filenames = new Set<string>();
+    return photos.map(photo => {
+      if (filenames.has(photo.filename)) throw new Error(`影像文件名 ${photo.filename}重复，无法关联唯一时间`);
+      filenames.add(photo.filename);
+      const time = times.get(photo.filename);
+      if (time === undefined) throw new Error(`时间清单缺少 CC 照片 ${photo.filename}，请导入生成这些照片的原始清单`);
+      return { photo, time };
+    }).sort((a, b) => a.time - b.time);
+  }
   finite(options.firstTimeSeconds, '首张照片视频时间');
   if (options.firstTimeSeconds < 0) throw new Error('首张照片视频时间不能小于 0');
   positive(options.intervalSeconds, '抽帧间隔');
-  if (!photos.length) throw new Error('没有可关联的照片');
   if (options.mode === 'ordinal') return photos.map((photo, i) => ({ photo, time: finite(options.firstTimeSeconds + i * options.intervalSeconds, '照片时间') }));
-  if (options.mode !== 'filename-number') throw new Error('请选择按导出顺序或按文件编号关联');
+  if (options.mode !== 'filename-number') throw new Error('请选择按导出顺序、文件编号或精确照片时间清单关联');
   const step = positive(options.filenameStep ?? NaN, '文件编号步长');
   if (!Number.isSafeInteger(step)) throw new Error('文件编号步长必须是正整数');
   if (photos.some(photo => photo.filenameNumber === null || !Number.isSafeInteger(photo.filenameNumber))) throw new Error('按编号关联需要每个文件名末尾都有数字编号');
@@ -326,8 +364,12 @@ export function createCcCameraTrack(dataset: CcCameraDataset, options: CcTrackOp
     return { time, photoId: photo.id, filename: photo.filename, position: ccGeodeticToEcef(photo.longitude, photo.latitude, photo.height + offset), orientation: quaternionFromColumns(right, down, forward) };
   });
   const startTime = keyframes[0].time, endTime = keyframes[keyframes.length - 1].time;
-  const warnings = [...dataset.warnings];
+  const smoothing = validateCcCameraSmoothing(options.smoothing);
+  const interpolate = smoothing === 'cubic' ? createCcSmoothInterpolator(keyframes) : undefined;
+  const warnings = dataset.warnings.filter(warning => options.mode !== 'photo-times' || !warning.startsWith('XML 不含可靠的视频时间；'));
   if (options.mode === 'ordinal') warnings.push('按 XML 顺序分配等间隔时间：仅适用于照片未缺失且导出顺序与抽帧顺序一致的情况。');
+  if (options.mode === 'photo-times' && options.photoTimes!.length > keyframes.length) warnings.push(`时间清单中有 ${options.photoTimes!.length - keyframes.length} 张照片未用于当前空三轨迹；保留其原始时间间隔，不压缩缺失区间。`);
+  if (smoothing === 'cubic') warnings.push('连续轨迹插值仅平滑关键帧之间的速度变化，保留全部空三关键帧；它不消除空三误差或视频自身抖动。');
   return {
     startTime, endTime, keyframes, intrinsics: group.intrinsics, distortion: group.distortion, warnings,
     sample(time: number): CcCameraSample | null {
@@ -336,8 +378,9 @@ export function createCcCameraTrack(dataset: CcCameraDataset, options: CcTrackOp
       while (low < high) { const mid = Math.floor((low + high) / 2); if (keyframes[mid].time < time) low = mid + 1; else high = mid; }
       const next = keyframes[low], previous = keyframes[Math.max(0, low - 1)];
       const t = next.time === previous.time ? 0 : (time - previous.time) / (next.time - previous.time);
-      const orientation = ccSlerp(previous.orientation, next.orientation, t);
-      const position = { x: previous.position.x + (next.position.x - previous.position.x) * t, y: previous.position.y + (next.position.y - previous.position.y) * t, z: previous.position.z + (next.position.z - previous.position.z) * t };
+      const smooth = interpolate?.(Math.max(0, low - 1), t);
+      const orientation = smooth?.orientation ?? ccSlerp(previous.orientation, next.orientation, t);
+      const position = smooth?.position ?? { x: previous.position.x + (next.position.x - previous.position.x) * t, y: previous.position.y + (next.position.y - previous.position.y) * t, z: previous.position.z + (next.position.z - previous.position.z) * t };
       return { time, position, orientation, direction: rotate(orientation, { x: 0, y: 0, z: 1 }), up: rotate(orientation, { x: 0, y: -1, z: 0 }), intrinsics: group.intrinsics, distortion: group.distortion, fromPhotoId: previous.photoId, toPhotoId: next.photoId, interpolation: t };
     },
   };

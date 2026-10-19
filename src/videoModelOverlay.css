@@ -24,3 +24,7 @@
 .cc-video-status {position:absolute;top:10px;left:12px;z-index:12;background:#101e30e8;color:#cfe5fa;border:1px solid #38526c;padding:8px 12px;border-radius:5px;font-size:12px;pointer-events:none}
 .cc-video-active [data-cc-drag=horizontal] canvas {cursor:move}
 .cc-video-active [data-cc-drag=vertical] canvas {cursor:ns-resize}
+
+/* Keep the renderer sized and interactive; only committed frame pairs are displayed. */
+.cc-video-active .cesium-widget canvas {opacity:0}
+.cc-video-presentation {position:absolute;pointer-events:none}
