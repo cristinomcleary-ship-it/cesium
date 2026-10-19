@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import {
   BoundingSphere, Cartesian3, Cesium3DTileset, Cesium3DTileStyle, CustomShader,
   CustomShaderMode, CustomShaderTranslucencyMode, Event as CesiumEvent, JulianDate,
@@ -7,7 +9,7 @@ import {
   type Cesium3DTile, type Viewer,
 } from 'cesium';
 import {
-  assertVideoOverlayOccluder, validateVideoOverlayOcclusion, VideoOverlayOcclusion,
+  assertVideoOverlayOccluder, validateVideoOverlayOcclusion, VideoOverlayOcclusion, VideoOverlayTileCoverage,
   type SavedVideoOverlayOcclusion,
 } from './videoOverlayOcclusion.ts';
 import { VideoOverlayResources } from './videoOverlayResources.ts';
@@ -445,4 +447,90 @@ test('revocation or replacement stops readiness, hides source and releases only 
   assert.equal(value.show, false); assert.equal(value.customShader, undefined);
   assert.equal(owned.isDestroyed(), true);
   session.restore();
+});
+
+test('presentation coverage never edits shader or detail and distinguishes offscreen models from missing occluder coverage', () => {
+  const originalShader = new CustomShader({}), value = source({ customShader: originalShader, maximumScreenSpaceError: 6 });
+  const view = viewer(), presentation = new VideoOverlayTileCoverage(value, view.scene, false);
+  assert.equal(value.customShader, originalShader); assert.equal(value.maximumScreenSpaceError, 6);
+  assert.equal(presentation.isReady(), false);
+  render(view, value); assert.equal(presentation.isReady(), true);
+  render(view, value, []); mutate(value.root, '_visibilityPlaneMask', 0xffffffff);
+  assert.equal(presentation.isReady(), true, 'an offscreen engineering model has no missing image geometry');
+  const surface = new VideoOverlayTileCoverage(value, view.scene);
+  render(view, value, []); mutate(value.root, '_visibilityPlaneMask', 0xffffffff);
+  assert.equal(surface.isReady(), false, 'an offscreen surface cannot prove ground coverage');
+  presentation.restore(); presentation.restore(); surface.restore();
+  assert.equal(view.scene.preRender.numberOfListeners, 0); assert.equal(value.tileVisible.numberOfListeners, 0);
+  assert.equal(presentation.isReady(), false); assert.equal(value.customShader, originalShader);
+  originalShader.destroy();
+});
+
+test('exit retains full detail, trims only unused video-route tile cache on the next map frame, and is idempotent', async () => {
+  // Exercise the actual pinned Cesium cache, which queues trim for the next
+  // render frame rather than issuing WebGL deletes from event handlers.
+  const enginePath = createRequire(import.meta.resolve('cesium')).resolve('@cesium/engine');
+  const cacheUrl = new URL('./Source/Scene/Cesium3DTilesetCache.js', pathToFileURL(enginePath)).href;
+  const { default: CesiumTilesetCache } = await import(cacheUrl);
+  const cache = new CesiumTilesetCache();
+  const mapTile = { cacheNode: undefined, bytes: 128 }, arCurrent = { cacheNode: undefined, bytes: 256 }, arRoute = { cacheNode: undefined, bytes: 512 };
+  const resident = new Set([mapTile, arCurrent, arRoute]);
+  for (const entry of resident) cache.add(entry);
+  cache.reset(); cache.touch(arCurrent);
+  let trims = 0, releases = 0;
+  const value = source({ maximumScreenSpaceError: 6, _cache: cache, cacheBytes: 4096, totalMemoryUsageInBytes: 896,
+    trimLoadedTiles: () => { trims++; cache.trim(); } });
+  const view = viewer(), owner = new VideoOverlayOcclusion('survey', value, view.scene);
+  assert.equal(value.maximumScreenSpaceError, 6, 'AR must preserve the requested geometry detail');
+  owner.restore(); owner.restore();
+  assert.equal(trims, 1); assert.equal(resident.size, 3, 'exit schedules cache release without deleting live GPU tiles immediately');
+  // The controller restores the map camera before this next frame traverses.
+  cache.reset(); cache.touch(mapTile);
+  cache.unloadTiles(value, (_source: unknown, entry: typeof mapTile) => { resident.delete(entry); releases += entry.bytes; });
+  assert.deepEqual([...resident], [mapTile]); assert.equal(releases, 768);
+  cache.unloadTiles(value, () => { throw new Error('trim must not keep evicting every frame'); });
+  assert.equal(view.scene.preRender.numberOfListeners, 0); assert.equal(value.tileVisible.numberOfListeners, 0);
+});
+
+test('a failing property restore or listener remover cannot leave AR callbacks or shader allocations active', () => {
+  const originalStyle = new Cesium3DTileStyle({ color: "color('white')" }), value = source({ style: originalStyle });
+  const view = viewer();
+  const event = view.scene.preRender, add = event.addEventListener.bind(event);
+  event.addEventListener = ((...args: Parameters<typeof event.addEventListener>) => {
+    const remove = add(...args); return () => { remove(); throw new Error('host listener teardown failed'); };
+  }) as typeof event.addEventListener;
+  let style = originalStyle as Cesium3DTileStyle | undefined, trims = 0;
+  Object.defineProperty(value, 'style', { configurable: true, get: () => style, set: next => {
+    if (next === originalStyle) throw new Error('host refuses old style'); style = next;
+  } });
+  mutate(value, 'trimLoadedTiles', () => { trims++; });
+  const owner = new VideoOverlayOcclusion('survey', value, view.scene), shader = value.customShader!;
+  assert.doesNotThrow(() => owner.restore());
+  assert.equal(shader.isDestroyed(), true); assert.equal(trims, 1);
+  assert.equal(value.debugWireframe, true); assert.equal(value.cullRequestsWhileMoving, true);
+  assert.equal(view.scene.preRender.numberOfListeners, 0); assert.equal(value.tileVisible.numberOfListeners, 0);
+  assert.equal(value.tileLoad.numberOfListeners, 0); assert.equal(value.tileFailed.numberOfListeners, 0);
+});
+
+test('model timeline effects preserve the independent depth role, current-pass Tiles readiness, and exit releases selection trackers', async () => {
+  let surfaceTrims = 0, engineeringTrims = 0;
+  const surface = source({ trimLoadedTiles: () => { surfaceTrims++; } });
+  const engineering = source({ trimLoadedTiles: () => { engineeringTrims++; } });
+  const view = viewer(), imports = [record('surface', surface), record('engineering', engineering)];
+  const session = await VideoOverlayResources.create({ viewer: view, imports: () => imports, getRecord: () => undefined });
+  session.setOcclusion('surface'); session.setSelection(['surface', 'engineering']);
+  const depthShader = surface.customShader;
+  session.setTimelineOpacity({ surface: { opacity: 0, visible: false } });
+  assert.equal(surface.customShader, depthShader); assert.equal(surface.show, true, 'fade cues must never hide the occluder');
+  assert.equal(session.isPresentationReady(true), true, 'preRender leaves current Tiles coverage to the render pass');
+  assert.equal(session.isPresentationReady(), false, 'loading/cached Tiles cannot prove submitted current geometry');
+  render(view, engineering);
+  assert.equal(session.isPresentationReady(), true);
+  mutate(engineering.root, 'commandsLength', 0);
+  assert.equal(session.isPresentationReady(), false, 'tileVisible alone is not a submitted model frame');
+  session.restore(); session.restore();
+  assert.equal(engineeringTrims, 1); assert.ok(surfaceTrims >= 1);
+  assert.equal(view.scene.preRender.numberOfListeners, 0);
+  assert.equal(surface.tileVisible.numberOfListeners, 0); assert.equal(engineering.tileVisible.numberOfListeners, 0);
+  assert.equal(surface.customShader, undefined); assert.equal(surface.show, true); assert.equal(engineering.show, true);
 });

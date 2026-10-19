@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  BoundingSphere, Cartesian3, CustomDataSource, Event, GroundPolylinePrimitive,
-  JulianDate, Matrix4, PolygonHierarchy, Primitive, PrimitiveCollection, Transforms, type Viewer,
+  Appearance, BoundingSphere, Cartesian3, Color, CustomDataSource, CustomShader,
+  CustomShaderTranslucencyMode, Event, GroundPolylinePrimitive, JulianDate, Matrix4,
+  PolygonHierarchy, PolylineColorAppearance, Primitive, PrimitiveCollection,
+  Transforms, UniformType, type Viewer,
 } from "cesium";
 import { VideoOverlayResources } from "./videoOverlayResources.ts";
 import type { CadImportPackage } from "./cadImport.ts";
@@ -309,4 +311,136 @@ test('unchanged entity CAD playback emits no per-entity visibility changes and s
   imports = []; session.setVisible(true);
   assert.equal(data.show, false); assert.equal(events, data.entities.values.length);
   session.restore();
+});
+
+test('model effects preserve material alpha and original shader, reuse one translucent shader and never compound', async () => {
+  const first = model('model');
+  const original = new CustomShader({
+    uniforms: { u_original: { type: UniformType.FLOAT, value: .6 } },
+    fragmentShaderText: 'void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) { material.alpha *= u_original; }',
+  });
+  const resource = Object.assign(first.resource, { customShader: original, color: Color.RED.withAlpha(.7), ready: true, _drawCommandsBuilt: true });
+  const originalColor = resource.color;
+  const session = await VideoOverlayResources.create({ viewer: viewer(), imports: () => [first.record], getRecord: () => undefined });
+  session.setSelection(['model']);
+  session.setTimelineOpacity({ model: { opacity: 1, visible: true } });
+  assert.equal(resource.customShader, original, 'old plans need no shader replacement');
+  session.setTimelineOpacity({ model: { opacity: .5, visible: true } });
+  const owned = resource.customShader;
+  assert.notEqual(owned, original);
+  assert.equal(owned.translucencyMode, CustomShaderTranslucencyMode.TRANSLUCENT);
+  assert.equal(owned.uniforms.u_original, original.uniforms.u_original);
+  assert.match(owned.fragmentShaderText, /arOriginalFragmentMain\(fsInput, material\)/);
+  assert.match(owned.fragmentShaderText, /material.alpha \*= u_arPresentationOpacity/);
+  assert.equal(owned.uniforms.u_arPresentationOpacity.value, .5);
+  for (let frame = 0; frame < 20; frame++) session.setTimelineOpacity({ model: { opacity: .5, visible: true } });
+  assert.equal(resource.customShader, owned); assert.equal(owned.uniforms.u_arPresentationOpacity.value, .5);
+  assert.equal(resource.color, originalColor); assert.equal(resource.color.alpha, .7);
+  session.setTimelineOpacity({ model: { opacity: 0, visible: false } });
+  assert.equal(resource.show, false); assert.equal(session.get('model')?.selected, true);
+  session.setTimelineOpacity({ model: { opacity: 1, visible: true } });
+  assert.equal(resource.show, true); assert.equal(resource.customShader, owned);
+  assert.equal(owned.uniforms.u_arPresentationOpacity.value, 1);
+  session.restore();
+  assert.equal(resource.customShader, original); assert.equal(resource.color, originalColor);
+  assert.equal(owned.isDestroyed(), true); assert.equal(original.isDestroyed(), false);
+  original.destroy();
+});
+
+test('model command rebuild readiness gates fused output while alpha-hidden or unselected objects do not block', async () => {
+  const first = model('model');
+  const resource = Object.assign(first.resource, { ready: false, _drawCommandsBuilt: false });
+  const session = await VideoOverlayResources.create({ viewer: viewer(), imports: () => [first.record], getRecord: () => undefined });
+  assert.equal(session.isPresentationReady(), true);
+  session.setSelection(['model']); assert.equal(session.isPresentationReady(), false);
+  resource.ready = true; assert.equal(session.isPresentationReady(), false);
+  resource._drawCommandsBuilt = true; assert.equal(session.isPresentationReady(), true);
+  resource._drawCommandsBuilt = false;
+  session.setTimelineOpacity({ model: { opacity: 0, visible: false } });
+  assert.equal(session.isPresentationReady(), true);
+  session.setTimelineOpacity({ model: { opacity: .2, visible: true } });
+  assert.equal(session.isPresentationReady(), false);
+  resource._drawCommandsBuilt = true; assert.equal(session.isPresentationReady(), true);
+  session.restore(); assert.equal(session.isPresentationReady(), false);
+});
+
+test('primitive CAD fading retains original depth shader, uses one numeric uniform and restores appearance', async () => {
+  const appearance = new PolylineColorAppearance({
+    translucent: false,
+    fragmentShaderSource: 'in vec4 v_color; void main() { out_FragColor = v_color; czm_writeLogDepth(); }',
+  });
+  const primitive = new Primitive({ appearance });
+  const collection = new PrimitiveCollection(); collection.add(primitive);
+  const record: ImportRecord = { id: 'cad', name: 'cad', kind: 'CAD', representation: 'primitive', resource: collection, visible: true, boundingSphere: new BoundingSphere(center, 10) };
+  const session = await VideoOverlayResources.create({ viewer: viewer(collection), imports: () => [record], getRecord: () => undefined });
+  session.setSelection(['cad']); session.setTimelineOpacity({ cad: { opacity: .5, visible: true } });
+  const owned = primitive.appearance;
+  assert.ok(owned instanceof Appearance); assert.notEqual(owned, appearance);
+  assert.equal(owned.isTranslucent(), true);
+  assert.match(owned.fragmentShaderSource, /czm_writeLogDepth/);
+  assert.match(owned.fragmentShaderSource, /out_FragColor.a \*= arPresentationOpacity\(\)/);
+  assert.equal(owned.material.uniforms.arOpacity, .5);
+  for (let frame = 0; frame < 5; frame++) session.setTimelineOpacity({ cad: { opacity: .3, visible: true } });
+  assert.equal(primitive.appearance, owned); assert.equal(owned.material.uniforms.arOpacity, .3);
+  session.restore();
+  assert.equal(primitive.appearance, appearance); assert.equal(owned.material.isDestroyed(), true);
+  collection.destroy();
+});
+
+test('entity CAD fading reads original color properties at every time without multiplying prior output', async () => {
+  const data = new CustomDataSource('colored');
+  const line = data.entities.add({ polyline: { positions: [center, Cartesian3.add(center, new Cartesian3(1, 2, 3), new Cartesian3())], material: Color.RED.withAlpha(.6), clampToGround: false } });
+  const opaque = data.entities.add({ polyline: { positions: [center, Cartesian3.add(center, new Cartesian3(2, 3, 4), new Cartesian3())], material: Color.WHITE, clampToGround: false } });
+  const label = data.entities.add({ position: center, label: { text: 'CAD', fillColor: Color.BLUE.withAlpha(.8) } });
+  const originalMaterial = line.polyline!.material, originalFill = label.label!.fillColor;
+  const imports: ImportRecord[] = [{ id: 'cad', name: 'cad', kind: 'CAD', representation: 'dataSource', resource: data, visible: true }];
+  const view = viewer(), session = await VideoOverlayResources.create({ viewer: view, imports: () => imports, getRecord: () => undefined });
+  session.setSelection(['cad']); session.setTimelineOpacity({ cad: { opacity: .5, visible: true } });
+  const ownedMaterial = line.polyline!.material, ownedFill = label.label!.fillColor;
+  for (let frame = 0; frame < 10; frame++) {
+    session.setTimelineOpacity({ cad: { opacity: .5, visible: true } });
+    close(line.polyline!.material!.getValue(view.clock.currentTime).color.alpha, .3);
+    close(label.label!.fillColor!.getValue(view.clock.currentTime).alpha, .4);
+  }
+  session.setTimelineOpacity({});
+  close(line.polyline!.material!.getValue(view.clock.currentTime).color.alpha, .6);
+  const alpha = opaque.polyline!.material!.getValue(view.clock.currentTime).color.alpha as number;
+  assert.ok(alpha < 1, 'CPU material batching retains its fixed translucent pass');
+  assert.equal(Math.fround(alpha), 1, 'GPU float precision retains exact full opacity');
+  assert.equal(line.polyline!.material, ownedMaterial); assert.equal(label.label!.fillColor, ownedFill);
+  session.restore();
+  assert.equal(line.polyline!.material, originalMaterial); assert.equal(label.label!.fillColor, originalFill);
+});
+
+test('an external shader owner wins over restore and even a failing restore setter releases the owned shader', async () => {
+  const first = model('model');
+  const resource = first.resource as typeof first.resource & { customShader?: CustomShader };
+  const session = await VideoOverlayResources.create({ viewer: viewer(), imports: () => [first.record], getRecord: () => undefined });
+  session.setSelection(['model']); session.setTimelineOpacity({ model: { opacity: .5, visible: true } });
+  const owned = resource.customShader!;
+  const external = new CustomShader({}); resource.customShader = external;
+  session.restore(); assert.equal(resource.customShader, external); assert.equal(owned.isDestroyed(), true);
+  external.destroy();
+  const second = model('second');
+  const target = second.resource as typeof second.resource & { customShader?: CustomShader };
+  const another = await VideoOverlayResources.create({ viewer: viewer(), imports: () => [second.record], getRecord: () => undefined });
+  another.setTimelineOpacity({ second: { opacity: .5, visible: true } });
+  const shader = target.customShader!;
+  Object.defineProperty(target, 'customShader', { get: () => shader, set() { throw new Error('host already disposed'); }, configurable: true });
+  assert.doesNotThrow(() => another.restore()); assert.equal(shader.isDestroyed(), true);
+  assert.deepEqual(another.list(), []); assert.deepEqual(another.getAdjustments(), {});
+});
+
+test('a non-owning host still destroys temporary absolute CAD copies on exit', async () => {
+  const fetchBefore = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify(drawing), { status: 200 });
+  const root = new PrimitiveCollection({ destroyPrimitives: false }), original = new PrimitiveCollection();
+  original.add(groundSource()); root.add(original);
+  const record: ImportRecord = { id: 'cad', name: 'ground', kind: 'CAD', representation: 'primitive', resource: original, visible: true };
+  try {
+    const session = await VideoOverlayResources.create({ viewer: viewer(root), imports: () => [record], getRecord: savedCad });
+    const copy = root.get(1) as PrimitiveCollection;
+    session.restore();
+    assert.equal(root.length, 1); assert.equal(copy.isDestroyed(), true);
+  } finally { globalThis.fetch = fetchBefore; root.destroy(); original.destroy(); }
 });

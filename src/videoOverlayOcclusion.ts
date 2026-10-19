@@ -85,92 +85,34 @@ const debugFlags = [
   'debugShowRenderingStatistics', 'debugShowMemoryUsage', 'debugShowUrl', 'showOutline',
 ] as const;
 
-/** Owns only temporary material state; it never changes positioning or map visibility. */
-export class VideoOverlayOcclusion {
-  private readonly shader: CustomShader;
-  private readonly previous = new Map<string, unknown>();
-  private readonly applied = new Map<string, unknown>();
+/** Tracks current-view geometry and advances visited empty routing nodes that supply no coarse depth. */
+export class VideoOverlayTileCoverage {
   private readonly removers: Array<() => void> = [];
   private readonly visibleMeshes = new Set<Cesium3DTile>();
   private readonly emptyRefinements = new Map<CoverageTile, { descriptor?: PropertyDescriptor; applied: NonNullable<CoverageTile['getScreenSpaceError']> }>();
   private renderFrame?: number;
   private renderPass?: number;
-  private visibilityEpochBeforeRender?: number;
+  private initialVisibilityEpoch?: number;
   private coverageCache?: { frame: number; pass: number; commands: number; ready: boolean };
-  private warning?: string;
-  private error?: string;
   private restored = false;
 
-  constructor(readonly sourceId: string, readonly source: Cesium3DTileset, private readonly scene: Scene) {
-    assertVideoOverlayOccluder(source);
-    // Do not traverse the entire cached hierarchy on entry. The root is cheap
-    // to inspect; loaded and visible descendants are checked by their events
-    // before they can contribute to the current frame's coverage.
-    contentHasMesh(source.root.content);
-    this.shader = new CustomShader({
-      mode: CustomShaderMode.REPLACE_MATERIAL,
-      lightingModel: LightingModel.UNLIT,
-      translucencyMode: CustomShaderTranslucencyMode.OPAQUE,
-      // Opaque pass writes depth. Transparent black replaces any farther color,
-      // regardless of draw order, and remains transparent through the lens pass.
-      fragmentShaderText: `void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
-        material.diffuse = vec3(0.0);
-        material.emissive = vec3(0.0);
-        material.alpha = 0.0;
-      }`,
-    });
-    try {
-      this.replace('customShader', this.shader);
-      // Styles can discard alpha-zero features, and Cesium does not define their
-      // combination with a custom shader. Retain the exact user-owned style.
-      this.replace('style', undefined);
-      this.replace('colorBlendMode', Cesium3DTileColorBlendMode.HIGHLIGHT);
-      this.replace('splitDirection', SplitDirection.NONE);
-      this.replace('edgeDisplayMode', EdgeDisplayMode.SURFACES_ONLY);
-      this.replace('pointCloudShading', new PointCloudShading({ attenuation: false, eyeDomeLighting: false }));
-      // Replacement traversal retains the parent mesh until its children are
-      // ready. Keep requesting coverage while a video camera is always moving.
-      this.replace('skipLevelOfDetail', false);
-      this.replace('debugFreezeFrame', false);
-      this.replace('cullRequestsWhileMoving', false);
-      this.replace('foveatedTimeDelay', 0);
-      // Depth-only preview does not need texture-level detail. Coarser parents
-      // cover a moving view sooner and are restored with all other AR overrides.
-      if (Number.isFinite(source.maximumScreenSpaceError)) this.replace('maximumScreenSpaceError', Math.max(32, source.maximumScreenSpaceError));
-      if (typeof source.foveatedScreenSpaceError === 'boolean') this.replace('foveatedScreenSpaceError', false);
-      if (typeof source.preloadWhenHidden === 'boolean') this.replace('preloadWhenHidden', false);
-      for (const key of debugFlags) this.replace(key, false);
-      this.removers.push(scene.preRender.addEventListener(() => {
-        this.renderFrame = frameNumber(scene); this.renderPass = undefined; this.visibleMeshes.clear(); this.coverageCache = undefined;
-        this.visibilityEpochBeforeRender = (source as unknown as TraversalSource)._updatedVisibilityFrame;
-      }));
-      const inspect = (tile: Cesium3DTile, visible: boolean) => {
-        this.coverageCache = undefined;
-        try {
-          const mesh = contentHasMesh(tile.content);
-          if (visible && mesh && this.renderFrame !== undefined && this.renderFrame === frameNumber(scene)) {
-            const pass = (source as unknown as TraversalSource)._updatedVisibilityFrame;
-            if (this.renderPass !== pass) this.visibleMeshes.clear();
-            this.renderPass = pass; this.visibleMeshes.add(tile);
-          }
-        }
-        catch (error) { this.error = error instanceof Error ? error.message : String(error); }
-      };
-      this.removers.push(source.tileLoad.addEventListener(tile => inspect(tile, false)), source.tileVisible.addEventListener(tile => inspect(tile, true)));
-      this.removers.push(source.tileFailed.addEventListener(() => {
-        this.coverageCache = undefined;
-        // A failed detail request may be offscreen or covered by its parent.
-        // Keep traversal running; current-frame coverage decides visibility.
-        this.warning = '部分遮挡瓦片加载失败；使用当前可用地表，缺少覆盖时隐藏叠加';
-      }));
-    } catch (error) { this.restore(); throw error; }
+  constructor(private readonly source: Cesium3DTileset, private readonly scene: Scene, private readonly requireVisibleCoverage = true) {
+    this.removers.push(scene.preRender.addEventListener(() => {
+      this.renderFrame = frameNumber(scene); this.renderPass = undefined;
+      this.initialVisibilityEpoch = (source as unknown as TraversalSource)._updatedVisibilityFrame;
+      this.visibleMeshes.clear(); this.coverageCache = undefined;
+    }));
+    this.removers.push(source.tileVisible.addEventListener(tile => {
+      this.coverageCache = undefined;
+      if (contentHasDrawableGeometry(tile.content) && this.renderFrame !== undefined && this.renderFrame === frameNumber(scene)) {
+        const pass = (source as unknown as TraversalSource)._updatedVisibilityFrame;
+        if (this.renderPass !== pass) this.visibleMeshes.clear();
+        this.renderPass = pass; this.visibleMeshes.add(tile);
+      }
+    }));
   }
 
-  private replace(key: string, value: unknown) {
-    const object = this.source as unknown as Record<string, unknown>;
-    this.previous.set(key, object[key]); this.applied.set(key, value);
-    if (object[key] !== value) object[key] = value;
-  }
+  invalidate() { this.coverageCache = undefined; }
 
   private refineEmptyRoutingTile(tile: CoverageTile, targetError: number | undefined): void {
     // BaseTraversal may stop at a low-SSE empty tile even though it has children.
@@ -206,20 +148,19 @@ export class VideoOverlayOcclusion {
     for (const child of tile.children) this.refineVisitedEmptyBranches(child as CoverageTile, epoch, targetError);
   }
 
-  private hasCurrentCoverage(): boolean {
+  isReady(): boolean {
+    if (this.restored || this.source.isDestroyed()) return false;
     const source = this.source as unknown as TraversalSource;
     const epoch = source._updatedVisibilityFrame;
     const targetError = source.memoryAdjustedScreenSpaceError;
     if (!this.source.show || this.renderFrame === undefined || this.renderFrame !== frameNumber(this.scene)
       || !Number.isFinite(epoch) || source._pass !== RENDER_PASS) return false;
     if (epoch !== this.renderPass || !this.visibleMeshes.size) {
-      // A scene made only of coarse empty containers emits no tileVisible event.
-      // A newly completed render traversal may request descendants, but never
-      // establishes coverage until an actual mesh is submitted in a later frame.
-      if (!this.visibleMeshes.size && Number.isFinite(this.visibilityEpochBeforeRender) && epoch !== this.visibilityEpochBeforeRender) {
+      // An empty-only current traversal can request descendants, never certify depth.
+      if (!this.visibleMeshes.size && Number.isFinite(this.initialVisibilityEpoch) && epoch !== this.initialVisibilityEpoch) {
         this.refineVisitedEmptyBranches(this.source.root as CoverageTile, epoch!, targetError);
       }
-      return false;
+      if (this.requireVisibleCoverage || this.visibleMeshes.size > 0 || epoch === this.initialVisibilityEpoch) return false;
     }
     // Cesium clears this counter at traversal start and sets it only after all
     // selected tiles have submitted commands. Never cache inside tileVisible,
@@ -257,7 +198,7 @@ export class VideoOverlayOcclusion {
         if (tile.hasEmptyContent === true && tile.hasRenderableContent === false && !external) return true;
         // A leaf content bounding box may be outside even when its larger tile
         // box intersects. It has no pixels to cover in this view.
-        return !external && contentHasMesh(tile.content)
+        return !external && contentHasDrawableGeometry(tile.content)
           && tile.contentVisibility?.((this.scene as unknown as FrameScene).frameState) === CONTENT_OUTSIDE;
       }
       return tile.children.every(child => covered(child as CoverageTile, tile));
@@ -266,6 +207,102 @@ export class VideoOverlayOcclusion {
     if (cacheable) this.coverageCache = { frame: this.renderFrame, pass: epoch!, commands, ready };
     return ready;
   }
+
+
+  restore() {
+    if (this.restored) return;
+    this.restored = true;
+    for (const remove of this.removers.splice(0)) { try { remove(); } catch { /* Continue releasing the remaining listeners. */ } }
+    this.visibleMeshes.clear(); this.coverageCache = undefined;
+    for (const [tile, { descriptor, applied }] of this.emptyRefinements) {
+      try {
+        if (tile.getScreenSpaceError !== applied) continue;
+        if (descriptor) Object.defineProperty(tile, 'getScreenSpaceError', descriptor);
+        else delete tile.getScreenSpaceError;
+      } catch { /* Continue releasing other tile method owners. */ }
+    }
+    this.emptyRefinements.clear();
+    this.renderFrame = this.renderPass = this.initialVisibilityEpoch = undefined;
+  }
+}
+
+function contentHasDrawableGeometry(content: Cesium3DTileContent | undefined): boolean {
+  if (!content || (content as Cesium3DTileContent & { ready?: boolean }).ready === false) return false;
+  if (content.innerContents?.length) return content.innerContents.some(contentHasDrawableGeometry);
+  return content.trianglesLength > 0 || content.pointsLength > 0 || content.geometryByteLength > 0;
+}
+
+/** Owns only temporary material state; it never changes positioning or map visibility. */
+export class VideoOverlayOcclusion {
+  private readonly shader: CustomShader;
+  private readonly previous = new Map<string, unknown>();
+  private readonly applied = new Map<string, unknown>();
+  private readonly removers: Array<() => void> = [];
+  private coverage?: VideoOverlayTileCoverage;
+  private warning?: string;
+  private error?: string;
+  private restored = false;
+
+  constructor(readonly sourceId: string, readonly source: Cesium3DTileset, private readonly scene: Scene) {
+    assertVideoOverlayOccluder(source);
+    // Do not traverse the entire cached hierarchy on entry. The root is cheap
+    // to inspect; loaded and visible descendants are checked by their events
+    // before they can contribute to the current frame's coverage.
+    contentHasMesh(source.root.content);
+    this.shader = new CustomShader({
+      mode: CustomShaderMode.REPLACE_MATERIAL,
+      lightingModel: LightingModel.UNLIT,
+      translucencyMode: CustomShaderTranslucencyMode.OPAQUE,
+      // Opaque pass writes depth. Transparent black replaces any farther color,
+      // regardless of draw order, and remains transparent through the lens pass.
+      fragmentShaderText: `void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
+        material.diffuse = vec3(0.0);
+        material.emissive = vec3(0.0);
+        material.alpha = 0.0;
+      }`,
+    });
+    try {
+      this.replace('customShader', this.shader);
+      // Styles can discard alpha-zero features, and Cesium does not define their
+      // combination with a custom shader. Retain the exact user-owned style.
+      this.replace('style', undefined);
+      this.replace('colorBlendMode', Cesium3DTileColorBlendMode.HIGHLIGHT);
+      this.replace('splitDirection', SplitDirection.NONE);
+      this.replace('edgeDisplayMode', EdgeDisplayMode.SURFACES_ONLY);
+      this.replace('pointCloudShading', new PointCloudShading({ attenuation: false, eyeDomeLighting: false }));
+      // Replacement traversal retains the parent mesh until its children are
+      // ready. Keep requesting coverage while a video camera is always moving.
+      this.replace('skipLevelOfDetail', false);
+      this.replace('debugFreezeFrame', false);
+      this.replace('cullRequestsWhileMoving', false);
+      this.replace('foveatedTimeDelay', 0);
+      // Retain the user's full geometry detail. Readiness and complete-frame
+      // presentation handle slow views without reducing source or depth quality.
+      if (typeof source.foveatedScreenSpaceError === 'boolean') this.replace('foveatedScreenSpaceError', false);
+      if (typeof source.preloadWhenHidden === 'boolean') this.replace('preloadWhenHidden', false);
+      for (const key of debugFlags) this.replace(key, false);
+      this.coverage = new VideoOverlayTileCoverage(source, scene);
+      const inspect = (tile: Cesium3DTile) => {
+        this.coverage?.invalidate();
+        try { contentHasMesh(tile.content); }
+        catch (error) { this.error = error instanceof Error ? error.message : String(error); }
+      };
+      this.removers.push(source.tileLoad.addEventListener(inspect), source.tileVisible.addEventListener(inspect));
+      this.removers.push(source.tileFailed.addEventListener(() => {
+        this.coverage?.invalidate();
+        // A failed detail request may be offscreen or covered by its parent.
+        // Keep traversal running; current-frame coverage decides visibility.
+        this.warning = '部分遮挡瓦片加载失败；使用当前可用地表，缺少覆盖时隐藏叠加';
+      }));
+    } catch (error) { this.restore(); throw error; }
+  }
+
+  private replace(key: string, value: unknown) {
+    const object = this.source as unknown as Record<string, unknown>;
+    this.previous.set(key, object[key]); this.applied.set(key, value);
+    if (object[key] !== value) object[key] = value;
+  }
+
 
   getStatus(): VideoOverlayOcclusionStatus {
     const status: VideoOverlayOcclusionStatus = { enabled: true, sourceId: this.sourceId, ready: false };
@@ -283,30 +320,35 @@ export class VideoOverlayOcclusion {
       const statistics = object.statistics as Record<string, number> | undefined;
       const refining = !this.source.tilesLoaded || !!statistics && ['numberOfPendingRequests', 'numberOfTilesProcessing', 'numberOfAttemptedRequests']
         .some(key => statistics[key] > 0);
-      return { ...status, ready: this.hasCurrentCoverage(), refining, ...(this.warning ? { warning: this.warning } : {}) };
+      return { ...status, ready: this.coverage?.isReady() ?? false, refining, ...(this.warning ? { warning: this.warning } : {}) };
     } catch (error) { return { ...status, error: error instanceof Error ? error.message : String(error) }; }
   }
 
   restore() {
     if (this.restored) return;
     this.restored = true;
-    for (const remove of this.removers.splice(0)) remove();
-    this.visibleMeshes.clear(); this.coverageCache = undefined;
-    for (const [tile, { descriptor, applied }] of this.emptyRefinements) {
-      if (tile.getScreenSpaceError !== applied) continue;
-      if (descriptor) Object.defineProperty(tile, 'getScreenSpaceError', descriptor);
-      else delete tile.getScreenSpaceError;
-    }
-    this.emptyRefinements.clear();
-    if (!this.source.isDestroyed()) {
-      const object = this.source as unknown as Record<string, unknown>;
-      // Each property has independent ownership. Preserve a new shader/style
-      // owner while still restoring debug/point-cloud state left in our care.
-      for (const [key, value] of this.previous) {
-        if (object[key] === this.applied.get(key) && object[key] !== value) object[key] = value;
+    // A stale owner or a deleted scene must not strand the other callbacks or
+    // the AR shader. Restore each independently and always clear our references.
+    for (const remove of this.removers.splice(0)) { try { remove(); } catch { /* A removed event must not stop the remaining cleanup. */ } }
+    this.coverage?.restore(); this.coverage = undefined;
+    try {
+      if (!this.source.isDestroyed()) {
+        const object = this.source as unknown as Record<string, unknown>;
+        // Each property has independent ownership. Preserve a new shader/style
+        // owner while still restoring debug/point-cloud state left in our care.
+        for (const [key, value] of this.previous) {
+          try { if (object[key] === this.applied.get(key) && object[key] !== value) object[key] = value; }
+          catch { /* Continue restoring other properties after a failed setter. */ }
+        }
+        // Only schedules eviction. Cesium keeps the next map frame's selected
+        // tiles and releases the unused video-route GPU cache in its render loop.
+        try { this.source.trimLoadedTiles(); } catch { /* Host may have removed the source during exit. */ }
       }
+    } catch { /* A destroyed source must not strand the shader or scene cleanup. */ }
+    finally {
+      this.previous.clear(); this.applied.clear();
+      try { if (!this.shader.isDestroyed()) this.shader.destroy(); } catch { /* Already disposed by the host. */ }
+      try { this.scene.requestRender(); } catch { /* The entire viewer may already be gone. */ }
     }
-    this.previous.clear(); this.applied.clear();
-    if (!this.shader.isDestroyed()) this.shader.destroy();
   }
 }

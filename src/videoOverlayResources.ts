@@ -1,13 +1,17 @@
 import {
-  BoundingSphere, Cartesian3, ConstantPositionProperty, ConstantProperty, GroundPolylinePrimitive,
-  GroundPrimitive, HeightReference, LabelCollection, Matrix3, Matrix4, PolygonHierarchy,
-  Primitive, PrimitiveCollection, Transforms, type CustomDataSource, type JulianDate, type Viewer,
+  Appearance, BlendOption, BoundingSphere, CallbackProperty, Cartesian3, Cesium3DTileset, Color,
+  ColorMaterialProperty, ConstantPositionProperty, ConstantProperty, CustomShader,
+  CustomShaderTranslucencyMode, GroundPolylinePrimitive, GroundPrimitive, HeightReference,
+  LabelCollection, Material, Matrix3, Matrix4, PolygonHierarchy, Primitive,
+  PrimitiveCollection, Transforms, UniformType,
+  type CustomDataSource, type JulianDate, type Property, type Viewer,
 } from "cesium";
 import { readCadImport } from "./cadImport.ts";
 import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader.ts";
 import type { LibraryRecord } from "./projectLibrary.ts";
 import type { ImportRecord } from "./types.ts";
-import { assertVideoOverlayOccluder, VideoOverlayOcclusion, type VideoOverlayOcclusionStatus } from './videoOverlayOcclusion.ts';
+import { assertVideoOverlayOccluder, VideoOverlayOcclusion, VideoOverlayTileCoverage, type VideoOverlayOcclusionStatus } from './videoOverlayOcclusion.ts';
+import type { VideoOverlayEffectState } from './videoOverlayEffects.ts';
 
 /** Metres in the object's fixed local ENU frame; heading is clockwise degrees. */
 export type VideoOverlayAdjustment = { east: number; north: number; up: number; heading: number };
@@ -26,12 +30,139 @@ type VisibleResource = { show: boolean; isDestroyed?: () => boolean };
 type MatrixResource = VisibleResource & { modelMatrix: Matrix4; boundingSphere?: BoundingSphere };
 type MatrixBinding = { resource: MatrixResource; original: Matrix4 };
 type PositionBinding = { apply: (transform: Matrix4) => void; restore: () => void };
+type OpacityBinding = { apply: (opacity: number) => void; restore: () => void };
 type Entry = {
   record: ImportRecord; original: VisibleResource;
   target: VisibleResource; center?: Cartesian3; matrices: MatrixBinding[];
   positions: PositionBinding[]; dataSource?: CustomDataSource; copy?: PrimitiveCollection;
+  opacityBindings?: OpacityBinding[];
   description: string; error?: string; transformed?: boolean;
 };
+
+/** One shader owner per AR session; uniforms multiply the original fragment alpha. */
+function modelOpacityBinding(target: VisibleResource): OpacityBinding {
+  const resource = target as VisibleResource & { customShader?: CustomShader };
+  const original = resource.customShader;
+  let uniform = 'u_arPresentationOpacity', name = 'arOriginalFragmentMain';
+  const source = original?.fragmentShaderText ?? '';
+  while (original?.uniforms[uniform] || source.includes(uniform)) uniform += '_';
+  while (source.includes(name)) name += '_';
+  const fragment = source.replace(/\bfragmentMain\s*\(/g, `${name}(`);
+  const shader = new CustomShader({
+    mode: original?.mode,
+    lightingModel: original?.lightingModel,
+    // Fixed for the whole effect track: crossing alpha 1 never rebuilds the pass.
+    translucencyMode: CustomShaderTranslucencyMode.TRANSLUCENT,
+    uniforms: { ...original?.uniforms, [uniform]: { type: UniformType.FLOAT, value: 1 } },
+    varyings: original?.varyings,
+    vertexShaderText: original?.vertexShaderText,
+    fragmentShaderText: `${fragment}\nvoid fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
+      ${source.trim() ? `${name}(fsInput, material);` : ''}
+      material.alpha *= ${uniform};
+    }`,
+  });
+  resource.customShader = shader;
+  return {
+    apply: opacity => { if (alive(resource) && resource.customShader === shader) shader.setUniform(uniform, opacity); },
+    restore: () => {
+      try { if (alive(resource) && resource.customShader === shader) resource.customShader = original; }
+      finally { if (!shader.isDestroyed()) shader.destroy(); }
+    },
+  };
+}
+
+/** CAD shaders retain per-instance colors, original line depth tolerance and vertices. */
+function primitiveOpacityBinding(resource: Primitive): OpacityBinding {
+  const original = resource.appearance;
+  const source = original.getFragmentShaderSource();
+  let main = 'arOriginalMain', getter = 'arPresentationOpacity';
+  while (source.includes(main)) main += '_';
+  while (source.includes(getter)) getter += '_';
+  // A numeric Material uniform lets Cesium manage the uniform map without touching
+  // geometry-instance colors or rewriting thousands of per-feature byte arrays.
+  const material = new Material({
+    fabric: { uniforms: { arOpacity: 1 }, source: `float ${getter}() { return arOpacity; }` },
+    translucent: true,
+  });
+  const appearance = new Appearance({
+    material, translucent: true, closed: original.closed,
+    vertexShaderSource: original.vertexShaderSource,
+    fragmentShaderSource: `${source.replace(/\bmain\s*\(/g, `${main}(`)}\nvoid main() {
+      ${main}(); out_FragColor.a *= ${getter}();
+    }`,
+    renderState: original.renderState,
+  });
+  resource.appearance = appearance;
+  return {
+    apply: opacity => { if (alive(resource) && resource.appearance === appearance) material.uniforms.arOpacity = opacity; },
+    restore: () => {
+      try { if (alive(resource) && resource.appearance === appearance) resource.appearance = original; }
+      finally { if (!material.isDestroyed()) material.destroy(); }
+    },
+  };
+}
+
+function labelOpacityBindings(collection: LabelCollection): OpacityBinding[] {
+  const bindings: OpacityBinding[] = [];
+  const blend = collection.blendOption;
+  collection.blendOption = BlendOption.TRANSLUCENT;
+  bindings.push({ apply() {}, restore: () => { if (alive(collection)) collection.blendOption = blend; } });
+  for (let index = 0; index < collection.length; index++) {
+    const label = collection.get(index);
+    for (const key of ['fillColor', 'outlineColor', 'backgroundColor'] as const) {
+      const original = label[key], baseline = Color.clone(original);
+      bindings.push({
+        apply: opacity => { if (alive(collection)) label[key] = baseline.withAlpha(baseline.alpha * opacity); },
+        // Label color setters copy into an internal Color, so the getter's
+        // original reference may already have been mutated by later setters.
+        restore: () => { if (alive(collection)) label[key] = baseline; },
+      });
+    }
+  }
+  return bindings;
+}
+
+/** Entity properties are wrapped once; the source property remains authoritative. */
+function entityOpacityBindings(data: CustomDataSource, currentTime: JulianDate): OpacityBinding[] {
+  const bindings: OpacityBinding[] = [];
+  let opacity = 1;
+  bindings.push({ apply: value => { opacity = value; }, restore() {} });
+  // CPU material batching tests alpha < 1. The sub-float32 difference rounds to
+  // exactly 1 on the GPU, retaining full opacity while keeping the same pass.
+  const stableAlpha = (alpha: number) => Math.min(1 - Number.EPSILON, alpha * opacity);
+  const color = (original: Property | undefined) => new CallbackProperty((time, result: Color | undefined) => {
+    const baseline = original?.getValue(time) as Color | undefined ?? Color.WHITE;
+    return Color.fromAlpha(baseline, stableAlpha(baseline.alpha), result);
+  }, false);
+  for (const entity of data.entities.values) {
+    for (const graphic of [entity.polyline, entity.polygon]) {
+      if (!graphic) continue;
+      const original = graphic.material;
+      // Imported CAD uses Color materials; preserve any non-CAD extension material.
+      if (original && original.getType(currentTime) !== 'Color') continue;
+      const property = new CallbackProperty((time, result: Color | undefined) => {
+        const value = original?.getValue(time) as { color?: Color } | undefined;
+        const baseline = value?.color ?? Color.WHITE;
+        return Color.fromAlpha(baseline, stableAlpha(baseline.alpha), result);
+      }, false);
+      const material = new ColorMaterialProperty(property);
+      graphic.material = material;
+      bindings.push({ apply() {}, restore: () => { if (graphic.material === material) graphic.material = original; } });
+    }
+    for (const graphic of [entity.label, entity.point, entity.billboard]) {
+      if (!graphic) continue;
+      const object = graphic as unknown as Record<string, Property | undefined>;
+      const keys = graphic === entity.label ? ['fillColor', 'outlineColor', 'backgroundColor']
+        : graphic === entity.point ? ['color', 'outlineColor'] : ['color'];
+      for (const key of keys) {
+        const original = object[key], property = color(original);
+        object[key] = property;
+        bindings.push({ apply() {}, restore: () => { if (object[key] === property) object[key] = original; } });
+      }
+    }
+  }
+  return bindings;
+}
 
 function alive(resource: VisibleResource): boolean {
   try { return !resource.isDestroyed?.(); } catch { return false; }
@@ -169,6 +300,9 @@ export class VideoOverlayResources {
   private readonly visibilitySnapshots = new Map<VisibleResource, boolean>();
   private readonly controller = new AbortController();
   private readonly adjustments = new Map<string, VideoOverlayAdjustment>();
+  private readonly opacityStates = new Map<string, VideoOverlayEffectState>();
+  private readonly tileCoverage = new Map<string, VideoOverlayTileCoverage>();
+  private readonly touchedTiles = new Set<Cesium3DTileset>();
   private occlusion?: VideoOverlayOcclusion;
   private selected = new Set<string>();
   private visible = true;
@@ -364,6 +498,11 @@ export class VideoOverlayResources {
       if (!entry || entry.record.kind !== '3D Tiles' || !this.get(sourceId)?.available) {
         throw new Error('地表遮挡源尚未加载或不可用，请选择已授权的倾斜摄影');
       }
+      // A depth source owns a different opaque shader and must never inherit an
+      // engineering-model presentation multiplier from its previous role.
+      this.restoreOpacity(entry);
+      this.opacityStates.delete(sourceId);
+      this.tileCoverage.get(sourceId)?.restore(); this.tileCoverage.delete(sourceId);
       assertVideoOverlayOccluder(entry.original);
       if (Object.values(this.adjustments.get(sourceId) ?? noAdjustment()).some(value => value !== 0)) {
         throw new Error('此遮挡源已有独立 AR 位置微调，请先明确重置该对象微调或选择其他遮挡源');
@@ -373,6 +512,7 @@ export class VideoOverlayResources {
     } else {
       this.occlusion?.restore(); this.occlusion = undefined;
     }
+    this.prepareSelectedTileCoverage();
     this.updateVisibility(undefined, true);
   }
 
@@ -399,7 +539,107 @@ export class VideoOverlayResources {
     this.selected = new Set(ids.filter(id => {
       const entry = this.entries.get(id); return !!entry && this.available(entry, current);
     }));
+    this.prepareSelectedTileCoverage();
     this.updateVisibility(imports);
+  }
+
+  private prepareSelectedTileCoverage() {
+    for (const [id, coverage] of this.tileCoverage) {
+      if (!this.selected.has(id) || id === this.occlusion?.sourceId) {
+        coverage.restore(); this.tileCoverage.delete(id);
+      }
+    }
+    for (const id of this.selected) {
+      const entry = this.entries.get(id)!;
+      if (entry.record.kind === '3D Tiles' && entry.original instanceof Cesium3DTileset) {
+        if (id === this.occlusion?.sourceId) {
+          // The depth role trims its own route cache when that role exits.
+          this.touchedTiles.delete(entry.original);
+          continue;
+        }
+        this.touchedTiles.add(entry.original);
+        if (id !== this.occlusion?.sourceId && !this.tileCoverage.has(id)) {
+          this.tileCoverage.set(id, new VideoOverlayTileCoverage(entry.original, this.options.viewer.scene, false));
+        }
+      }
+    }
+  }
+
+  /** Pure timeline outputs are absolute multipliers. Missing IDs restore alpha 1.
+   * Bind each material only on its first real fade; all subsequent frames update
+   * uniforms/properties rather than replacing shaders or reselecting the object.
+   */
+  setTimelineOpacity(states: Readonly<Record<string, VideoOverlayEffectState>>): void {
+    this.throwIfCancelled();
+    const normalized = new Map<string, VideoOverlayEffectState>();
+    for (const [id, value] of Object.entries(states)) {
+      if (!value || !Number.isFinite(value.opacity) || value.opacity < 0 || value.opacity > 1
+        || typeof value.visible !== 'boolean') throw new Error('模型展示透明度必须在 0 到 1 之间');
+      normalized.set(id, { opacity: value.opacity, visible: value.visible && value.opacity > 0 });
+    }
+    const imports = this.options.imports(), current = this.importIndex(imports);
+    let changed = false;
+    for (const [id, entry] of this.entries) {
+      if (id === this.occlusion?.sourceId || !this.available(entry, current)) continue;
+      const next = normalized.get(id) ?? { opacity: 1, visible: true };
+      const previous = this.opacityStates.get(id) ?? { opacity: 1, visible: true };
+      if (next.opacity === previous.opacity && next.visible === previous.visible) continue;
+      if (next.opacity !== 1 && !entry.opacityBindings) this.prepareOpacity(entry);
+      for (const binding of entry.opacityBindings ?? []) binding.apply(next.opacity);
+      this.opacityStates.set(id, next); changed = true;
+    }
+    if (changed) this.updateVisibility(imports, true);
+  }
+
+  private prepareOpacity(entry: Entry) {
+    const bindings: OpacityBinding[] = [];
+    entry.opacityBindings = bindings;
+    try {
+      if (entry.record.kind === 'Model' || entry.record.kind === '3D Tiles') {
+        bindings.push(modelOpacityBinding(entry.target));
+      } else if (entry.dataSource) {
+        bindings.push(...entityOpacityBindings(entry.dataSource, this.options.viewer.clock.currentTime));
+      } else {
+        eachPrimitive(entry.target, child => {
+          if (child instanceof LabelCollection) bindings.push(...labelOpacityBindings(child));
+          else if (child instanceof Primitive && child.appearance) bindings.push(primitiveOpacityBinding(child));
+        });
+      }
+    } catch (error) { this.restoreOpacity(entry); throw error; }
+  }
+
+  private restoreOpacity(entry: Entry) {
+    for (const binding of entry.opacityBindings ?? []) {
+      try { binding.restore(); } catch { /* Continue releasing other original materials. */ }
+    }
+    entry.opacityBindings = undefined;
+  }
+
+  /** Both preRender and postRender use this guard before committing a fused frame.
+   * Model.ready alone stays true while a replaced shader rebuilds draw commands.
+   */
+  isPresentationReady(beforeRender = false): boolean {
+    if (this.restored || !this.visible) return !this.restored;
+    const current = this.importIndex();
+    for (const id of this.selected) {
+      if (id === this.occlusion?.sourceId) continue;
+      const entry = this.entries.get(id);
+      if (!entry || !this.available(entry, current) || this.opacityStates.get(id)?.visible === false) continue;
+      if (entry.record.kind === '3D Tiles' && this.tileCoverage.has(id)) {
+        // preRender resets coverage before traversal; only postRender can test
+        // this frame's selected tiles. Treating its empty pre-pass as a failure
+        // would prevent the renderer from ever committing a Tiles frame.
+        if (!beforeRender && !this.tileCoverage.get(id)!.isReady()) return false;
+        continue;
+      }
+      let ready = true;
+      eachPrimitive(entry.target, child => {
+        const resource = child as { ready?: boolean; _drawCommandsBuilt?: boolean };
+        if (resource?.ready === false || resource?._drawCommandsBuilt === false) ready = false;
+      });
+      if (!ready) return false;
+    }
+    return true;
   }
 
   /** Used while seeking / outside the CC time range without losing the user's selection. */
@@ -423,7 +663,7 @@ export class VideoOverlayResources {
     const current = this.importIndex(imports), occlusion = this.occlusionStatus(current);
     for (const [id, entry] of this.entries) {
       desired.set(entry.target, this.visible && this.available(entry, current)
-        && (id === occlusion.sourceId ? !occlusion.error : this.selected.has(id)));
+        && (id === occlusion.sourceId ? !occlusion.error : this.selected.has(id) && this.opacityStates.get(id)?.visible !== false));
     }
     let changed = false;
     for (const [resource, show] of desired) changed = setShow(resource, show) || changed;
@@ -476,32 +716,55 @@ export class VideoOverlayResources {
     const copy = entry.copy;
     entry.copy = undefined;
     try {
-      if (!copy.isDestroyed() && !this.options.viewer.scene.primitives.remove(copy)) copy.destroy();
+      if (!copy.isDestroyed()) this.options.viewer.scene.primitives.remove(copy);
     } catch { /* The host may already have disposed the viewer. */ }
+    finally {
+      // A non-owning root (or a failing host removal) must not retain AR buffers.
+      try { if (!copy.isDestroyed()) copy.destroy(); } catch { /* Already disposed by a host. */ }
+    }
   }
 
   /** Idempotent, including cancellation during a ground-CAD rebuild. */
   restore(): void {
     if (this.restored) return;
     this.restored = true;
-    this.controller.abort();
-    this.removeAbortListener?.();
-    this.occlusion?.restore(); this.occlusion = undefined;
+    try { this.controller.abort(); } catch { /* Continue independent releases. */ }
+    try { this.removeAbortListener?.(); } catch { /* Continue independent releases. */ }
+    this.removeAbortListener = undefined;
+    try { this.occlusion?.restore(); } catch { /* Continue independent releases. */ }
+    this.occlusion = undefined;
+    for (const coverage of this.tileCoverage.values()) {
+      try { coverage.restore(); } catch { /* Another owner must still be released. */ }
+    }
+    this.tileCoverage.clear();
     for (const entry of this.entries.values()) {
+      this.restoreOpacity(entry);
       if (entry.transformed && !entry.copy && alive(entry.original)) {
         for (const binding of entry.matrices) {
-          if (alive(binding.resource) && !Matrix4.equals(binding.resource.modelMatrix, binding.original)) {
-            binding.resource.modelMatrix = Matrix4.clone(binding.original);
-          }
+          try {
+            if (alive(binding.resource) && !Matrix4.equals(binding.resource.modelMatrix, binding.original)) {
+              binding.resource.modelMatrix = Matrix4.clone(binding.original);
+            }
+          } catch { /* A removed resource must not retain other AR owners. */ }
         }
-        entry.dataSource?.entities.suspendEvents();
-        try { for (const binding of entry.positions) binding.restore(); }
-        finally { entry.dataSource?.entities.resumeEvents(); }
+        try { entry.dataSource?.entities.suspendEvents(); } catch { /* Continue property restore. */ }
+        for (const binding of entry.positions) {
+          try { binding.restore(); } catch { /* Restore the remaining entity properties. */ }
+        }
+        try { entry.dataSource?.entities.resumeEvents(); } catch { /* Continue disposal. */ }
       }
       this.disposeCopy(entry);
     }
-    for (const [resource, show] of this.visibilitySnapshots) setShow(resource, show);
+    for (const [resource, show] of this.visibilitySnapshots) {
+      try { setShow(resource, show); } catch { /* Other map layers still need restoration. */ }
+    }
+    for (const source of this.touchedTiles) {
+      try { if (!source.isDestroyed()) source.trimLoadedTiles(); } catch { /* A host disposal may already be underway. */ }
+    }
+    this.touchedTiles.clear();
     this.selected.clear();
-    this.options.viewer.scene.requestRender();
+    this.opacityStates.clear(); this.adjustments.clear();
+    this.visibilitySnapshots.clear(); this.entries.clear();
+    try { this.options.viewer.scene.requestRender(); } catch { /* Viewer may already be destroyed. */ }
   }
 }

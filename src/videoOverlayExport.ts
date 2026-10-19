@@ -50,26 +50,26 @@ export function planVideoOverlayExport(options: VideoOverlayExportOptions): Expo
     throw new Error('导出时间范围无效，结束时间须晚于开始时间且不超过视频时长');
   }
   const end = Math.min(range.end, video.duration), duration = end - range.start;
-  if (duration > VIDEO_OVERLAY_EXPORT_LIMITS.maxDuration) throw new Error('一次最多实时导出 30 分钟，请缩短时间范围');
+  if (duration > VIDEO_OVERLAY_EXPORT_LIMITS.maxDuration) throw new Error('一次最多导出 30 分钟，请缩短时间范围');
   const frameRate = options.frameRate ?? 30;
   if (!Number.isFinite(frameRate) || frameRate < 1 || frameRate > 60) throw new Error('导出帧率须在 1–60 fps 之间');
-  const resolution = options.resolution ?? '1080p';
+  const resolution = options.resolution ?? 'source';
   if (!['1080p', '720p', 'source'].includes(resolution)) throw new Error('导出分辨率无效');
   const landscape = video.videoWidth >= video.videoHeight;
   const maximum = resolution === '720p' ? [1280, 720] : resolution === '1080p' ? [1920, 1080] : [video.videoWidth, video.videoHeight];
   if (!landscape && resolution !== 'source') maximum.reverse();
   const scale = Math.min(1, maximum[0] / video.videoWidth, maximum[1] / video.videoHeight);
   // Even dimensions are accepted by H.264 and avoid padding/encoder-specific failures.
-  const width = Math.max(2, Math.floor(video.videoWidth * scale / 2) * 2);
-  const height = Math.max(2, Math.floor(video.videoHeight * scale / 2) * 2);
-  if (width * height > VIDEO_OVERLAY_EXPORT_LIMITS.maxPixels) throw new Error('原始画幅超过 4K 导出上限，请选择 1080p 或 720p');
+  const width = resolution === 'source' ? video.videoWidth : Math.max(2, Math.floor(video.videoWidth * scale / 2) * 2);
+  const height = resolution === 'source' ? video.videoHeight : Math.max(2, Math.floor(video.videoHeight * scale / 2) * 2);
+  if (width * height > VIDEO_OVERLAY_EXPORT_LIMITS.maxPixels) throw new Error('原始画幅超过当前 4K 编码上限，未自动降低分辨率');
   const maxBytes = options.maxBytes ?? VIDEO_OVERLAY_EXPORT_LIMITS.maxBytes;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1024 * 1024 || maxBytes > VIDEO_OVERLAY_EXPORT_LIMITS.maxBytes) {
     throw new Error('导出大小上限须在 1–512 MiB 之间');
   }
-  const videoBitsPerSecond = Math.round(Math.min(12_000_000, Math.max(1_500_000, 6_000_000 * width * height / (1920 * 1080))));
+  const videoBitsPerSecond = Math.round(Math.min(60_000_000, Math.max(4_000_000, 16_000_000 * width * height / (1920 * 1080))));
   const estimatedBytes = duration * (videoBitsPerSecond + (options.includeAudio === false ? 0 : 128_000)) / 8;
-  if (estimatedBytes > maxBytes * .85) throw new Error('所选范围预计超过导出大小上限，请缩短范围或降低分辨率');
+  if (estimatedBytes > maxBytes * .85) throw new Error('所选范围预计超过导出大小上限，请缩短导出区间');
   const maxWallTimeSeconds = options.maxWallTimeSeconds ?? Math.min(3600, duration * 3 + 60);
   if (!Number.isFinite(maxWallTimeSeconds) || maxWallTimeSeconds < duration || maxWallTimeSeconds > 3600) {
     throw new Error('导出等待上限须不短于所选时长，且不超过一小时');
@@ -248,7 +248,7 @@ export class VideoOverlayExportSession {
     const data = (event: Event) => {
       const blob = (event as BlobEvent).data;
       if (this.cleaned || !blob?.size) return;
-      if (this.bytes + blob.size > this.plan.maxBytes) { this.fail(new Error('导出文件达到大小上限，已停止录制；请缩短范围或降低分辨率')); return; }
+      if (this.bytes + blob.size > this.plan.maxBytes) { this.fail(new Error('导出文件达到大小上限，已停止录制；请缩短导出区间')); return; }
       this.chunks.push(blob); this.bytes += blob.size; this.progress();
     };
     const error = () => this.fail(new Error('浏览器视频编码失败，请缩短范围、降低分辨率或改用 WebM 后重试'));
@@ -270,7 +270,7 @@ export class VideoOverlayExportSession {
       };
       void addVideoOverlayWebmDuration(result.blob, result.recordedDuration).then(blob => {
         if (this.cleaned) return;
-        if (blob.size > this.plan.maxBytes) { this.fail(new Error('导出文件达到大小上限，请缩短范围或降低分辨率')); return; }
+        if (blob.size > this.plan.maxBytes) { this.fail(new Error('导出文件达到大小上限，请缩短导出区间')); return; }
         result.blob = blob; this.bytes = blob.size;
         this.state = 'complete'; this.cleanup(); this.progress(); this.resolve(result);
       }, () => this.fail(new Error('无法完成视频文件，请重试')));

@@ -30,3 +30,8 @@
 /* Keep the renderer sized and interactive; only committed frame pairs are displayed. */
 .cc-video-active .cesium-widget canvas {opacity:0}
 .cc-video-presentation {position:absolute;pointer-events:none}
+
+.cc-video-editor {position:absolute;z-index:10;pointer-events:none;touch-action:none}
+.cc-cached-preview {z-index:2;object-fit:contain}
+.cc-presentation-editor textarea {width:100%;box-sizing:border-box;min-height:54px;resize:vertical}
+.cc-presentation-editor input[type=color] {height:30px;padding:1px}

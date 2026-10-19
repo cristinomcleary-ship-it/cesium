@@ -22,6 +22,23 @@ export function containVideoRect(width: number, height: number, videoWidth: numb
   return { left: (width - w) / 2, top: (height - h) / 2, width: w, height: h };
 }
 
+/** Cesium's OIT composite assumes an opaque map background when writing alpha.
+ * Keep its weighted color/depth result, but recover source-over coverage when
+ * rendering onto transparent AR. These pinned-version textures remain Cesium-owned.
+ */
+export function overlayTransparencyUniforms(scene: object) {
+  type TextureMap = { u_opaque?: () => unknown; u_accumulation?: () => unknown; u_revealage?: () => unknown };
+  const internals = scene as { _environmentState?: { useOIT?: boolean }; _context?: { defaultTexture?: unknown };
+    _view?: { oit?: { _translucentMRTSupport?: boolean; _compositeCommand?: { uniformMap?: TextureMap } } } };
+  const textures = () => internals._view?.oit?._compositeCommand?.uniformMap;
+  const texture = (name: keyof TextureMap) => textures()?.[name]?.() ?? internals._context?.defaultTexture;
+  return {
+    oitMode: () => internals._environmentState?.useOIT && textures()?.u_opaque && textures()?.u_accumulation && textures()?.u_revealage
+      ? internals._view?.oit?._translucentMRTSupport ? 1 : 2 : 0,
+    oitOpaque: () => texture('u_opaque'), oitAccumulation: () => texture('u_accumulation'), oitRevealage: () => texture('u_revealage'),
+  };
+}
+
 // Output pixels follow the original distorted video. Sample the ideal geometry
 // render through the inverse lens map; video itself remains untouched beneath it.
 export const OVERLAY_LENS_SHADER = `
@@ -32,6 +49,10 @@ uniform vec4 opticalBounds;
 uniform vec3 radialLens;
 uniform vec2 tangentLens;
 uniform float overlayOpacity;
+uniform float oitMode;
+uniform sampler2D oitOpaque;
+uniform sampler2D oitAccumulation;
+uniform sampler2D oitRevealage;
 in vec2 v_textureCoordinates;
 vec2 distort(vec2 p) {
   float r2=dot(p,p), r4=r2*r2;
@@ -63,5 +84,10 @@ void main() {
     out_FragColor=vec4(0.0); return;
   }
   vec4 color=texture(colorTexture,uv);
+  if (oitMode > 0.5) {
+    float transmittance=oitMode < 1.5 ? texture(oitAccumulation,uv).a : texture(oitRevealage,uv).r;
+    transmittance=clamp(transmittance,0.0,1.0);
+    color.a=1.0-transmittance+transmittance*texture(oitOpaque,uv).a;
+  }
   out_FragColor=color*overlayOpacity;
 }`;

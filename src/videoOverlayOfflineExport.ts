@@ -15,7 +15,7 @@ function waitForEncoderQueue(encoder: VideoEncoder | AudioEncoder, limit: number
     const cleanup = () => { clearTimeout(timer); encoder.removeEventListener('dequeue', dequeue); signal.removeEventListener('abort', abort); };
     const dequeue = () => { if (encoder.encodeQueueSize < limit) { cleanup(); resolve(); } };
     const abort = () => { cleanup(); reject(new DOMException('已取消视频导出', 'AbortError')); };
-    const timer = setTimeout(() => { cleanup(); reject(new Error('编码器处理超时，请降低分辨率后重试')); }, 30000);
+    const timer = setTimeout(() => { cleanup(); reject(new Error('编码器处理超时，请关闭占用显卡的其他程序后重试')); }, 30000);
     encoder.addEventListener('dequeue', dequeue); signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort(); else dequeue();
   });
@@ -46,7 +46,7 @@ export async function exportVideoOverlayOffline(options: OfflineExportOptions): 
   const packet = (chunk: EncodedVideoChunk | EncodedAudioChunk, track: 1 | 2) => {
     if (signal.aborted) return;
     bytes += chunk.byteLength;
-    if (bytes > plan.maxBytes - 1024 * 1024) { fail(new Error('导出文件达到大小上限，请缩短范围或降低分辨率')); return; }
+    if (bytes > plan.maxBytes - 1024 * 1024) { fail(new Error('导出文件达到大小上限，请缩短导出区间')); return; }
     const data = new Uint8Array(chunk.byteLength); chunk.copyTo(data);
     packets.push({ data, timestamp: chunk.timestamp, duration: track === 1 ? frameDurations.get(chunk.timestamp) : chunk.duration ?? undefined, track, key: chunk.type === 'key' });
     if (track === 1) encodedFrames++;

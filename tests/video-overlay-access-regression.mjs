@@ -53,6 +53,7 @@ try {
   const owner = Object.assign(Object.create(VideoModelOverlay.prototype), {
     viewer, selected: new Set(), selectionInitialized: false, destroyed: false, epoch: 0,
     occlusion: { enabled: false, sourceId: '' },
+    presentationEditor: { unmount() {}, setValue() {}, destroy() {} }, annotations: [],
     video: { pause() {}, removeAttribute() {}, load() {} }, updateTargets() {},
   });
   const host = new Function('managementWorkspace', 'imports', 'videoModelOverlay', 'viewer', 'scheduleSceneDisplay', 'modelEditor', 'projectLibrary', 'sceneDisplayPanel', 'document', `
@@ -94,14 +95,25 @@ try {
   const sourceFrame = { width: 2, height: 2 };
   viewer.canvas = {};
   owner.sourceFrame = sourceFrame; owner.pendingTime = 0; owner.editRevision = 0; owner.track = { sample: () => ({}) };
-  owner.presentation = { width: 2, height: 2, remove() {}, getContext: () => ({ drawImage(image) {
+  viewer.scene.frameState = { frameNumber: 1 }; owner.lensFrame = { number: 1, time: 0, ready: true }; owner.renderReady = true;
+  owner.presentation = { width: 2, height: 2, style: {}, remove() {}, getContext: () => ({ save() {}, restore() {}, beginPath() {}, rect() {}, clip() {}, drawImage(image) {
     presentedPixels = image === sourceFrame ? 'source-video' : model.resource.show ? 'source-video+restricted-model' : 'source-video';
   } }) };
   owner.commitPresentation();
   assert.equal(presentedPixels, 'source-video+restricted-model');
   assert.ok(owner.lastPresentationKey, 'the paused composition is cached');
+  let cachePaused = 0, cacheReleased = 0;
+  const previewUrl = URL.createObjectURL(new Blob(['baked-private-model']));
+  owner.cachedPreview = { url: previewUrl, start: 0, end: 1, revision: 0, video: {
+    currentTime: 0, pause() { cachePaused++; }, removeAttribute() {}, load() {}, remove() { cacheReleased++; },
+  } };
+  owner.resumeRenderLoop = true; viewer.useDefaultRenderLoop = false; owner.presentation.style.visibility = 'hidden';
   permissions.models = false;
   host.renderWorkbenchMachinery(); // Existing session-change callback; no playback frame is delivered.
+  assert.equal(owner.cachedPreview, undefined, 'revocation removes the baked preview containing restricted model pixels');
+  assert.equal(cachePaused, 1); assert.equal(cacheReleased, 1);
+  assert.equal(viewer.useDefaultRenderLoop, true, 'revocation restores the original render loop');
+  assert.equal(owner.presentation.style.visibility, '', 'the sanitized live composition replaces the restricted baked video');
   assert.equal(presentedPixels, 'source-video', 'revocation removes cached restricted pixels before another render');
   assert.equal(owner.lastPresentationKey, '', 'resource refresh invalidates the paused composition cache');
   owner.commitPresentation();
@@ -155,6 +167,8 @@ try {
   owner.files = cachedFiles; owner.savedId = 'saved-private-video'; owner.inputGeneration = 0; owner.manifestImportGeneration = 0;
   permissions.media = false; host.renderWorkbenchMachinery();
   assert.equal(host.canAccessVideo(), false, 'the host uses the existing media permission, independently of model/file access');
+  assert.throws(() => owner.playCachedPreview(), /没有录像权限/, 'cached preview playback checks the media gate');
+  assert.throws(() => owner.installCachedPreview(new Blob(['private']), 0, 1), /没有录像权限/, 'cached preview installation cannot allocate media after revocation');
   for (const invoke of [() => owner.prepare(), () => owner.loadMedia(), () => owner.enter(),
     () => owner.createDiagnostics(), () => owner.exportVideo(), () => owner.extractFrames(false),
     () => owner.extractFrames(true), () => owner.importManifest(manifestFile), () => owner.restoreReplay(cachedFiles, {}, 'other')]) {
