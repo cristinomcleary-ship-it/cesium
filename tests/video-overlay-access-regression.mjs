@@ -42,7 +42,7 @@ try {
   const viewer = { container, clock: { currentTime: JulianDate.now() }, scene: { primitives: new PrimitiveCollection(), requestRender() {} }, isDestroyed: () => false, resize() {} };
   const owner = Object.assign(Object.create(VideoModelOverlay.prototype), {
     viewer, selected: new Set(), selectionInitialized: false, destroyed: false, epoch: 0,
-    occlusion: { enabled: false, sourceId: '' },
+    occlusion: { enabled: false, sourceId: '' }, presentationEditor: { unmount() {} },
     video: { pause() {}, removeAttribute() {}, load() {} }, updateTargets() {},
   });
   const host = new Function('managementWorkspace', 'imports', 'videoModelOverlay', 'viewer', 'scheduleSceneDisplay', 'modelEditor', 'projectLibrary', 'sceneDisplayPanel', 'document', `

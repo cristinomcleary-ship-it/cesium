@@ -47,6 +47,7 @@ async function libraryHttp(req, res, next) {
     const name = url.searchParams.get('name'), fileUrl = `/__library/files/${id}/${slot}/${encodeURIComponent(name)}`;
     bytes.set(fileUrl, body); return respond({ name, url: fileUrl });
   }
+  if (req.method === 'DELETE') { records.delete(id); for (const key of bytes.keys()) if (key.startsWith('/__library/files/'+id+'/')) bytes.delete(key); return respond({ok:true}); }
   const data = JSON.parse(body.toString()), old = records.get(id);
   if (req.method === 'PUT') records.set(id, { ...data, createdAt: '2026-10-19T00:00:00Z', updatedAt: new Date().toISOString() });
   else if (req.method === 'PATCH' && old) records.set(id, { ...old, ...data, settings: { ...old.settings, ...data.settings }, updatedAt: new Date().toISOString() });
@@ -130,7 +131,23 @@ try {
   record('current media permission hides a cached scheme and blocks direct opening');
 
   await page.evaluate(async () => { const h = window.__videoSchemes; h.setMediaAllowed(true); await h.library.refreshVideoOverlaySchemes(); });
-  records.delete('scheme');
+  const originalVideoUrl = records.get('scheme').files.video.url;
+  const originalPosts = requests.filter(([method]) => method === 'POST').length;
+  await page.evaluate(async () => {
+    const h=window.__videoSchemes, pos=new File(['name,coordinate_system,x,y,z\nframe_000000.jpg,WGS 84,120,30,100'], 'position-v2.csv', {type:'text/csv',lastModified:1700000000000});
+    const settings={...h.settings,fileMetadata:{...h.fileMetadata,pos:{name:pos.name,size:pos.size,type:pos.type,lastModified:pos.lastModified}}};
+    await h.library.updateVideoOverlaySettings('scheme',settings,pos);
+    await h.library.openVideoOverlayScheme('scheme');
+  });
+  assert.equal(records.get('scheme').files.video.url, originalVideoUrl);
+  assert.equal(requests.filter(([method])=>method==='POST').length, originalPosts+1);
+  const restoredPos = await page.evaluate(()=>window.__videoSchemes.calls.at(-1).files.find(file=>file.slot==='pos'));
+  assert.equal(restoredPos.name,'position-v2.csv'); assert.match(restoredPos.text, /coordinate_system/);
+  record('adding a POS attachment persists and reopens it without uploading the source video again');
+  const refused=await page.evaluate(()=>window.__videoSchemes.library.delete('scheme',false));
+  assert.equal(refused,true); assert.equal(records.has('scheme'),false);
+  assert.equal(bytes.size,0);
+  record('deleting a fusion scheme removes its saved source copies and list entry');
   result = await page.evaluate(() => window.__videoSchemes.library.refreshVideoOverlaySchemes()); assert.deepEqual(result, []);
   record('explicit refresh removes an externally deleted scheme');
   assert.deepEqual(errors, []);

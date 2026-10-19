@@ -1,4 +1,5 @@
 /** Video frames and their decoded presentation times form one portable CC input. */
+import { createVideoFramePosCsv, type VideoPosSource } from './videoFramePos';
 export interface VideoFrameFingerprint { algorithm: 'sha256-samples-v1'; value: string }
 export interface VideoFrameManifest {
   version: 1;
@@ -10,6 +11,7 @@ export interface VideoFrameManifest {
 export interface VideoExtractedFrame { filename: string; index: number; requestedTime: number; mediaTime: number; width: number; height: number }
 export interface VideoFrameExtractionOptions {
   start?: number; end?: number; intervalSeconds?: number; count?: number; maxWidth?: number;
+  pos?: VideoPosSource;
   signal?: AbortSignal; onProgress?: (progress: { completed: number; total: number; time: number; bytes: number }) => void;
 }
 /** Structural types also work in browsers without TypeScript File System Access declarations. */
@@ -141,7 +143,7 @@ const crcTable = Uint32Array.from({ length: 256 }, (_, value) => {
 function crc32(bytes: Uint8Array): number { let crc = 0xffffffff; for (const byte of bytes) crc = crcTable[(crc ^ byte) & 255] ^ (crc >>> 8); return (crc ^ 0xffffffff) >>> 0; }
 /** JPEG is already compressed; stored ZIP avoids another large compression workspace. */
 export function createVideoFrameZip(entries: readonly { name: string; bytes: Uint8Array<ArrayBuffer> }[], limit = VIDEO_FRAME_ZIP_LIMIT): Blob {
-  if (entries.length > VIDEO_FRAME_MAX_COUNT + 1) throw new Error('ZIP 文件数量超过上限');
+  if (entries.length > VIDEO_FRAME_MAX_COUNT + 3) throw new Error('ZIP 文件数量超过上限');
   const encoder = new TextEncoder(), parts: BlobPart[] = [], central: BlobPart[] = [];
   let offset = 0, centralSize = 0;
   for (const entry of entries) {
@@ -269,8 +271,16 @@ export async function extractVideoFrames(file: File, options: VideoFrameExtracti
     }
     const checked = parseVideoFrameManifest(manifest), json = JSON.stringify(checked, null, 2);
     abortIfNeeded(options.signal);
-    if (directory) { await writeFrameFile(directory, MANIFEST_NAME, json, options.signal); completed = true; return { manifest: checked, output: { kind: 'directory', name: folder } }; }
-    entries.push({ name: MANIFEST_NAME, bytes: new TextEncoder().encode(json) });
+    const posName = options.pos ? 'All_Pos.csv' : 'All_Pos_template.csv';
+    const pos = createVideoFramePosCsv(checked.frames, options.pos);
+    const readme = options.pos
+      ? 'All_Pos.csv 与本文件夹实际照片逐一对应，按 video-frame-manifest.json 的实际解码帧时间，从导入的真实 POS 定位数据采样。\r\n在 CC 中选择 CSV 导入位置/姿态先验：name=照片名，coordinate_system=坐标系，x/y/z=原始坐标和高程，yaw/pitch/roll=原始姿态（度）。\r\n坐标系及高程基准沿用原 POS；本工具未转换高程，未将飞行高度推定为绝对高程。姿态轴定义及精度需按原设备数据核对。照片位置先验不能替代空三解算。\r\n'
+      : '未导入真实 POS 定位数据。All_Pos_template.csv 仅包含与照片对应的名称，坐标与姿态为空，不能作为有效定位先验导入 CC。\r\n请填写真实坐标和坐标系，或在平台选择原始 POS CSV 后重新抽帧。普通视频像素不能直接给出可核实的经纬度和高程。\r\n';
+    if (directory) {
+      await writeFrameFile(directory, MANIFEST_NAME, json, options.signal); await writeFrameFile(directory, posName, pos, options.signal); await writeFrameFile(directory, 'POS说明.txt', readme, options.signal);
+      completed = true; return { manifest: checked, output: { kind: 'directory', name: folder } };
+    }
+    for (const [name, text] of [[MANIFEST_NAME, json], [posName, pos], ['POS说明.txt', readme]]) entries.push({ name, bytes: new TextEncoder().encode(text) });
     const blob = createVideoFrameZip(entries); abortIfNeeded(options.signal); completed = true;
     return { manifest: checked, output: { kind: 'zip', name: `${stem}_frames.zip`, blob } };
   } finally {

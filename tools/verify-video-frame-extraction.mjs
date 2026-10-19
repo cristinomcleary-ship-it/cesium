@@ -28,7 +28,9 @@ try {
   const first = await page.evaluate(async () => {
     const file = document.querySelector('#file').files[0], original = document.querySelector('#original'), originalUrl = URL.createObjectURL(file);
     original.src = originalUrl; await original.play(); const before = original.currentTime;
-    const result = await window.__frames.extractVideoFrames(file, { intervalSeconds: .7, maxWidth: 160 });
+    const { parseVideoPosCsv } = await import('/src/videoFramePos.ts');
+    const pos = parseVideoPosCsv('name,coordinate_system,x,y,z,yaw,pitch,roll\nframe_000000.jpg,WGS 84,120,30,100,0,-30,0\nframe_000029.jpg,WGS 84,120.0029,30,102.9,29,-30,0', { frameRate: 10 });
+    const result = await window.__frames.extractVideoFrames(file, { intervalSeconds: .7, maxWidth: 160, pos });
     const after = original.currentTime, originalUnchanged = original.src === originalUrl && !original.paused;
     original.pause(); original.removeAttribute('src'); original.load(); URL.revokeObjectURL(originalUrl);
     return { manifest: result.manifest, zip: Array.from(new Uint8Array(await result.output.blob.arrayBuffer())), before, after, originalUnchanged, videos: document.querySelectorAll('video').length };
@@ -37,7 +39,7 @@ try {
   assert.ok(first.originalUnchanged); assert.ok(first.after >= first.before); assert.equal(first.videos, 1);
   for (const [index, frame] of first.manifest.frames.entries()) assert.ok(Math.abs(frame.mediaTime - [0, .7, 1.4, 2.1, 2.8][index]) < .001, JSON.stringify(frame));
   const zipPath = path.join(output, 'extracted-test.zip'); await writeFile(zipPath, Uint8Array.from(first.zip));
-  execFileSync('python', ['-c', 'import zipfile,sys,json; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; m=json.loads(z.read("video-frame-manifest.json")); assert len(m["frames"])==5; z.extractall(sys.argv[2])', zipPath, path.join(output, 'frames')]);
+  execFileSync('python', ['-c', 'import zipfile,sys,json; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; m=json.loads(z.read("video-frame-manifest.json")); assert len(m["frames"])==5; import csv,io; p=list(csv.DictReader(io.StringIO(z.read("All_Pos.csv").decode("utf-8-sig")))); assert len(p)==5; assert [r["name"] for r in p]==[f["filename"] for f in m["frames"]]; assert all(abs(float(r["z"])-(100+f["mediaTime"]))<1e-6 for r,f in zip(p,m["frames"])); z.extractall(sys.argv[2])', zipPath, path.join(output, 'frames')]);
   record('real paused seek captures frame zero and subsequent decoded PTS, preserves aspect ratio, produces valid ZIP and leaves original video playing');
   const colorEvidence = await page.evaluate(async bytes => {
     const view = new DataView(new Uint8Array(bytes).buffer), evidence = []; let offset = 0;
@@ -53,6 +55,7 @@ try {
     } return evidence;
   }, first.zip);
   colorEvidence.forEach((sample, index) => { const channel = index < 2 ? 0 : index < 3 ? 1 : 2; assert.ok(sample.rgba[channel] > 240); assert.ok(sample.rgba.filter((_, i) => i < 3 && i !== channel).every(v => v < 15)); });
+  record('POS CSV contains one measured/interpolated prior per actual photo PTS');
   record('JPEG pixels match the decoded frame PTS, including real color transitions');
   const range = await page.evaluate(async () => (await window.__frames.extractVideoFrames(document.querySelector('#file').files[0], { start: .15, end: 2.55, count: 4 })).manifest);
   assert.equal(range.frames.length, 4); for (const [index, frame] of range.frames.entries()) assert.ok(Math.abs(frame.mediaTime - [.1, .9, 1.7, 2.5][index]) < .001, JSON.stringify(frame));

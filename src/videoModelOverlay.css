@@ -4,6 +4,8 @@
 .cc-overlay-panel input[type=checkbox] {width:auto;margin:0 8px 0 0}
 .cc-overlay-panel input[type=file] {font-size:11px}
 .cc-overlay-panel button {cursor:pointer}
+.cc-overlay-panel .cc-exit {width:100%;padding:9px;margin-bottom:12px;border:1px solid #6587a4;border-radius:5px;background:#21394d;color:#e4f2ff}
+.cc-overlay-panel #ccSchemeDelete {color:#ffb2b2}
 .cc-overlay-panel .cc-actions {display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
 .cc-overlay-panel .cc-actions button {flex:1;min-width:65px}
 .cc-overlay-panel .cc-resource {padding:8px 0;border-bottom:1px solid #365069}
@@ -28,3 +30,8 @@
 /* Keep the renderer sized and interactive; only committed frame pairs are displayed. */
 .cc-video-active .cesium-widget canvas {opacity:0}
 .cc-video-presentation {position:absolute;pointer-events:none}
+
+.cc-video-editor {position:absolute;z-index:10;pointer-events:none;touch-action:none}
+.cc-cached-preview {z-index:2;object-fit:contain}
+.cc-presentation-editor textarea {width:100%;box-sizing:border-box;min-height:54px;resize:vertical}
+.cc-presentation-editor input[type=color] {height:30px;padding:1px}

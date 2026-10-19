@@ -782,7 +782,7 @@ videoModelOverlay.onSave = async (snapshot, existingId, reportProgress) => {
     { name: file.name, size: file.size, lastModified: file.lastModified, type: file.type }])) };
   if (existingId) {
     reportProgress?.({ phase: "committing", loaded: 0, total: 0 });
-    await projectLibrary!.updateVideoOverlaySettings(existingId, settings);
+    await projectLibrary!.updateVideoOverlaySettings(existingId, settings, snapshot.files.pos);
     return existingId;
   }
   const previous = videoOverlaySaveDraft;
@@ -791,14 +791,14 @@ videoModelOverlay.onSave = async (snapshot, existingId, reportProgress) => {
   const id = retrying && previous ? previous.id : crypto.randomUUID();
   videoOverlaySaveDraft = { id, files: { ...snapshot.files } };
   if (projectLibrary!.records.has(id)) {
-    await projectLibrary!.updateVideoOverlaySettings(id, settings);
+    await projectLibrary!.updateVideoOverlaySettings(id, settings, snapshot.files.pos);
   } else {
     const files = Object.fromEntries(Object.entries(snapshot.files).map(([slot, file]) => [slot, { name: file.name, blob: file }]));
     await projectLibrary!.save(id, snapshot.name, "Drone Video",
       { video: settings as unknown as Record<string, unknown> }, files, undefined, reportProgress);
     // SceneLibrary may recover the previous successful PUT after a lost response;
     // persist any subsequent edits before reporting this retry as saved.
-    if (retrying) await projectLibrary!.updateVideoOverlaySettings(id, settings);
+    if (retrying) await projectLibrary!.updateVideoOverlaySettings(id, settings, snapshot.files.pos);
   }
   if (videoOverlaySaveDraft?.id === id) videoOverlaySaveDraft = undefined;
   return id;
@@ -814,7 +814,7 @@ function renderVideoOverlaySchemes(): void {
   const selected = schemes.some(scheme => scheme.id === previous) ? previous : projectLibrary?.activeVideoRecordId;
   select.value = selected && schemes.some(scheme => scheme.id === selected) ? selected : "";
   select.disabled = videoSchemeActionBusy;
-  for (const id of ["ccSchemeOpen", "ccSchemeCopy"]) {
+  for (const id of ["ccSchemeOpen", "ccSchemeCopy", "ccSchemeDelete"]) {
     const button = document.querySelector<HTMLButtonElement>(`#${id}`); if (button) button.disabled = videoSchemeActionBusy || !select.value;
   }
   const refresh = document.querySelector<HTMLButtonElement>("#ccSchemeRefresh"); if (refresh) refresh.disabled = videoSchemeActionBusy;
@@ -836,6 +836,21 @@ async function openVideoOverlayScheme(copy: boolean): Promise<void> {
 document.getElementById("ccSchemeList")?.addEventListener("change", renderVideoOverlaySchemes);
 document.getElementById("ccSchemeOpen")?.addEventListener("click", () => { void openVideoOverlayScheme(false); });
 document.getElementById("ccSchemeCopy")?.addEventListener("click", () => { void openVideoOverlayScheme(true); });
+async function deleteVideoOverlayScheme(): Promise<void> {
+  const id = document.querySelector<HTMLSelectElement>("#ccSchemeList")?.value;
+  if (!id || videoSchemeActionBusy) return;
+  videoSchemeActionBusy = true; renderVideoOverlaySchemes();
+  try {
+    videoModelOverlay?.setPanelActive(false);
+    // Drain autosave before deleting, so an in-flight first upload cannot recreate it.
+    await videoModelOverlay?.flushPendingSave();
+    const scheme = projectLibrary!.listVideoOverlaySchemes().find(item => item.id === id);
+    if (!scheme) throw new Error("方案已不存在，请刷新列表");
+    if (await projectLibrary!.delete(id)) toast("融合方案已删除");
+  } catch (error) { toast(error instanceof Error ? error.message : String(error), true); }
+  finally { videoSchemeActionBusy = false; renderVideoOverlaySchemes(); }
+}
+document.getElementById("ccSchemeDelete")?.addEventListener("click", () => { void deleteVideoOverlayScheme(); });
 document.getElementById("ccSchemeRefresh")?.addEventListener("click", () => {
   if (videoSchemeActionBusy) return;
   videoSchemeActionBusy = true; renderVideoOverlaySchemes();

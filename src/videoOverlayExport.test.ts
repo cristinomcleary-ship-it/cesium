@@ -10,13 +10,13 @@ const options = (overrides: Partial<VideoOverlayExportOptions> = {}): VideoOverl
   overlayCanvas: {} as HTMLCanvasElement, range: { start: 1, end: 4 }, ...overrides,
 });
 
-test('export planning preserves aspect, defaults to 1080p, and bounds dimensions, time and memory', () => {
-  assert.deepEqual([planVideoOverlayExport(options()).width, planVideoOverlayExport(options()).height], [1920, 1080]);
+test('export planning preserves aspect, defaults to native resolution, and bounds dimensions, time and memory', () => {
+  assert.deepEqual([planVideoOverlayExport(options()).width, planVideoOverlayExport(options()).height], [3840, 2160]);
   assert.deepEqual([planVideoOverlayExport(options({ resolution: '720p' })).width, planVideoOverlayExport(options({ resolution: '720p' })).height], [1280, 720]);
   const portrait = options({ video: { duration: 20, videoWidth: 2160, videoHeight: 3840 } as HTMLVideoElement });
-  assert.deepEqual([planVideoOverlayExport(portrait).width, planVideoOverlayExport(portrait).height], [1080, 1920]);
+  assert.deepEqual([planVideoOverlayExport(portrait).width, planVideoOverlayExport(portrait).height], [2160, 3840]);
   const small = planVideoOverlayExport(options({ video: { duration: 20, videoWidth: 641, videoHeight: 361 } as HTMLVideoElement }));
-  assert.deepEqual([small.width, small.height], [640, 360]);
+  assert.deepEqual([small.width, small.height], [641, 361]);
   assert.throws(() => planVideoOverlayExport(options({ range: { start: 4, end: 1 } })), /时间范围/);
   assert.throws(() => planVideoOverlayExport(options({ range: { start: 1, end: 21 } })), /时间范围/);
   assert.throws(() => planVideoOverlayExport(options({ maxBytes: 1024 * 1024 })), /大小上限/);
@@ -133,13 +133,13 @@ test('cancel and abort discard incomplete recordings and release every owned tra
 
 test('incomplete intervals, background tabs, backwards clocks and oversized output fail closed', async t => {
   const env = installBrowser(t);
-  const make = () => createVideoOverlayExport(options({ video: env.video, range: { start: 0, end: 3 }, maxBytes: 1024 * 1024 }));
+  const make = () => createVideoOverlayExport(options({ video: env.video, range: { start: 0, end: 3 }, maxBytes: 2 * 1024 * 1024 }));
   const incomplete = make(); incomplete.commitFrame(0); await assert.rejects(incomplete.finish(), /录制完整/);
   const background = make(); env.documentMock.hidden = true; env.documentMock.dispatchEvent(new Event('visibilitychange'));
   await assert.rejects(background.done, /前台/); env.documentMock.hidden = false;
   const backwards = make(); backwards.commitFrame(0); backwards.commitFrame(1); backwards.commitFrame(.5);
   await assert.rejects(backwards.done, /时间倒退/);
-  const oversized = make(); oversized.commitFrame(0); env.Recorder.instances.at(-1)!.data(new Blob([new Uint8Array(1024 * 1024 + 1)]));
+  const oversized = make(); oversized.commitFrame(0); env.Recorder.instances.at(-1)!.data(new Blob([new Uint8Array(2 * 1024 * 1024 + 1)]));
   await assert.rejects(oversized.done, /大小上限/);
 });
 
