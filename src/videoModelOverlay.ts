@@ -613,7 +613,7 @@ export class VideoModelOverlay {
     parent.classList.add('cc-video-active');
     this.badge = document.createElement('div'); this.badge.className = 'cc-video-status'; parent.append(this.badge);
     this.controls = document.createElement('div'); this.controls.className = 'cc-video-controls';
-    this.controls.innerHTML = '<button data-cc-play type="button">播放</button><button data-cc-back type="button">上一关键帧</button><button data-cc-next type="button">下一关键帧</button><input data-cc-seek aria-label="视频进度" type="range" min="0" step="0.001"><span class="cc-clock"></span><select data-cc-speed aria-label="倍速"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select><button data-cc-full type="button">全屏</button><button data-cc-exit type="button">退出 AR · 释放资源</button>';
+    this.controls.innerHTML = '<input data-cc-seek aria-label="视频进度" type="range" min="0" step="0.001"><div class="cc-video-buttons"><button data-cc-play type="button">播放</button><button data-cc-back type="button">上一关键帧</button><button data-cc-next type="button">下一关键帧</button><span class="cc-clock"></span><select data-cc-speed aria-label="倍速"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select><button data-cc-full type="button">全屏</button><button data-cc-exit type="button">退出 AR · 释放资源</button></div>';
     this.controls.querySelector('[data-cc-play]')!.addEventListener('click', () => {
       if (this.cachedPreview) { this.playCachedPreview(); return; }
       if (this.wantedPlaying) { this.wantedPlaying = false; this.video.pause(); } else { this.wantedPlaying = true; void this.video.play().catch(e => this.fail(e)); } this.updatePlayback();

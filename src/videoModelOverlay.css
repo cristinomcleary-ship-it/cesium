@@ -19,9 +19,10 @@
 .cc-video-backdrop video {position:absolute;object-fit:contain;pointer-events:none}
 .cc-video-active .topbar,.cc-video-active #modelTools,.cc-video-active .cesium-viewer-toolbar {display:none!important}
 .cc-video-active .cesium-viewer,.cc-video-active .cesium-widget {background:transparent!important}
-.cc-video-controls {position:absolute;left:12px;right:12px;bottom:8px;z-index:12;padding:10px;background:#101e30f5;border:1px solid #38526c;border-radius:8px;display:flex;align-items:center;gap:8px;color:#dceafa;font-size:12px}
-.cc-video-controls input[type=range] {flex:1;min-width:50px}
-.cc-video-controls button,.cc-video-controls select {padding:6px 8px;border:1px solid #38526c;background:#1b324a;color:#e4f2ff;border-radius:4px;cursor:pointer}
+.cc-video-controls {position:absolute;left:12px;right:12px;bottom:8px;z-index:12;padding:10px;background:#101e30f5;border:1px solid #38526c;border-radius:8px;display:flex;flex-direction:column;gap:8px;color:#dceafa;font-size:12px}
+.cc-video-controls input[type=range] {width:100%;min-width:0;flex:none}
+.cc-video-controls .cc-video-buttons {display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.cc-video-controls button,.cc-video-controls select {padding:6px 8px;border:1px solid #38526c;background:#1b324a;color:#e4f2ff;border-radius:4px;cursor:pointer;flex:0 0 auto;width:auto}
 .cc-video-controls .cc-clock {white-space:nowrap}
 .cc-video-status {position:absolute;top:10px;left:12px;z-index:12;background:#101e30e8;color:#cfe5fa;border:1px solid #38526c;padding:8px 12px;border-radius:5px;font-size:12px;pointer-events:none}
 .cc-video-active [data-cc-drag=horizontal] canvas {cursor:move}
