@@ -107,12 +107,14 @@ try {
   owner.cachedPreview = { url: previewUrl, start: 0, end: 1, revision: 0, video: {
     currentTime: 0, pause() { cachePaused++; }, removeAttribute() {}, load() {}, remove() { cacheReleased++; },
   } };
-  owner.resumeRenderLoop = true; viewer.useDefaultRenderLoop = false; owner.presentation.style.visibility = 'hidden';
+  // Cached playback now releases its 3D session and leaves the map loop alone.
+  // Keep a live canvas in this harness too, to check synchronous revocation of both pixel owners.
+  viewer.useDefaultRenderLoop = true; owner.presentation.style.visibility = '';
   permissions.models = false;
   host.renderWorkbenchMachinery(); // Existing session-change callback; no playback frame is delivered.
   assert.equal(owner.cachedPreview, undefined, 'revocation removes the baked preview containing restricted model pixels');
   assert.equal(cachePaused, 1); assert.equal(cacheReleased, 1);
-  assert.equal(viewer.useDefaultRenderLoop, true, 'revocation restores the original render loop');
+  assert.equal(viewer.useDefaultRenderLoop, true, 'revocation preserves the independent map render loop');
   assert.equal(owner.presentation.style.visibility, '', 'the sanitized live composition replaces the restricted baked video');
   assert.equal(gpuClearCalls, 1, 'revocation synchronously clears the compositor before another scene render');
   assert.equal(presentedPixels, 'source-video', 'revocation removes cached restricted pixels before another render');

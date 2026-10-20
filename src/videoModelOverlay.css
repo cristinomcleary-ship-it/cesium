@@ -36,3 +36,6 @@
 .cc-cached-preview {z-index:2;object-fit:contain}
 .cc-presentation-editor textarea {width:100%;box-sizing:border-box;min-height:54px;resize:vertical}
 .cc-presentation-editor input[type=color] {height:30px;padding:1px}
+
+/* A finished movie is independent of the shared Cesium canvas. */
+.cc-cache-backdrop {z-index:9}
