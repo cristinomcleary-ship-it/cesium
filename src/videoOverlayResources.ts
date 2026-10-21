@@ -489,6 +489,76 @@ export class VideoOverlayResources {
     return entry ? this.item(entry, this.importIndex()) : undefined;
   }
 
+  /** Annotation coordinates belong to the resource, never to a video frame.
+   * Models use their native model frame. CAD uses a small ENU frame around its
+   * source geometry; the current primitive/AR transform is applied afterwards.
+   */
+  spatialFrame(id: string): Matrix4 | undefined {
+    const entry = this.entries.get(id);
+    if (!entry || !entry.center || !this.available(entry, this.importIndex())) return undefined;
+    if (entry.record.kind !== 'CAD') {
+      const target = entry.target as MatrixResource & { scale?: number };
+      const matrix = Matrix4.clone(target.modelMatrix);
+      // Cesium's Model.scale is separate from modelMatrix. Imported engineering
+      // models disable minimumPixelSize, so this is their exact render scale.
+      return entry.record.kind === 'Model' && Number.isFinite(target.scale) && target.scale! > 0
+        ? Matrix4.multiplyByUniformScale(matrix, target.scale!, matrix) : matrix;
+    }
+    const binding = entry.matrices[0];
+    if (binding) {
+      const sourceCenter = Matrix4.multiplyByPoint(Matrix4.inverse(binding.original, new Matrix4()), entry.center, new Cartesian3());
+      const sourceFrame = Transforms.eastNorthUpToFixedFrame(sourceCenter);
+      return Matrix4.multiply(binding.resource.modelMatrix, sourceFrame, new Matrix4());
+    }
+    const adjustment = this.adjustments.get(id) ?? noAdjustment();
+    return Matrix4.multiply(videoOverlayAdjustmentMatrix(entry.center, adjustment), Transforms.eastNorthUpToFixedFrame(entry.center), new Matrix4());
+  }
+
+  spatialVisible(id: string): boolean {
+    const entry = this.entries.get(id);
+    return !!entry && this.visible && this.selected.has(id) && id !== this.occlusion?.sourceId
+      && this.available(entry, this.importIndex()) && entry.target.show && this.opacityStates.get(id)?.visible !== false;
+  }
+
+  /** Verify the pick's real resource identity, not a coincident feature name. */
+  spatialOwnsPick(id: string, picked: unknown): boolean {
+    const entry = this.entries.get(id);
+    if (!entry || !picked || typeof picked !== 'object' || !this.spatialVisible(id)) return false;
+    const hit = picked as { primitive?: unknown; id?: unknown; tileset?: unknown; content?: { tileset?: unknown } };
+    if (hit.primitive === entry.target || hit.tileset === entry.target || hit.content?.tileset === entry.target) return true;
+    if (entry.dataSource?.entities.values.some(entity => entity === hit.id)) return true;
+    let owned = false;
+    eachPrimitive(entry.target, primitive => {
+      if (primitive === hit.primitive) owned = true;
+      if (primitive instanceof LabelCollection) {
+        for (let index = 0; index < primitive.length; index++) {
+          const label = primitive.get(index);
+          if (label === hit.primitive || hit.id !== undefined && label.id === hit.id) owned = true;
+        }
+      }
+    });
+    return owned;
+  }
+
+  /** Exact currently rendered CAD line geometry, scoped to the picked feature.
+   * Retained CPU line data is used because line depth can resolve to the surface
+   * behind a thin CAD stroke. Never turn that unrelated depth into an anchor.
+   */
+  spatialPickedLines(id: string, picked: unknown): Cartesian3[][] {
+    const entry = this.entries.get(id);
+    if (!entry || entry.record.kind !== 'CAD' || !this.spatialOwnsPick(id, picked)) return [];
+    const hit = picked as { primitive?: MatrixResource; id?: unknown };
+    if (entry.dataSource) {
+      const entity = entry.dataSource.entities.values.find(value => value === hit.id);
+      const points = entity?.polyline?.positions?.getValue(this.options.viewer.clock.currentTime) as Cartesian3[] | undefined;
+      return points?.every(finitePoint) ? [points.map(point => Cartesian3.clone(point))] : [];
+    }
+    const source = entry.target as VisibleResource & { cadPolylineFeatures?: { entity: unknown; positions: Cartesian3[] }[] };
+    const feature = source.cadPolylineFeatures?.find(value => value.entity === hit.id);
+    const matrix = hit.primitive?.modelMatrix;
+    return feature && matrix ? [feature.positions.map(point => Matrix4.multiplyByPoint(matrix, point, new Cartesian3()))] : [];
+  }
+
   /** A separate depth role; it does not edit texture selection or persisted positioning. */
   setOcclusion(sourceId?: string): void {
     this.throwIfCancelled();

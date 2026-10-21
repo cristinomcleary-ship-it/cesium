@@ -1,6 +1,6 @@
 import * as Cesium from 'cesium';
 import { Cartesian2, Cartesian3, Cartesian4, PixelDatatype, PixelFormat, PostProcessStage, type Scene } from 'cesium';
-import { undistortPixel, type CameraIntrinsics, type LensDistortion } from './videoArCamera';
+import { undistortPixel, type CameraIntrinsics, type LensDistortion } from './videoArCamera.ts';
 
 /** Bounds in ideal optical right/down coordinates. Includes every sampled border ray. */
 export function overlayLensBounds(k: CameraIntrinsics, lens: LensDistortion) {

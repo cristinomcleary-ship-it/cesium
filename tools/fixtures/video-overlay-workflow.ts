@@ -4,6 +4,8 @@ import { VideoModelOverlay, videoModelOverlayPanelHtml, type SavedVideoOverlaySe
 import { VideoOverlayPlaybackCompositor } from '../../src/videoOverlayPlaybackCompositor';
 import type { ImportRecord } from '../../src/types';
 import type { LibraryRecord } from '../../src/projectLibrary';
+import type { SpatialAnnotation } from '../../src/videoOverlaySpatialAnnotations';
+import type { VideoOverlaySpatialBinding } from '../../src/videoOverlaySpatialBinding';
 
 // Synthetic geometry only. The requested plane URI is fulfilled by Playwright,
 // allowing an actual pending 3D Tiles content request to test fail-closed loading.
@@ -96,9 +98,12 @@ const overlay = new VideoModelOverlay(viewer, { getImports: () => imports, getRe
 type Internal = {
   video: HTMLVideoElement; presentation?: HTMLCanvasElement; compositor?: VideoOverlayPlaybackCompositor;
   pendingTime?: number; presentedTime?: number; lastFrameTime: number; buffering: boolean; wantedPlaying: boolean;
-  resources?: { getOcclusionStatus(): { ready: boolean; [key: string]: unknown } }; frameHandle?: number; animationHandle?: number;
+  resources?: { getOcclusionStatus(): { ready: boolean; [key: string]: unknown }; spatialFrame(id: string): Matrix4 | undefined }; frameHandle?: number; animationHandle?: number;
   cachedPreview?: { video: HTMLVideoElement; start: number; end: number }; editorCanvas?: HTMLCanvasElement;
   editRevision: number; annotations: unknown[]; effects: unknown[];
+  spatialAnnotations: SpatialAnnotation[]; spatialBinding: VideoOverlaySpatialBinding;
+  spatialEditor: { setValue(marks: SpatialAnnotation[]): void };
+  dirty(): void; renderFrame(time: number): void;
   captureSnapshot(): { settings: SavedVideoOverlaySettings };
 };
 const internal = overlay as unknown as Internal;
@@ -237,14 +242,15 @@ function dimensions() {
     cached: cached ? [cached.videoWidth, cached.videoHeight] : null,
     cachedTime: cached ? cached.currentTime : null, cachedPaused: cached?.paused ?? null,
     cachedSrc: cached?.getAttribute('src') ?? null, cachedDom: document.querySelectorAll('.cc-cached-preview').length,
-    editorDom: document.querySelectorAll('.cc-video-editor').length };
+    editorDom: document.querySelectorAll('.cc-video-editor').length,
+    spatialEditorDom: document.querySelectorAll('.cc-video-spatial-editor').length };
 }
 function snapshot() {
   return { active: overlay.active, modelStates: models.map((model, index) => ({ id: imports[index].id, show: model.show, ready: model.ready,
       color: model.color ? [model.color.red, model.color.green, model.color.blue, model.color.alpha] : null,
       commandsBuilt: (model as unknown as { _drawCommandsBuilt: boolean })._drawCommandsBuilt,
       shader: model.customShader ? { translucencyMode: model.customShader.translucencyMode,
-        uniforms: Object.fromEntries(Object.entries(model.customShader.uniforms).map(([key, value]) => [key, value.value])) } : null })), renderer: renderer(), dimensions: dimensions(), editRevision: internal.editRevision, annotations: structuredClone(internal.annotations), effects: structuredClone(internal.effects), modelReady: models.every(model => model.ready), lifecycle: lifecycle(), geometry: geometry(),
+        uniforms: Object.fromEntries(Object.entries(model.customShader.uniforms).map(([key, value]) => [key, value.value])) } : null })), renderer: renderer(), dimensions: dimensions(), editRevision: internal.editRevision, annotations: structuredClone(internal.annotations), spatialAnnotations: structuredClone(internal.spatialAnnotations ?? []), effects: structuredClone(internal.effects), modelReady: models.every(model => model.ready), lifecycle: lifecycle(), geometry: geometry(),
     mediaTime: video.currentTime, mediaSrc: video.getAttribute('src'), paused: video.paused, seeking: video.seeking,
     presentedTime: internal.presentedTime ?? null, pendingTime: internal.pendingTime ?? null,
     buffering: internal.buffering, wantedPlaying: internal.wantedPlaying, status: internal.resources?.getOcclusionStatus() ?? null,
@@ -258,6 +264,22 @@ function snapshot() {
 }
 (window as unknown as { __workflow: unknown }).__workflow = {
   snapshot, pixels, lifecycle, geometry, presentationHash,
+  spatial: {
+    fromWorld(targetId: string, point: { x: number; y: number; z: number }) {
+      const frame = internal.resources?.spatialFrame(targetId);
+      if (!frame) throw new Error('No current target frame');
+      const local = Matrix4.multiplyByPoint(Matrix4.inverse(frame, new Matrix4()), world(point.x, point.y, point.z), new Cartesian3());
+      return { x: local.x, y: local.y, z: local.z };
+    },
+    project(targetId: string, point: { x: number; y: number; z: number }) { return internal.spatialBinding.project(targetId, point); },
+    pick(targetId: string, x: number, y: number) { return internal.spatialBinding.pick(targetId, x, y); },
+    set(marks: SpatialAnnotation[]) { internal.spatialAnnotations = structuredClone(marks); internal.spatialEditor.setValue(marks); internal.dirty(); internal.renderFrame(internal.lastFrameTime); },
+    counts() {
+      const data = presentationPixels(); let magenta = 0;
+      if (data) for (let i = 0; i < data.length; i += 4) if (data[i] > 190 && data[i + 1] < 70 && data[i + 2] > 190) magenta++;
+      return { magenta };
+    },
+  },
   resetMediaStats() { pauseCalls = 0; playCalls = 0; cpuVideoCopies = 0; },
   sample(x: number, y: number) { const canvas = internal.presentation!; return [...presentationPixels(Math.floor(x * canvas.width), Math.floor(y * canvas.height), 1, 1)!]; },
   setDepthMode(mode: typeof depthMode) { depthMode = mode; patchDepth(); viewer.scene.requestRender(); },

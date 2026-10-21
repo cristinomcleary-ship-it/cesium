@@ -13,6 +13,9 @@ import { VideoOverlayAutosave } from './videoOverlayAutosave';
 import { drawVideoOverlayAnnotations, videoOverlayAnnotationState, validateVideoOverlayAnnotation, type VideoOverlayAnnotation } from './videoOverlayAnnotations';
 import { evaluateVideoOverlayEffects, validateVideoOverlayEffects, type SavedVideoOverlayEffect } from './videoOverlayEffects';
 import { VideoOverlayPresentationEditor } from './videoOverlayPresentationEditor';
+import { drawSpatialAnnotations, validateSpatialAnnotations, type SpatialAnnotation } from './videoOverlaySpatialAnnotations';
+import { VideoOverlaySpatialBinding } from './videoOverlaySpatialBinding';
+import { VideoOverlaySpatialEditor } from './videoOverlaySpatialEditor';
 import { VideoOverlayPlaybackCompositor } from './videoOverlayPlaybackCompositor';
 import { captureVideoOverlayRenderTargets } from './videoOverlayRenderTargets';
 import { prepareNativeVideoCache } from './videoOverlayNativeCache';
@@ -20,7 +23,7 @@ import { VideoOverlayCacheStore, hashVideoOverlayInputs } from './videoOverlayCa
 import { VideoOverlayLifecycle } from './videoOverlayLifecycle';
 import './videoModelOverlay.css';
 
-export const VIDEO_OVERLAY_BUILD = '2026.10.20-R4';
+export const VIDEO_OVERLAY_BUILD = '2026.10.21-R5-spatial';
 
 export type SavedVideoOverlaySettings = {
   schemeName?: string;
@@ -32,6 +35,7 @@ export type SavedVideoOverlaySettings = {
   occlusion?: SavedVideoOverlayOcclusion;
   posTiming?: { frameRate: number; firstTime: number };
   annotations?: VideoOverlayAnnotation[];
+  spatialAnnotations?: SpatialAnnotation[];
   effects?: SavedVideoOverlayEffect[];
 };
 type SaveProgress = { phase: 'uploading' | 'committing'; loaded: number; total: number };
@@ -101,6 +105,7 @@ export const videoModelOverlayPanelHtml = `
   <div class="cc-actions"><button id="ccUndo" type="button">撤销</button><button id="ccRedo" type="button">重做</button><button id="ccReset" type="button">重置对象微调</button></div>
   <label>叠加透明度<input id="ccOpacity" type="range" min="0" max="1" step="0.01" value="0.8"></label>
   <small>位置微调对整段视频生效，保存在当前视频方案中。</small>
+  <div id="ccSpatialEditor"></div>
   <div id="ccPresentationEditor"></div>
   <div class="cc-actions"><button id="ccSave" class="primary" type="button">保存融合方案</button></div><small id="ccSavedState">尚未保存</small>
   <details><summary>导出融合视频</summary><small id="ccExportRange">载入视频与空三后显示实际可导出范围。</small><small>导出保持源视频每帧时间和原分辨率，不转换帧率。</small><label><input id="ccExportAudio" type="checkbox" checked>保留原视频音轨（支持时）</label><div class="cc-fields"><label>开始（秒，空白为首个定位）<input id="ccExportStart" type="number" min="0" step="0.001"></label><label>结束（秒，空白为末个定位）<input id="ccExportEnd" type="number" min="0" step="0.001"></label></div><div class="cc-actions"><button id="ccExport" type="button">导出融合视频</button><button id="ccExportCancel" type="button" disabled>取消</button></div><small id="ccExportStatus">默认导出完整融合缓存：原分辨率、源视频每帧时间，边编码边写入本机磁盘，容量取决于可用空间。首次生成需要等待；已有有效缓存时直接导出，不重复计算。</small></details>
@@ -163,6 +168,10 @@ export class VideoModelOverlay {
   private extractionTask?: Promise<void>;
   private lastPresentationKey = '';
   private annotations: VideoOverlayAnnotation[] = [];
+  private spatialAnnotations: SpatialAnnotation[] = [];
+  private spatialBinding: VideoOverlaySpatialBinding;
+  private spatialEditor: VideoOverlaySpatialEditor;
+  private spatialCanvas?: HTMLCanvasElement;
   private effects: SavedVideoOverlayEffect[] = [];
   private presentationEditor: VideoOverlayPresentationEditor;
   private editorCanvas?: HTMLCanvasElement;
@@ -236,6 +245,22 @@ export class VideoModelOverlay {
       getDuration: () => this.metadata?.duration ?? 60, onChange: (annotations, effects) => {
         this.annotations = annotations; this.effects = effects; this.dirty(); this.lastPresentationKey = ''; this.renderFrame(this.lastFrameTime);
       } });
+    this.spatialBinding = new VideoOverlaySpatialBinding({ viewer: this.viewer, resources: () => this.resources,
+      intrinsics: () => this.track?.intrinsics, lens: () => this.track?.distortion });
+    this.spatialEditor = new VideoOverlaySpatialEditor({ root: this.el('ccSpatialEditor'),
+      getTime: () => this.lastFrameTime, getDuration: () => this.metadata?.duration ?? 60,
+      onBeginPick: () => {
+        if (this.cacheTask || this.cachedPreview || !this.restoreScene) throw new Error('请先进入融合编辑，再暂停到需要标绘的画面；缓存播放时请点击“返回融合编辑”并进入 AR');
+        this.wantedPlaying = false; this.video.pause(); this.updatePlayback();
+        if (this.seeking || this.buffering || this.presentedTime === undefined || this.pendingTime !== this.presentedTime) throw new Error('当前画面仍在准备，请等待融合画面完成后再标绘');
+        if (!this.track?.sample(this.presentedTime)) throw new Error('当前画面没有有效的相机定位，无法标定结构');
+      },
+      pick: (targetId, u, v) => {
+        if (!this.restoreScene || this.cachedPreview || this.cacheTask || this.seeking || this.buffering || this.pendingTime !== this.presentedTime) throw new Error('请等待当前融合帧准备完成后再选点');
+        return this.spatialBinding.pick(targetId, u, v);
+      },
+      onChange: marks => { this.spatialAnnotations = marks; this.dirty(); this.lastPresentationKey = ''; this.renderFrame(this.lastFrameTime); },
+    });
     this.bind('ccBuildPreview', 'click', () => { void this.prepareCachedPlayback().catch(e => this.fail(e)); });
     this.bind('ccCacheCancel', 'click', () => this.cacheLifecycle?.abort());
     this.bind('ccClearPreview', 'click', () => this.clearCachedPreview());
@@ -309,7 +334,7 @@ export class VideoModelOverlay {
     this.listen(window, 'pointerup', () => { this.dragging = undefined; });
     this.listen(window, 'blur', () => { this.dragging = undefined; });
     this.listen(this.viewer.canvas, 'webglcontextlost', () => { if (this.active) { this.leave(); this.fail(new Error('显卡渲染上下文已丢失，请恢复后重新进入融合')); } });
-    this.listen(window, 'keydown', event => { if ((event as KeyboardEvent).key === 'Escape' && this.active) this.leave(); });
+    this.listen(window, 'keydown', event => { if ((event as KeyboardEvent).key === 'Escape' && !event.defaultPrevented && !this.spatialEditor.editing && this.active) this.leave(); });
     this.refreshResources();
     this.listen(document, 'visibilitychange', () => { if (document.hidden && this.active && !this.cacheTask) { this.wantedPlaying = false; this.video.pause(); this.cachedPreview?.video.pause(); } });
   }
@@ -319,7 +344,7 @@ export class VideoModelOverlay {
   private number(id: string) { const raw = this.el<HTMLInputElement>(id).value.trim(); return raw ? Number(raw) : NaN; }
   private fail(error: unknown) { if (error instanceof DOMException && error.name === 'AbortError') return; const message = error instanceof Error ? error.message : String(error); this.el('ccOverlayInfo').textContent = message; this.options.notify(message, true); }
   private dirty(invalidateCache = true) {
-    if (invalidateCache) { this.cacheLifecycle?.abort(); this.clearCachedPreview(); }
+    if (invalidateCache) { this.spatialEditor?.cancelPicking(); this.cacheLifecycle?.abort(); this.clearCachedPreview(); }
     ++this.editRevision; this.el('ccSavedState').textContent = '有未保存的更改';
     clearTimeout(this.autosaveTimer);
     if (this.autoSaveReady) this.autosaveTimer = window.setTimeout(() => { void this.queueSave().catch(() => {}); }, 800);
@@ -333,7 +358,7 @@ export class VideoModelOverlay {
   }
   private pickFile(slot: string, file?: File) {
     if (!file) return; this.leave(); this.autoSaveReady = false; this.accessInvalid = false; ++this.sessionGeneration; ++this.inputGeneration; this.exit(); this.mediaLoad?.cancel(); this.files = { ...this.files, [slot]: file }; this.savedId = undefined; this.dataset = undefined; this.track = undefined;
-    if (slot === 'video') { this.annotations = []; this.effects = []; this.presentationEditor.setValue([], []); this.manifest = undefined; delete this.files.manifest; delete this.files.pos; this.el<HTMLInputElement>('ccPosFile').value = ''; this.resumeTime = 0; this.metadata = undefined; }
+    if (slot === 'video') { this.annotations = []; this.effects = []; this.presentationEditor.setValue([], []); this.spatialAnnotations = []; this.spatialEditor.setValue([]); this.manifest = undefined; delete this.files.manifest; delete this.files.pos; this.el<HTMLInputElement>('ccPosFile').value = ''; this.resumeTime = 0; this.metadata = undefined; }
     this.el<HTMLInputElement>('ccSchemeName').value = `${this.files.video?.name ?? '视频'} · CC 融合`;
     this.sceneReference = undefined; this.refreshSceneReferences();
     this.cameraRegistration = defaultCcCameraRegistration(); this.cameraAnchor = undefined; this.cameraCorrection = Matrix4.toArray(Matrix4.IDENTITY); this.syncCameraInputs();
@@ -652,6 +677,7 @@ export class VideoModelOverlay {
     this.originalContainerStyle = this.container.style.cssText;
     this.backdrop = document.createElement('div'); this.backdrop.className = 'cc-video-backdrop'; this.backdrop.append(this.video); this.compositor = new VideoOverlayPlaybackCompositor(this.video.videoWidth, this.video.videoHeight, { allowSourceScaling: true, allowOverlayRounding: true, onContextLost: () => { if (this.active) { this.leave(); this.fail(new Error('融合画面 GPU 上下文已丢失，请重新进入 AR')); } } }); this.presentation = this.compositor.canvas; this.presentation.className = 'cc-video-presentation'; this.backdrop.append(this.presentation); parent.prepend(this.backdrop);
     this.editorCanvas = document.createElement('canvas'); this.editorCanvas.className = 'cc-video-editor'; parent.append(this.editorCanvas); this.presentationEditor.mount(this.editorCanvas);
+    this.spatialCanvas = document.createElement('canvas'); this.spatialCanvas.className = 'cc-video-spatial-editor'; parent.append(this.spatialCanvas); this.spatialEditor.mount(this.spatialCanvas);
     parent.classList.add('cc-video-active');
     this.badge = document.createElement('div'); this.badge.className = 'cc-video-status'; parent.append(this.badge);
     this.mountControls(parent);
@@ -689,16 +715,18 @@ export class VideoModelOverlay {
       Object.assign(this.cachedPreview.video.style, { position: 'absolute', left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
       return; // Cached playback never resizes or allocates the map's render targets.
     }
-    for (const e of [this.video, this.container, this.presentation!, this.editorCanvas!]) Object.assign(e.style, { position: 'absolute', left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+    for (const e of [this.video, this.container, this.presentation!, this.editorCanvas!, this.spatialCanvas!]) Object.assign(e.style, { position: 'absolute', left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
     this.viewer.resolutionScale = 1; this.viewer.resize();
     const targetWidth = this.video.videoWidth, targetHeight = this.video.videoHeight;
     this.viewer.resolutionScale = Math.max((targetWidth + 0.001) / Math.max(1, this.viewer.canvas.width), (targetHeight + 0.001) / Math.max(1, this.viewer.canvas.height)); this.viewer.resize();
     this.compositor?.resize(targetWidth, targetHeight);
     this.compositor?.setOverlayRoundingPixels(Math.ceil(Math.max(targetWidth / Math.max(1, this.viewer.canvas.clientWidth), targetHeight / Math.max(1, this.viewer.canvas.clientHeight))) + 1);
     if (this.editorCanvas) { this.editorCanvas.width = this.video.videoWidth; this.editorCanvas.height = this.video.videoHeight; }
+    if (this.spatialCanvas) { this.spatialCanvas.width = this.video.videoWidth; this.spatialCanvas.height = this.video.videoHeight; }
     this.viewer.scene.requestRender();
   }
   private beginSeek(time: number) {
+    this.spatialEditor.cancelPicking();
     ++this.frameGeneration;
     if (this.frameHandle !== undefined) this.video.cancelVideoFrameCallback?.(this.frameHandle); this.frameHandle = undefined;
     if (this.animationHandle !== undefined) cancelAnimationFrame(this.animationHandle); this.animationHandle = undefined;
@@ -771,12 +799,14 @@ export class VideoModelOverlay {
     if (this.lastPresentationKey === presentationKey && !this.buffering && !status?.refining && this.resources?.isPresentationReady()) return;
     const width = this.presentation.width, height = this.presentation.height;
     let annotations: HTMLCanvasElement | undefined;
-    if (this.annotations.some(mark => videoOverlayAnnotationState(mark, this.pendingTime!).visible)) {
+    if (this.annotations.some(mark => videoOverlayAnnotationState(mark, this.pendingTime!).visible) || hasSample && this.spatialAnnotations.some(mark => mark.visible && this.pendingTime! >= mark.start && this.pendingTime! < mark.end)) {
       this.annotationFrame ??= document.createElement('canvas'); annotations = this.annotationFrame;
       const key = `${this.pendingTime}/${this.editRevision}/${width}/${height}`;
       if (this.annotationKey !== key) {
         if (annotations.width !== width || annotations.height !== height) { annotations.width = width; annotations.height = height; }
         const context = annotations.getContext('2d')!; context.clearRect(0, 0, width, height);
+        if (hasSample) drawSpatialAnnotations(context, this.spatialAnnotations, { width, height, mediaTime: this.pendingTime,
+          project: (id, point) => this.spatialBinding.project(id, point), targetVisible: id => this.spatialBinding.targetVisible(id) });
         drawVideoOverlayAnnotations(context, this.annotations, { width, height, mediaTime: this.pendingTime }); this.annotationKey = key;
       }
     }
@@ -929,7 +959,7 @@ export class VideoModelOverlay {
     return JSON.stringify({ algorithm: VIDEO_OVERLAY_BUILD, range, selected: [...this.selected].sort(), timing: this.readTiming(), resources,
       adjustments: this.adjustments, opacity: this.opacity, sceneReference: this.sceneReference,
       cameraRegistration: this.cameraRegistration, cameraAnchor: this.cameraAnchor, occlusion: this.occlusion,
-      annotations: this.annotations, effects: this.effects, includeAudio: this.el<HTMLInputElement>('ccExportAudio').checked,
+      annotations: this.annotations, spatialAnnotations: this.spatialAnnotations, effects: this.effects, includeAudio: this.el<HTMLInputElement>('ccExportAudio').checked,
       width: this.metadata?.width, height: this.metadata?.height });
   }
   private prepareCachedPlayback(download = false, autoplay = false): Promise<void> {
@@ -969,7 +999,7 @@ export class VideoModelOverlay {
         if (!this.restoreScene) await this.enter(true, signal);
         check(); if (!this.restoreScene || !this.compositor) throw new Error('融合渲染器尚未准备好');
         const epoch = this.epoch;
-        lock(); this.presentationEditor.unmount(); this.nativeCacheRendering = true;
+        this.presentationEditor.unmount(); this.spatialEditor.unmount(); lock(); this.nativeCacheRendering = true;
         this.wantedPlaying = false; this.video.pause();
         ++this.frameGeneration;
         if (this.frameHandle !== undefined) this.video.cancelVideoFrameCallback?.(this.frameHandle); this.frameHandle = undefined;
@@ -1061,7 +1091,7 @@ export class VideoModelOverlay {
     // A baked preview owns pixels independently of Cesium visibility. Revoke it
     // before exposing the sanitized live canvas when any selected layer is lost.
     if (this.accessInvalid) this.clearCachedPreview(false);
-    this.lastPresentationKey = '';
+    this.lastPresentationKey = ''; this.annotationKey = '';
     // The presentation canvas holds pixels independently of Cesium visibility.
     // Remove revoked objects immediately, then redraw authorized layers next frame.
     if (this.active && this.accessInvalid && !this.compositor?.clearOverlay()) this.exit();
@@ -1092,6 +1122,7 @@ export class VideoModelOverlay {
     select.replaceChildren(new Option('勾选对象整体平移', '*'));
     for (const item of this.options.getImports()) if (this.selected.has(item.id) && !this.isOcclusionSource(item.id)) select.add(new Option(item.name, item.id));
     this.presentationEditor.setTargets(this.options.getImports().filter(item => this.selected.has(item.id) && !this.isOcclusionSource(item.id)).map(item => ({ id: item.id, name: item.name })));
+    this.spatialEditor.setTargets(this.options.getImports().filter(item => this.selected.has(item.id) && !this.isOcclusionSource(item.id)).map(item => ({ id: item.id, name: item.name })));
     select.value = [...select.options].some(o => o.value === previous) ? previous : '*'; this.syncAdjustmentInputs();
   }
   private targetIds() { const target = this.el<HTMLSelectElement>('ccTarget').value; return (target === '*' ? [...this.selected] : this.selected.has(target) ? [target] : []).filter(id => !this.isOcclusionSource(id)); }
@@ -1119,7 +1150,7 @@ export class VideoModelOverlay {
   }
   private startDrag(event: PointerEvent) {
     const mode = this.el<HTMLSelectElement>('ccDragMode').value;
-    if (this.cacheTask || !this.active || mode === 'off' || event.button !== 0 || !this.targetIds().length || !this.track?.sample(this.lastFrameTime)) return;
+    if (this.spatialEditor.editing || this.cacheTask || !this.active || mode === 'off' || event.button !== 0 || !this.targetIds().length || !this.track?.sample(this.lastFrameTime)) return;
     this.wantedPlaying = false; this.video.pause(); this.pushHistory();
     const item = this.options.getImports().find(r => r.id === this.targetIds()[0]);
     const center = item?.boundingSphere?.center ?? (item?.resource as { boundingSphere?: { center: Cartesian3 } })?.boundingSphere?.center;
@@ -1154,7 +1185,7 @@ export class VideoModelOverlay {
       schemeName: name, mode: 'cc-overlay', version: 1, timing: structuredClone(this.timing), selectedIds: [...this.selected],
       adjustments: structuredClone(this.adjustments), opacity: this.opacity, currentTime: this.active ? this.presentedTime ?? this.lastFrameTime : this.resumeTime,
       videoName: this.files.video.name, videoSize: this.files.video.size, width: this.metadata.width, height: this.metadata.height,
-      annotations: structuredClone(this.annotations), effects: structuredClone(this.effects),
+      annotations: structuredClone(this.annotations), spatialAnnotations: structuredClone(this.spatialAnnotations), effects: structuredClone(this.effects),
       posTiming: { frameRate: this.number('ccPosFrameRate'), firstTime: this.number('ccPosFirstTime') },
       ...(this.sceneReference ? { sceneReference: structuredClone(this.sceneReference) } : {}),
       cameraRegistration: structuredClone({ ...this.cameraRegistration, anchor: this.cameraAnchor }), occlusion: { ...this.occlusion },
@@ -1192,6 +1223,7 @@ export class VideoModelOverlay {
     this.files = { ...files }; this.savedId = recordId; this.adjustments = structuredClone(settings.adjustments ?? {}); this.selected = new Set(settings.selectedIds ?? []); this.selectionInitialized = true;
     this.occlusion = validateVideoOverlayOcclusion(settings.occlusion);
     this.annotations = (settings.annotations ?? []).map(validateVideoOverlayAnnotation); this.effects = validateVideoOverlayEffects(settings.effects); this.presentationEditor.setValue(this.annotations, this.effects);
+    this.spatialAnnotations = validateSpatialAnnotations(settings.spatialAnnotations ?? []); this.spatialEditor.setValue(this.spatialAnnotations);
     if (settings.sceneReference) {
       if (!settings.sceneReference.recordId || typeof settings.sceneReference.recordId !== 'string') throw new Error('保存的相机坐标关联无效');
       this.sceneReference = { recordId: settings.sceneReference.recordId, matrix: [...validateCcSceneTransform(settings.sceneReference.matrix)] };
@@ -1261,7 +1293,8 @@ export class VideoModelOverlay {
           scale: resource.scale ?? null, minimumPixelSize: resource.minimumPixelSize ?? null,
           bounds: sphere ? { center: sphere.center, radius: sphere.radius } : null, adjustment: this.adjustments[item.id] ?? zero() };
       }),
-      notes: ['诊断不含视频、影像或模型文件。', '场景中的对齐不等于空三和视频已配准；应核对同源成果、时间与高程。'],
+      spatialAnnotations: structuredClone(this.spatialAnnotations),
+      notes: ['结构标绘按模型/CAD局部坐标绑定，采用汇报透视显示，不作遮挡判定。', '诊断不含视频、影像或模型文件。', '场景中的对齐不等于空三和视频已配准；应核对同源成果、时间与高程。'],
     };
   }
   private async exportDiagnostics() {
@@ -1276,7 +1309,8 @@ export class VideoModelOverlay {
     const report: typeof this.cleanupReport = { errors: [], pendingPreparation: !!this.cacheLifecycle?.pendingCount };
     this.cleanupReport = report;
     const release = (action: () => void) => { try { action(); } catch (error) { report.errors.push(error instanceof Error ? error.message : String(error)); console.warn('[CC AR] Cleanup continued after host error', error); } };
-    release(() => this.clearCachedPreview(false)); release(() => this.presentationEditor.unmount());
+    release(() => this.clearCachedPreview(false)); release(() => this.presentationEditor.unmount()); release(() => this.spatialEditor.unmount());
+    if (this.spatialCanvas) { this.spatialCanvas.width = 0; this.spatialCanvas.height = 0; this.spatialCanvas.remove(); this.spatialCanvas = undefined; }
     if (this.editorCanvas) { this.editorCanvas.width = 0; this.editorCanvas.height = 0; this.editorCanvas.remove(); this.editorCanvas = undefined; }
     ++this.epoch; ++this.frameGeneration; this.sampleVisible = undefined; const restore = this.restoreScene; this.restoreScene = undefined;
     release(() => this.extraction?.abort()); this.wantedPlaying = false; this.buffering = false;
@@ -1323,11 +1357,11 @@ export class VideoModelOverlay {
     this.sceneReference = undefined;
     this.occlusion = validateVideoOverlayOcclusion();
     this.cameraRegistration = defaultCcCameraRegistration(); this.cameraAnchor = undefined; this.cameraCorrection = Matrix4.toArray(Matrix4.IDENTITY); this.syncCameraInputs();
-    this.annotations = []; this.effects = []; this.presentationEditor.setValue([], []);
+    this.annotations = []; this.effects = []; this.presentationEditor.setValue([], []); this.spatialAnnotations = []; this.spatialEditor.setValue([]);
     this.adjustments = {}; this.undo = []; this.redo = []; this.selected.clear(); this.selectionInitialized = false;
     this.el<HTMLInputElement>('ccVideoFile').value = ''; this.el<HTMLInputElement>('ccXmlFile').value = ''; this.refreshResources();
     this.el<HTMLInputElement>('ccPosFile').value = ''; this.el<HTMLInputElement>('ccManifestFile').value = '';
     this.el('ccOverlayInfo').textContent = '选择视频与 CC 空三 XML，无需 SRT。'; this.el('ccSavedState').textContent = '尚未保存';
   }
-  destroy() { this.clear(); this.presentationEditor.destroy(); this.destroyed = true; for (const dispose of this.disposers.splice(0)) dispose(); }
+  destroy() { this.clear(); this.presentationEditor.destroy(); this.spatialEditor.destroy(); this.destroyed = true; for (const dispose of this.disposers.splice(0)) dispose(); }
 }

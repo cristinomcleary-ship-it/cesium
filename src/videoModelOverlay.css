@@ -39,3 +39,6 @@
 
 /* A finished movie is independent of the shared Cesium canvas. */
 .cc-cache-backdrop {z-index:9}
+
+/* Spatial picking is independent of the older screen-space annotation handles. */
+.cc-video-spatial-editor {position:absolute;z-index:11;pointer-events:none;touch-action:none}
