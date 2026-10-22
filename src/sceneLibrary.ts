@@ -6,7 +6,7 @@ import {
 } from "cesium";
 import { readCadImport } from "./cadImport";
 import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader";
-import { clampCadToScene, getCadBoundingSphere, loadCadImport, useSampledCadHeights } from "./dxfLoader";
+import { clampCadToScene, getCadBoundingSphere, getCadModelSamplingExclusions, loadCadImport, useSampledCadHeights } from "./dxfLoader";
 import { loadLocalImagery, type LocalImageryResult } from "./localImagery";
 import type { ModelEditor } from "./modelEditor";
 import type { ImportRecord } from "./types";
@@ -338,7 +338,8 @@ export class SceneLibrary {
         if (displayMode === "model" && !loaded.some(i => i.kind === "3D Tiles")) {
           const data = await loadCadImport(imported, s.coordinates, displayMode);
           await h.viewer.dataSources.add(data); cleanup = () => { h.viewer.dataSources.remove(data, true); };
-          await clampCadToScene(data, h.viewer.scene, 2000); useSampledCadHeights(data);
+          await clampCadToScene(data, h.viewer.scene, { objectsToExclude: getCadModelSamplingExclusions(loaded) });
+          useSampledCadHeights(data);
           h.addImport(record.name, "CAD", data, id, { representation: "dataSource", boundingSphere: getCadBoundingSphere(data) });
           data.show = record.visible;
         } else {

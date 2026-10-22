@@ -36,7 +36,7 @@ import {
 } from "cesium";
 import { cadImportFileName, readCadImport, type CadImportPackage } from "./cadImport";
 import { createCadImportFromDwgInWorker } from "./cadImportWorkerClient";
-import { clampCadToScene, getCadBoundingSphere, loadCadImport, useSampledCadHeights } from "./dxfLoader";
+import { clampCadToScene, getCadBoundingSphere, getCadModelSamplingExclusions, loadCadImport, useSampledCadHeights } from "./dxfLoader";
 import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader";
 import { loadLocalImagery, type LocalImageryResult } from "./localImagery";
 import { UnavailableMapTileDiscardPolicy } from "./imageryOverzoom";
@@ -2689,7 +2689,6 @@ $("#loadCad").addEventListener("click", async () => {
       data: { name: lowerName.endsWith(".cadimport") ? cadFile.name : cadImportFileName(cadFile.name), blob: lowerName.endsWith(".dwg") ? generatedCadImport!.blob : cadFile },
     });
     let clampedVertices = 0;
-    let skippedClampVertices = 0;
     const hasTileset = imports.some((item) => item.kind === "3D Tiles");
     const hasOrdinaryModel = imports.some((item) => item.kind === "Model");
     const requiresOrdinaryModelSampling = displayMode === "model" && !hasTileset && hasOrdinaryModel;
@@ -2712,9 +2711,10 @@ $("#loadCad").addEventListener("click", async () => {
         controller.signal,
       );
       setStatus("正在分批将 CAD 依附到模型表面…");
-      const clampResult = await clampCadToScene(dataSource, viewer.scene, 2000, controller.signal);
+      const clampResult = await clampCadToScene(dataSource, viewer.scene, {
+        signal: controller.signal, objectsToExclude: getCadModelSamplingExclusions(imports),
+      });
       clampedVertices = clampResult.clamped;
-      skippedClampVertices = clampResult.skipped;
       useSampledCadHeights(dataSource);
       cadBoundingSphere = getCadBoundingSphere(dataSource);
       featureCount = dataSource.entities.values.length;
@@ -2757,7 +2757,7 @@ $("#loadCad").addEventListener("click", async () => {
       : displayMode === "model"
         ? hasTileset
           ? "，已启用倾斜摄影实时贴附"
-          : `，已依附普通模型（采样 ${clampedVertices} 个顶点${skippedClampVertices ? `，为防止内存溢出跳过 ${skippedClampVertices} 个` : ""}）`
+          : `，已依附普通模型（采样全部 ${clampedVertices} 个顶点）`
         : "";
     toast(`CAD 已加载：${featureCount} 个对象${modeLabel}${hidden ? `，已忽略 ${hidden} 个冻结/关闭图层对象` : ""}${skipped ? `，${skipped} 个复杂或无效对象未展开` : ""}${legacyNotice}`);
   } catch (error) {

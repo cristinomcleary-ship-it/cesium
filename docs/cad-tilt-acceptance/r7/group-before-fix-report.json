@@ -1,0 +1,497 @@
+{
+  "pass": false,
+  "checks": [],
+  "browserErrors": [],
+  "loadErrors": [],
+  "error": "AssertionError [ERR_ASSERTION]: #ccHeading must work in whole-group mode\n\nfalse !== true\n\n    at file:///workspace/scratch/984f1c5e6ddb/cesium/tools/verify-video-overlay-cad-tilt.mjs:58:122",
+  "final": {
+    "active": true,
+    "camera": {
+      "height": 79.99999999859646,
+      "position": [
+        -2764162.960662568,
+        4787670.688267582,
+        3170413.735383637
+      ],
+      "direction": [
+        0.43301270187414564,
+        -0.7499999999686959,
+        -0.5000000000626086
+      ],
+      "up": [
+        0.2500000000313043,
+        -0.43301270194644015,
+        0.8660254037482915
+      ],
+      "transform": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "frustum": {
+        "fov": 1.1414614903045788,
+        "aspectRatio": 1.7734806629834254,
+        "near": 0.1,
+        "far": 100000,
+        "xOffset": 0,
+        "yOffset": 0
+      },
+      "controls": {
+        "enableInputs": false,
+        "enableTranslate": true,
+        "enableZoom": true,
+        "enableRotate": true,
+        "enableTilt": true,
+        "enableLook": true
+      }
+    },
+    "modelStates": [
+      {
+        "id": "buried-opaque",
+        "show": true,
+        "ready": true,
+        "color": null,
+        "commandsBuilt": true,
+        "shader": null
+      },
+      {
+        "id": "above-opaque",
+        "show": true,
+        "ready": true,
+        "color": null,
+        "commandsBuilt": true,
+        "shader": null
+      },
+      {
+        "id": "buried-translucent",
+        "show": true,
+        "ready": true,
+        "color": null,
+        "commandsBuilt": true,
+        "shader": null
+      },
+      {
+        "id": "above-translucent",
+        "show": true,
+        "ready": true,
+        "color": null,
+        "commandsBuilt": true,
+        "shader": null
+      },
+      {
+        "id": "remote-buried-opaque",
+        "show": true,
+        "ready": true,
+        "color": null,
+        "commandsBuilt": true,
+        "shader": null
+      },
+      {
+        "id": "remote-above-opaque",
+        "show": true,
+        "ready": true,
+        "color": null,
+        "commandsBuilt": true,
+        "shader": null
+      },
+      {
+        "id": "remote-buried-translucent",
+        "show": true,
+        "ready": true,
+        "color": null,
+        "commandsBuilt": true,
+        "shader": null
+      },
+      {
+        "id": "remote-above-translucent",
+        "show": true,
+        "ready": true,
+        "color": null,
+        "commandsBuilt": true,
+        "shader": null
+      }
+    ],
+    "renderer": {
+      "resolutionScale": 0.6808521276595745,
+      "useDefaultRenderLoop": true,
+      "requestRenderMode": true,
+      "maximumRenderTimeChange": "Infinity",
+      "shadows": false,
+      "highDynamicRange": false,
+      "cameraInputs": false,
+      "width": 640,
+      "height": 360,
+      "loadedTiles": 0,
+      "tileBytes": 0
+    },
+    "dimensions": {
+      "source": [
+        640,
+        360
+      ],
+      "gpuSource": [
+        640,
+        360
+      ],
+      "presentation": [
+        640,
+        360
+      ],
+      "cached": null,
+      "cachedTime": null,
+      "cachedPaused": null,
+      "cachedSrc": null,
+      "cachedDom": 0,
+      "editorDom": 1,
+      "spatialEditorDom": 1
+    },
+    "editRevision": 4,
+    "adjustments": {},
+    "groupAdjustment": null,
+    "annotations": [],
+    "spatialAnnotations": [],
+    "effects": [],
+    "modelReady": true,
+    "lifecycle": {
+      "preUpdate": 1,
+      "preRender": 1,
+      "postRender": 3,
+      "tileLoad": 0,
+      "tileVisible": 0,
+      "tileFailed": 1,
+      "primitives": 10,
+      "postProcesses": 1
+    },
+    "geometry": {
+      "matrices": [
+        [
+          -0.8660254037844386,
+          -0.49999999999999983,
+          0,
+          0,
+          0.24999999999999986,
+          -0.4330127018922192,
+          0.8660254037844386,
+          0,
+          -0.43301270189221924,
+          0.75,
+          0.4999999999999999,
+          0,
+          -2764113.9991383413,
+          4787609.884420005,
+          3170355.3430787916,
+          1
+        ],
+        [
+          -0.8660254037844386,
+          -0.49999999999999983,
+          0,
+          0,
+          0.24999999999999986,
+          -0.4330127018922192,
+          0.8660254037844386,
+          0,
+          -0.43301270189221924,
+          0.75,
+          0.4999999999999999,
+          0,
+          -2764148.640154493,
+          4787621.884420005,
+          3170371.3430787916,
+          1
+        ],
+        [
+          -0.8660254037844386,
+          -0.49999999999999983,
+          0,
+          0,
+          0.24999999999999986,
+          -0.4330127018922192,
+          0.8660254037844386,
+          0,
+          -0.43301270189221924,
+          0.75,
+          0.4999999999999999,
+          0,
+          -2764107.9991383413,
+          4787599.4921151595,
+          3170376.127688483,
+          1
+        ],
+        [
+          -0.8660254037844386,
+          -0.49999999999999983,
+          0,
+          0,
+          0.24999999999999986,
+          -0.4330127018922192,
+          0.8660254037844386,
+          0,
+          -0.43301270189221924,
+          0.75,
+          0.4999999999999999,
+          0,
+          -2764142.640154493,
+          4787611.4921151595,
+          3170392.127688483,
+          1
+        ],
+        [
+          -0.8660254037844386,
+          -0.49999999999999983,
+          0,
+          0,
+          0.24999999999999986,
+          -0.4330127018922192,
+          0.8660254037844386,
+          0,
+          -0.43301270189221924,
+          0.75,
+          0.4999999999999999,
+          0,
+          -2764373.8067594767,
+          4787459.884420005,
+          3170355.3430787916,
+          1
+        ],
+        [
+          -0.8660254037844386,
+          -0.49999999999999983,
+          0,
+          0,
+          0.24999999999999986,
+          -0.4330127018922192,
+          0.8660254037844386,
+          0,
+          -0.43301270189221924,
+          0.75,
+          0.4999999999999999,
+          0,
+          -2764408.447775628,
+          4787471.884420005,
+          3170371.3430787916,
+          1
+        ],
+        [
+          -0.8660254037844386,
+          -0.49999999999999983,
+          0,
+          0,
+          0.24999999999999986,
+          -0.4330127018922192,
+          0.8660254037844386,
+          0,
+          -0.43301270189221924,
+          0.75,
+          0.4999999999999999,
+          0,
+          -2764367.8067594767,
+          4787449.4921151595,
+          3170376.127688483,
+          1
+        ],
+        [
+          -0.8660254037844386,
+          -0.49999999999999983,
+          0,
+          0,
+          0.24999999999999986,
+          -0.4330127018922192,
+          0.8660254037844386,
+          0,
+          -0.43301270189221924,
+          0.75,
+          0.4999999999999999,
+          0,
+          -2764402.447775628,
+          4787461.4921151595,
+          3170392.127688483,
+          1
+        ]
+      ],
+      "cad": [
+        [
+          [
+            -2764115.159392379,
+            4787627.894038948,
+            3170399.3238409054
+          ],
+          [
+            -2764149.8004085305,
+            4787607.894038948,
+            3170399.3238409054
+          ]
+        ],
+        [
+          [
+            -2764134.979900455,
+            4787622.224165967,
+            3170390.6635868675
+          ],
+          [
+            -2764129.979900455,
+            4787613.563911929,
+            3170407.9840949434
+          ]
+        ]
+      ],
+      "tilesMatrix": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ]
+    },
+    "mediaTime": 0,
+    "mediaSrc": "blob:http://127.0.0.1:5194/26008f6e-b6f9-429b-a8d8-f7821e4edb1b",
+    "paused": true,
+    "seeking": false,
+    "presentedTime": 0,
+    "pendingTime": 0,
+    "buffering": false,
+    "wantedPlaying": false,
+    "status": {
+      "enabled": false,
+      "ready": true
+    },
+    "hasResources": true,
+    "hasSourceFrame": true,
+    "hasPresentation": true,
+    "sourceShow": false,
+    "shaderRestored": true,
+    "styleRestored": true,
+    "frameHandle": 1,
+    "animationHandle": null,
+    "pendingCallbacks": 1,
+    "callbackCount": 0,
+    "callbacksAfterExit": 0,
+    "decodedCopies": 1,
+    "pauseCalls": 0,
+    "playCalls": 0,
+    "cpuVideoCopies": 0,
+    "released": [],
+    "pairs": [
+      {
+        "time": 0,
+        "pendingTime": 0,
+        "sourceTime": 0,
+        "cameraError": 6.585445079827193e-10,
+        "sourcePtsError": 0,
+        "sequence": 1,
+        "buffered": false,
+        "depthReady": true
+      }
+    ],
+    "compositor": {
+      "sourceTime": 0,
+      "presentedTime": 0,
+      "disposed": false,
+      "lost": false
+    },
+    "presentationDom": 1,
+    "saveCount": 1,
+    "initialUploads": 1,
+    "settingsUpdates": 0,
+    "savedIds": [
+      "workflow-saved"
+    ],
+    "saved": {
+      "name": "spatial-15fps.mp4 · CC 融合",
+      "id": "workflow-saved",
+      "settings": {
+        "schemeName": "spatial-15fps.mp4 · CC 融合",
+        "mode": "cc-overlay",
+        "version": 1,
+        "timing": {
+          "firstTimeSeconds": 0,
+          "intervalSeconds": 1,
+          "mode": "filename-number",
+          "smoothing": "none",
+          "filenameStep": 1,
+          "heightReference": "ellipsoid",
+          "heightOffsetMeters": 0
+        },
+        "selectedIds": [
+          "buried-opaque",
+          "above-opaque",
+          "buried-translucent",
+          "above-translucent",
+          "remote-buried-opaque",
+          "remote-above-opaque",
+          "remote-buried-translucent",
+          "remote-above-translucent",
+          "cad"
+        ],
+        "adjustments": {},
+        "opacity": 1,
+        "currentTime": 0,
+        "videoName": "spatial-15fps.mp4",
+        "videoSize": 2733,
+        "width": 640,
+        "height": 360,
+        "annotations": [],
+        "spatialAnnotations": [],
+        "effects": [],
+        "posTiming": {
+          "frameRate": 30,
+          "firstTime": 0
+        },
+        "cameraRegistration": {
+          "enabled": false,
+          "east": 0,
+          "north": 0,
+          "up": 0,
+          "heading": 0,
+          "pitch": 0,
+          "roll": 0,
+          "anchor": {
+            "position": {
+              "x": -2764162.960662568,
+              "y": 4787670.688267582,
+              "z": 3170413.735383637
+            },
+            "orientation": {
+              "x": -0.22414386804201325,
+              "y": 0.8365163037378079,
+              "z": -0.48296291314453416,
+              "w": 0.12940952255126034
+            }
+          }
+        },
+        "occlusion": {
+          "enabled": false,
+          "sourceId": ""
+        }
+      }
+    },
+    "enterCount": 1,
+    "exitCount": 0,
+    "messages": [],
+    "renderErrors": []
+  }
+}

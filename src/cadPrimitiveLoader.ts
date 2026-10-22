@@ -70,6 +70,12 @@ export type CadPrimitiveLoadOptions = {
   scene?: Scene;
   /** Lets the caller attach the empty collection early so batches can compile and release CPU geometry while loading continues. */
   beforePopulate?: (collection: PrimitiveCollection) => void | Promise<void>;
+  /** Freeze a draped layer to sampled world positions before building absolute geometry.
+   * Called in source batches; it must return one finite position for every input.
+   */
+  transformPositions?: (positions: Cartesian3[]) => Promise<Cartesian3[]>;
+  /** Maximum world-space interval between samples along lines / face boundaries. */
+  surfaceSampleSpacing?: number;
 };
 
 export type CadPrimitiveLoadResult = {
@@ -148,6 +154,20 @@ function closeLine(positions: Cartesian3[], closed: boolean): Cartesian3[] {
   return [...positions, Cartesian3.clone(positions[0])];
 }
 
+/** Preserve the rendered path between sparse CAD vertices when freezing a surface. */
+function densifyPositions(positions: Cartesian3[], spacing: number): Cartesian3[] {
+  if (positions.length < 2) return positions;
+  const result = [positions[0]];
+  for (let index = 1; index < positions.length; index++) {
+    const from = positions[index - 1], to = positions[index];
+    const segments = Math.max(1, Math.ceil(Cartesian3.distance(from, to) / spacing));
+    if (result.length + segments > 250_000) throw new Error("CAD 单条线过长，表面高程采样超过 250000 点，请拆分图纸后再融合");
+    for (let step = 1; step < segments; step++) result.push(Cartesian3.lerp(from, to, step / segments, new Cartesian3()));
+    result.push(to);
+  }
+  return result;
+}
+
 function validFace(positions: Cartesian3[]): boolean {
   if (positions.length < 3) return false;
   const origin = positions[0];
@@ -212,6 +232,9 @@ export async function loadCadPrimitiveCollection(
   if (displayMode !== "absolute" && !options.scene) {
     throw new Error("贴地或依附模型加载 CAD 时需要传入 viewer.scene，以便文字正确贴附");
   }
+  if (options.transformPositions && displayMode !== "absolute") throw new Error("表面高程采样后的 CAD 必须以绝对高程显示");
+  const surfaceSpacing = options.surfaceSampleSpacing;
+  if (surfaceSpacing !== undefined && (!Number.isFinite(surfaceSpacing) || surfaceSpacing <= 0)) throw new Error("CAD 表面采样间距必须为正数");
   const sourceBatchSize = Math.max(100, Math.floor(options.batchSize ?? 500));
   const primitiveBatchSize = Math.max(50, Math.floor(options.primitiveBatchSize ?? 600));
   const classificationType = displayMode === "model" ? ClassificationType.CESIUM_3D_TILE : ClassificationType.TERRAIN;
@@ -347,13 +370,33 @@ export async function loadCadPrimitiveCollection(
     if (instances.length >= Math.max(50, Math.floor(primitiveBatchSize / 2))) flushGroundFaceColor(colorKey);
   };
 
+  let sampledBatch: Cartesian3[][] = [];
   for (let index = 0; index < value.entities.length; index += 1) {
     abortIfRequested(options.signal);
+    if (options.transformPositions && index % sourceBatchSize === 0) {
+      const batch = value.entities.slice(index, index + sourceBatchSize).map(entity => {
+        if (entity.type === "POINT") return [];
+        let points = convertPoints(entity.vertices, convert);
+        if (surfaceSpacing && (entity.type === "POLYLINE" || entity.type === "3DFACE")) {
+          points = closeLine(points, entity.type === "3DFACE" || Boolean(entity.closed));
+          points = densifyPositions(points, surfaceSpacing);
+        }
+        return points;
+      });
+      const flattened = batch.flat();
+      const transformed = flattened.length ? await options.transformPositions(flattened) : [];
+      abortIfRequested(options.signal);
+      if (transformed.length !== flattened.length || transformed.some(point => !isFinitePosition(point))) {
+        throw new Error("CAD 表面高程采样不完整，不能用图纸原始高程代替缺失结果");
+      }
+      let offset = 0;
+      sampledBatch = batch.map(points => { const result = transformed.slice(offset, offset + points.length); offset += points.length; return result; });
+    }
     const entity = value.entities[index];
     const id = featureIdentity(entity, index);
     const color = entityColor(entity);
     const width = cadLineWidth(entity);
-    const converted = convertPoints(entity.vertices, convert);
+    const converted = options.transformPositions ? sampledBatch[index % sourceBatchSize] : convertPoints(entity.vertices, convert);
 
     if (entity.type === "POLYLINE") {
       const positions = closeLine(converted, Boolean(entity.closed));

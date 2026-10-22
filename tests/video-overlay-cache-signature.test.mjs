@@ -70,3 +70,26 @@ test('resources without a runtime matrix retain saved placement and other cache 
     const previous = signature(); change(); assert.notEqual(signature(), previous);
   }
 });
+
+test('whole-group angles and the saved common pivot each invalidate baked frames', () => {
+  const { owner, signature } = fixture();
+  const before = signature();
+  owner.groupAdjustment = { anchor: [6378137, 0, 0], values: { east: 0, north: 0, up: 0, heading: 0, tiltEast: .1, tiltNorth: -.2 } };
+  const tilted = signature(); assert.notEqual(tilted, before);
+  owner.groupAdjustment.values.tiltNorth += .1;
+  const otherAxis = signature(); assert.notEqual(otherAxis, tilted);
+  owner.groupAdjustment.anchor[1] += 10;
+  assert.notEqual(signature(), otherAxis);
+  owner.groupAdjustment = undefined; assert.equal(signature(), before);
+});
+
+test('draped CAD cache depends on receiving models even when they are not visible overlays', () => {
+  const { owner, model, item, record, signature } = fixture();
+  const cad = { id: 'cad', kind: 'CAD', resource: {} };
+  const cadRecord = { settings: { displayMode: 'model' }, files: {} };
+  owner.options = { getImports: () => [cad, item], getRecord: id => id === 'cad' ? cadRecord : record };
+  owner.selected = new Set(['cad']);
+  const before = signature();
+  model.modelMatrix = translated(8);
+  assert.notEqual(signature(), before, 'Hidden receiver movement must invalidate frozen CAD geometry');
+});

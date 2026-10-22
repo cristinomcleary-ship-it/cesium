@@ -111,6 +111,7 @@ type Internal = {
   resources?: { getOcclusionStatus(): { ready: boolean; [key: string]: unknown }; spatialFrame(id: string): Matrix4 | undefined }; frameHandle?: number; animationHandle?: number;
   cachedPreview?: { video: HTMLVideoElement; start: number; end: number }; editorCanvas?: HTMLCanvasElement;
   editRevision: number; annotations: unknown[]; effects: unknown[]; adjustments: SavedVideoOverlaySettings['adjustments'];
+  groupAdjustment?: SavedVideoOverlaySettings['groupAdjustment'];
   spatialAnnotations: SpatialAnnotation[]; spatialBinding: VideoOverlaySpatialBinding;
   spatialEditor: { setValue(marks: SpatialAnnotation[]): void };
   dirty(): void; renderFrame(time: number): void;
@@ -278,7 +279,7 @@ function snapshot() {
       color: model.color ? [model.color.red, model.color.green, model.color.blue, model.color.alpha] : null,
       commandsBuilt: (model as unknown as { _drawCommandsBuilt: boolean })._drawCommandsBuilt,
       shader: model.customShader ? { translucencyMode: model.customShader.translucencyMode,
-        uniforms: Object.fromEntries(Object.entries(model.customShader.uniforms).map(([key, value]) => [key, value.value])) } : null })), renderer: renderer(), dimensions: dimensions(), editRevision: internal.editRevision, adjustments: structuredClone(internal.adjustments), annotations: structuredClone(internal.annotations), spatialAnnotations: structuredClone(internal.spatialAnnotations ?? []), effects: structuredClone(internal.effects), modelReady: models.every(model => model.ready), lifecycle: lifecycle(), geometry: geometry(),
+        uniforms: Object.fromEntries(Object.entries(model.customShader.uniforms).map(([key, value]) => [key, value.value])) } : null })), renderer: renderer(), dimensions: dimensions(), editRevision: internal.editRevision, adjustments: structuredClone(internal.adjustments), groupAdjustment: structuredClone(internal.groupAdjustment ?? null), annotations: structuredClone(internal.annotations), spatialAnnotations: structuredClone(internal.spatialAnnotations ?? []), effects: structuredClone(internal.effects), modelReady: models.every(model => model.ready), lifecycle: lifecycle(), geometry: geometry(),
     mediaTime: video.currentTime, mediaSrc: video.getAttribute('src'), paused: video.paused, seeking: video.seeking,
     presentedTime: internal.presentedTime ?? null, pendingTime: internal.pendingTime ?? null,
     buffering: internal.buffering, wantedPlaying: internal.wantedPlaying, status: internal.resources?.getOcclusionStatus() ?? null,
@@ -326,7 +327,10 @@ function snapshot() {
   async restoreSaved(legacyTilt = false) {
     if (!saved) throw new Error('No saved workflow');
     const settings = structuredClone(saved.settings);
-    if (legacyTilt) for (const adjustment of Object.values(settings.adjustments)) { delete adjustment.tiltEast; delete adjustment.tiltNorth; }
+    if (legacyTilt) {
+      delete settings.groupAdjustment;
+      for (const adjustment of Object.values(settings.adjustments)) { delete adjustment.tiltEast; delete adjustment.tiltNorth; }
+    }
     await overlay.restoreReplay(saved.files, settings, saved.id);
   },
   waitOutsideFrames(count: number) {

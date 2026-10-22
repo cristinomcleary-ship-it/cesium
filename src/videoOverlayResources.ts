@@ -8,6 +8,7 @@ import {
 } from "cesium";
 import { readCadImport } from "./cadImport.ts";
 import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader.ts";
+import { createCadSurfaceSampler } from "./videoOverlayDrapedCad.ts";
 import type { LibraryRecord } from "./projectLibrary.ts";
 import type { ImportRecord } from "./types.ts";
 import { assertVideoOverlayOccluder, VideoOverlayOcclusion, VideoOverlayTileCoverage, type VideoOverlayOcclusionStatus } from './videoOverlayOcclusion.ts';
@@ -22,6 +23,13 @@ export type VideoOverlayAdjustment = {
   tiltEast?: number; tiltNorth?: number;
 };
 type NormalizedVideoOverlayAdjustment = Required<VideoOverlayAdjustment>;
+/** One fixed ECEF anchor for a rigid correction of the engineering overlays. */
+export type VideoOverlayGroupAdjustment = {
+  anchor: [number, number, number]; values: VideoOverlayAdjustment;
+};
+type NormalizedVideoOverlayGroupAdjustment = {
+  anchor: [number, number, number]; values: NormalizedVideoOverlayAdjustment;
+};
 export type VideoOverlayResourceItem = {
   id: string; name: string; kind: ImportRecord["kind"]; description: string;
   available: boolean; selected: boolean; occluder?: boolean; error?: string;
@@ -43,7 +51,7 @@ type Entry = {
   target: VisibleResource; center?: Cartesian3; matrices: MatrixBinding[];
   positions: PositionBinding[]; dataSource?: CustomDataSource; copy?: PrimitiveCollection;
   opacityBindings?: OpacityBinding[];
-  description: string; error?: string; transformed?: boolean;
+  description: string; error?: string; transformed?: boolean; transform?: Matrix4;
 };
 
 /** One shader owner per AR session; uniforms multiply the original fragment alpha. */
@@ -187,6 +195,15 @@ function sameAdjustment(a: NormalizedVideoOverlayAdjustment | undefined, b: Norm
   return !!a && a.east === b.east && a.north === b.north && a.up === b.up && a.heading === b.heading
     && a.tiltEast === b.tiltEast && a.tiltNorth === b.tiltNorth;
 }
+function sameGroupAdjustment(a: NormalizedVideoOverlayGroupAdjustment | undefined, b: NormalizedVideoOverlayGroupAdjustment | undefined): boolean {
+  return a === b || !!a && !!b && a.anchor.every((value, index) => value === b.anchor[index]) && sameAdjustment(a.values, b.values);
+}
+function hasAdjustment(value: NormalizedVideoOverlayAdjustment): boolean {
+  return Object.values(value).some(number => number !== 0);
+}
+function groupAdjustable(entry: Entry): boolean {
+  return entry.record.kind === 'CAD' || entry.record.kind === 'Model';
+}
 function setShow(resource: VisibleResource, show: boolean): boolean {
   if (!alive(resource) || resource.show === show) return false;
   resource.show = show; return true;
@@ -207,6 +224,18 @@ export function validateVideoOverlayAdjustment(value: Partial<VideoOverlayAdjust
     }
   }
   return result;
+}
+
+export function validateVideoOverlayGroupAdjustment(value: VideoOverlayGroupAdjustment): NormalizedVideoOverlayGroupAdjustment;
+export function validateVideoOverlayGroupAdjustment(value?: VideoOverlayGroupAdjustment): NormalizedVideoOverlayGroupAdjustment | undefined;
+export function validateVideoOverlayGroupAdjustment(value?: VideoOverlayGroupAdjustment): NormalizedVideoOverlayGroupAdjustment | undefined {
+  if (value === undefined) return undefined;
+  if (!value || !Array.isArray(value.anchor) || value.anchor.length !== 3
+    || !value.anchor.every(number => Number.isFinite(number))
+    || !validAnchor(new Cartesian3(...value.anchor)) || !value.values || typeof value.values !== 'object') {
+    throw new Error('整体工程校正缺少有效的固定地理中心');
+  }
+  return { anchor: [...value.anchor], values: validateVideoOverlayAdjustment(value.values) };
 }
 
 /** Always derives from the saved anchor; repeated edits never compound a transform. */
@@ -324,6 +353,8 @@ export class VideoOverlayResources {
   private readonly visibilitySnapshots = new Map<VisibleResource, boolean>();
   private readonly controller = new AbortController();
   private readonly adjustments = new Map<string, NormalizedVideoOverlayAdjustment>();
+  private groupAdjustment?: NormalizedVideoOverlayGroupAdjustment;
+  private groupTransform?: Matrix4;
   private readonly opacityStates = new Map<string, VideoOverlayEffectState>();
   private readonly tileCoverage = new Map<string, VideoOverlayTileCoverage>();
   private readonly touchedTiles = new Set<Cesium3DTileset>();
@@ -347,14 +378,14 @@ export class VideoOverlayResources {
         const original = record.resource as VisibleResource;
         if (!original || !alive(original) || typeof original.show !== "boolean") continue;
         session.visibilitySnapshots.set(original, original.show);
-        original.show = false;
         if (!["CAD", "Model", "3D Tiles"].includes(record.kind)) continue;
         session.entries.set(record.id, {
           record, original, target: original,
           matrices: [], positions: [], description: record.kind === "CAD" ? "使用图纸已定位坐标" : "使用工程对象已定位坐标",
         });
       }
-      // Ground CAD must be rebuilt from source; all other resources reuse existing geometry.
+      // Freeze draped CAD while the receiving surfaces still have their map visibility.
+      // Only hide imports after preparation; sampling after hiding models loses their heights.
       for (const entry of session.entries.values()) {
         session.throwIfCancelled();
         try { await session.prepare(entry); }
@@ -365,6 +396,7 @@ export class VideoOverlayResources {
         }
       }
       session.throwIfCancelled();
+      for (const original of session.visibilitySnapshots.keys()) if (alive(original)) original.show = false;
       options.viewer.scene.requestRender();
       return session;
     } catch (error) { session.restore(); throw error; }
@@ -471,6 +503,8 @@ export class VideoOverlayResources {
     const result = await loadCadPrimitiveCollection(imported, saved.settings.coordinates, {
       displayMode: "absolute", scene: this.options.viewer.scene, signal: this.controller.signal,
       batchSize: 2000, primitiveBatchSize: 1000,
+      transformPositions: createCadSurfaceSampler(this.options.viewer, saved.settings.displayMode === "model" ? "model" : "terrain", this.options.imports(), this.controller.signal),
+      surfaceSampleSpacing: 5,
       beforePopulate: collection => {
         if (this.restored || this.controller.signal.aborted) collection.destroy();
         this.throwIfCancelled();
@@ -484,7 +518,7 @@ export class VideoOverlayResources {
     await this.waitForCadReady(entry, result.collection);
     entry.matrices = collectMatrices(result.collection);
     entry.center = result.boundingSphere?.center ? Cartesian3.clone(result.boundingSphere.center) : undefined;
-    entry.description = "按图纸标高叠加，可用高程微调（原贴附图层保持不变）";
+    entry.description = "保留地图贴附表面高程，可整体调整（原图层保持不变）";
   }
 
   list(): VideoOverlayResourceItem[] {
@@ -513,6 +547,15 @@ export class VideoOverlayResources {
     return entry ? this.item(entry, this.importIndex()) : undefined;
   }
 
+  /** Original engineering centers keep the group pivot stable while visibility changes. */
+  getGroupCenter(): Cartesian3 | undefined {
+    const current = this.importIndex();
+    const centers = [...this.entries.values()].filter(entry => groupAdjustable(entry)
+      && entry.record.id !== this.occlusion?.sourceId && this.available(entry, current) && validAnchor(entry.center))
+      .map(entry => entry.center!);
+    return centers.length ? Cartesian3.clone(BoundingSphere.fromPoints(centers).center) : undefined;
+  }
+
   /** Annotation coordinates belong to the resource, never to a video frame.
    * Models use their native model frame. CAD uses a small ENU frame around its
    * source geometry; the current primitive/AR transform is applied afterwards.
@@ -534,8 +577,7 @@ export class VideoOverlayResources {
       const sourceFrame = Transforms.eastNorthUpToFixedFrame(sourceCenter);
       return Matrix4.multiply(binding.resource.modelMatrix, sourceFrame, new Matrix4());
     }
-    const adjustment = this.adjustments.get(id) ?? noAdjustment();
-    return Matrix4.multiply(videoOverlayAdjustmentMatrix(entry.center, adjustment), Transforms.eastNorthUpToFixedFrame(entry.center), new Matrix4());
+    return Matrix4.multiply(entry.transform ?? Matrix4.IDENTITY, Transforms.eastNorthUpToFixedFrame(entry.center), new Matrix4());
   }
 
   spatialVisible(id: string): boolean {
@@ -764,26 +806,43 @@ export class VideoOverlayResources {
     if (changed || forceRender) this.options.viewer.scene.requestRender();
   }
 
-  /** A patch of absolute per-object offsets, not incremental deltas. Omitted objects retain their offsets. */
-  applyAdjustments(values: Record<string, Partial<VideoOverlayAdjustment>>): void {
+  /** Per-object offsets are patched; group is the complete group state (undefined clears it).
+   * G * L applies one rigid correction after each object's own correction. Survey
+   * tiles keep their map coordinates and never participate in the group transform.
+   */
+  applyAdjustments(values: Record<string, Partial<VideoOverlayAdjustment>>, group?: VideoOverlayGroupAdjustment): void {
     this.throwIfCancelled();
     const normalized = Object.entries(values).map(([id, value]) => [id, validateVideoOverlayAdjustment({ ...this.adjustments.get(id), ...value })] as const);
+    const nextGroup = validateVideoOverlayGroupAdjustment(group);
     for (const [id, adjustment] of normalized) {
-      if (id === this.occlusion?.sourceId && Object.values(adjustment).some(value => value !== 0)) {
+      if (id === this.occlusion?.sourceId && hasAdjustment(adjustment)) {
         throw new Error('地表遮挡源使用原地图定位，不能同时进行对象位置微调');
       }
     }
+    const groupChanged = !sameGroupAdjustment(this.groupAdjustment, nextGroup);
+    const nextGroupTransform = groupChanged
+      ? nextGroup && hasAdjustment(nextGroup.values) ? videoOverlayAdjustmentMatrix(new Cartesian3(...nextGroup.anchor), nextGroup.values) : undefined
+      : this.groupTransform;
+    // Validate the whole patch before changing geometry or saved session values.
+    this.groupAdjustment = nextGroup;
+    this.groupTransform = nextGroupTransform;
+    const patched = new Map(normalized);
     const current = this.importIndex();
     let changed = false;
-    for (const [id, adjustment] of normalized) {
-      const entry = this.entries.get(id);
-      if (!entry || !this.available(entry, current) || !entry.center
-        || sameAdjustment(this.adjustments.get(id), adjustment)) continue;
+    for (const [id, entry] of this.entries) {
+      const previous = this.adjustments.get(id);
+      const adjustment = patched.get(id) ?? previous ?? noAdjustment();
+      if (!this.available(entry, current) || !entry.center
+        || sameAdjustment(previous, adjustment) && !(groupChanged && groupAdjustable(entry))) continue;
       // A source's exact map matrix is also its depth reference. Never replace
       // it with the numerically approximate ENU * inverse(ENU) for a zero edit.
       if (id === this.occlusion?.sourceId) continue;
-      const unchanged = Object.values(adjustment).every(value => value === 0);
-      const transform = unchanged ? Matrix4.IDENTITY : videoOverlayAdjustmentMatrix(entry.center, adjustment);
+      const local = hasAdjustment(adjustment) ? videoOverlayAdjustmentMatrix(entry.center, adjustment) : Matrix4.IDENTITY;
+      const transform = this.groupTransform && groupAdjustable(entry)
+        ? Matrix4.multiply(this.groupTransform, local, new Matrix4()) : local;
+      this.adjustments.set(id, adjustment);
+      if (Matrix4.equals(entry.transform ?? Matrix4.IDENTITY, transform)) continue;
+      const unchanged = Matrix4.equals(transform, Matrix4.IDENTITY);
       entry.transformed = true;
       for (const binding of entry.matrices) {
         const next = unchanged ? binding.original : Matrix4.multiply(transform, binding.original, new Matrix4());
@@ -795,7 +854,7 @@ export class VideoOverlayResources {
       try { for (const binding of entry.positions) { if (unchanged) binding.restore(); else binding.apply(transform); } }
       finally { entry.dataSource?.entities.resumeEvents(); }
       entry.transformed = !unchanged;
-      this.adjustments.set(id, adjustment);
+      entry.transform = unchanged ? undefined : Matrix4.clone(transform);
       changed = true;
     }
     if (changed) this.options.viewer.scene.requestRender();
@@ -858,6 +917,7 @@ export class VideoOverlayResources {
     this.touchedTiles.clear();
     this.selected.clear();
     this.opacityStates.clear(); this.adjustments.clear();
+    this.groupAdjustment = undefined; this.groupTransform = undefined;
     this.visibilitySnapshots.clear(); this.entries.clear();
     try { this.options.viewer.scene.requestRender(); } catch { /* Viewer may already be destroyed. */ }
   }

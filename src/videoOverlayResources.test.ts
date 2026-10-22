@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   Appearance, BoundingSphere, Cartesian3, Color, CustomDataSource, CustomShader,
-  CustomShaderTranslucencyMode, Event, GroundPolylinePrimitive, JulianDate, Matrix3, Matrix4,
+  CustomShaderTranslucencyMode, EllipsoidTerrainProvider, Cartographic, Event, GroundPolylinePrimitive, JulianDate, Matrix3, Matrix4,
   PolygonHierarchy, PolylineColorAppearance, Primitive, PrimitiveCollection,
   Transforms, UniformType, type Viewer,
 } from "cesium";
-import { validateVideoOverlayAdjustment, videoOverlayAdjustmentMatrix, VideoOverlayResources } from "./videoOverlayResources.ts";
+import { validateVideoOverlayAdjustment, validateVideoOverlayGroupAdjustment, videoOverlayAdjustmentMatrix, VideoOverlayResources, type VideoOverlayGroupAdjustment } from "./videoOverlayResources.ts";
 import type { CadImportPackage } from "./cadImport.ts";
 import type { LibraryRecord } from "./projectLibrary.ts";
 import type { ImportRecord } from "./types.ts";
@@ -21,7 +21,7 @@ function viewer(primitives = new PrimitiveCollection(), autoCompile = true): Vie
       if (resource.show) for (let index = 0; index < resource.length; index++) compile(resource.get(index));
     } else if (resource instanceof Primitive) (resource as unknown as { _ready: boolean })._ready = true;
   };
-  return { clock: { currentTime: JulianDate.now() }, scene: { primitives, postRender, requestRender() {
+  return { terrainProvider: new EllipsoidTerrainProvider(), clock: { currentTime: JulianDate.now() }, scene: { primitives, postRender, requestRender() {
     if (!autoCompile || queued || !postRender.numberOfListeners) return;
     queued = true;
     queueMicrotask(() => { queued = false; compile(primitives); postRender.raiseEvent(); });
@@ -94,6 +94,115 @@ test('invalid tilt patches reject atomically and valid angle-only edits never ac
     assert.ok(Matrix4.equals(first.resource.modelMatrix, once));
   } finally { session.restore(); }
   assert.ok(Matrix4.equals(first.resource.modelMatrix, base));
+});
+
+test('one fixed group tilt moves distant engineering objects rigidly, preserves individual edits and leaves survey tiles fixed', async () => {
+  const first = model('a'), second = model('b'), survey = model('survey');
+  const farCenter = Matrix4.multiplyByPoint(base, new Cartesian3(1_200, 800, 40), new Cartesian3());
+  const farBase = Transforms.eastNorthUpToFixedFrame(farCenter);
+  second.resource.modelMatrix = Matrix4.clone(farBase);
+  second.resource.boundingSphere = new BoundingSphere(farCenter, 20);
+  survey.record.kind = '3D Tiles';
+  survey.resource.boundingSphere = new BoundingSphere(Cartesian3.fromDegrees(121, 32), 100_000);
+  const imports = [first.record, second.record, survey.record];
+  const session = await VideoOverlayResources.create({ viewer: viewer(), imports: () => imports, getRecord: () => undefined });
+  const zero = { east: 0, north: 0, up: 0, heading: 0, tiltEast: 0, tiltNorth: 0 };
+  const pivot = session.getGroupCenter()!;
+  const group: VideoOverlayGroupAdjustment = { anchor: [pivot.x, pivot.y, pivot.z], values: { ...zero, tiltEast: 12, tiltNorth: -7, up: 3 } };
+  try {
+    closePoint(pivot, BoundingSphere.fromPoints([center, farCenter]).center);
+    session.setSelection(['a']);
+    session.applyAdjustments({ a: { east: 5, heading: 13, tiltNorth: 2 }, b: { north: 7 } });
+    const individualFirst = Matrix4.clone(first.resource.modelMatrix), individualSecond = Matrix4.clone(second.resource.modelMatrix);
+    const firstPoint = Matrix4.getTranslation(individualFirst, new Cartesian3());
+    const secondPoint = Matrix4.getTranslation(individualSecond, new Cartesian3());
+    const individualValues = session.getAdjustments();
+    session.applyAdjustments({}, group);
+    const transform = videoOverlayAdjustmentMatrix(pivot, group.values);
+    assert.ok(Matrix4.equalsEpsilon(first.resource.modelMatrix, Matrix4.multiply(transform, individualFirst, new Matrix4()), 1e-8));
+    assert.ok(Matrix4.equalsEpsilon(second.resource.modelMatrix, Matrix4.multiply(transform, individualSecond, new Matrix4()), 1e-8), 'hidden objects share the same correction');
+    close(Cartesian3.distance(Matrix4.getTranslation(first.resource.modelMatrix, new Cartesian3()), Matrix4.getTranslation(second.resource.modelMatrix, new Cartesian3())), Cartesian3.distance(firstPoint, secondPoint));
+    assert.deepEqual(session.getAdjustments(), individualValues, 'group edits never overwrite individual offsets');
+    assert.ok(Matrix4.equals(survey.resource.modelMatrix, base), 'survey camera reference remains at its original map matrix');
+    closePoint(session.getGroupCenter()!, pivot);
+    session.setSelection(['b']);
+    closePoint(session.getGroupCenter()!, pivot);
+    const once = Matrix4.clone(first.resource.modelMatrix);
+    for (let index = 0; index < 10; index++) session.applyAdjustments({}, group);
+    assert.ok(Matrix4.equals(first.resource.modelMatrix, once));
+    session.applyAdjustments({}, { ...group, values: { ...group.values, tiltEast: 14 } });
+    assert.ok(!Matrix4.equals(first.resource.modelMatrix, once), 'group-only edits must update every engineering object');
+    session.applyAdjustments({}, group);
+    assert.ok(Matrix4.equals(first.resource.modelMatrix, once), 'undo restores the same fixed-pivot result');
+    const saved = JSON.parse(JSON.stringify({ individual: session.getAdjustments(), group }));
+    session.applyAdjustments({}, { ...group, values: zero });
+    assert.ok(Matrix4.equals(first.resource.modelMatrix, individualFirst));
+    assert.ok(Matrix4.equals(second.resource.modelMatrix, individualSecond));
+    session.applyAdjustments(saved.individual, saved.group);
+    assert.ok(Matrix4.equals(first.resource.modelMatrix, once));
+    session.applyAdjustments({ a: zero, b: zero });
+    assert.ok(Matrix4.equals(first.resource.modelMatrix, base));
+    assert.ok(Matrix4.equals(second.resource.modelMatrix, farBase));
+    session.applyAdjustments(saved.individual, saved.group);
+  } finally { session.restore(); }
+  assert.ok(Matrix4.equals(first.resource.modelMatrix, base));
+  assert.ok(Matrix4.equals(second.resource.modelMatrix, farBase));
+  assert.ok(Matrix4.equals(survey.resource.modelMatrix, base));
+});
+
+test('invalid group anchors and angles reject the full edit without changing session geometry', async () => {
+  const first = model('a');
+  const session = await VideoOverlayResources.create({ viewer: viewer(), imports: () => [first.record], getRecord: () => undefined });
+  const group: VideoOverlayGroupAdjustment = { anchor: [center.x, center.y, center.z], values: { east: 0, north: 0, up: 0, heading: 0, tiltEast: 5 } };
+  try {
+    session.applyAdjustments({}, group);
+    const original = Matrix4.clone(first.resource.modelMatrix);
+    for (const invalid of [
+      { ...group, anchor: [0, 0, 0] }, { ...group, anchor: [center.x, Number.NaN, center.z] },
+      { ...group, anchor: [center.x, center.y] }, { ...group, values: { ...group.values, tiltEast: 91 } },
+    ]) {
+      assert.throws(() => session.applyAdjustments({ a: { east: 20 } }, invalid as VideoOverlayGroupAdjustment), /地理中心|倾角/);
+      assert.ok(Matrix4.equals(first.resource.modelMatrix, original));
+      assert.equal(session.getAdjustments().a.east, 0);
+    }
+    const normalized = validateVideoOverlayGroupAdjustment(group);
+    normalized.anchor[0] = 0; normalized.values.tiltEast = 90;
+    assert.equal(group.anchor[0], center.x); assert.equal(group.values.tiltEast, 5);
+    session.applyAdjustments({}, group);
+    assert.ok(Matrix4.equals(first.resource.modelMatrix, original));
+  } finally { session.restore(); }
+});
+
+test('group and individual corrections share the entity CAD picking and annotation frame and zero restores original properties', async () => {
+  const data = new CustomDataSource('group');
+  const points = [-300, 300].map(x => Matrix4.multiplyByPoint(base, new Cartesian3(x, x / 2, 0), new Cartesian3()));
+  const line = data.entities.add({ polyline: { positions: points, clampToGround: false } });
+  const label = data.entities.add({ position: center, label: { text: 'group' } });
+  const lineProperty = line.polyline!.positions!, labelProperty = label.position!;
+  const record: ImportRecord = { id: 'cad', name: 'cad', kind: 'CAD', representation: 'dataSource', resource: data, visible: true };
+  const view = viewer(), session = await VideoOverlayResources.create({ viewer: view, imports: () => [record], getRecord: () => undefined });
+  const pivot = session.getGroupCenter()!;
+  const group: VideoOverlayGroupAdjustment = { anchor: [pivot.x, pivot.y, pivot.z], values: { east: 1, north: 2, up: 3, heading: 4, tiltEast: 8, tiltNorth: -6 } };
+  try {
+    session.setSelection(['cad']);
+    const inverse = Matrix4.inverse(session.spatialFrame('cad')!, new Matrix4());
+    const locals = points.map(point => Matrix4.multiplyByPoint(inverse, point, new Cartesian3()));
+    const labelLocal = Matrix4.multiplyByPoint(inverse, center, new Cartesian3());
+    session.applyAdjustments({ cad: { east: 3, tiltEast: 2 } }, group);
+    const frame = session.spatialFrame('cad')!;
+    const picked = session.spatialPickedLines('cad', { id: line })[0];
+    locals.forEach((point, index) => closePoint(Matrix4.multiplyByPoint(frame, point, new Cartesian3()), picked[index]));
+    closePoint(Matrix4.multiplyByPoint(frame, labelLocal, new Cartesian3()), label.position!.getValue(view.clock.currentTime)!);
+    const once = line.polyline!.positions;
+    session.applyAdjustments({}, group);
+    assert.equal(line.polyline!.positions, once, 'unchanged group state does not allocate fresh entity properties');
+    session.applyAdjustments({}, { ...group, values: { ...group.values, tiltEast: 10 } });
+    assert.notEqual(line.polyline!.positions, once, 'changed group state updates entities even with unchanged individual offsets');
+    session.applyAdjustments({ cad: { east: 0, tiltEast: 0 } });
+    assert.equal(line.polyline!.positions, lineProperty); assert.equal(label.position, labelProperty);
+    session.applyAdjustments({}, group);
+  } finally { session.restore(); }
+  assert.equal(line.polyline!.positions, lineProperty); assert.equal(label.position, labelProperty);
 });
 
 test('tilted entity CAD lines and saved annotation coordinates share the same transform and restore exactly', async () => {
@@ -253,7 +362,7 @@ function groundSource(): GroundPolylinePrimitive {
   return Object.assign(Object.create(GroundPolylinePrimitive.prototype), { show: true, isDestroyed: () => false, destroy() {} });
 }
 
-test("ground CAD uses an absolute-height copy, discloses height change, and destroys copy on exit", async () => {
+test("ground CAD freezes map surface height instead of restoring source Z, and destroys copy on exit", async () => {
   const fetchBefore = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify(drawing), { status: 200 });
   const root = new PrimitiveCollection(), original = new PrimitiveCollection();
@@ -262,12 +371,15 @@ test("ground CAD uses an absolute-height copy, discloses height change, and dest
   try {
     const session = await VideoOverlayResources.create({ viewer: viewer(root), imports: () => [record], getRecord: savedCad });
     assert.equal(session.get("cad")!.available, true);
-    assert.match(session.get("cad")!.description, /按图纸标高叠加，可用高程微调/);
+    assert.match(session.get("cad")!.description, /保留地图贴附表面高程/);
     assert.equal(root.length, 2);
     session.setSelection(["cad"]);
     assert.equal(original.show, false);
     const copy = root.get(1) as PrimitiveCollection;
     assert.equal(copy.show, true);
+    const features = (copy as unknown as { cadPolylineFeatures: { positions: Cartesian3[] }[] }).cadPolylineFeatures;
+    assert.ok(features[0].positions.length >= 3, 'Surface copy samples long segments between endpoints');
+    for (const point of features[0].positions) close(Cartographic.fromCartesian(point).height, 0);
     const sourceFrame = session.spatialFrame('cad')!;
     const originalPoint = Matrix4.getTranslation(sourceFrame, new Cartesian3());
     session.applyAdjustments({ cad: { up: 7, tiltEast: 9, tiltNorth: -4 } });

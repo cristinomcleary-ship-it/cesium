@@ -1,0 +1,30 @@
+{
+  "pass": true,
+  "checks": [
+    {
+      "name": "terrain: a source line sloping 20m freezes to the actual rendered surface",
+      "vertices": 22,
+      "minHeight": 0,
+      "maxHeight": 9.313225746154785e-10,
+      "expectedHeight": 0
+    },
+    {
+      "name": "terrain: tilt, exact reset and resource/visibility restoration preserve original map geometry"
+    },
+    {
+      "name": "model: a source line sloping 20m freezes to the actual rendered surface",
+      "vertices": 22,
+      "minHeight": 99.99934532120824,
+      "maxHeight": 100.00060961581767,
+      "expectedHeight": 100
+    },
+    {
+      "name": "model: tilt, exact reset and resource/visibility restoration preserve original map geometry"
+    },
+    {
+      "name": "Missing model coverage fails explicitly without source-height fallback or a leaked copy",
+      "error": "CAD 部分位置没有可用模型表面高程，已停止融合准备；请核对模型覆盖范围与 CAD 定位"
+    }
+  ],
+  "browserErrors": []
+}
