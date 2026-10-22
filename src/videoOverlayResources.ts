@@ -302,6 +302,56 @@ function dataSourceIsClamped(data: CustomDataSource, time: JulianDate): boolean 
     || !!entity.point && (entity.point.heightReference?.getValue(time) ?? HeightReference.NONE) !== HeightReference.NONE);
 }
 
+/** A new group pivot belongs to the local engineering geometry, never a global
+ * CAD bounding box which may include distant layouts. The caller freezes the
+ * returned point in the saved group adjustment before applying any group edit.
+ */
+export function findVideoOverlayGroupCenter(imports: readonly ImportRecord[], reference: Cartesian3, time: JulianDate): Cartesian3 | undefined {
+  if (!validAnchor(reference)) return undefined;
+  let nearest: Cartesian3 | undefined, distance = Infinity;
+  const include = (point: Cartesian3 | undefined, matrix?: Matrix4) => {
+    if (!validAnchor(point)) return;
+    const world = matrix ? Matrix4.multiplyByPoint(matrix, point, new Cartesian3()) : point;
+    const next = Cartesian3.distanceSquared(reference, world);
+    if (Number.isFinite(next) && next < distance) { distance = next; nearest = Cartesian3.clone(world); }
+  };
+  const ring = (hierarchy: PolygonHierarchy) => {
+    for (const point of hierarchy.positions) include(point);
+    for (const hole of hierarchy.holes ?? []) ring(hole);
+  };
+  for (const record of imports) {
+    if (record.kind === 'Model') {
+      let center = record.boundingSphere?.center;
+      try { center ??= (record.resource as MatrixResource).boundingSphere?.center; } catch { /* Not ready yet. */ }
+      include(center);
+      continue;
+    }
+    if (record.kind !== 'CAD' || isGroundCad(record.resource)) continue;
+    const data = record.resource as CustomDataSource;
+    if (data.entities?.values) {
+      // Before AR preparation these positions may still contain source heights.
+      if (dataSourceIsClamped(data, time)) continue;
+      for (const entity of data.entities.values) {
+        include(entity.position?.getValue(time));
+        for (const point of entity.polyline?.positions?.getValue(time) ?? []) include(point);
+        const hierarchy = entity.polygon?.hierarchy?.getValue(time) as PolygonHierarchy | undefined;
+        if (hierarchy) ring(hierarchy);
+      }
+    } else {
+      let matrix: Matrix4 | undefined;
+      eachPrimitive(record.resource, child => {
+        if (child instanceof LabelCollection) {
+          for (let index = 0; index < child.length; index++) include(child.get(index).position, child.modelMatrix);
+        } else matrix ??= (child as MatrixResource)?.modelMatrix;
+      });
+      const source = record.resource as { cadPolylineFeatures?: { positions: Cartesian3[] }[]; cadFacePositions?: Cartesian3[][] };
+      for (const feature of source.cadPolylineFeatures ?? []) for (const point of feature.positions) include(point, matrix);
+      for (const face of source.cadFacePositions ?? []) for (const point of face) include(point, matrix);
+    }
+  }
+  return nearest;
+}
+
 /** CAD entity properties already contain sampled heights; retain those exact vertices. */
 function collectPositions(data: CustomDataSource, time: JulianDate): { bindings: PositionBinding[]; center?: Cartesian3 } {
   const bindings: PositionBinding[] = [], points: Cartesian3[] = [];
@@ -547,12 +597,17 @@ export class VideoOverlayResources {
     return entry ? this.item(entry, this.importIndex()) : undefined;
   }
 
-  /** Original engineering centers keep the group pivot stable while visibility changes. */
-  getGroupCenter(): Cartesian3 | undefined {
+  /** Without a reference retain the legacy center for existing integrations.
+   * New corrections use actual nearby geometry and persist that one fixed pivot.
+   */
+  getGroupCenter(reference?: Cartesian3): Cartesian3 | undefined {
     const current = this.importIndex();
-    const centers = [...this.entries.values()].filter(entry => groupAdjustable(entry)
-      && entry.record.id !== this.occlusion?.sourceId && this.available(entry, current) && validAnchor(entry.center))
-      .map(entry => entry.center!);
+    const entries = [...this.entries.values()].filter(entry => groupAdjustable(entry)
+      && entry.record.id !== this.occlusion?.sourceId && this.available(entry, current) && validAnchor(entry.center));
+    if (reference) return findVideoOverlayGroupCenter(entries.map(entry => ({ ...entry.record, resource: entry.target,
+      boundingSphere: new BoundingSphere(entry.transform ? Matrix4.multiplyByPoint(entry.transform, entry.center!, new Cartesian3()) : entry.center!),
+    })), reference, this.options.viewer.clock.currentTime);
+    const centers = entries.map(entry => entry.center!);
     return centers.length ? Cartesian3.clone(BoundingSphere.fromPoints(centers).center) : undefined;
   }
 

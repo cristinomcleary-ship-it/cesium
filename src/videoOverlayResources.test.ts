@@ -6,10 +6,11 @@ import {
   PolygonHierarchy, PolylineColorAppearance, Primitive, PrimitiveCollection,
   Transforms, UniformType, type Viewer,
 } from "cesium";
-import { validateVideoOverlayAdjustment, validateVideoOverlayGroupAdjustment, videoOverlayAdjustmentMatrix, VideoOverlayResources, type VideoOverlayGroupAdjustment } from "./videoOverlayResources.ts";
+import { findVideoOverlayGroupCenter, validateVideoOverlayAdjustment, validateVideoOverlayGroupAdjustment, videoOverlayAdjustmentMatrix, VideoOverlayResources, type VideoOverlayGroupAdjustment } from "./videoOverlayResources.ts";
 import type { CadImportPackage } from "./cadImport.ts";
 import type { LibraryRecord } from "./projectLibrary.ts";
 import type { ImportRecord } from "./types.ts";
+import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader.ts";
 
 const center = Cartesian3.fromDegrees(120, 30, 25);
 const base = Transforms.eastNorthUpToFixedFrame(center);
@@ -171,6 +172,83 @@ test('invalid group anchors and angles reject the full edit without changing ses
     session.applyAdjustments({}, group);
     assert.ok(Matrix4.equals(first.resource.modelMatrix, original));
   } finally { session.restore(); }
+});
+
+test('disjoint CAD layouts cannot put a new group pivot inside Earth or launch nearby geometry kilometres away', async () => {
+  const nearby = [center, Matrix4.multiplyByPoint(base, new Cartesian3(20, 0, 0), new Cartesian3())];
+  const remote = [Cartesian3.fromDegrees(50, 10, 25), Cartesian3.fromDegrees(50.001, 10, 25)];
+  const positionsBefore = [...nearby, ...remote].map(point => Cartesian3.clone(point));
+  const bounds = BoundingSphere.fromPoints([...nearby, ...remote]);
+  const leaf = { show: true, modelMatrix: Matrix4.clone(Matrix4.IDENTITY), isDestroyed: () => false, destroy() {} };
+  const root = Object.assign(new PrimitiveCollection(), { cadPolylineFeatures: [{ positions: nearby }, { positions: remote }] });
+  root.add(leaf);
+  const record: ImportRecord = { id: 'cad', name: 'disjoint-layouts', kind: 'CAD', representation: 'primitive', resource: root, visible: true, boundingSphere: bounds };
+  const camera = Matrix4.multiplyByPoint(base, new Cartesian3(0, 0, 100), new Cartesian3());
+  const session = await VideoOverlayResources.create({ viewer: viewer(), imports: () => [record], getRecord: () => undefined });
+  const values = { east: 0, north: 0, up: 0, heading: 0, tiltEast: .1, tiltNorth: 0 };
+  try {
+    assert.ok(bounds.radius > 1_000_000);
+    assert.ok(Cartographic.fromCartesian(bounds.center).height < -100_000);
+    const bad = videoOverlayAdjustmentMatrix(bounds.center, values);
+    assert.ok(Cartesian3.distance(Matrix4.multiplyByPoint(bad, nearby[1], new Cartesian3()), nearby[1]) > 1000);
+    const pivot = session.getGroupCenter(camera)!;
+    closePoint(pivot, center);
+    assert.ok(Matrix4.equals(leaf.modelMatrix, Matrix4.IDENTITY), 'choosing a pivot never edits geometry');
+    session.setSelection([]); closePoint(session.getGroupCenter(camera)!, pivot);
+    session.setSelection(['cad']); closePoint(session.getGroupCenter(camera)!, pivot);
+    const group: VideoOverlayGroupAdjustment = { anchor: [pivot.x, pivot.y, pivot.z], values };
+    session.applyAdjustments({}, group);
+    const once = Matrix4.clone(leaf.modelMatrix);
+    assert.ok(Cartesian3.distance(Matrix4.multiplyByPoint(once, nearby[1], new Cartesian3()), nearby[1]) < .1);
+    const saved = JSON.parse(JSON.stringify(group));
+    session.applyAdjustments({}, { ...group, values: { ...values, tiltEast: .2 } });
+    session.applyAdjustments({}, saved);
+    assert.ok(Matrix4.equals(leaf.modelMatrix, once), 'saved/undo state keeps the exact local pivot');
+    session.applyAdjustments({});
+    assert.ok(Matrix4.equals(leaf.modelMatrix, Matrix4.IDENTITY));
+    session.applyAdjustments({}, saved);
+    assert.ok(Matrix4.equals(leaf.modelMatrix, once), 'reapplying saved correction never recalculates its anchor');
+    assert.deepEqual([...nearby, ...remote], positionsBefore, 'remote geometry is retained without filtering or rewriting');
+  } finally { session.restore(); root.destroy(); }
+});
+
+test('new CAD group pivots use actual current matrices or entity heights, and never use unprepared ground bounds', async () => {
+  const camera = Matrix4.multiplyByPoint(base, new Cartesian3(0, 0, 100), new Cartesian3());
+  const data = new CustomDataSource('sampled');
+  const line = data.entities.add({ polyline: { positions: [center, Matrix4.multiplyByPoint(base, new Cartesian3(20, 0, 0), new Cartesian3())], clampToGround: false } });
+  const record: ImportRecord = { id: 'entity', name: 'sampled', kind: 'CAD', representation: 'dataSource', resource: data, visible: true };
+  const view = viewer(), session = await VideoOverlayResources.create({ viewer: view, imports: () => [record], getRecord: () => undefined });
+  try {
+    session.applyAdjustments({ entity: { east: 3, up: 5 } });
+    closePoint(session.getGroupCenter(camera)!, line.polyline!.positions!.getValue(view.clock.currentTime)[0]);
+  } finally { session.restore(); }
+  const original = videoOverlayAdjustmentMatrix(center, { east: 3, north: 0, up: 5, heading: 0 });
+  const root = Object.assign(new PrimitiveCollection(), { cadPolylineFeatures: [{ positions: [center] }] });
+  root.add({ modelMatrix: original, show: true, destroy() {} });
+  try {
+    const primitiveRecord: ImportRecord = { ...record, resource: root, representation: 'primitive' };
+    closePoint(findVideoOverlayGroupCenter([primitiveRecord], camera, view.clock.currentTime)!, Matrix4.multiplyByPoint(original, center, new Cartesian3()));
+    const ground = new PrimitiveCollection(); ground.add(groundSource());
+    try {
+      assert.equal(findVideoOverlayGroupCenter([{ ...primitiveRecord, resource: ground, boundingSphere: new BoundingSphere(center, 20) }], camera, view.clock.currentTime), undefined);
+    } finally { ground.destroy(); }
+  } finally { root.destroy(); }
+});
+
+test('face-only primitive CAD retains actual pivot candidates independently of polyline collision data', async () => {
+  const value: CadImportPackage = { format: 'cesium-cad-import', version: 2,
+    source: { name: 'faces.dwg', format: 'DWG', generatedAt: '' }, warnings: [],
+    statistics: { sourceEntities: 1, displayEntities: 1, skippedEntities: 0, unknownEntities: 0, layers: ['0'] },
+    entities: [{ type: '3DFACE', sourceType: 'SOLID', layer: '0', vertices: [{ x: 0, y: 0, z: 0 }, { x: 10, y: 0, z: 0 }, { x: 0, y: 10, z: 0 }] }],
+  };
+  const result = await loadCadPrimitiveCollection(value, { mode: 'local', longitude: 120, latitude: 30, altitude: 25, referenceX: 0, referenceY: 0, rotation: 0, scale: 1 });
+  try {
+    assert.equal(result.cadPolylineFeatures.length, 0);
+    assert.equal(result.collection.cadFacePositions.length, 1);
+    const reference = Matrix4.multiplyByPoint(base, new Cartesian3(0, 0, 100), new Cartesian3());
+    const record: ImportRecord = { id: 'face', name: 'face', kind: 'CAD', representation: 'primitive', resource: result.collection, visible: true, boundingSphere: result.boundingSphere };
+    closePoint(findVideoOverlayGroupCenter([record], reference, JulianDate.now())!, center);
+  } finally { result.collection.destroy(); }
 });
 
 test('group and individual corrections share the entity CAD picking and annotation frame and zero restores original properties', async () => {
@@ -380,6 +458,9 @@ test("ground CAD freezes map surface height instead of restoring source Z, and d
     const features = (copy as unknown as { cadPolylineFeatures: { positions: Cartesian3[] }[] }).cadPolylineFeatures;
     assert.ok(features[0].positions.length >= 3, 'Surface copy samples long segments between endpoints');
     for (const point of features[0].positions) close(Cartographic.fromCartesian(point).height, 0);
+    const pivot = session.getGroupCenter(center)!;
+    assert.ok(features[0].positions.some(point => Cartesian3.equalsEpsilon(point, pivot, 1e-12, 1e-6)));
+    close(Cartographic.fromCartesian(pivot).height, 0);
     const sourceFrame = session.spatialFrame('cad')!;
     const originalPoint = Matrix4.getTranslation(sourceFrame, new Cartesian3());
     session.applyAdjustments({ cad: { up: 7, tiltEast: 9, tiltNorth: -4 } });

@@ -88,3 +88,40 @@ test('whole-group drag uses its fixed anchor without reading an unready first mo
   assert.ok(Cartesian3.equals(owner.dragging.origin, anchor));
   assert.equal(owner.undo.length, 1); assert.equal(owner.undo[0].groupAdjustment, undefined);
 });
+
+test('new overall edits choose once from the fixed first camera and preserve that pivot through seek, save and history', () => {
+  const firstCamera = Cartesian3.add(origin, Cartesian3.multiplyByScalar(up, 100, new Cartesian3()), new Cartesian3());
+  const references = [];
+  const owner = Object.assign(Object.create(VideoModelOverlay.prototype), {
+    adjustments: {}, undo: [], redo: [], groupAdjustment: undefined,
+    cameraAnchor: { position: { ...firstCamera } },
+    resources: { getGroupCenter(reference) { references.push(Cartesian3.clone(reference)); return Cartesian3.clone(origin); } },
+    el: () => ({ value: '*' }), targetIds: () => ['cad'], applyAdjustments() {}, syncAdjustmentInputs() {},
+    checkOcclusionAdjustment() {}, fail(error) { throw error; },
+  });
+  owner.edit('tiltEast', .1);
+  assert.equal(references.length, 1); assert.ok(Cartesian3.equals(references[0], firstCamera));
+  const saved = JSON.parse(JSON.stringify(owner.adjustmentState()));
+  owner.cameraAnchor.position = Cartesian3.fromDegrees(0, 0, 100); // Even a later restored reference cannot rewrite a saved pivot.
+  owner.edit('tiltNorth', -.2);
+  assert.equal(references.length, 1);
+  assert.deepEqual(owner.groupAnchor(), [origin.x, origin.y, origin.z]);
+  owner.history(false);
+  assert.deepEqual(owner.adjustmentState(), saved);
+  owner.history(true);
+  assert.deepEqual(owner.groupAnchor(), saved.groupAdjustment.anchor);
+  owner.groupAdjustment = JSON.parse(JSON.stringify(saved.groupAdjustment));
+  assert.deepEqual(owner.groupAnchor(), saved.groupAdjustment.anchor);
+  assert.equal(references.length, 1, 'saved anchor bypasses all geometry searches');
+});
+
+test('before preparation an unknown CAD geometry cannot fall back to its misleading bounding-box center', () => {
+  const owner = Object.assign(Object.create(VideoModelOverlay.prototype), {
+    cameraAnchor: { position: { ...origin } }, viewer: { clock: { currentTime: undefined } },
+    options: { getImports: () => [{ id: 'cad', kind: 'CAD', resource: {}, boundingSphere: { center: origin, radius: 3_000_000 } }] },
+    isOcclusionSource: () => false,
+  });
+  assert.throws(() => owner.groupAnchor(), /先进入融合/);
+  owner.groupAdjustment = structuredClone(groupAdjustment);
+  assert.deepEqual(owner.groupAnchor(), groupAdjustment.anchor, 'a saved anchor remains readable without geometry or a ready scene');
+});

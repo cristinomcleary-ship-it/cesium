@@ -1,0 +1,49 @@
+(node:12) ExperimentalWarning: Transform Types is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ old saved offsets and zero tilts retain the exact legacy heading matrix (5.554594ms)
+✔ fixed ENU tilts raise the named side, follow heading, and keep the pivot at its requested translation (1.414918ms)
+✔ invalid tilt patches reject atomically and valid angle-only edits never accumulate (3.944754ms)
+✔ one fixed group tilt moves distant engineering objects rigidly, preserves individual edits and leaves survey tiles fixed (2.554441ms)
+✔ invalid group anchors and angles reject the full edit without changing session geometry (1.120135ms)
+✔ disjoint CAD layouts cannot put a new group pivot inside Earth or launch nearby geometry kilometres away (2.939145ms)
+✔ new CAD group pivots use actual current matrices or entity heights, and never use unprepared ground bounds (3.052636ms)
+✔ face-only primitive CAD retains actual pivot candidates independently of polyline collision data (2.048355ms)
+✔ group and individual corrections share the entity CAD picking and annotation frame and zero restores original properties (2.347079ms)
+✔ tilted entity CAD lines and saved annotation coordinates share the same transform and restore exactly (2.38159ms)
+✔ primitive CAD line picking and bound annotations follow both tilts with an existing source matrix (1.235769ms)
+✔ ENU edits are absolute, are video-local, and selection restores all imported layer visibility (1.125088ms)
+✔ CAD entity lines, polygons including holes, and text retain sampled heights and restore original properties (1.487665ms)
+✔ recursive primitive CAD transforms leaves about the object's fixed center (1.144921ms)
+✔ ground CAD freezes map surface height instead of restoring source Z, and destroys copy on exit (8.212689ms)
+✔ cancel during ground source fetch restores every layer, including non-CAD resources (0.914723ms)
+✔ invalid offsets fail before touching any valid object (0.5233ms)
+✔ restored CAD waits for the geometry worker before snapshotting and applying offsets (1.219809ms)
+✔ cancelling CAD compilation restores the user's layer and removes readiness listeners (0.611839ms)
+✔ CAD removed or denied during compilation stays unavailable and hidden (1.202722ms)
+✔ CAD compilation timeout is bounded and restores temporary visibility (1.425875ms)
+✔ resource lookup stays linear and unchanged frames never rewrite visibility or zero transforms (4.899509ms)
+✔ unchanged entity CAD playback emits no per-entity visibility changes and still applies revocation (3.361945ms)
+✔ model effects preserve material alpha and original shader, reuse one translucent shader and never compound (1.950479ms)
+✔ model command rebuild readiness gates fused output while alpha-hidden or unselected objects do not block (1.184513ms)
+✔ primitive CAD fading retains original depth shader, uses one numeric uniform and restores appearance (2.355925ms)
+✔ entity CAD fading reads original color properties at every time without multiplying prior output (1.992765ms)
+✔ an external shader owner wins over restore and even a failing restore setter releases the owned shader (0.799589ms)
+✔ a non-owning host still destroys temporary absolute CAD copies on exit (2.134238ms)
+✔ unsaved map placement invalidates cache despite stale persisted matrix (5.348737ms)
+✔ temporary AR transforms do not change the base placement fingerprint across entry and exit (0.48358ms)
+✔ resources without a runtime matrix retain saved placement and other cache dependencies (0.655961ms)
+✔ whole-group angles and the saved common pivot each invalidate baked frames (0.782186ms)
+✔ draped CAD cache depends on receiving models even when they are not visible overlays (0.880973ms)
+✔ individual horizontal screen drag compensates group heading and both tilts without mutating the undo snapshot (31.22004ms)
+✔ individual vertical screen drag compensates group heading and both tilts without mutating the undo snapshot (3.642161ms)
+✔ whole-group drag uses its fixed anchor without reading an unready first model bounding sphere (9.673677ms)
+✔ new overall edits choose once from the fixed first camera and preserve that pivot through seek, save and history (1.665384ms)
+✔ before preparation an unknown CAD geometry cannot fall back to its misleading bounding-box center (1.727326ms)
+ℹ tests 39
+ℹ suites 0
+ℹ pass 39
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3743.147732

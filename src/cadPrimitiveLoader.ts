@@ -55,6 +55,8 @@ export type CadPolylineFeature = {
 export type CadPrimitiveCollection = PrimitiveCollection & {
   readonly cadName: string;
   readonly cadPolylineFeatures: CadPolylineFeature[];
+  /** Actual face vertices remain available for local editing pivots after GPU upload. */
+  readonly cadFacePositions: Cartesian3[][];
   readonly cadFeatureCount: number;
 };
 
@@ -246,6 +248,7 @@ export async function loadCadPrimitiveCollection(
     handedToCaller = true;
   }
   const cadPolylineFeatures: CadPolylineFeature[] = [];
+  const cadFacePositions: Cartesian3[][] = [];
   let minimum: Cartesian3 | undefined;
   let maximum: Cartesian3 | undefined;
   let featureCount = 0;
@@ -412,6 +415,7 @@ export async function loadCadPrimitiveCollection(
       else {
         converted.forEach(include);
         addFace(converted, color, id);
+        cadFacePositions.push(converted);
         if (entity.sourceType === "3DFACE") {
           addLine(closeLine(converted, true), Math.max(1, Math.min(width, 2)), color, id);
         }
@@ -467,6 +471,7 @@ export async function loadCadPrimitiveCollection(
   Object.defineProperties(collection, {
     cadName: { value: value.source.name, enumerable: true },
     cadPolylineFeatures: { value: cadPolylineFeatures, enumerable: false },
+    cadFacePositions: { value: cadFacePositions, enumerable: false },
     cadFeatureCount: { value: featureCount, enumerable: true },
   });
 

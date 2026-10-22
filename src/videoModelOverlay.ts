@@ -1,6 +1,6 @@
-import { BoundingSphere, Cartesian3, Color, Matrix4, PerspectiveFrustum, SceneMode, Transforms, type PostProcessStage, type Viewer } from 'cesium';
+import { Cartesian3, Color, Matrix4, PerspectiveFrustum, SceneMode, Transforms, type PostProcessStage, type Viewer } from 'cesium';
 import { createCcCameraTrack, parseCcCameraXml, type CcCameraDataset, type CcCameraTrack, type CcTrackOptions } from './ccCameraTrack';
-import { VideoOverlayResources, validateVideoOverlayAdjustment, validateVideoOverlayGroupAdjustment, videoOverlayAdjustmentMatrix, type VideoOverlayGroupAdjustment, type VideoOverlayAdjustment } from './videoOverlayResources';
+import { VideoOverlayResources, findVideoOverlayGroupCenter, validateVideoOverlayAdjustment, validateVideoOverlayGroupAdjustment, videoOverlayAdjustmentMatrix, type VideoOverlayGroupAdjustment, type VideoOverlayAdjustment } from './videoOverlayResources';
 import { containVideoRect, overlayLensBounds, overlayTransparencyUniforms, createVideoOverlayLensStage } from './videoOverlayLens';
 import { transformCcCameraSample, validateCcSceneTransform } from './ccSceneRegistration';
 import { createCcCameraRegistrationMatrix, defaultCcCameraRegistration, validateCcCameraRegistration, type CcCameraRegistration, type CcCameraRegistrationAnchor } from './ccCameraRegistration';
@@ -23,7 +23,7 @@ import { VideoOverlayCacheStore, hashVideoOverlayInputs } from './videoOverlayCa
 import { VideoOverlayLifecycle } from './videoOverlayLifecycle';
 import './videoModelOverlay.css';
 
-export const VIDEO_OVERLAY_BUILD = '2026.10.22-R7-group-tilt-surface';
+export const VIDEO_OVERLAY_BUILD = '2026.10.22-R8-local-cad-pivot';
 
 export type SavedVideoOverlaySettings = {
   schemeName?: string;
@@ -1206,19 +1206,11 @@ export class VideoModelOverlay {
   private pushHistory() { this.undo.push(this.adjustmentState()); if (this.undo.length > 100) this.undo.shift(); this.redo = []; }
   private groupAnchor(): [number, number, number] {
     if (this.groupAdjustment) return [...this.groupAdjustment.anchor];
-    let center = this.resources?.getGroupCenter();
-    if (!center) {
-      const points: Cartesian3[] = [];
-      for (const item of this.options.getImports().filter(item => (item.kind === 'CAD' || item.kind === 'Model') && !this.isOcclusionSource(item.id))) {
-        let point = item.boundingSphere?.center;
-        try { point ??= (item.resource as { boundingSphere?: BoundingSphere }).boundingSphere?.center; } catch { /* Not ready yet. */ }
-        const matrix = (item.resource as { modelMatrix?: Matrix4 }).modelMatrix;
-        if (!point && matrix) point = Matrix4.getTranslation(matrix, new Cartesian3());
-        if (point && [point.x, point.y, point.z].every(Number.isFinite) && Cartesian3.magnitude(point) > 1) points.push(point);
-      }
-      if (points.length) center = BoundingSphere.fromPoints(points).center;
-    }
-    if (!center) throw new Error('整体校正缺少定位中心，请等待 CAD／工程模型加载完成后进入融合');
+    if (!this.cameraAnchor) throw new Error('请先载入视频和空三并进入融合，再建立整体校正中心');
+    const reference = v3(this.cameraAnchor.position);
+    const center = this.resources ? this.resources.getGroupCenter(reference)
+      : findVideoOverlayGroupCenter(this.options.getImports().filter(item => !this.isOcclusionSource(item.id)), reference, this.viewer.clock.currentTime);
+    if (!center) throw new Error('请先进入融合并完成 CAD／工程模型准备，再建立实际工程位置上的整体校正中心');
     return [center.x, center.y, center.z];
   }
   private edit(key: keyof VideoOverlayAdjustment, value: number) {
@@ -1396,6 +1388,8 @@ export class VideoModelOverlay {
     try { this.checkOcclusionSource(); } catch (error) { occlusionError = error instanceof Error ? error.message : String(error); }
     const raw = this.track!.sample(time), rendered = raw && !referenceError ? (this.sceneReference ? transformCcCameraSample(raw, this.sceneReference.matrix) : raw) : null;
     const corrected = rendered && (this.cameraRegistration.enabled ? transformCcCameraSample(rendered, this.cameraCorrection) : rendered);
+    let groupPivot: [number, number, number] | null = null;
+    try { groupPivot = this.groupAnchor(); } catch { /* An unprepared CAD has no actual pivot yet. */ }
     return {
       format: 'cesium-cc-registration-diagnostic', version: 1, runtimeBuild: VIDEO_OVERLAY_BUILD, createdAt: new Date().toISOString(),
       lifecycle: { cleanup: this.cleanupReport, pendingTasks: (this.cacheLifecycle?.pendingCount ?? 0) + Number(!!this.extractionTask), cachedPlayback: !!this.cachedPreview, liveRendering: !!this.restoreScene },
@@ -1404,6 +1398,7 @@ export class VideoModelOverlay {
       xml: { name: this.files.source.name, photos: this.dataset!.photos.length, referenceSystems: this.dataset!.photogroups.map(group => group.referenceSystem),
         intrinsics: this.track!.intrinsics, distortion: this.track!.distortion, startTime: this.track!.startTime, endTime: this.track!.endTime },
       groupAdjustment: structuredClone(this.groupAdjustment) ?? null,
+      groupPivot, groupPivotReference: this.cameraAnchor?.position ?? null,
       timing: this.timing, sceneReference: this.sceneReference ?? null, referenceError, rawCamera: raw, registeredCamera: rendered,
       cameraRegistration: { ...this.cameraRegistration, anchor: this.cameraAnchor ?? null, matrix: [...this.cameraCorrection] }, correctedCamera: corrected,
       occlusion: { ...this.occlusion, status: this.resources?.getOcclusionStatus() ?? null, error: occlusionError },
@@ -1416,6 +1411,7 @@ export class VideoModelOverlay {
         try { sphere ??= resource.boundingSphere; } catch { /* A not-yet-ready model has no evaluated sphere. */ }
         return { id: item.id, name: item.name, kind: item.kind, selected: this.selected.has(item.id), occluder: this.isOcclusionSource(item.id),
           savedMatrix: record?.settings.matrix ?? null, displayedMatrix: resource.modelMatrix ? Matrix4.toArray(resource.modelMatrix) : null,
+          coordinates: record?.settings.coordinates ?? null, displayMode: record?.settings.displayMode ?? null,
           scale: resource.scale ?? null, minimumPixelSize: resource.minimumPixelSize ?? null,
           bounds: sphere ? { center: sphere.center, radius: sphere.radius } : null, adjustment: this.adjustments[item.id] ?? zero() };
       }),
