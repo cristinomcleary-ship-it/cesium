@@ -177,7 +177,10 @@ function interpolatePolyline(vertices: PolylineVertex[], closed: boolean): CadPo
 }
 
 function polyline2dDisplayVertices(entity: AnyEntity): PolylineVertex[] {
-  const vertices = validPolylineVertices(entity.vertices, Number(entity.elevation) || 0);
+  // AcDb2dVertex stores XY in OCS; its owning POLYLINE2D supplies the Z.
+  // LibreDWG emits vertex.point.z (usually 0), so a fallback alone loses elevation.
+  const elevation = Number(entity.elevation) || 0;
+  const vertices = validPolylineVertices(entity.vertices).map(vertex => ({ ...vertex, z: elevation }));
   if (vertices.length < 2) return vertices;
   const splineFit = vertices.filter((vertex) => ((vertex.flag ?? 0) & 8) !== 0 && ((vertex.flag ?? 0) & (4 | 16)) === 0);
   if (splineFit.length >= 2) return splineFit;
@@ -190,6 +193,34 @@ function polyline2dDisplayVertices(entity: AnyEntity): PolylineVertex[] {
 function compose(parent: PointTransform, local: PointTransform): PointTransform {
   return (value) => parent(local(value));
 }
+
+/** Autodesk's arbitrary-axis algorithm converts planar entity OCS to WCS.
+ * https://help.autodesk.com/cloudhelp/2020/ENU/AutoCAD-DXF/files/GUID-E19E5B42-0CC7-4EBA-B29F-5E1D595149EE.htm
+ * LINE, POINT, 3DFACE, POLYLINE3D, SPLINE and MTEXT already use WCS.
+ */
+function objectCoordinateTransform(extrusion: unknown): PointTransform {
+  const normal = point(extrusion, 1);
+  if (!normal) return identity;
+  const length = Math.hypot(normal.x, normal.y, normal.z ?? 0);
+  if (!Number.isFinite(length) || length === 0) return identity;
+  const nx = normal.x / length, ny = normal.y / length, nz = (normal.z ?? 0) / length;
+  if (nx === 0 && ny === 0 && nz === 1) return identity;
+  // Ax = worldY x N near the poles; otherwise worldZ x N.
+  let ax: number, ay: number, az: number;
+  if (Math.abs(nx) < 1 / 64 && Math.abs(ny) < 1 / 64) [ax, ay, az] = [nz, 0, -nx];
+  else [ax, ay, az] = [-ny, nx, 0];
+  const axisLength = Math.hypot(ax, ay, az);
+  ax /= axisLength; ay /= axisLength; az /= axisLength;
+  // Ay = N x Ax, completing a right-handed orthonormal frame.
+  const bx = ny * az - nz * ay, by = nz * ax - nx * az, bz = nx * ay - ny * ax;
+  return ({ x, y, z = 0 }) => ({
+    x: ax * x + bx * y + nx * z,
+    y: ay * x + by * y + ny * z,
+    z: az * x + bz * y + nz * z,
+  });
+}
+
+const OBJECT_COORDINATE_ENTITIES = new Set(['LWPOLYLINE', 'POLYLINE2D', 'CIRCLE', 'ARC', 'SOLID', 'TRACE', 'TEXT', 'ATTRIB', 'ATTDEF']);
 
 function sampleArc(center: CadPoint, radius: number, start = 0, end = Math.PI * 2): CadPoint[] {
   let normalizedEnd = end;
@@ -206,22 +237,33 @@ function sampleEllipse(entity: AnyEntity): CadPoint[] {
   const center = point(entity.center);
   const major = point(entity.majorAxisEndPoint);
   const ratio = Number(entity.axisRatio);
-  if (!center || !major || !Number.isFinite(ratio)) return [];
-  const majorLength = Math.hypot(major.x, major.y);
+  if (!center || !major || !Number.isFinite(ratio) || ratio <= 0) return [];
+  // ELLIPSE center and major-axis vector are already WCS. The normal defines
+  // the short axis; projecting the major axis to XY loses tilted/vertical planes.
+  // https://help.autodesk.com/cloudhelp/2020/ENU/AutoCAD-DXF/files/GUID-107CB04F-AD4D-4D2F-8EC9-AC90888063AB.htm
+  const normal = point(entity.extrusionDirection, 1) ?? { x: 0, y: 0, z: 1 };
+  const majorZ = major.z ?? 0;
+  const majorLength = Math.hypot(major.x, major.y, majorZ);
   if (!majorLength) return [];
-  const rotation = Math.atan2(major.y, major.x);
+  const minor = {
+    x: normal.y * majorZ - (normal.z ?? 0) * major.y,
+    y: (normal.z ?? 0) * major.x - normal.x * majorZ,
+    z: normal.x * major.y - normal.y * major.x,
+  };
+  const minorLength = Math.hypot(minor.x, minor.y, minor.z);
+  if (!Number.isFinite(minorLength) || !minorLength) return [];
+  const minorScale = majorLength * ratio / minorLength;
   const start = Number.isFinite(entity.startAngle) ? Number(entity.startAngle) : 0;
   let end = Number.isFinite(entity.endAngle) ? Number(entity.endAngle) : Math.PI * 2;
   while (end <= start) end += Math.PI * 2;
   const segments = Math.max(48, Math.ceil((end - start) / (Math.PI / 48)));
   return Array.from({ length: segments + 1 }, (_, index) => {
     const angle = start + ((end - start) * index) / segments;
-    const localX = Math.cos(angle) * majorLength;
-    const localY = Math.sin(angle) * majorLength * ratio;
+    const cos = Math.cos(angle), sin = Math.sin(angle) * minorScale;
     return {
-      x: center.x + localX * Math.cos(rotation) - localY * Math.sin(rotation),
-      y: center.y + localX * Math.sin(rotation) + localY * Math.cos(rotation),
-      z: (center.z ?? 0) + (major.z ?? 0) * Math.cos(angle),
+      x: center.x + major.x * cos + minor.x * sin,
+      y: center.y + major.y * cos + minor.y * sin,
+      z: (center.z ?? 0) + majorZ * cos + minor.z * sin,
     };
   });
 }
@@ -234,6 +276,8 @@ function transformed(points: CadPoint[], transform: PointTransform): CadPoint[] 
 function normaliseEntity(entity: AnyEntity, transform: PointTransform, style: CadStyle, inheritedLayer?: string): CadImportEntity | null {
   const layer = entity.layer === "0" && inheritedLayer ? inheritedLayer : String(entity.layer || inheritedLayer || "0");
   const common = { sourceType: entity.type, layer, ...style };
+  // Interpolate in the entity plane before OCS conversion and enclosing INSERTs.
+  if (OBJECT_COORDINATE_ENTITIES.has(entity.type)) transform = compose(transform, objectCoordinateTransform(entity.extrusionDirection));
   let points: CadPoint[] = [];
   let closed = false;
 
@@ -301,7 +345,7 @@ function normaliseEntity(entity: AnyEntity, transform: PointTransform, style: Ca
   return null;
 }
 
-function expandDatabase(database: DwgDatabase): { entities: CadImportEntity[]; skipped: number; hidden: number; warnings: string[] } {
+export function expandCadDatabase(database: DwgDatabase): { entities: CadImportEntity[]; skipped: number; hidden: number; warnings: string[] } {
   const output: CadImportEntity[] = [];
   const warnings: string[] = [];
   let skipped = 0;
@@ -350,6 +394,7 @@ function expandDatabase(database: DwgDatabase): { entities: CadImportEntity[]; s
     const rotation = Number(entity.rotation) || 0;
     const cos = Math.cos(rotation);
     const sin = Math.sin(rotation);
+    const insertToWorld = objectCoordinateTransform(entity.extrusionDirection);
     const rows = Math.max(1, Number(entity.rowCount) || 1);
     const columns = Math.max(1, Number(entity.columnCount) || 1);
     const layer = entity.layer === "0" ? inheritedLayer : String(entity.layer || inheritedLayer || "0");
@@ -362,11 +407,11 @@ function expandDatabase(database: DwgDatabase): { entities: CadImportEntity[]; s
         const local: PointTransform = (value) => {
           const x = (value.x - base.x + columnOffset) * sx;
           const y = (value.y - base.y + rowOffset) * sy;
-          return {
+          return insertToWorld({
             x: insertion.x + x * cos - y * sin,
             y: insertion.y + x * sin + y * cos,
             z: (insertion.z ?? 0) + ((value.z ?? 0) - (base.z ?? 0)) * sz,
-          };
+          });
         };
         const nestedTransform = compose(transform, local);
         block.entities.forEach((child) => visit(child as AnyEntity, nestedTransform, layer, insertStyle, depth + 1, [...stack, name.toUpperCase()]));
@@ -393,7 +438,7 @@ export async function createCadImportFromDwg(file: File): Promise<CadImportPacka
 
   try {
     const { database, stats } = engine.convertEx(pointer);
-    const result = expandDatabase(database);
+    const result = expandCadDatabase(database);
     if (!result.entities.length) throw new Error("DWG 已解析，但模型空间内没有可显示的线、圆弧、多段线、文字、点或三维面");
     const layers = [...new Set(result.entities.map((entity) => entity.layer))].sort((a, b) => a.localeCompare(b, "zh-CN"));
     return {

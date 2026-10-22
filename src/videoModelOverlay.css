@@ -42,3 +42,5 @@
 
 /* Spatial picking is independent of the older screen-space annotation handles. */
 .cc-video-spatial-editor {position:absolute;z-index:11;pointer-events:none;touch-action:none}
+
+.cc-overlay-panel .cc-tilt-nudges {display:grid;grid-template-columns:1fr 1fr;gap:5px}

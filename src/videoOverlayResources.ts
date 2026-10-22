@@ -13,8 +13,15 @@ import type { ImportRecord } from "./types.ts";
 import { assertVideoOverlayOccluder, VideoOverlayOcclusion, VideoOverlayTileCoverage, type VideoOverlayOcclusionStatus } from './videoOverlayOcclusion.ts';
 import type { VideoOverlayEffectState } from './videoOverlayEffects.ts';
 
-/** Metres in the object's fixed local ENU frame; heading is clockwise degrees. */
-export type VideoOverlayAdjustment = { east: number; north: number; up: number; heading: number };
+/** Metres in the object's fixed local ENU frame; angles are degrees.
+ * Heading is clockwise. Positive tilts raise the east / north side respectively.
+ * Missing tilts in older saved plans mean zero.
+ */
+export type VideoOverlayAdjustment = {
+  east: number; north: number; up: number; heading: number;
+  tiltEast?: number; tiltNorth?: number;
+};
+type NormalizedVideoOverlayAdjustment = Required<VideoOverlayAdjustment>;
 export type VideoOverlayResourceItem = {
   id: string; name: string; kind: ImportRecord["kind"]; description: string;
   available: boolean; selected: boolean; occluder?: boolean; error?: string;
@@ -173,21 +180,31 @@ function finitePoint(point: Cartesian3 | undefined): point is Cartesian3 {
 function validAnchor(point: Cartesian3 | undefined): point is Cartesian3 {
   return finitePoint(point) && Cartesian3.magnitude(point) > 1;
 }
-function noAdjustment(): VideoOverlayAdjustment { return { east: 0, north: 0, up: 0, heading: 0 }; }
-function sameAdjustment(a: VideoOverlayAdjustment | undefined, b: VideoOverlayAdjustment): boolean {
-  return !!a && a.east === b.east && a.north === b.north && a.up === b.up && a.heading === b.heading;
+function noAdjustment(): NormalizedVideoOverlayAdjustment {
+  return { east: 0, north: 0, up: 0, heading: 0, tiltEast: 0, tiltNorth: 0 };
+}
+function sameAdjustment(a: NormalizedVideoOverlayAdjustment | undefined, b: NormalizedVideoOverlayAdjustment): boolean {
+  return !!a && a.east === b.east && a.north === b.north && a.up === b.up && a.heading === b.heading
+    && a.tiltEast === b.tiltEast && a.tiltNorth === b.tiltNorth;
 }
 function setShow(resource: VisibleResource, show: boolean): boolean {
   if (!alive(resource) || resource.show === show) return false;
   resource.show = show; return true;
 }
-function normalizedAdjustment(value: Partial<VideoOverlayAdjustment>): VideoOverlayAdjustment {
+export function validateVideoOverlayAdjustment(value: Partial<VideoOverlayAdjustment>): Required<VideoOverlayAdjustment> {
   const result = noAdjustment();
   for (const key of Object.keys(result) as Array<keyof VideoOverlayAdjustment>) {
     const number = value[key] ?? 0;
     if (!Number.isFinite(number)) throw new Error("AR 位置和旋转必须为有限数值");
-    if (key !== "heading" && Math.abs(number) > 100_000) throw new Error("AR 位置微调不能超过 100000 米");
-    result[key] = key === "heading" ? ((number + 180) % 360 + 360) % 360 - 180 : number;
+    if (key === "tiltEast" || key === "tiltNorth") {
+      if (Math.abs(number) > 90) throw new Error("AR 水平倾角必须在 -90 到 90 度之间");
+      result[key] = number;
+    } else if (key === "heading") {
+      result[key] = ((number + 180) % 360 + 360) % 360 - 180;
+    } else {
+      if (Math.abs(number) > 100_000) throw new Error("AR 位置微调不能超过 100000 米");
+      result[key] = number;
+    }
   }
   return result;
 }
@@ -195,10 +212,17 @@ function normalizedAdjustment(value: Partial<VideoOverlayAdjustment>): VideoOver
 /** Always derives from the saved anchor; repeated edits never compound a transform. */
 export function videoOverlayAdjustmentMatrix(center: Cartesian3, value: VideoOverlayAdjustment): Matrix4 {
   if (!validAnchor(center)) throw new Error("对象没有有效的地理定位中心");
-  const adjustment = normalizedAdjustment(value);
+  const adjustment = validateVideoOverlayAdjustment(value);
   const frame = Transforms.eastNorthUpToFixedFrame(center);
+  const radians = Math.PI / 180;
+  const rotation = Matrix3.fromRotationZ(-adjustment.heading * Math.PI / 180);
+  // Keep the old heading rotation first, then tilt about the fixed ENU axes.
+  // Derive all edits from the same center so repeated input cannot accumulate.
+  // Skip identity products to retain the exact zero-tilt legacy matrix.
+  if (adjustment.tiltNorth !== 0) Matrix3.multiply(Matrix3.fromRotationX(adjustment.tiltNorth * radians), rotation, rotation);
+  if (adjustment.tiltEast !== 0) Matrix3.multiply(Matrix3.fromRotationY(-adjustment.tiltEast * radians), rotation, rotation);
   const local = Matrix4.fromRotationTranslation(
-    Matrix3.fromRotationZ(-adjustment.heading * Math.PI / 180),
+    rotation,
     new Cartesian3(adjustment.east, adjustment.north, adjustment.up),
   );
   return Matrix4.multiply(Matrix4.multiply(frame, local, new Matrix4()), Matrix4.inverseTransformation(frame, new Matrix4()), new Matrix4());
@@ -299,7 +323,7 @@ export class VideoOverlayResources {
   private readonly entries = new Map<string, Entry>();
   private readonly visibilitySnapshots = new Map<VisibleResource, boolean>();
   private readonly controller = new AbortController();
-  private readonly adjustments = new Map<string, VideoOverlayAdjustment>();
+  private readonly adjustments = new Map<string, NormalizedVideoOverlayAdjustment>();
   private readonly opacityStates = new Map<string, VideoOverlayEffectState>();
   private readonly tileCoverage = new Map<string, VideoOverlayTileCoverage>();
   private readonly touchedTiles = new Set<Cesium3DTileset>();
@@ -743,7 +767,7 @@ export class VideoOverlayResources {
   /** A patch of absolute per-object offsets, not incremental deltas. Omitted objects retain their offsets. */
   applyAdjustments(values: Record<string, Partial<VideoOverlayAdjustment>>): void {
     this.throwIfCancelled();
-    const normalized = Object.entries(values).map(([id, value]) => [id, normalizedAdjustment({ ...this.adjustments.get(id), ...value })] as const);
+    const normalized = Object.entries(values).map(([id, value]) => [id, validateVideoOverlayAdjustment({ ...this.adjustments.get(id), ...value })] as const);
     for (const [id, adjustment] of normalized) {
       if (id === this.occlusion?.sourceId && Object.values(adjustment).some(value => value !== 0)) {
         throw new Error('地表遮挡源使用原地图定位，不能同时进行对象位置微调');
@@ -777,7 +801,7 @@ export class VideoOverlayResources {
     if (changed) this.options.viewer.scene.requestRender();
   }
 
-  getAdjustments(): Record<string, VideoOverlayAdjustment> {
+  getAdjustments(): Record<string, NormalizedVideoOverlayAdjustment> {
     return Object.fromEntries([...this.adjustments].map(([id, value]) => [id, { ...value }]));
   }
 

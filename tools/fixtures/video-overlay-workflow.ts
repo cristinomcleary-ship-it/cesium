@@ -1,5 +1,5 @@
 import 'cesium/Build/Cesium/Widgets/widgets.css';
-import { BoundingSphere, Cartesian3, Cesium3DTileset, Cesium3DTileStyle, Color, CustomDataSource, CustomShader, CustomShaderMode, LightingModel, Matrix3, Matrix4, Model, Transforms, Viewer } from 'cesium';
+import { BoundingSphere, Cartesian3, SceneTransforms, Cesium3DTileset, Cesium3DTileStyle, Color, CustomDataSource, CustomShader, CustomShaderMode, LightingModel, Matrix3, Matrix4, Model, Transforms, Viewer } from 'cesium';
 import { VideoModelOverlay, videoModelOverlayPanelHtml, type SavedVideoOverlaySettings } from '../../src/videoModelOverlay';
 import { VideoOverlayPlaybackCompositor } from '../../src/videoOverlayPlaybackCompositor';
 import type { ImportRecord } from '../../src/types';
@@ -82,8 +82,18 @@ for (const item of [0, 300].flatMap(east => modelDefinitions.map(item => ({ ...i
   records.set(item.id, record(item.id, 'Model', matrix));
 }
 const cad = new CustomDataSource('CAD control line'); await viewer.dataSources.add(cad);
-const cadLines = [0, 300].map(east => cad.entities.add({ polyline: { positions: [world(east - 20, 18, 20), world(east + 20, 18, 20)], width: 3, material: Color.WHITE, clampToGround: false } }));
-imports.push({ id: 'cad', name: 'CAD control lines', kind: 'CAD', representation: 'dataSource', resource: cad, visible: true, boundingSphere: new BoundingSphere(world(150, 18, 20), 180) });
+const cadTiltFixture = new URLSearchParams(location.search).get('cadTilt') === '1';
+// Deterministic input probes: do not carry a prior mouse gesture's inertia into
+// the next AR capture. Real drag and wheel events still use Cesium's controller.
+if (cadTiltFixture) {
+  const controls = viewer.scene.screenSpaceCameraController;
+  controls.inertiaSpin = 0; controls.inertiaTranslate = 0; controls.inertiaZoom = 0;
+}
+const cadPoints = cadTiltFixture
+  ? [[world(-20, 18, 20), world(20, 18, 20)], [world(0, 8, 20), world(0, 28, 20)]]
+  : [0, 300].map(east => [world(east - 20, 18, 20), world(east + 20, 18, 20)]);
+const cadLines = cadPoints.map(positions => cad.entities.add({ polyline: { positions, width: 3, material: Color.WHITE, clampToGround: false } }));
+imports.push({ id: 'cad', name: 'CAD control lines', kind: 'CAD', representation: 'dataSource', resource: cad, visible: true, boundingSphere: new BoundingSphere(world(cadTiltFixture ? 0 : 150, 18, 20), cadTiltFixture ? 24 : 180) });
 imports.push({ id: 'ground', name: 'Synthetic photogrammetry ground', kind: '3D Tiles', resource: tiles, visible: false, boundingSphere: tiles.boundingSphere });
 records.set('ground', record('ground', '3D Tiles', Matrix4.IDENTITY));
 
@@ -100,11 +110,12 @@ type Internal = {
   pendingTime?: number; presentedTime?: number; lastFrameTime: number; buffering: boolean; wantedPlaying: boolean;
   resources?: { getOcclusionStatus(): { ready: boolean; [key: string]: unknown }; spatialFrame(id: string): Matrix4 | undefined }; frameHandle?: number; animationHandle?: number;
   cachedPreview?: { video: HTMLVideoElement; start: number; end: number }; editorCanvas?: HTMLCanvasElement;
-  editRevision: number; annotations: unknown[]; effects: unknown[];
+  editRevision: number; annotations: unknown[]; effects: unknown[]; adjustments: SavedVideoOverlaySettings['adjustments'];
   spatialAnnotations: SpatialAnnotation[]; spatialBinding: VideoOverlaySpatialBinding;
   spatialEditor: { setValue(marks: SpatialAnnotation[]): void };
   dirty(): void; renderFrame(time: number): void;
   captureSnapshot(): { settings: SavedVideoOverlaySettings };
+  cacheSignature(range: { start: number; end: number }): string;
 };
 const internal = overlay as unknown as Internal;
 const video = internal.video, callbackHandles = new Set<number>();
@@ -245,12 +256,29 @@ function dimensions() {
     editorDom: document.querySelectorAll('.cc-video-editor').length,
     spatialEditorDom: document.querySelectorAll('.cc-video-spatial-editor').length };
 }
+function cameraState() {
+  const camera = viewer.camera, controls = viewer.scene.screenSpaceCameraController;
+  const frustum = camera.frustum as unknown as Record<string, unknown>;
+  return { height: camera.positionCartographic.height, position: xyz(camera.positionWC), direction: xyz(camera.directionWC), up: xyz(camera.upWC),
+    transform: Matrix4.toArray(camera.transform), frustum: Object.fromEntries(['fov','aspectRatio','near','far','xOffset','yOffset'].map(key => [key,frustum[key]])),
+    controls: Object.fromEntries(['enableInputs','enableTranslate','enableZoom','enableRotate','enableTilt','enableLook'].map(key => [key,(controls as unknown as Record<string,unknown>)[key]])) };
+}
+function mapPick() {
+  viewer.scene.requestRender(); viewer.render();
+  let picked = false;
+  for (const model of models) {
+    if (!model.show || !model.ready) continue;
+    const point = SceneTransforms.worldToWindowCoordinates(viewer.scene, model.boundingSphere.center);
+    if (point && viewer.scene.pick(point)?.primitive === model) { picked = true; break; }
+  }
+  return { picked, glError: viewer.canvas.getContext('webgl2')!.getError() };
+}
 function snapshot() {
-  return { active: overlay.active, modelStates: models.map((model, index) => ({ id: imports[index].id, show: model.show, ready: model.ready,
+  return { active: overlay.active, camera: cameraState(), modelStates: models.map((model, index) => ({ id: imports[index].id, show: model.show, ready: model.ready,
       color: model.color ? [model.color.red, model.color.green, model.color.blue, model.color.alpha] : null,
       commandsBuilt: (model as unknown as { _drawCommandsBuilt: boolean })._drawCommandsBuilt,
       shader: model.customShader ? { translucencyMode: model.customShader.translucencyMode,
-        uniforms: Object.fromEntries(Object.entries(model.customShader.uniforms).map(([key, value]) => [key, value.value])) } : null })), renderer: renderer(), dimensions: dimensions(), editRevision: internal.editRevision, annotations: structuredClone(internal.annotations), spatialAnnotations: structuredClone(internal.spatialAnnotations ?? []), effects: structuredClone(internal.effects), modelReady: models.every(model => model.ready), lifecycle: lifecycle(), geometry: geometry(),
+        uniforms: Object.fromEntries(Object.entries(model.customShader.uniforms).map(([key, value]) => [key, value.value])) } : null })), renderer: renderer(), dimensions: dimensions(), editRevision: internal.editRevision, adjustments: structuredClone(internal.adjustments), annotations: structuredClone(internal.annotations), spatialAnnotations: structuredClone(internal.spatialAnnotations ?? []), effects: structuredClone(internal.effects), modelReady: models.every(model => model.ready), lifecycle: lifecycle(), geometry: geometry(),
     mediaTime: video.currentTime, mediaSrc: video.getAttribute('src'), paused: video.paused, seeking: video.seeking,
     presentedTime: internal.presentedTime ?? null, pendingTime: internal.pendingTime ?? null,
     buffering: internal.buffering, wantedPlaying: internal.wantedPlaying, status: internal.resources?.getOcclusionStatus() ?? null,
@@ -263,7 +291,17 @@ function snapshot() {
     enterCount, exitCount, messages: [...messages], renderErrors: [...renderErrors] };
 }
 (window as unknown as { __workflow: unknown }).__workflow = {
-  snapshot, pixels, lifecycle, geometry, presentationHash,
+  snapshot, pixels, lifecycle, geometry, presentationHash, mapPick,
+  cacheSignature() { return internal.cacheSignature({start:0,end:1.2}); },
+  moveMapModel(east: number) {
+    const index = imports.findIndex(item => item.id === 'above-opaque'), model = models[index];
+    const original = Matrix4.fromArray(records.get('above-opaque')!.settings.matrix as number[]);
+    const translation = Matrix4.multiplyByPointAsVector(frame,new Cartesian3(east,0,0),new Cartesian3());
+    model.modelMatrix = Matrix4.multiply(Matrix4.fromTranslation(translation),original,new Matrix4());
+    viewer.scene.requestRender();
+    return { recordMatrix: records.get('above-opaque')!.settings.matrix, modelMatrix: Matrix4.toArray(model.modelMatrix) };
+  },
+  restoreMapCamera() { viewer.camera.setView({ destination: world(0, 0, 200), orientation: { direction: Matrix4.multiplyByPointAsVector(frame, new Cartesian3(0, 0, -1), new Cartesian3()), up: Matrix4.multiplyByPointAsVector(frame, new Cartesian3(0, 1, 0), new Cartesian3()) } }); viewer.scene.requestRender(); },
   spatial: {
     fromWorld(targetId: string, point: { x: number; y: number; z: number }) {
       const frame = internal.resources?.spatialFrame(targetId);
@@ -285,7 +323,12 @@ function snapshot() {
   setDepthMode(mode: typeof depthMode) { depthMode = mode; patchDepth(); viewer.scene.requestRender(); },
   async cachedBlob() { const response = await fetch(internal.cachedPreview!.video.src); return [...new Uint8Array(await response.arrayBuffer())]; },
   planeGltf: () => JSON.stringify(planeGltf),
-  async restoreSaved() { if (!saved) throw new Error('No saved workflow'); await overlay.restoreReplay(saved.files, structuredClone(saved.settings), saved.id); },
+  async restoreSaved(legacyTilt = false) {
+    if (!saved) throw new Error('No saved workflow');
+    const settings = structuredClone(saved.settings);
+    if (legacyTilt) for (const adjustment of Object.values(settings.adjustments)) { delete adjustment.tiltEast; delete adjustment.tiltNorth; }
+    await overlay.restoreReplay(saved.files, settings, saved.id);
+  },
   waitOutsideFrames(count: number) {
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => { remove(); reject(new Error('Map render loop stopped after AR exit')); }, 10000);

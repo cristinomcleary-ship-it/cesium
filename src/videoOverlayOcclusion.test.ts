@@ -428,8 +428,16 @@ test('source offsets are preserved and forbidden active edits reject the entire 
   assert.throws(() => session.setOcclusion('survey'), /已有独立 AR 位置微调/);
   assert.ok(Matrix4.equals(value.modelMatrix, moved)); assert.equal(session.getAdjustments().survey.up, 29);
   session.applyAdjustments({ survey: { up: 0 } });
+  for (const key of ['tiltEast', 'tiltNorth'] as const) {
+    session.applyAdjustments({ survey: { [key]: 0.1 } });
+    assert.throws(() => session.setOcclusion('survey'), /已有独立 AR 位置微调/);
+    session.applyAdjustments({ survey: { [key]: 0 } });
+  }
   session.setOcclusion('survey');
   assert.throws(() => session.applyAdjustments({ bridge: { east: 20 }, survey: { north: 1 } }), /不能同时/);
+  for (const key of ['tiltEast', 'tiltNorth'] as const) {
+    assert.throws(() => session.applyAdjustments({ bridge: { east: 20 }, survey: { [key]: 0.1 } }), /不能同时/);
+  }
   assert.ok(Matrix4.equals(engineer.modelMatrix, base)); assert.ok(Matrix4.equals(value.modelMatrix, base));
   assert.equal(session.getAdjustments().bridge.east, 0);
   session.restore();

@@ -1,6 +1,6 @@
 import { Cartesian3, Color, Matrix4, PerspectiveFrustum, SceneMode, Transforms, type PostProcessStage, type Viewer } from 'cesium';
 import { createCcCameraTrack, parseCcCameraXml, type CcCameraDataset, type CcCameraTrack, type CcTrackOptions } from './ccCameraTrack';
-import { VideoOverlayResources, type VideoOverlayAdjustment } from './videoOverlayResources';
+import { VideoOverlayResources, validateVideoOverlayAdjustment, type VideoOverlayAdjustment } from './videoOverlayResources';
 import { containVideoRect, overlayLensBounds, overlayTransparencyUniforms, createVideoOverlayLensStage } from './videoOverlayLens';
 import { transformCcCameraSample, validateCcSceneTransform } from './ccSceneRegistration';
 import { createCcCameraRegistrationMatrix, defaultCcCameraRegistration, validateCcCameraRegistration, type CcCameraRegistration, type CcCameraRegistrationAnchor } from './ccCameraRegistration';
@@ -23,7 +23,7 @@ import { VideoOverlayCacheStore, hashVideoOverlayInputs } from './videoOverlayCa
 import { VideoOverlayLifecycle } from './videoOverlayLifecycle';
 import './videoModelOverlay.css';
 
-export const VIDEO_OVERLAY_BUILD = '2026.10.21-R5-spatial';
+export const VIDEO_OVERLAY_BUILD = '2026.10.22-R6-cad-tilt';
 
 export type SavedVideoOverlaySettings = {
   schemeName?: string;
@@ -46,7 +46,8 @@ type Options = {
   canAccessVideo?: () => boolean;
 };
 type Visible = { show: boolean; isDestroyed?: () => boolean };
-const zero = (): VideoOverlayAdjustment => ({ east: 0, north: 0, up: 0, heading: 0 });
+const zero = (): Required<VideoOverlayAdjustment> => ({ east: 0, north: 0, up: 0, heading: 0, tiltEast: 0, tiltNorth: 0 });
+const adjustmentInputs = { ccEast: 'east', ccNorth: 'north', ccUp: 'up', ccHeading: 'heading', ccTiltEast: 'tiltEast', ccTiltNorth: 'tiltNorth' } as const;
 const v3 = (v: { x: number; y: number; z: number }) => new Cartesian3(v.x, v.y, v.z);
 const clock = (v: number) => Number.isFinite(v) ? `${Math.floor(v / 60)}:${(v % 60).toFixed(2).padStart(5, '0')}` : '--:--';
 
@@ -101,10 +102,18 @@ export const videoModelOverlayPanelHtml = `
   <div class="cc-fields"><label>向东（米）<input id="ccEast" type="number" step="0.1" value="0"></label><label>向北（米）<input id="ccNorth" type="number" step="0.1" value="0"></label><label>升高（米）<input id="ccUp" type="number" step="0.1" value="0"></label><label>按钮步长（米）<input id="ccStep" type="number" min="0.001" step="any" value="0.1"></label></div>
   <div class="cc-nudges"><button data-cc-nudge="east:-1" type="button">向西</button><button data-cc-nudge="north:1" type="button">向北</button><button data-cc-nudge="up:1" type="button">升高</button><button data-cc-nudge="east:1" type="button">向东</button><button data-cc-nudge="north:-1" type="button">向南</button><button data-cc-nudge="up:-1" type="button">降低</button></div>
   <label>画面拖动<select id="ccDragMode"><option value="off">关闭</option><option value="horizontal">拖动平移所选对象</option><option value="vertical">拖动升降所选对象</option></select></label>
-  <details><summary>单个对象方向微调</summary><label>顺时针旋转（度）<input id="ccHeading" type="number" step="0.1" value="0"></label><small>先在调整范围中选择一个对象。</small></details>
+  <details open id="ccObjectOrientation"><summary>单个对象方向与倾角</summary>
+    <small id="ccTiltHint">先在“调整范围”中选择一份 CAD 或其他对象，再校正其方向与倾角。</small>
+    <label>顺时针旋转（度）<input id="ccHeading" type="number" step="0.1" value="0"></label>
+    <div class="cc-fields"><label>东西倾角（度）<input id="ccTiltEast" type="number" min="-90" max="90" step="0.1" value="0" aria-describedby="ccTiltAxes"></label><label>南北倾角（度）<input id="ccTiltNorth" type="number" min="-90" max="90" step="0.1" value="0" aria-describedby="ccTiltAxes"></label></div>
+    <small id="ccTiltAxes">按场景东、北方向调整，不随视频镜头改变。正值分别抬高东侧、北侧；负值抬高相反一侧。以对象中心为转轴，保留原始高差。</small>
+    <label>倾角按钮步长（度）<input id="ccTiltStep" type="number" min="0.001" max="90" step="0.1" value="0.1"></label>
+    <div class="cc-tilt-nudges"><button data-cc-tilt="tiltEast:-1" type="button">西侧抬高 −</button><button data-cc-tilt="tiltEast:1" type="button">东侧抬高 ＋</button><button data-cc-tilt="tiltNorth:-1" type="button">南侧抬高 −</button><button data-cc-tilt="tiltNorth:1" type="button">北侧抬高 ＋</button></div>
+    <div class="cc-actions"><button id="ccTiltReset" type="button">倾角归零</button></div><small>归零只清除本方案的两项倾角修正，保留平移和水平旋转；不会自动将原图压平。</small>
+  </details>
   <div class="cc-actions"><button id="ccUndo" type="button">撤销</button><button id="ccRedo" type="button">重做</button><button id="ccReset" type="button">重置对象微调</button></div>
   <label>叠加透明度<input id="ccOpacity" type="range" min="0" max="1" step="0.01" value="0.8"></label>
-  <small>位置微调对整段视频生效，保存在当前视频方案中。</small>
+  <small>位置、方向与倾角对整段视频生效，保存在当前视频方案中。调整后需重新生成融合缓存。</small>
   <div id="ccSpatialEditor"></div>
   <div id="ccPresentationEditor"></div>
   <div class="cc-actions"><button id="ccSave" class="primary" type="button">保存融合方案</button></div><small id="ccSavedState">尚未保存</small>
@@ -294,9 +303,37 @@ export class VideoModelOverlay {
     for (const id of ['ccFirstTime', 'ccInterval', 'ccTimeMode', 'ccFilenameStep', 'ccHeightReference', 'ccHeightOffset', 'ccSmooth']) {
       this.bind(id, 'input', () => { ++this.inputGeneration; this.exit(); this.track = undefined; this.syncHeightInputs(); this.dirty(); });
     }
-    for (const [id, key] of Object.entries({ ccEast: 'east', ccNorth: 'north', ccUp: 'up', ccHeading: 'heading' })) {
-      this.bind(id, 'input', () => this.edit(key as keyof VideoOverlayAdjustment, this.number(id)));
+    for (const [id, key] of Object.entries(adjustmentInputs)) {
+      this.bind(id, 'input', () => {
+        const input = this.el<HTMLInputElement>(id);
+        if (input.value !== '' && !input.validity.badInput) this.edit(key, this.number(id));
+      });
+      // Incomplete/invalid typing never enters a saved scheme; blur restores the committed value.
+      this.bind(id, 'change', () => {
+        const target = this.el<HTMLSelectElement>('ccTarget').value;
+        const value = target === '*' ? this.groupValues : this.adjustments[target] ?? zero();
+        this.el<HTMLInputElement>(id).value = String(value[key] ?? 0);
+      });
     }
+    for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cc-tilt]')) {
+      const handler = () => {
+        const [key, sign] = button.dataset.ccTilt!.split(':') as ['tiltEast' | 'tiltNorth', string];
+        const target = this.el<HTMLSelectElement>('ccTarget').value, step = this.number('ccTiltStep');
+        if (target === '*' || this.cacheTask) return;
+        if (!(step > 0 && step <= 90)) return this.fail(new Error('倾角步长必须大于 0 且不超过 90 度'));
+        const value = (this.adjustments[target]?.[key] ?? 0) + Number(sign) * step;
+        this.edit(key, Math.round(value * 1e9) / 1e9); this.syncAdjustmentInputs();
+      };
+      button.addEventListener('click', handler); this.disposers.push(() => button.removeEventListener('click', handler));
+    }
+    this.bind('ccTiltReset', 'click', () => {
+      const target = this.el<HTMLSelectElement>('ccTarget').value;
+      if (target === '*' || this.cacheTask || !this.targetIds().length) return;
+      const before = this.adjustments[target] ?? zero();
+      if (!(before.tiltEast || before.tiltNorth)) return;
+      this.pushHistory(); this.adjustments[target] = { ...before, tiltEast: 0, tiltNorth: 0 };
+      this.applyAdjustments(); this.syncAdjustmentInputs();
+    });
     for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cc-nudge]')) {
       const handler = () => { const [key, sign] = button.dataset.ccNudge!.split(':'); const id = { east: 'ccEast', north: 'ccNorth', up: 'ccUp' }[key]!;
         const step = this.number('ccStep'); if (!(step > 0)) return this.fail(new Error('步长必须大于 0'));
@@ -421,7 +458,7 @@ export class VideoModelOverlay {
     if (!settings.enabled) return;
     const value = values[settings.sourceId];
     if (value && ((['east', 'north', 'up'] as const).some(key => Math.abs(value[key]) > 1e-9)
-      || Math.abs(value.heading % 360) > 1e-9)) {
+      || Math.abs(value.heading % 360) > 1e-9 || Math.abs(value.tiltEast ?? 0) > 1e-9 || Math.abs(value.tiltNorth ?? 0) > 1e-9)) {
       throw new Error('遮挡参照需使用地图原定位；请先关闭遮挡并恢复这份倾斜摄影的对象微调，再启用遮挡');
     }
   }
@@ -953,8 +990,13 @@ export class VideoModelOverlay {
       const item = imports.find(item => item.id === id), record = this.options.getRecord(id);
       if (!item) throw new Error('融合方案引用的模型已不可用，请恢复资源后重新生成');
       const model = item.resource as unknown as { modelMatrix?: Matrix4; scale?: number };
+      // Map edits take effect before the library's asynchronous PATCH succeeds.
+      // Fingerprint the displayed placement, but freeze its pre-AR matrix while
+      // the live resource also carries this scheme's temporary adjustments.
+      const placement = this.restoreScene ? this.resourceMatricesBeforeAR.get(id)
+        : model.modelMatrix ? Matrix4.toArray(model.modelMatrix) : undefined;
       return { id, kind: item.kind, version: record?.updatedAt, files: record?.files, settings: record?.settings,
-        matrix: record?.settings.matrix ?? (this.restoreScene ? this.resourceMatricesBeforeAR.get(id) : model.modelMatrix ? Matrix4.toArray(model.modelMatrix) : undefined), scale: model.scale };
+        matrix: placement ?? record?.settings.matrix, scale: model.scale };
     });
     return JSON.stringify({ algorithm: VIDEO_OVERLAY_BUILD, range, selected: [...this.selected].sort(), timing: this.readTiming(), resources,
       adjustments: this.adjustments, opacity: this.opacity, sceneReference: this.sceneReference,
@@ -1129,16 +1171,27 @@ export class VideoModelOverlay {
   private syncAdjustmentInputs() {
     this.groupValues = zero(); const target = this.el<HTMLSelectElement>('ccTarget').value;
     const value = target === '*' ? this.groupValues : this.adjustments[target] ?? zero();
-    for (const [id, key] of Object.entries({ ccEast: 'east', ccNorth: 'north', ccUp: 'up', ccHeading: 'heading' })) this.el<HTMLInputElement>(id).value = String(value[key as keyof VideoOverlayAdjustment]);
-    this.el<HTMLInputElement>('ccHeading').disabled = target === '*';
+    for (const [id, key] of Object.entries(adjustmentInputs)) this.el<HTMLInputElement>(id).value = String(value[key] ?? 0);
+    const disabled = target === '*' || !this.targetIds().length;
+    for (const id of ['ccHeading', 'ccTiltEast', 'ccTiltNorth', 'ccTiltStep', 'ccTiltReset']) this.el<HTMLInputElement | HTMLButtonElement>(id).disabled = disabled;
+    for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cc-tilt]')) button.disabled = disabled;
+    this.el('ccTiltHint').textContent = disabled ? '先在“调整范围”中选择一份 CAD 或其他对象，再校正其方向与倾角。' : '先暂停到结构清晰的一帧，用小步长调整，再检查视频首、中、尾的对齐情况。';
   }
   private pushHistory() { this.undo.push(structuredClone(this.adjustments)); if (this.undo.length > 100) this.undo.shift(); this.redo = []; }
   private edit(key: keyof VideoOverlayAdjustment, value: number) {
-    if (!Number.isFinite(value) || Math.abs(value) > 100000) return;
+    if (this.cacheTask || !Number.isFinite(value) || Math.abs(value) > 100000) return;
     const ids = this.targetIds(); if (!ids.length) return;
-    this.pushHistory(); const all = this.el<HTMLSelectElement>('ccTarget').value === '*';
-    const delta = value - this.groupValues[key];
-    for (const id of ids) { const before = this.adjustments[id] ?? zero(); this.adjustments[id] = { ...before, [key]: all ? before[key] + delta : value }; }
+    const all = this.el<HTMLSelectElement>('ccTarget').value === '*';
+    if (all && ['heading', 'tiltEast', 'tiltNorth'].includes(key)) return;
+    const delta = value - (this.groupValues[key] ?? 0), next = { ...this.adjustments };
+    try {
+      for (const id of ids) {
+        const before = this.adjustments[id] ?? zero();
+        next[id] = validateVideoOverlayAdjustment({ ...before, [key]: all ? (before[key] ?? 0) + delta : value });
+      }
+    } catch (error) { this.fail(error); return; }
+    if (ids.every(id => (next[id][key] ?? 0) === (this.adjustments[id]?.[key] ?? 0))) return;
+    this.pushHistory(); this.adjustments = next;
     this.groupValues[key] = value; this.applyAdjustments();
   }
   private applyAdjustments() { try { const all = Object.fromEntries(this.options.getImports().map(item => [item.id, this.adjustments[item.id] ?? zero()])); this.resources?.applyAdjustments(all); this.viewer.scene.requestRender(); this.dirty(); } catch (e) { this.fail(e); } }
@@ -1220,7 +1273,7 @@ export class VideoModelOverlay {
     const checkRestore = () => { restoreController.signal.throwIfAborted(); if (restoreGeneration !== this.inputGeneration || restoreEpoch !== this.epoch || this.destroyed) throw new DOMException('融合方案已切换', 'AbortError'); };
     if (settings.mode !== 'cc-overlay' || settings.version !== 1 || !settings.timing) throw new Error('不支持的 CC 融合方案');
     if (!files.video || files.video.name !== settings.videoName || files.video.size !== settings.videoSize) throw new Error('保存的视频与融合方案不一致');
-    this.files = { ...files }; this.savedId = recordId; this.adjustments = structuredClone(settings.adjustments ?? {}); this.selected = new Set(settings.selectedIds ?? []); this.selectionInitialized = true;
+    this.files = { ...files }; this.savedId = recordId; this.adjustments = Object.fromEntries(Object.entries(settings.adjustments ?? {}).map(([id, value]) => [id, validateVideoOverlayAdjustment(value)])); this.selected = new Set(settings.selectedIds ?? []); this.selectionInitialized = true;
     this.occlusion = validateVideoOverlayOcclusion(settings.occlusion);
     this.annotations = (settings.annotations ?? []).map(validateVideoOverlayAnnotation); this.effects = validateVideoOverlayEffects(settings.effects); this.presentationEditor.setValue(this.annotations, this.effects);
     this.spatialAnnotations = validateSpatialAnnotations(settings.spatialAnnotations ?? []); this.spatialEditor.setValue(this.spatialAnnotations);

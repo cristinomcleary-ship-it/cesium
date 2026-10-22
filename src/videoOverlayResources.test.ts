@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   Appearance, BoundingSphere, Cartesian3, Color, CustomDataSource, CustomShader,
-  CustomShaderTranslucencyMode, Event, GroundPolylinePrimitive, JulianDate, Matrix4,
+  CustomShaderTranslucencyMode, Event, GroundPolylinePrimitive, JulianDate, Matrix3, Matrix4,
   PolygonHierarchy, PolylineColorAppearance, Primitive, PrimitiveCollection,
   Transforms, UniformType, type Viewer,
 } from "cesium";
-import { VideoOverlayResources } from "./videoOverlayResources.ts";
+import { validateVideoOverlayAdjustment, videoOverlayAdjustmentMatrix, VideoOverlayResources } from "./videoOverlayResources.ts";
 import type { CadImportPackage } from "./cadImport.ts";
 import type { LibraryRecord } from "./projectLibrary.ts";
 import type { ImportRecord } from "./types.ts";
@@ -35,6 +35,123 @@ function localDisplacement(actual: Cartesian3, anchor = center): Cartesian3 {
   return Matrix4.multiplyByPoint(Matrix4.inverseTransformation(Transforms.eastNorthUpToFixedFrame(anchor), new Matrix4()), actual, new Cartesian3());
 }
 function close(actual: number, expected: number) { assert.ok(Math.abs(actual - expected) < 1e-6, `${actual} differs from ${expected}`); }
+function closePoint(actual: Cartesian3, expected: Cartesian3) {
+  assert.ok(Cartesian3.distance(actual, expected) < 1e-6, `${actual} differs from ${expected}`);
+}
+
+test('old saved offsets and zero tilts retain the exact legacy heading matrix', () => {
+  for (const heading of [-143.7, -90, 0, 63.24, 180, 720]) {
+    const old = { east: 11, north: -7, up: 4, heading };
+    const normalizedHeading = ((heading + 180) % 360 + 360) % 360 - 180;
+    const local = Matrix4.fromRotationTranslation(Matrix3.fromRotationZ(-normalizedHeading * Math.PI / 180), new Cartesian3(11, -7, 4));
+    const expected = Matrix4.multiply(Matrix4.multiply(base, local, new Matrix4()), Matrix4.inverseTransformation(base, new Matrix4()), new Matrix4());
+    assert.ok(Matrix4.equals(videoOverlayAdjustmentMatrix(center, old), expected));
+    assert.ok(Matrix4.equals(videoOverlayAdjustmentMatrix(center, { ...old, tiltEast: 0, tiltNorth: 0 }), expected));
+    assert.deepEqual(validateVideoOverlayAdjustment(old), { ...old, heading: normalizedHeading, tiltEast: 0, tiltNorth: 0 });
+  }
+});
+
+test('fixed ENU tilts raise the named side, follow heading, and keep the pivot at its requested translation', () => {
+  const point = (x: number, y: number) => Matrix4.multiplyByPoint(base, new Cartesian3(x, y, 0), new Cartesian3());
+  const zero = { east: 0, north: 0, up: 0, heading: 0 };
+  const east = videoOverlayAdjustmentMatrix(center, { ...zero, tiltEast: 30 });
+  closePoint(localDisplacement(Matrix4.multiplyByPoint(east, point(10, 0), new Cartesian3())), new Cartesian3(Math.sqrt(75), 0, 5));
+  const north = videoOverlayAdjustmentMatrix(center, { ...zero, tiltNorth: 30 });
+  closePoint(localDisplacement(Matrix4.multiplyByPoint(north, point(0, 10), new Cartesian3())), new Cartesian3(0, Math.sqrt(75), 5));
+  const composed = videoOverlayAdjustmentMatrix(center, { east: 2, north: 3, up: 4, heading: 90, tiltEast: 60, tiltNorth: 30 });
+  // Heading first sends east toward south; north tilt sends it downward; east tilt then changes x/z.
+  closePoint(localDisplacement(Matrix4.multiplyByPoint(composed, point(10, 0), new Cartesian3())), new Cartesian3(2 + Math.sqrt(18.75), 3 - Math.sqrt(75), 1.5));
+  closePoint(localDisplacement(Matrix4.multiplyByPoint(composed, center, new Cartesian3())), new Cartesian3(2, 3, 4));
+  for (const tilt of [-90, 90]) assert.doesNotThrow(() => validateVideoOverlayAdjustment({ ...zero, tiltEast: tilt, tiltNorth: tilt }));
+});
+
+test('invalid tilt patches reject atomically and valid angle-only edits never accumulate', async () => {
+  const first = model('a'), second = model('b');
+  const session = await VideoOverlayResources.create({ viewer: viewer(), imports: () => [first.record, second.record], getRecord: () => undefined });
+  try {
+    for (const key of ['tiltEast', 'tiltNorth'] as const) {
+      for (const invalid of [90.001, -90.001, Number.NaN, Number.POSITIVE_INFINITY]) {
+        assert.throws(() => session.applyAdjustments({ a: { east: 2 }, b: { [key]: invalid } }), /倾角|有限数值/);
+        assert.ok(Matrix4.equals(first.resource.modelMatrix, base));
+        assert.ok(Matrix4.equals(second.resource.modelMatrix, base));
+        assert.equal(session.getAdjustments().a.east, 0);
+      }
+    }
+    session.applyAdjustments({ a: { tiltEast: 12, tiltNorth: -8 } });
+    const once = Matrix4.clone(first.resource.modelMatrix);
+    for (let index = 0; index < 20; index++) session.applyAdjustments({ a: { tiltEast: 12, tiltNorth: -8 } });
+    assert.ok(Matrix4.equals(first.resource.modelMatrix, once));
+    session.applyAdjustments({ a: { tiltEast: 20 } });
+    assert.ok(!Matrix4.equals(first.resource.modelMatrix, once), 'tilt-only edits must invalidate the current matrix');
+    assert.equal(session.getAdjustments().a.tiltNorth, -8, 'partial edits preserve the other tilt');
+    session.applyAdjustments({ a: { tiltEast: 12 } });
+    assert.ok(Matrix4.equals(first.resource.modelMatrix, once));
+    const saved = JSON.parse(JSON.stringify(session.getAdjustments()));
+    assert.equal(saved.a.tiltEast, 12); assert.equal(saved.a.tiltNorth, -8);
+    session.applyAdjustments({ a: { tiltEast: 0, tiltNorth: 0 } });
+    assert.ok(Matrix4.equals(first.resource.modelMatrix, base), 'zero restores the exact original matrix');
+    session.applyAdjustments(saved);
+    assert.ok(Matrix4.equals(first.resource.modelMatrix, once));
+  } finally { session.restore(); }
+  assert.ok(Matrix4.equals(first.resource.modelMatrix, base));
+});
+
+test('tilted entity CAD lines and saved annotation coordinates share the same transform and restore exactly', async () => {
+  const data = new CustomDataSource('tilted');
+  const at = (x: number, y: number, z: number) => Matrix4.multiplyByPoint(base, new Cartesian3(x, y, z), new Cartesian3());
+  const line = data.entities.add({ polyline: { positions: [at(-10, 0, -2), at(10, 0, 2)], clampToGround: false } });
+  const label = data.entities.add({ position: at(0, 5, 0), label: { text: 'label' } });
+  const polygon = data.entities.add({ polygon: { hierarchy: [at(0, 0, 0), at(4, 0, 1), at(0, 3, 2)], perPositionHeight: true } });
+  const view = viewer(), time = view.clock.currentTime;
+  const originalLine = line.polyline!.positions!, originalLabel = label.position!, originalPolygon = polygon.polygon!.hierarchy!;
+  const record: ImportRecord = { id: 'cad', name: 'cad', kind: 'CAD', representation: 'dataSource', resource: data, visible: true };
+  const session = await VideoOverlayResources.create({ viewer: view, imports: () => [record], getRecord: () => undefined });
+  try {
+    session.setSelection(['cad']);
+    const beforeFrame = session.spatialFrame('cad')!;
+    const inverse = Matrix4.inverse(beforeFrame, new Matrix4());
+    const source = (originalLine.getValue(time) as Cartesian3[]).map(value => Cartesian3.clone(value));
+    const annotation = source.map(value => Matrix4.multiplyByPoint(inverse, value, new Cartesian3()));
+    const labelLocal = Matrix4.multiplyByPoint(inverse, originalLabel.getValue(time)!, new Cartesian3());
+    const polygonLocal = (originalPolygon.getValue(time) as PolygonHierarchy).positions.map(value => Matrix4.multiplyByPoint(inverse, value, new Cartesian3()));
+    session.applyAdjustments({ cad: { east: 3, north: -2, up: 1, heading: 19, tiltEast: 8, tiltNorth: -6 } });
+    const afterFrame = session.spatialFrame('cad')!;
+    const picked = session.spatialPickedLines('cad', { id: line })[0];
+    annotation.forEach((local, index) => closePoint(Matrix4.multiplyByPoint(afterFrame, local, new Cartesian3()), picked[index]));
+    closePoint(Matrix4.multiplyByPoint(afterFrame, labelLocal, new Cartesian3()), label.position!.getValue(time)!);
+    polygonLocal.forEach((local, index) => closePoint(Matrix4.multiplyByPoint(afterFrame, local, new Cartesian3()), (polygon.polygon!.hierarchy!.getValue(time) as PolygonHierarchy).positions[index]));
+    assert.ok(Cartesian3.distance(picked[0], source[0]) > 1, 'the geometry itself must move');
+    const currentProperty = line.polyline!.positions;
+    session.applyAdjustments({ cad: { tiltEast: 8, tiltNorth: -6 } });
+    assert.equal(line.polyline!.positions, currentProperty, 'repeated angles do not rebuild CAD properties');
+  } finally { session.restore(); }
+  assert.equal(line.polyline!.positions, originalLine); assert.equal(label.position, originalLabel); assert.equal(polygon.polygon!.hierarchy, originalPolygon);
+});
+
+test('primitive CAD line picking and bound annotations follow both tilts with an existing source matrix', async () => {
+  const original = videoOverlayAdjustmentMatrix(center, { east: 2, north: 4, up: 3, heading: 17 });
+  const movedCenter = Matrix4.multiplyByPoint(original, center, new Cartesian3());
+  const positions = [-10, 10].map(x => Matrix4.multiplyByPoint(base, new Cartesian3(x, 0, 1), new Cartesian3()));
+  const feature = { id: 'line' };
+  const leaf = { show: true, modelMatrix: Matrix4.clone(original), isDestroyed: () => false, destroy() {} };
+  const root = Object.assign(new PrimitiveCollection(), { cadPolylineFeatures: [{ entity: feature, positions }] });
+  root.add(leaf);
+  const record: ImportRecord = { id: 'cad', name: 'cad', kind: 'CAD', representation: 'primitive', resource: root, visible: true, boundingSphere: new BoundingSphere(movedCenter, 20) };
+  const session = await VideoOverlayResources.create({ viewer: viewer(), imports: () => [record], getRecord: () => undefined });
+  try {
+    session.setSelection(['cad']);
+    const inverse = Matrix4.inverse(session.spatialFrame('cad')!, new Matrix4());
+    const picked = { id: feature, primitive: leaf };
+    const locals = session.spatialPickedLines('cad', picked)[0].map(point => Matrix4.multiplyByPoint(inverse, point, new Cartesian3()));
+    session.applyAdjustments({ cad: { tiltEast: -12, tiltNorth: 7 } });
+    const tilted = session.spatialPickedLines('cad', picked)[0], frame = session.spatialFrame('cad')!;
+    locals.forEach((local, index) => closePoint(Matrix4.multiplyByPoint(frame, local, new Cartesian3()), tilted[index]));
+    closePoint(Matrix4.multiplyByPoint(leaf.modelMatrix, center, new Cartesian3()), movedCenter);
+    session.applyAdjustments({ cad: { tiltEast: 0, tiltNorth: 0 } });
+    assert.ok(Matrix4.equals(leaf.modelMatrix, original));
+  } finally { session.restore(); root.destroy(); }
+  assert.ok(Matrix4.equals(leaf.modelMatrix, original));
+});
 
 test("ENU edits are absolute, are video-local, and selection restores all imported layer visibility", async () => {
   const first = model("a"), second = model("b", false);
@@ -151,8 +268,14 @@ test("ground CAD uses an absolute-height copy, discloses height change, and dest
     assert.equal(original.show, false);
     const copy = root.get(1) as PrimitiveCollection;
     assert.equal(copy.show, true);
-    session.applyAdjustments({ cad: { up: 7 } });
+    const sourceFrame = session.spatialFrame('cad')!;
+    const originalPoint = Matrix4.getTranslation(sourceFrame, new Cartesian3());
+    session.applyAdjustments({ cad: { up: 7, tiltEast: 9, tiltNorth: -4 } });
     assert.ok(!Matrix4.equals(copy.get(0).modelMatrix, Matrix4.IDENTITY));
+    closePoint(Matrix4.getTranslation(session.spatialFrame('cad')!, new Cartesian3()),
+      Matrix4.multiplyByPoint(copy.get(0).modelMatrix, originalPoint, new Cartesian3()));
+    assert.equal(session.getAdjustments().cad.tiltEast, 9);
+    assert.equal(session.getAdjustments().cad.tiltNorth, -4);
     session.restore();
     assert.equal(root.length, 1);
     assert.equal(original.show, true);
