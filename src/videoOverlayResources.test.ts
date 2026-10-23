@@ -251,6 +251,80 @@ test('face-only primitive CAD retains actual pivot candidates independently of p
   } finally { result.collection.destroy(); }
 });
 
+function primitivePivot(points: Cartesian3[], reference: Cartesian3, matrix?: Matrix4): Cartesian3 | undefined {
+  const resource = Object.assign(new PrimitiveCollection({ destroyPrimitives: false }), { cadPolylineFeatures: [{ positions: points }] });
+  if (matrix) resource.add({ modelMatrix: matrix, show: true });
+  const record: ImportRecord = { id: 'synthetic', name: 'synthetic', kind: 'CAD', representation: 'primitive', resource, visible: true };
+  try { return findVideoOverlayGroupCenter([record], reference, JulianDate.now()); }
+  finally { resource.destroy(); }
+}
+
+// Reference the Cesium operations used before the allocation-free scan. These
+// tests exercise numerical edge cases without changing accepted CAD geometry.
+function legacyPrimitivePivot(points: Cartesian3[], reference: Cartesian3, matrix?: Matrix4): Cartesian3 | undefined {
+  let nearest: Cartesian3 | undefined, distance = Infinity;
+  for (const point of points) {
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z) || !(Cartesian3.magnitude(point) > 1)) continue;
+    const world = matrix ? Matrix4.multiplyByPoint(matrix, point, new Cartesian3()) : point;
+    const next = Cartesian3.distanceSquared(reference, world);
+    if (Number.isFinite(next) && next < distance) { distance = next; nearest = Cartesian3.clone(world); }
+  }
+  return nearest;
+}
+
+test('group pivot scalar transforms exactly match Cesium for identity, affine and non-affine matrices', () => {
+  const matrix = Matrix4.fromRowMajorArray([1.25, -.5, .75, 20, .25, 2, -.125, -10, -.75, .125, 3, 7, 2, 4, 6, 8]);
+  const negativeZeroIdentity = Matrix4.fromRowMajorArray([1, -0, -0, -0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+  const points = [new Cartesian3(10, 20, 30), new Cartesian3(-0, 2, 3), new Cartesian3(25, -13, 42)];
+  const reference = new Cartesian3(12, 19, 33);
+  for (const transform of [undefined, Matrix4.IDENTITY, Matrix4.clone(Matrix4.IDENTITY), negativeZeroIdentity,
+    Matrix4.fromTranslation(new Cartesian3(5, 6, 7)), matrix]) {
+    assert.deepEqual(primitivePivot(points, reference, transform), legacyPrimitivePivot(points, reference, transform));
+    // Check each zero component even when it would not be the nearest candidate.
+    for (const point of [new Cartesian3(-0, 2, 3), new Cartesian3(2, -0, 3), new Cartesian3(2, 3, -0)]) {
+      assert.deepEqual(primitivePivot([point], reference, transform), legacyPrimitivePivot([point], reference, transform));
+    }
+  }
+  assert.deepEqual(points[1], new Cartesian3(-0, 2, 3), 'the scan never changes input coordinates');
+});
+
+test('group pivot scan preserves invalid-source rejection, magnitude rounding and finite-distance rules', () => {
+  const nearUnit = new Cartesian3(1, Math.sqrt(Number.EPSILON), 0);
+  assert.equal(Cartesian3.magnitude(nearUnit), 1, 'fixture exercises the rounded magnitude boundary');
+  const points = [Cartesian3.ZERO, new Cartesian3(NaN, 2, 3), new Cartesian3(Infinity, 2, 3), nearUnit, new Cartesian3(3, 4, 5)];
+  const reference = new Cartesian3(2, 0, 0);
+  assert.deepEqual(primitivePivot(points, reference), points[4]);
+  assert.deepEqual(primitivePivot(points, reference, Matrix4.IDENTITY), legacyPrimitivePivot(points, reference, Matrix4.IDENTITY));
+  assert.equal(primitivePivot(points.slice(0, 4), reference, Matrix4.fromTranslation(new Cartesian3(100, 200, 300))), undefined);
+  assert.equal(primitivePivot([points[4]], new Cartesian3(NaN, 2, 3)), undefined);
+  const hugeReference = new Cartesian3(1e200, 0, 0);
+  const hugePoints = [new Cartesian3(-1e200, 0, 0), new Cartesian3(1e200, 2, 0)];
+  assert.deepEqual(primitivePivot(hugePoints, hugeReference, Matrix4.IDENTITY), hugePoints[1], 'finite points may have overflowing magnitudes, but their distance must be finite');
+  assert.equal(primitivePivot([hugePoints[0]], hugeReference), undefined);
+  const origin = primitivePivot([new Cartesian3(2, 3, 4)], reference, Matrix4.fromTranslation(new Cartesian3(-2, -3, -4)));
+  assert.deepEqual(origin, Cartesian3.ZERO, 'source validity is checked before its transform');
+});
+
+test('group pivot nearest ties keep the first candidate and return an independent point', () => {
+  const first = new Cartesian3(10, -2, 3), second = new Cartesian3(10, 2, 3), reference = new Cartesian3(10, 0, 3);
+  for (const matrix of [undefined, Matrix4.IDENTITY]) {
+    const result = primitivePivot([first, second], reference, matrix)!;
+    assert.deepEqual(result, first);
+    assert.notEqual(result, first);
+    result.y = 123;
+    assert.equal(first.y, -2);
+  }
+});
+
+test('large synthetic CAD pivot scan retains the same exact winner with and without a matrix', () => {
+  const points = Array.from({ length: 240_000 }, (_, index) => new Cartesian3(-2_800_000 + index % 10_000, 4_700_000 + index * 7 % 10_000, 3_250_000 + index % 20));
+  const reference = new Cartesian3(-2_799_500, 4_700_500, 3_250_100);
+  for (const matrix of [undefined, Matrix4.IDENTITY, Matrix4.fromTranslation(new Cartesian3(5, 6, 7))]) {
+    assert.deepEqual(primitivePivot(points, reference, matrix), legacyPrimitivePivot(points, reference, matrix));
+  }
+  assert.deepEqual(points[0], new Cartesian3(-2_800_000, 4_700_000, 3_250_000));
+});
+
 test('group and individual corrections share the entity CAD picking and annotation frame and zero restores original properties', async () => {
   const data = new CustomDataSource('group');
   const points = [-300, 300].map(x => Matrix4.multiplyByPoint(base, new Cartesian3(x, x / 2, 0), new Cartesian3()));

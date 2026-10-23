@@ -682,6 +682,8 @@ export class FoundationPitMonitoring {
       if (!this.displayAllowed || this.displayDisposed) return;
       if (this.interactionSuspensionDepth > 0) return;
       if (this.pickMode) return;
+      // Hidden models may retain selectable centre hints; inspect the rendered hints themselves.
+      if (!this.dataSource.show || !this.state.pits.some(pit => this.dataSource.entities.getById(`foundation-pit-anchor-${pit.id}`)?.isShowing)) return;
       let picked: { id?: unknown } | undefined;
       try { picked = this.viewer.scene.pick(movement.position) as { id?: unknown } | undefined; } catch { return; }
       const candidate = picked?.id;

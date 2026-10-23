@@ -308,12 +308,25 @@ function dataSourceIsClamped(data: CustomDataSource, time: JulianDate): boolean 
  */
 export function findVideoOverlayGroupCenter(imports: readonly ImportRecord[], reference: Cartesian3, time: JulianDate): Cartesian3 | undefined {
   if (!validAnchor(reference)) return undefined;
-  let nearest: Cartesian3 | undefined, distance = Infinity;
-  const include = (point: Cartesian3 | undefined, matrix?: Matrix4) => {
-    if (!validAnchor(point)) return;
-    const world = matrix ? Matrix4.multiplyByPoint(matrix, point, new Cartesian3()) : point;
-    const next = Cartesian3.distanceSquared(reference, world);
-    if (Number.isFinite(next) && next < distance) { distance = next; nearest = Cartesian3.clone(world); }
+  let nearestX: number | undefined, nearestY = 0, nearestZ = 0, distance = Infinity;
+  const include = (point: Cartesian3 | undefined, matrix?: Matrix4, identity = false) => {
+    if (!point) return;
+    const { x, y, z } = point;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) || !(Math.sqrt(x * x + y * y + z * z) > 1)) return;
+    // Large CADs contain millions of candidates. Keep the scan allocation-free,
+    // while matching multiplyByPoint (including its operation order and no /w).
+    // Zero components use that expression even for identity to preserve -0.
+    let worldX = x, worldY = y, worldZ = z;
+    if (matrix && !(identity && x !== 0 && y !== 0 && z !== 0)) {
+      worldX = matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12];
+      worldY = matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13];
+      worldZ = matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14];
+    }
+    const dx = reference.x - worldX, dy = reference.y - worldY, dz = reference.z - worldZ;
+    const next = dx * dx + dy * dy + dz * dz;
+    if (Number.isFinite(next) && next < distance) {
+      distance = next; nearestX = worldX; nearestY = worldY; nearestZ = worldZ;
+    }
   };
   const ring = (hierarchy: PolygonHierarchy) => {
     for (const point of hierarchy.positions) include(point);
@@ -341,15 +354,17 @@ export function findVideoOverlayGroupCenter(imports: readonly ImportRecord[], re
       let matrix: Matrix4 | undefined;
       eachPrimitive(record.resource, child => {
         if (child instanceof LabelCollection) {
-          for (let index = 0; index < child.length; index++) include(child.get(index).position, child.modelMatrix);
+          const labelMatrix = child.modelMatrix, identity = Matrix4.equals(labelMatrix, Matrix4.IDENTITY);
+          for (let index = 0; index < child.length; index++) include(child.get(index).position, labelMatrix, identity);
         } else matrix ??= (child as MatrixResource)?.modelMatrix;
       });
       const source = record.resource as { cadPolylineFeatures?: { positions: Cartesian3[] }[]; cadFacePositions?: Cartesian3[][] };
-      for (const feature of source.cadPolylineFeatures ?? []) for (const point of feature.positions) include(point, matrix);
-      for (const face of source.cadFacePositions ?? []) for (const point of face) include(point, matrix);
+      const identity = Matrix4.equals(matrix, Matrix4.IDENTITY);
+      for (const feature of source.cadPolylineFeatures ?? []) for (const point of feature.positions) include(point, matrix, identity);
+      for (const face of source.cadFacePositions ?? []) for (const point of face) include(point, matrix, identity);
     }
   }
-  return nearest;
+  return nearestX === undefined ? undefined : new Cartesian3(nearestX, nearestY, nearestZ);
 }
 
 /** CAD entity properties already contain sampled heights; retain those exact vertices. */

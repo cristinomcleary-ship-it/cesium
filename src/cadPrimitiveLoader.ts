@@ -28,6 +28,7 @@ import {
 } from "cesium";
 import proj4 from "proj4";
 import { cadLineWidth, createCadPolylineAppearance } from "./cadDisplayStyle.ts";
+import { cadSpatialBatchKey, CadSpatialBatcher } from "./cadSpatialBatcher.ts";
 import type { CadImportEntity, CadImportPackage, CadPoint } from "./cadImport";
 import { createGaussKrugerToWgs84Converter } from "./coordinateUtils.ts";
 import type { CadCoordinateOptions, CadDisplayMode } from "./types";
@@ -254,9 +255,6 @@ export async function loadCadPrimitiveCollection(
   let featureCount = 0;
   let skippedCount = 0;
 
-  let lineInstances: GeometryInstance[] = [];
-  let faceInstances: GeometryInstance[] = [];
-  const groundFacesByColor = new Map<string, GeometryInstance[]>();
   let labels: LabelCollection | undefined;
 
   const heightReference = displayMode === "terrain"
@@ -280,8 +278,7 @@ export async function loadCadPrimitiveCollection(
     Cartesian3.maximumByComponent(maximum, position, maximum);
   };
 
-  const flushLines = () => {
-    if (!lineInstances.length) return;
+  const lineBatches = new CadSpatialBatcher<GeometryInstance>({ maxBatchSize: primitiveBatchSize, emit: lineInstances => {
     if (displayMode === "absolute") {
       collection.add(new Primitive({
         geometryInstances: lineInstances,
@@ -302,51 +299,50 @@ export async function loadCadPrimitiveCollection(
         allowPicking: true,
       }));
     }
-    lineInstances = [];
-  };
+  } });
 
-  const flushAbsoluteFaces = () => {
-    if (!faceInstances.length) return;
-    collection.add(new Primitive({
-      geometryInstances: faceInstances,
-      appearance: new PerInstanceColorAppearance({ flat: true, translucent: true, closed: false }),
-      asynchronous: true,
-      releaseGeometryInstances: true,
-      vertexCacheOptimize: true,
-      compressVertices: true,
-      allowPicking: true,
-    }));
-    faceInstances = [];
-  };
+  const faceBatches = new CadSpatialBatcher<GeometryInstance>({
+    maxBatchSize: Math.max(50, Math.floor(primitiveBatchSize / 2)),
+    emit: instances => {
+      if (displayMode === "absolute") {
+        collection.add(new Primitive({
+          geometryInstances: instances,
+          appearance: new PerInstanceColorAppearance({ flat: true, translucent: true, closed: false }),
+          asynchronous: true,
+          releaseGeometryInstances: true,
+          vertexCacheOptimize: true,
+          compressVertices: true,
+          allowPicking: true,
+        }));
+        return;
+      }
+      // Ground/classification primitives require a uniform color on every
+      // supported GPU, so different CAD colors are deliberately split here.
+      collection.add(new GroundPrimitive({
+        geometryInstances: instances,
+        appearance: new PerInstanceColorAppearance({ flat: true, translucent: true, closed: false }),
+        asynchronous: true,
+        releaseGeometryInstances: true,
+        vertexCacheOptimize: true,
+        compressVertices: true,
+        classificationType,
+        allowPicking: true,
+      }));
+    },
+  });
 
-  const flushGroundFaceColor = (colorKey: string) => {
-    const instances = groundFacesByColor.get(colorKey);
-    if (!instances?.length) return;
-    // Ground/classification primitives require a uniform color on every
-    // supported GPU, so different CAD colors are deliberately split here.
-    collection.add(new GroundPrimitive({
-      geometryInstances: instances,
-      appearance: new PerInstanceColorAppearance({ flat: true, translucent: true, closed: false }),
-      asynchronous: true,
-      releaseGeometryInstances: true,
-      vertexCacheOptimize: true,
-      compressVertices: true,
-      classificationType,
-      allowPicking: true,
-    }));
-    groundFacesByColor.set(colorKey, []);
-  };
+  const batchKey = (positions: Cartesian3[], partition?: string) =>
+    cadSpatialBatchKey(BoundingSphere.fromPoints(positions).center, partition);
 
   const addLine = (positions: Cartesian3[], width: number, color: Color, id: CadPrimitiveFeatureId) => {
     const geometry = displayMode === "absolute"
       ? new PolylineGeometry({ positions, width, arcType: ArcType.NONE, vertexFormat: PolylineColorAppearance.VERTEX_FORMAT })
       : new GroundPolylineGeometry({ positions, width, granularity: 0, arcType: ArcType.GEODESIC });
-    lineInstances.push(new GeometryInstance({
+    lineBatches.add(batchKey(positions), new GeometryInstance({
       geometry,
       id,
       attributes: { color: ColorGeometryInstanceAttribute.fromColor(color) },
-    }));
-    if (lineInstances.length >= primitiveBatchSize) flushLines();
+    }), positions.length);
   };
 
   const addFace = (positions: Cartesian3[], color: Color, id: CadPrimitiveFeatureId) => {
@@ -361,16 +357,8 @@ export async function loadCadPrimitiveCollection(
       id,
       attributes: { color: ColorGeometryInstanceAttribute.fromColor(faceColor) },
     });
-    if (displayMode === "absolute") {
-      faceInstances.push(instance);
-      if (faceInstances.length >= Math.max(50, Math.floor(primitiveBatchSize / 2))) flushAbsoluteFaces();
-      return;
-    }
-    const colorKey = faceColor.toCssHexString();
-    const instances = groundFacesByColor.get(colorKey) ?? [];
-    instances.push(instance);
-    groundFacesByColor.set(colorKey, instances);
-    if (instances.length >= Math.max(50, Math.floor(primitiveBatchSize / 2))) flushGroundFaceColor(colorKey);
+    const partition = displayMode === "absolute" ? "" : faceColor.toCssHexString();
+    faceBatches.add(batchKey(positions, partition), instance, positions.length, partition);
   };
 
   let sampledBatch: Cartesian3[][] = [];
@@ -457,9 +445,8 @@ export async function loadCadPrimitiveCollection(
     }
   }
 
-  flushLines();
-  flushAbsoluteFaces();
-  for (const colorKey of groundFacesByColor.keys()) flushGroundFaceColor(colorKey);
+  lineBatches.flush();
+  faceBatches.flush();
   abortIfRequested(options.signal);
   options.onProgress?.(value.entities.length, value.entities.length);
 

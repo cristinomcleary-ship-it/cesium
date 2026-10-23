@@ -21,6 +21,7 @@ import {
 } from "cesium";
 import type { ImportRecord } from "./types";
 import type { CadPolylineFeature } from "./cadPrimitiveLoader";
+import { recoverDestroyedClippingReferences } from "./destroyedClippingRecovery";
 
 export const subsurfacePanelHtml = `
   <div id="subsurfacePanel" class="subsurface-panel hidden">
@@ -380,7 +381,12 @@ export class SubsurfaceTools {
           continue;
         }
         if (collection.isDestroyed()) {
-          if (candidate[publicKey] === collection || candidate[privateKey] === collection) candidate[privateKey] = undefined;
+          if (candidate[publicKey] === collection || candidate[privateKey] === collection) {
+            candidate[privateKey] = undefined;
+            // A directly imported Model may already have commands whose
+            // uniforms captured the deleted clipping texture.
+            (target as { resetDrawCommands?: () => void }).resetDrawCommands?.();
+          }
           targets.delete(target);
           detached += 1;
         } else {
@@ -397,6 +403,7 @@ export class SubsurfaceTools {
     for (const target of candidates) {
       const candidate = target as Record<string, unknown> & { isDestroyed?: () => boolean };
       if (candidate.isDestroyed?.()) continue;
+      detached += recoverDestroyedClippingReferences(target);
       for (const [publicKey, privateKey] of [["clippingPlanes", "_clippingPlanes"], ["clippingPolygons", "_clippingPolygons"]] as const) {
         const collection = candidate[publicKey] as { enabled: boolean; isDestroyed: () => boolean } | undefined;
         if (!collection) continue;

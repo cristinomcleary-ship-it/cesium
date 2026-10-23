@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Cartesian3, CustomDataSource, JulianDate, PrimitiveCollection, type Entity, type Primitive, type Viewer } from "cesium";
+import { Cartesian2, Cartesian3, CustomDataSource, JulianDate, PrimitiveCollection, ScreenSpaceEventType, type Entity, type Primitive, type ScreenSpaceEventHandler, type Viewer } from "cesium";
 import { FoundationPitMonitoring } from "./foundationPitMonitoring.ts";
 
 const pit = (id: string, visible = true) => ({
@@ -183,4 +183,53 @@ test("an in-progress support handle survives display rebuilds without joining th
   assert.equal(f.monitoring.getDisplayItems().length, 9);
   assert.equal(f.monitoring.getDisplayItems().some(item => item.id.includes("draft")), false);
   assert.deepEqual(f.state, before);
+});
+
+test("centre selection skips GPU picking without visible hints and resumes for saved-hidden pit centres", () => {
+  const f = fixture();
+  class Surface extends EventTarget { disableRootEvents = true; onwheel = null; }
+  let picks = 0;
+  const selected: string[] = [];
+  Object.assign(f.monitoring, {
+    interactionSuspensionDepth: 0,
+    viewer: { scene: { canvas: new Surface(), requestRender() {}, pick() {
+      picks++;
+      return { id: f.source.entities.getById("foundation-pit-anchor-hidden") };
+    } } },
+    selectPitForManagement(pit: { id: string }, fromMap: boolean) {
+      assert.equal(fromMap, true); selected.push(pit.id);
+    },
+  });
+  const internal = f.monitoring as unknown as { bindCenterSelection(): void; centerSelectionHandler: ScreenSpaceEventHandler };
+  internal.bindCenterSelection();
+  try {
+    const click = () => (internal.centerSelectionHandler.getInputAction(ScreenSpaceEventType.LEFT_CLICK) as ScreenSpaceEventHandler.PositionedEventCallback)({ position: new Cartesian2(1, 1) });
+    const pits = f.state.pits;
+    f.state.pits = [];
+    for (let index = 0; index < 25; index++) click();
+    assert.equal(picks, 0, "an empty pit catalogue does not issue GPU picks");
+    f.state.pits = pits;
+    f.monitoring.setDisplayVisibility({ "pit:marker:visible": false, "pit:marker:hidden": false });
+    for (let index = 0; index < 25; index++) click();
+    assert.equal(picks, 0, "visible pit models without centre hints do not issue GPU picks");
+    f.monitoring.setDisplayVisibility({ "pit:marker:visible": false });
+    f.source.show = false;
+    click();
+    assert.equal(picks, 0, "a hidden pit layer does not issue GPU picks");
+    f.source.show = true;
+    click();
+    assert.equal(picks, 1);
+    assert.deepEqual(selected, ["hidden"], "a saved-hidden model retains its selectable centre hint");
+    for (let index = 0; index < 5; index++) {
+      const resume = f.monitoring.suspendInteractions();
+      click();
+      assert.equal(picks, index + 1, "suspended interactions never pick");
+      resume(); resume();
+      click();
+      assert.equal(picks, index + 2, "each resumed click issues exactly one pick");
+    }
+    assert.deepEqual(selected, Array(6).fill("hidden"));
+  } finally {
+    internal.centerSelectionHandler.destroy();
+  }
 });

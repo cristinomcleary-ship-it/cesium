@@ -23,7 +23,7 @@ import { VideoOverlayCacheStore, hashVideoOverlayInputs } from './videoOverlayCa
 import { VideoOverlayLifecycle } from './videoOverlayLifecycle';
 import './videoModelOverlay.css';
 
-export const VIDEO_OVERLAY_BUILD = '2026.10.22-R8-local-cad-pivot';
+export const VIDEO_OVERLAY_BUILD = '2026.10.23-R9-cad-interaction';
 
 export type SavedVideoOverlaySettings = {
   schemeName?: string;

@@ -237,6 +237,7 @@ export class ModelEditor {
   private bindMouse() {
     this.handler.setInputAction((event: { position: Cartesian2 }) => {
       if (this.destroyed || this.suspensionDepth > 0) return;
+      if (!this.models.size) return;
       const picked = this.viewer.scene.pick(event.position) as { id?: { engineeringModelId?: string }; primitive?: Model } | undefined;
       const pickedId = picked?.id?.engineeringModelId;
       if (pickedId && this.models.has(pickedId)) this.select(pickedId);

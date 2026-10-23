@@ -114,6 +114,11 @@ try {
 
   let changed = 0;
   const editor = new ModelEditor(viewer, () => changed++);
+  let editorPickCalls = 0;
+  viewer.scene.pick = () => { editorPickCalls++; return undefined; };
+  const dragStart = () => editor.handler.getInputAction(ScreenSpaceEventType.LEFT_DOWN)({ position: new Cartesian2(0, 0) });
+  for (let index = 0; index < 25; index++) dragStart();
+  assert.equal(editorPickCalls, 0, "ordinary map navigation with no models must not trigger GPU picking");
   const entity = { modelMatrix: sourceMatrix, boundingSphere: new BoundingSphere(before, 5), isDestroyed: () => false, silhouetteSize: 0 };
   editor.add("a", "test", entity);
   assert.equal(editor.setTransform({ east: 10, north: -20, up: 3, heading: 0.4 }), true);
@@ -123,12 +128,15 @@ try {
   close(editor.getSelected().up, 3);
   editor.handler.getInputAction(ScreenSpaceEventType.LEFT_UP)();
   assert.equal(viewer.scene.screenSpaceCameraController.enableInputs, false, "unowned mouse-up cannot unlock another tool");
-  viewer.scene.pick = () => ({ id: { engineeringModelId: "a" } });
+  viewer.scene.pick = () => { editorPickCalls++; return { id: { engineeringModelId: "a" } }; };
   const localRay = (point) => new Ray(Matrix4.multiplyByPoint(sourceMatrix, point, new Cartesian3()), Matrix4.multiplyByPointAsVector(sourceMatrix, new Cartesian3(0, 0, -1), new Cartesian3()));
   // View rotated 90 degrees: moving screen-right means local north, not east.
   viewer.camera.getPickRay = (screen) => localRay(new Cartesian3(0, screen.x, 100));
   viewer.scene.screenSpaceCameraController.enableInputs = true;
-  editor.handler.getInputAction(ScreenSpaceEventType.LEFT_DOWN)({ position: new Cartesian2(0, 0) });
+  editor.select(null);
+  dragStart();
+  assert.equal(editorPickCalls, 1, "a loaded model remains selectable with one pick");
+  assert.equal(editor.getSelected().id, "a");
   assert.equal(viewer.scene.screenSpaceCameraController.enableInputs, false);
   editor.handler.getInputAction(ScreenSpaceEventType.MOUSE_MOVE)({ endPosition: new Cartesian2(5, 0) });
   close(editor.getSelected().east, 10); close(editor.getSelected().north, -15);
@@ -144,8 +152,11 @@ try {
   close(editor.getSelected().east, 0);
   editor.remove("a");
   assert.equal(editor.getSelected(), null);
+  const picksBeforeEmptyNavigation = editorPickCalls;
+  for (let index = 0; index < 25; index++) dragStart();
+  assert.equal(editorPickCalls, picksBeforeEmptyNavigation, "removing the last model restores navigation without GPU picking");
   editor.destroy(); editor.destroy();
   assert.equal(canvas.listenerCount, 0);
   assert.equal(window.listenerCount, 0);
-  console.log("PASS: GLB geometry anchoring; bounded streamed/Blob metadata; offset/scale/rotation; map click/sky/Escape/abort cleanup; numeric translation; rotated-view dragging; camera lock ownership and teardown.");
+  console.log("PASS: GLB geometry anchoring; bounded streamed/Blob metadata; offset/scale/rotation; map click/sky/Escape/abort cleanup; zero empty-model GPU picks; loaded-model selection and rotated-view dragging; numeric translation; camera lock ownership and teardown.");
 } finally { await rm(directory, { recursive: true, force: true }); }
