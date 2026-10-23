@@ -6,47 +6,30 @@
 目标分支：`codex/machinery-integration-20261013`
 默认入口：`http://127.0.0.1:5173/`
 
+部署流程以同一交付提交中的 [R9 更新部署说明](CODEX_LOCAL_DEPLOY_CAD_TILT.md) 为准。用户明确要求只使用 GitHub 代码备份，不创建本地备份；已经存在的备份和 Git 外资料保留原位。不要调用原目录中尚未更新、仍会创建本地备份的旧版部署脚本。
+
 ## 给本机 Codex 的任务
 
 1. 找到用户一直使用的原 Cesium 项目目录。优先使用当前工作目录、`CESIUM_PROJECT_DIR`、现有启动快捷方式及 `output/local-service/service.json`。不要另建一个空项目冒充更新完成，不要清空浏览器或删除 `project-data`。
 2. 读取该目录的 `AGENTS.md`，核对 `origin`、当前分支、提交历史、未提交修改和启动方式。目标是保留当前模型、资料、保存的融合方案及其他模块功能。
-3. 用户若给出了本轮 GitHub 完整提交 SHA，使用下述 `-ExpectedCommit` 固定它。远端若已变化，先审查差异。没有固定 SHA 时，脚本快进到运行时该目标分支的最新版本，并记录实际部署 SHA。
-4. 用下面的 `-CheckOnly` 检查。若有脏修改，正式脚本会保存二进制 patch 和工作文件副本后停止，交由本机 Codex 对比、合并、提交。禁止 `reset --hard`、`git clean`、强制 checkout、覆盖用户文件或自动丢弃修改。若当前分支不同或历史分叉，审查后安全合并修复提交；脚本不替用户猜测或强制切分支。
-5. 执行部署脚本。它会安装必要的锁定依赖、运行 `npm run build`、保存原 `dist`，通过现有服务脚本只重启能够确认属于当前项目的服务。不得执行 `taskkill /IM node.exe`、关闭所有 Node 进程或占用其他端口来掩盖失败。
-6. 打开页面强制刷新，确认 AR 面板显示 `版本 2026.10.20-R4`，浏览器加载的是新构建。用用户原航拍视频、CC XML 和原模型播放，记录源分辨率、播放时长、明显停顿次数和退出前后场景拖动效果。先用进度条检查暂停画面的配准，再点击“缓存后播放”，记录首次完整准备耗时；确认准备完成后使用缓存连续播放。至少重复退出、重新打开缓存五次，检查复用时不会再次生成三维画面。确认退出后不需要刷新页面即可正常移动、缩放，并检查其他模块、方案读取、标注及视频导出。准备耗时与播放停顿分别记录。核对源视频和输出帧数、帧时间及分辨率（尤其60fps/VFR），检查音轨；测试生成途中退出、重新进入、修改模型后重算。默认导出也复用完整缓存。用“导出配准诊断”检查 lifecycle.cleanup 与 pendingTasks。浏览器解码硬件能力、用户原场景的退出后帧耗时必须本机实测，不能把云端测试当作已解决证明。
-7. 报告实际路径、完整 Git SHA、构建结果、服务 PID、访问 URL、浏览器验收结果及尚未解决的问题。只运行了脚本或构建通过，不等于用户视频性能验收通过。
+3. 使用本轮交付的 GitHub 完整提交 SHA，并以 `-ExpectedCommit` 固定它；远端若已变化，先审查差异。按新版部署说明只读抓取、核验提交，再从该提交提取三份部署工具到系统临时执行目录。临时目录仅存放新工具，不复制旧源码或资料。
+4. 使用临时目录中的新版脚本和显式 `-ProjectPath` 执行 `-CheckOnly`；该模式不创建远端备份。若有脏修改，正式脚本只报错并保留原位，不复制、不自动提交或 stash。可上传代码必须经审查后独立提交到 GitHub 备份分支并核验 SHA；资料、模型、配置和秘密不得混入。禁止 `reset --hard`、`git clean`、强制 checkout 或丢弃修改。分支不同或历史分叉时，先完成 GitHub 备份核验，再安全整合。
+5. 正式部署先创建唯一 GitHub `backup/local-deploy/...` 分支并核验原 HEAD 的 SHA，成功后才改源码或停服。随后按需安装锁定依赖、在 `output/deploy-build-<GUID>` 生成新构建，经保护检查后更新 `dist` 中对应构建文件，不保存旧 `dist` 副本，也不删除其他既有文件。通过现有服务脚本只重启能够确认属于当前项目的服务。不得执行 `taskkill /IM node.exe`、关闭所有 Node 进程或占用其他端口来掩盖失败。
+6. 打开页面强制刷新，确认 AR 面板显示 `版本 2026.10.23-R9-cad-interaction` 和实际交付 SHA，浏览器加载的是新构建。用用户原航拍视频、CC XML 和原模型播放，记录源分辨率、播放时长、明显停顿次数和退出前后场景拖动效果。先用进度条检查暂停画面的配准，再点击“缓存后播放”，记录首次完整准备耗时；确认准备完成后使用缓存连续播放。至少重复退出、重新打开缓存五次，检查复用时不会再次生成三维画面。确认退出后不需要刷新页面即可正常移动、缩放，并检查其他模块、方案读取、标注及视频导出。准备耗时与播放停顿分别记录。核对源视频和输出帧数、帧时间及分辨率（尤其60fps/VFR），检查音轨；测试生成途中退出、重新进入、修改模型后重算。默认导出也复用完整缓存。检查诊断中的 lifecycle.cleanup 与 pendingTasks，已有诊断记录保留原位，不创建备份副本或上传 GitHub。浏览器解码硬件能力、用户原场景的退出后帧耗时必须本机实测，不能把云端测试当作已解决证明；偶发渲染错误未复现时注明覆盖范围，不能宣称已消除。
+7. 报告实际路径、完整 Git SHA、GitHub 备份分支 URL／SHA／远端核验结果、构建结果、服务 PID、访问 URL、浏览器验收结果及尚未解决的问题。Git 外资料／模型／配置保持原位，GitHub 代码备份不覆盖它们；涉及迁移、覆盖或删除时必须先停下说明。只运行了脚本或构建通过，不等于用户视频性能验收通过。
 
 ## 在原项目中运行
 
 已经安装本机 Codex CLI 时，可在原项目打开终端交接任务：
 
 ```powershell
-codex -C "D:\你的原项目目录" "请读取 CODEX_LOCAL_DEPLOY_AR.md，按其中要求审查并部署本轮 GitHub AR 修复版本，完成原视频播放和退出后的实际性能验收，报告实际提交 SHA 和服务状态。"
+codex -C "D:\你的原项目目录" "请接续本轮 GitHub Cesium 更新。先只读获取并核验交付消息中的完整提交 SHA，读取该提交中的 CODEX_LOCAL_DEPLOY_CAD_TILT.md，按其新版工具引导部署，不直接运行本机旧版部署脚本。只在 GitHub 备份代码并核验 SHA，不创建本地备份，不上传工程资料或秘密；原资料模型配置和现有备份保留原位。完成原视频播放和连续至少五次退出后的实际性能验收，报告实际提交、GitHub 备份和服务状态。"
 ```
 
 这条命令启动的是执行该命令电脑上的 Codex，不会从聊天云工作区远程连接电脑。保留本机 Codex 的正常审查与权限设置。
 
-先在 PowerShell 进入原项目目录，或用 `-ProjectPath` 明确指定。脚本仅支持已有 Git 仓库，自动识别不扫描整台电脑。
+完整 PowerShell 引导、SHA 核验、新版三份工具提取及正式部署命令见 [CODEX_LOCAL_DEPLOY_CAD_TILT.md](CODEX_LOCAL_DEPLOY_CAD_TILT.md) 第 1–4 节。三份工具必须来自同一个已核验交付 SHA：`deploy-ar-local.ps1`、`github-code-backup.mjs`、`install-staged-build.mjs`。显式 `-ProjectPath` 指向原项目；脚本仅支持已有 Git 仓库，不扫描整台电脑。不要为了获取新工具在脏工作区直接 `git pull`。
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\deploy-ar-local.ps1 -CheckOnly
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\deploy-ar-local.ps1 -NoBrowser
-```
+`-Mode Preview` 或 `-Mode Development` 应保持原运行模式；未指定时优先沿用已有服务记录。Node.js 需要 24+，可以通过 `CESIUM_NODE_EXE` 指定已有运行时；原启动器需要已安装 pnpm。常规更新不要使用 `-SkipRestart`：它不会替你停止／重启服务，也不能用于报告版本已部署。
 
-明确原目录并固定已审查的版本：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\deploy-ar-local.ps1 -ProjectPath "D:\你的原项目目录" -ExpectedCommit "替换为本轮GitHub的40位完整提交SHA" -NoBrowser
-```
-
-仅构建，暂不重启现有服务：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\deploy-ar-local.ps1 -SkipRestart -NoBrowser
-```
-
-`-SkipRestart` 不能用于报告已部署。`-Mode Preview` 或 `-Mode Development` 可明确指定服务模式；未指定时优先沿用已有服务记录。Node.js 需要 24+，可以通过 `CESIUM_NODE_EXE` 指定已有运行时。原服务启动器需要已安装 pnpm，脚本不会自动下载或升级包管理器。
-
-如果本机还没有这两个新文件，先让本机 Codex只读获取目标提交中的文件内容并审查，再运行。不要为了获取脚本在脏工作区直接 `git pull`。也可以先在一个临时目录下载这两个文件，使用 `-ProjectPath` 指向原项目；脚本仍会在更新前备份并拒绝覆盖脏修改。
-
-备份和日志保存在原项目的 `.local-backups/ar-local-时间戳/`，其中 `deployment.json` 记录更新前、目标提交及完成状态。失败时保留日志并停止，脚本不会自动回退 Git 历史或删除文件。原构建位于 `previous-dist` 时，由本机 Codex在确认服务停止后恢复；必须记录回退后的版本，不能把旧构建报告为新版本。
+执行状态写入 `output/local-service/deployment.json`，这是部署记录，不是本地代码或数据备份。失败时查看原服务和安装状态；需要恢复旧代码则从已核验 GitHub 备份 SHA 重新构建，不承诺本机即时回滚。保留已有备份和业务数据原位，不为了恢复程序而删除、迁移或回滚资料。恢复后必须报告实际版本，不能把旧构建报告为新版本。

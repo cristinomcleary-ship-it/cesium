@@ -14,7 +14,9 @@ $requestedMode = $PSBoundParameters.ContainsKey('Mode')
 $repository = 'cristinomcleary-ship-it/cesium'
 $git = (Get-Command git.exe -ErrorAction Stop).Source
 $originalLocation = Get-Location
-$backupRoot = $null
+$reportPath = $null
+$githubBackupScript = Join-Path $PSScriptRoot 'github-code-backup.mjs'
+$installBuildScript = Join-Path $PSScriptRoot 'install-staged-build.mjs'
 $report = $null
 $serviceWasStopped = $false
 
@@ -65,43 +67,9 @@ function Find-ProjectNode {
 }
 
 function Write-DeployReport {
-  if ($null -ne $backupRoot -and $null -ne $report) {
-    $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $backupRoot 'deployment.json') -Encoding UTF8
+  if ($null -ne $reportPath -and $null -ne $report) {
+    $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $reportPath -Encoding UTF8
   }
-}
-
-function Backup-ProjectChanges {
-  # Node preserves arbitrary UTF-8 Git filenames, NUL separators and binary diffs.
-  # It copies only Git-visible work; project-data, credentials and node_modules stay local.
-  $backupProgram = @'
-const fs = require('node:fs');
-const path = require('node:path');
-const cp = require('node:child_process');
-const root = process.argv[1], backup = process.argv[2];
-const git = (...args) => cp.execFileSync('git', ['-C', root, ...args], {maxBuffer: 128 * 1024 * 1024});
-git('diff', '--binary', '--no-ext-diff', '--output=' + path.join(backup, 'working-tree.patch'));
-git('diff', '--cached', '--binary', '--no-ext-diff', '--output=' + path.join(backup, 'staged.patch'));
-fs.writeFileSync(path.join(backup, 'status-porcelain.bin'), git('status', '--porcelain=v1', '-z'));
-const names = new Set([
-  ...git('diff', '--name-only', '-z').toString('utf8').split('\0'),
-  ...git('diff', '--cached', '--name-only', '-z').toString('utf8').split('\0'),
-  ...git('ls-files', '--others', '--exclude-standard', '-z').toString('utf8').split('\0'),
-].filter(Boolean));
-const files = [];
-for (const name of names) {
-  const source = path.resolve(root, name);
-  if (!source.startsWith(root + path.sep)) throw new Error('Unsafe Git path: ' + name);
-  if (!fs.existsSync(source)) { files.push({path: name, deleted: true}); continue; }
-  if (fs.lstatSync(source).isSymbolicLink()) throw new Error('Back up this changed symlink manually: ' + name);
-  const target = path.resolve(backup, 'working-files', name);
-  fs.mkdirSync(path.dirname(target), {recursive: true});
-  fs.cpSync(source, target, {recursive: true, errorOnExist: true});
-  files.push({path: name, deleted: false});
-}
-fs.writeFileSync(path.join(backup, 'working-files.json'), JSON.stringify(files, null, 2));
-'@
-  & $script:node --eval $backupProgram $script:projectRoot $backupRoot
-  if ($LASTEXITCODE -ne 0) { throw 'Working-tree backup failed. No Git update or service restart was performed.' }
 }
 
 try {
@@ -120,6 +88,9 @@ try {
   Write-Host "Repository: $originUrl"
   Write-Host "Branch: $currentBranch; current commit: $beforeCommit"
   Write-Host "Working tree clean: $([string]::IsNullOrWhiteSpace($dirty))"
+  if (-not [string]::IsNullOrWhiteSpace($dirty)) {
+    throw 'The working tree has local changes. Local Codex must review and commit code changes before creating the GitHub backup. No local backup, automatic commit, stash or update was performed.'
+  }
   $stopScript = Join-Path $projectRoot 'tools/stop-cesium.ps1'
   $startScript = Join-Path $projectRoot 'tools/start-cesium.ps1'
   $statePath = Join-Path $projectRoot 'output/local-service/service.json'
@@ -147,7 +118,9 @@ try {
     & $stopScript -WhatIf
   }
   if ($CheckOnly) {
-    Write-Host (Invoke-ProjectGit -Arguments @('ls-remote', '--heads', 'origin', ('refs/heads/' + $Branch)))
+    $remoteHead = Invoke-ProjectGit -Arguments @('ls-remote', '--heads', 'origin', ('refs/heads/' + $Branch))
+    if (-not $remoteHead -or ($ExpectedCommit -and (($remoteHead -split '\s+')[0] -ine $ExpectedCommit))) { throw 'Remote branch is missing or differs from ExpectedCommit.' }
+    Write-Host $remoteHead
     Write-Host 'Preflight finished. No source update, dependency install, build or service stop was performed.'
     return
   }
@@ -155,31 +128,34 @@ try {
   $env:PATH = (Split-Path -Parent $node) + [IO.Path]::PathSeparator + $env:PATH
   $env:CESIUM_NODE_EXE = $node
   $npm = (Get-Command npm.cmd -ErrorAction Stop).Source
-  $backupRoot = Join-Path $projectRoot ('.local-backups/ar-local-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
-  New-Item -ItemType Directory -Path $backupRoot -ErrorAction Stop | Out-Null
-  $report = [ordered]@{ projectRoot = $projectRoot; branch = $Branch; beforeCommit = $beforeCommit; targetCommit = $null; startedAt = (Get-Date).ToUniversalTime().ToString('o'); mode = $Mode; status = 'preparing'; restarted = $false; error = $null }
-  Write-DeployReport
-  Backup-ProjectChanges
-  if (-not [string]::IsNullOrWhiteSpace($dirty)) {
-    throw "Local changes were backed up to $backupRoot. Resolve them with local Codex before retrying. No stash, reset, checkout, clean, pull or service stop was performed."
+  if (-not (Test-Path -LiteralPath $githubBackupScript -PathType Leaf) -or -not (Test-Path -LiteralPath $installBuildScript -PathType Leaf)) {
+    throw 'Deployment helpers are missing. Obtain this script and both helpers from the same reviewed GitHub commit.'
   }
   Invoke-ProjectGit -Arguments @('fetch', '--no-tags', 'origin', $Branch) | Write-Host
   $fetchedCommit = Invoke-ProjectGit -Arguments @('rev-parse', 'FETCH_HEAD^{commit}')
   if ($ExpectedCommit -and $fetchedCommit -ine $ExpectedCommit) { throw "Remote HEAD $fetchedCommit differs from expected $ExpectedCommit. Review the new remote commits before deployment." }
   & $git merge-base --is-ancestor HEAD $fetchedCommit
   if ($LASTEXITCODE -ne 0) { throw 'This checkout has local commits or diverged history. Local Codex must review and integrate them; no forced update was attempted.' }
-  # A running development server would consume source changes during the pull.
+  # No source or service changes are permitted before the remote code backup is verified.
+  $backupJson = @(& $node $githubBackupScript $projectRoot $beforeCommit)
+  if ($LASTEXITCODE -ne 0) { throw 'GitHub backup failed. No source update or service stop was performed.' }
+  $githubBackup = ($backupJson -join [Environment]::NewLine) | ConvertFrom-Json
+  if ($githubBackup.sha -ine $beforeCommit -or -not $githubBackup.branch.StartsWith('backup/local-deploy/')) { throw 'Invalid GitHub backup confirmation.' }
+  Write-Host "Verified GitHub code backup: $($githubBackup.url) ($($githubBackup.sha))"
+  $reportDirectory = Join-Path $projectRoot 'output/local-service'
+  New-Item -ItemType Directory -Path $reportDirectory -Force | Out-Null
+  $reportPath = Join-Path $reportDirectory 'deployment.json'
+  $report = [ordered]@{ projectRoot = $projectRoot; branch = $Branch; beforeCommit = $beforeCommit; targetCommit = $null; githubBackup = $githubBackup; startedAt = (Get-Date).ToUniversalTime().ToString('o'); mode = $Mode; status = 'preparing'; restarted = $false; error = $null }
+  Write-DeployReport
+  # A running development server would consume source changes during the update.
   if (-not $SkipRestart -and $runningMode -eq 'Development') {
     & $stopScript -Confirm:$false
     $serviceWasStopped = $true
   }
-  if (-not [string]::IsNullOrWhiteSpace((Invoke-ProjectGit -Arguments @('status', '--porcelain=v1', '--untracked-files=normal')))) { throw 'Working tree changed after backup. Review those changes before continuing.' }
-  if ($ExpectedCommit) {
-    # Pin the reviewed commit; the second network request of git pull could race.
-    Invoke-ProjectGit -Arguments @('merge', '--ff-only', $fetchedCommit) | Write-Host
-  } else {
-    Invoke-ProjectGit -Arguments @('pull', '--ff-only', '--no-rebase', 'origin', $Branch) | Write-Host
-  }
+  if (-not [string]::IsNullOrWhiteSpace((Invoke-ProjectGit -Arguments @('status', '--porcelain=v1', '--untracked-files=normal')))) { throw 'Working tree changed after the GitHub backup. Review those changes before continuing.' }
+  if ((Invoke-ProjectGit -Arguments @('rev-parse', 'HEAD')) -ine $beforeCommit) { throw 'HEAD changed after the GitHub backup; no update was performed.' }
+  # Always pin the fetched commit, including when ExpectedCommit was omitted.
+  Invoke-ProjectGit -Arguments @('merge', '--ff-only', $fetchedCommit) | Write-Host
   $targetCommit = Invoke-ProjectGit -Arguments @('rev-parse', 'HEAD')
   $report.targetCommit = $targetCommit
   $report.status = 'building'
@@ -194,7 +170,7 @@ try {
     & $npm ci
     if ($LASTEXITCODE -ne 0) { throw 'npm ci failed. The existing dist was not replaced.' }
   }
-  $buildDirectory = Join-Path $backupRoot 'build-dist'
+  $buildDirectory = Join-Path $projectRoot ('output/deploy-build-' + [Guid]::NewGuid().ToString('N'))
   # Vite builds into a separate directory, keeping the currently served dist whole.
   & $npm run build -- --outDir $buildDirectory --emptyOutDir
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $buildDirectory 'index.html') -PathType Leaf)) { throw 'Build failed. The previous dist was not replaced; inspect compiler output above.' }
@@ -203,13 +179,10 @@ try {
     & $stopScript -Confirm:$false
     $serviceWasStopped = $true
   }
-  $distPath = Join-Path $projectRoot 'dist'
-  if (Test-Path -LiteralPath $distPath) { Move-Item -LiteralPath $distPath -Destination (Join-Path $backupRoot 'previous-dist') }
-  try { Move-Item -LiteralPath $buildDirectory -Destination $distPath }
-  catch {
-    if (Test-Path -LiteralPath (Join-Path $backupRoot 'previous-dist')) { Move-Item -LiteralPath (Join-Path $backupRoot 'previous-dist') -Destination $distPath }
-    throw
-  }
+  # Install only the new build paths. Do not archive old dist or remove unrelated
+  # files, which may include user assets. The helper rejects linked/data-root paths.
+  & $node $installBuildScript $projectRoot $buildDirectory
+  if ($LASTEXITCODE -ne 0) { throw 'Build installation failed. Inspect the deployment report; recover code by rebuilding the verified GitHub backup commit if required.' }
   if (-not $SkipRestart) {
     & $startScript -Mode $Mode -NoBrowser
     $response = Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:5173/' -TimeoutSec 10
@@ -221,13 +194,14 @@ try {
   $report.finishedAt = (Get-Date).ToUniversalTime().ToString('o')
   Write-DeployReport
   Write-Host "Built commit: $targetCommit"
-  Write-Host "Backup and deployment report: $backupRoot"
+  Write-Host "GitHub code backup: $($githubBackup.url)"
+  Write-Host "Deployment report (no backup copies): $reportPath"
   if ($SkipRestart) { Write-Host 'Restart was skipped. Do not report this version as running until the local service is restarted and checked.' }
-  else { Write-Host 'Service and API checks passed. Complete the AR playback and exit performance checks in CODEX_LOCAL_DEPLOY_AR.md.' }
+  else { Write-Host 'Service and API checks passed. Complete the AR playback and exit performance checks in CODEX_LOCAL_DEPLOY_CAD_TILT.md.' }
 } catch {
   if ($null -ne $report) { $report.status = 'failed'; $report.error = $_.Exception.Message; Write-DeployReport }
   Write-Error $_ -ErrorAction Continue
-  if ($serviceWasStopped) { Write-Warning 'This project service was stopped. Review the error and backup before restarting; no unrelated Node process was stopped.' }
+  if ($serviceWasStopped) { Write-Warning 'This project service was stopped. Review the error and verified GitHub code backup before restarting; no unrelated Node process was stopped.' }
   exit 1
 } finally {
   Set-Location -LiteralPath $originalLocation.Path
