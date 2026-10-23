@@ -1,0 +1,641 @@
+{
+  "result": "passed",
+  "completedUniqueChecks": 10,
+  "classification": "actual-original-workbench-scene-display-ui-webgl-with-isolated-data",
+  "browserVersion": "153.0.8010.0",
+  "renderer": "Chromium SwiftShader software WebGL",
+  "productionDataReadOrModified": false,
+  "port": 5195,
+  "strictPort": true,
+  "fixture": {
+    "location": {
+      "longitude": 116.391,
+      "latitude": 39.907
+    },
+    "width": 100,
+    "depth": 100,
+    "heightFormula": "12 + 0.12 * east + 0.06 * north (metres)",
+    "limitations": [
+      "Synthetic 3D Tiles geometry; not a surveyed site or accuracy certification",
+      "Software WebGL renderer when supplied launch options use SwiftShader"
+    ]
+  },
+  "runs": [
+    {
+      "name": "core-ui-and-rendering",
+      "sourceCommit": "a890718",
+      "startedAt": "2026-10-14T02:49:07.043Z",
+      "finishedAt": "2026-10-14T02:57:03.214Z",
+      "completedChecks": 8,
+      "result": "partial",
+      "stopReason": "The following account-login UI attempt timed out because the anonymous management refresh removed the login drawer. The eight prior checks passed. The account checks were rerun separately using real session API login."
+    },
+    {
+      "name": "access-and-persistence-follow-up",
+      "sourceCommit": "fc87fb7",
+      "startedAt": "2026-10-14T02:58:50.903Z",
+      "finishedAt": "2026-10-14T03:02:40.092Z",
+      "completedChecks": 2,
+      "fixtureSetupPassed": true,
+      "result": "passed"
+    }
+  ],
+  "checks": [
+    {
+      "id": "author-three-machines-and-independent-fixtures",
+      "status": "passed",
+      "evidence": {
+        "machines": [
+          {
+            "id": "display-crane-01",
+            "name": "吊机 01 · 同型第一台",
+            "assetId": "crane"
+          },
+          {
+            "id": "display-crane-02",
+            "name": "吊机 02 · 同型第二台",
+            "assetId": "crane"
+          },
+          {
+            "id": "display-pile-03",
+            "name": "桩机 03 · 列表末项",
+            "assetId": "pile"
+          }
+        ],
+        "guardId": "1b52fa3a-0b9d-409b-9535-6e75b03c58b5",
+        "limitId": "f9e6a59c-b0ba-4952-85ea-5f87ea60670b",
+        "slopedBaseHeights": [
+          12.06,
+          12.54,
+          15.54,
+          15.06
+        ],
+        "markups": [
+          {
+            "id": "497c2cad-d599-47ca-9e66-02fffdf6bd4d",
+            "name": "验收标绘标签",
+            "show": true,
+            "label": true
+          },
+          {
+            "id": "24d19fcd-7930-401c-afab-228d75d154b8",
+            "name": "验收文字正文",
+            "show": true,
+            "label": true
+          }
+        ],
+        "monitored": {
+          "state": "outside",
+          "text": "已离开工作区",
+          "role": "alert",
+          "summary": "人员定位：实测越界 0 · 模拟越界 1 · 待核实 0"
+        }
+      }
+    },
+    {
+      "id": "right-dock-full-list-wheel-and-hit-testing",
+      "status": "passed",
+      "evidence": [
+        {
+          "viewport": {
+            "width": 1920,
+            "height": 1080
+          },
+          "geometry": {
+            "side": {
+              "x": 1500,
+              "right": 1920,
+              "width": 420
+            },
+            "canvas": {
+              "x": 0,
+              "right": 1500
+            },
+            "oldMachineListVisible": false
+          },
+          "fullMachineIds": [
+            "machine:display-crane-01",
+            "machine:display-crane-02",
+            "machine:display-pile-03"
+          ],
+          "thirdMachineButtonHit": {
+            "x": 1870.9921875,
+            "y": 830.234375,
+            "hit": true
+          },
+          "lastButtonHit": {
+            "x": 1870.9921875,
+            "y": 946.234375,
+            "rect": {
+              "top": 934.734375,
+              "bottom": 957.734375
+            },
+            "target": "<button class=\"\" type=\"button\" data-action=\"item-edit\" data-item-id=\"markup:24d19fcd-7930-401c-afab-228d75d154b8\">配置</button>",
+            "hit": true
+          },
+          "scroll": {
+            "scrollTop": 906,
+            "scrollHeight": 1519,
+            "clientHeight": 613
+          }
+        },
+        {
+          "viewport": {
+            "width": 1366,
+            "height": 768
+          },
+          "geometry": {
+            "side": {
+              "x": 946,
+              "right": 1366,
+              "width": 420
+            },
+            "canvas": {
+              "x": 0,
+              "right": 946
+            },
+            "oldMachineListVisible": false
+          },
+          "fullMachineIds": [
+            "machine:display-crane-01",
+            "machine:display-crane-02",
+            "machine:display-pile-03"
+          ],
+          "thirdMachineButtonHit": {
+            "x": 1316.9921875,
+            "y": 680.234375,
+            "hit": true
+          },
+          "lastButtonHit": {
+            "x": 1316.9921875,
+            "y": 634.234375,
+            "rect": {
+              "top": 622.734375,
+              "bottom": 645.734375
+            },
+            "target": "<button class=\"\" type=\"button\" data-action=\"item-edit\" data-item-id=\"markup:24d19fcd-7930-401c-afab-228d75d154b8\">配置</button>",
+            "hit": true
+          },
+          "scroll": {
+            "scrollTop": 1218,
+            "scrollHeight": 1519,
+            "clientHeight": 301
+          }
+        }
+      ]
+    },
+    {
+      "id": "sloped-limit-wall-height-modes-and-opacity",
+      "status": "passed",
+      "evidence": {
+        "wall": {
+          "minimumHeights": [
+            12.06,
+            12.54,
+            15.54,
+            15.06,
+            12.06
+          ],
+          "maximumHeights": [
+            20.060000000000002,
+            20.54,
+            23.54,
+            23.060000000000002,
+            20.060000000000002
+          ],
+          "alpha": 0.22
+        },
+        "transparent": {
+          "count": 17676,
+          "width": 1500,
+          "height": 1018
+        },
+        "opaque": {
+          "count": 289534,
+          "width": 1500,
+          "height": 1018
+        },
+        "primitives": [
+          {
+            "id": "rail-safety:limit:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:wall",
+            "type": "Primitive",
+            "ready": true,
+            "show": true,
+            "instanceShow": 1
+          },
+          {
+            "id": "rail-safety:limit:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:wall",
+            "type": "Primitive",
+            "ready": true,
+            "show": true,
+            "instanceShow": 1
+          }
+        ],
+        "resultsUnchanged": true,
+        "displayGeneratedCommands": 0
+      }
+    },
+    {
+      "id": "cross-category-group-controls-real-rendering",
+      "status": "passed",
+      "evidence": {
+        "members": [
+          "machine:display-crane-01",
+          "rail:workArea:1b52fa3a-0b9d-409b-9535-6e75b03c58b5",
+          "rail:limit:f9e6a59c-b0ba-4952-85ea-5f87ea60670b"
+        ],
+        "hidden": {
+          "machines": [
+            {
+              "id": "display-crane-01",
+              "show": false
+            },
+            {
+              "id": "display-crane-02",
+              "show": true
+            },
+            {
+              "id": "display-pile-03",
+              "show": true
+            }
+          ],
+          "railIds": [
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:area",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:station",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:station:label",
+            "rail-safety:machine:display-crane-01:envelope",
+            "rail-safety:machine:display-crane-01:support",
+            "rail-safety:machine:display-crane-01:farthest",
+            "rail-safety:machine:display-crane-01:radius",
+            "rail-safety:machine:display-crane-01:intersection:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:0",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:position"
+          ],
+          "railLabels": [
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:station:label",
+            "rail-safety:machine:display-crane-01:farthest",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:position"
+          ],
+          "wall": null,
+          "markups": [
+            {
+              "id": "497c2cad-d599-47ca-9e66-02fffdf6bd4d",
+              "name": "验收标绘标签",
+              "show": true,
+              "label": true
+            },
+            {
+              "id": "24d19fcd-7930-401c-afab-228d75d154b8",
+              "name": "验收文字正文",
+              "show": true,
+              "label": true
+            }
+          ]
+        },
+        "hiddenPrimitives": [
+          {
+            "id": "machinery:display-crane-01",
+            "type": "Model",
+            "ready": true,
+            "show": false
+          }
+        ],
+        "shown": {
+          "machines": [
+            {
+              "id": "display-crane-01",
+              "show": true
+            },
+            {
+              "id": "display-crane-02",
+              "show": true
+            },
+            {
+              "id": "display-pile-03",
+              "show": true
+            }
+          ],
+          "railIds": [
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:area",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:station",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:station:label",
+            "rail-safety:machine:display-crane-01:envelope",
+            "rail-safety:machine:display-crane-01:support",
+            "rail-safety:machine:display-crane-01:farthest",
+            "rail-safety:machine:display-crane-01:radius",
+            "rail-safety:machine:display-crane-01:intersection:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:0",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:position",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:work-area",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:work-area:label",
+            "rail-safety:limit:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:area",
+            "rail-safety:limit:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:wall",
+            "rail-safety:limit:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:name"
+          ],
+          "railLabels": [
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:station:label",
+            "rail-safety:machine:display-crane-01:farthest",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:position",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:work-area:label",
+            "rail-safety:limit:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:name"
+          ],
+          "wall": {
+            "minimumHeights": [
+              12.06,
+              12.54,
+              15.54,
+              15.06,
+              12.06
+            ],
+            "maximumHeights": [
+              20.060000000000002,
+              20.54,
+              23.54,
+              23.060000000000002,
+              20.060000000000002
+            ],
+            "alpha": 0.35
+          },
+          "markups": [
+            {
+              "id": "497c2cad-d599-47ca-9e66-02fffdf6bd4d",
+              "name": "验收标绘标签",
+              "show": true,
+              "label": true
+            },
+            {
+              "id": "24d19fcd-7930-401c-afab-228d75d154b8",
+              "name": "验收文字正文",
+              "show": true,
+              "label": true
+            }
+          ]
+        },
+        "resultsAndMonitoringUnchanged": true,
+        "displayGeneratedCommands": 0
+      }
+    },
+    {
+      "id": "overlap-group-partial-rename-members-dissolve",
+      "status": "passed",
+      "evidence": {
+        "updated": {
+          "id": "display-group:3e470871-91eb-4c69-a328-1a1a1b770514",
+          "name": "已重命名施工组合",
+          "members": [
+            "machine:display-crane-01",
+            "rail:limit:f9e6a59c-b0ba-4952-85ea-5f87ea60670b",
+            "machine:display-pile-03"
+          ]
+        },
+        "partialStatesObserved": true,
+        "dissolveDeletedNoObjects": true
+      }
+    },
+    {
+      "id": "global-labels-control-safety-and-markups",
+      "status": "passed",
+      "evidence": {
+        "hidden": {
+          "machines": [
+            {
+              "id": "display-crane-01",
+              "show": true
+            },
+            {
+              "id": "display-crane-02",
+              "show": true
+            },
+            {
+              "id": "display-pile-03",
+              "show": true
+            }
+          ],
+          "railIds": [
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:area",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:station",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:station:label",
+            "rail-safety:machine:display-crane-01:envelope",
+            "rail-safety:machine:display-crane-01:support",
+            "rail-safety:machine:display-crane-01:farthest",
+            "rail-safety:machine:display-crane-01:radius",
+            "rail-safety:machine:display-crane-01:intersection:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:0",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:position",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:work-area",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:work-area:label",
+            "rail-safety:limit:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:area",
+            "rail-safety:limit:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:wall",
+            "rail-safety:limit:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:name"
+          ],
+          "railLabels": [],
+          "wall": {
+            "minimumHeights": [
+              12.06,
+              12.54,
+              15.54,
+              15.06,
+              12.06
+            ],
+            "maximumHeights": [
+              20.060000000000002,
+              20.54,
+              23.54,
+              23.060000000000002,
+              20.060000000000002
+            ],
+            "alpha": 0.35
+          },
+          "markups": [
+            {
+              "id": "497c2cad-d599-47ca-9e66-02fffdf6bd4d",
+              "name": "验收标绘标签",
+              "show": true,
+              "label": false
+            },
+            {
+              "id": "24d19fcd-7930-401c-afab-228d75d154b8",
+              "name": "验收文字正文",
+              "show": true,
+              "label": true
+            }
+          ]
+        },
+        "shown": {
+          "machines": [
+            {
+              "id": "display-crane-01",
+              "show": true
+            },
+            {
+              "id": "display-crane-02",
+              "show": true
+            },
+            {
+              "id": "display-pile-03",
+              "show": true
+            }
+          ],
+          "railIds": [
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:area",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:station",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:station:label",
+            "rail-safety:machine:display-crane-01:envelope",
+            "rail-safety:machine:display-crane-01:support",
+            "rail-safety:machine:display-crane-01:farthest",
+            "rail-safety:machine:display-crane-01:radius",
+            "rail-safety:machine:display-crane-01:intersection:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:0",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:position",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:work-area",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:work-area:label",
+            "rail-safety:limit:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:area",
+            "rail-safety:limit:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:wall",
+            "rail-safety:limit:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:name"
+          ],
+          "railLabels": [
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:station:label",
+            "rail-safety:machine:display-crane-01:farthest",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:position",
+            "rail-safety:guard:1b52fa3a-0b9d-409b-9535-6e75b03c58b5:work-area:label",
+            "rail-safety:limit:f9e6a59c-b0ba-4952-85ea-5f87ea60670b:name"
+          ],
+          "wall": {
+            "minimumHeights": [
+              12.06,
+              12.54,
+              15.54,
+              15.06,
+              12.06
+            ],
+            "maximumHeights": [
+              20.060000000000002,
+              20.54,
+              23.54,
+              23.060000000000002,
+              20.060000000000002
+            ],
+            "alpha": 0.35
+          },
+          "markups": [
+            {
+              "id": "497c2cad-d599-47ca-9e66-02fffdf6bd4d",
+              "name": "验收标绘标签",
+              "show": true,
+              "label": true
+            },
+            {
+              "id": "24d19fcd-7930-401c-afab-228d75d154b8",
+              "name": "验收文字正文",
+              "show": true,
+              "label": true
+            }
+          ]
+        },
+        "textMarkupBodyRetained": true
+      }
+    },
+    {
+      "id": "display-editor-switch-preserves-unsaved-drafts",
+      "status": "passed",
+      "evidence": {
+        "railDraftPreserved": true,
+        "machineDraftPreserved": true,
+        "businessWrites": 0
+      }
+    },
+    {
+      "id": "existing-work-area-and-fall-demo-remain-operable",
+      "status": "passed",
+      "evidence": {
+        "inside": {
+          "state": "inside",
+          "text": "工作区内",
+          "role": "status",
+          "summary": "人员定位：实测越界 0 · 模拟越界 0 · 待核实 0"
+        },
+        "demoReady": true,
+        "sourcePartCount": 12,
+        "originalPoseUnchanged": true
+      }
+    },
+    {
+      "id": "management-access-revocation-cannot-be-overridden",
+      "status": "passed",
+      "evidence": {
+        "sameLoadedTileset": true,
+        "logoutHides": true,
+        "noModelsAccountCatalogAbsent": true,
+        "showAllCannotRevive": true,
+        "showAllDispatchedWhileWorkbenchInaccessible": true,
+        "ownerRestored": true
+      }
+    },
+    {
+      "id": "refresh-and-real-account-isolate-personal-preferences",
+      "status": "passed",
+      "evidence": {
+        "ownerId": "138b6d98-55b5-4c27-b20a-439a9ffef6ab",
+        "readerId": "81a5cec2-7ba9-48e8-91d5-7b152fc8ccf2",
+        "ownerPreferences": {
+          "version": 1,
+          "overrides": {
+            "machine:display-crane-01": false,
+            "rail:limit:aea160d0-d6af-4744-a2f5-1e4a83fb58a4": false,
+            "machine:display-pile-03": false
+          },
+          "labelsVisible": false,
+          "groups": [
+            {
+              "id": "display-group:ee894933-0f5e-49fe-999f-f54af0bc3518",
+              "name": "隔离权限复验组合",
+              "members": [
+                "machine:display-crane-01",
+                "rail:limit:aea160d0-d6af-4744-a2f5-1e4a83fb58a4",
+                "machine:display-pile-03"
+              ]
+            }
+          ],
+          "view": "groups",
+          "collapsedCategories": []
+        },
+        "readerPreferences": null,
+        "ownerWall": {
+          "representation": "both",
+          "wallHeight": 8,
+          "wallOpacity": 0.22
+        },
+        "restored": true,
+        "pageErrors": [],
+        "consoleErrors": []
+      }
+    }
+  ],
+  "unexpectedPageErrors": [],
+  "unexpectedConsoleErrors": [],
+  "expectedAuthErrors": [
+    {
+      "check": "management-access-revocation-cannot-be-overridden",
+      "message": "Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "url": "http://127.0.0.1:5195/__management/state?projectId=safety%3Aproject"
+    }
+  ],
+  "displayGeneratedBusinessCommands": 0,
+  "fixtureBusinessCommands": [
+    {
+      "type": "railSafety.save",
+      "count": 3,
+      "purpose": "Create the guard, create the limit, and save the machine-limit association in each isolated run"
+    }
+  ],
+  "screenshotsReviewedLocally": [
+    "output/scene-display/01-right-dock-1366.png",
+    "output/scene-display/02-sloped-transparent-limit-wall.png"
+  ],
+  "screenshotsCommitted": false,
+  "coverageNotes": [
+    "Core run loaded a890718. The subsequent fc87fb7 change only adjusted limit-display tab layout and the global label caption; the access follow-up loaded fc87fb7. The parent separately passed the final production build and 85 CPU regressions.",
+    "Real UI logout activates the existing management access gate. Subsequent logins use the real session HTTP API followed by the real management refresh. The login form itself is not claimed as a passed check.",
+    "A no-models account cannot navigate back to the workbench under the existing permissions. Its hidden workbench show-all button received a DOM click as a defensive check; navigation and authorization were not bypassed.",
+    "Wheel reachability uses actual mouse-wheel input, waits for the list scroll position, and checks elementFromPoint. It does not use scrollIntoView to satisfy the reachability assertion.",
+    "Actual Model visibility and WallGraphics geometry are supplemented with ready Cesium primitive observations and canvas-pixel comparisons.",
+    "The original-saved-hidden imported-model picking scenario and project-switch preference isolation were not separate browser checks. The tested account isolation uses one project.",
+    "The synthetic scene is not a surveyed site. Known tiny draped-line residuals were not reinvestigated. Foundation-pit label behavior and IME composition were not separate browser checks in this suite."
+  ]
+}

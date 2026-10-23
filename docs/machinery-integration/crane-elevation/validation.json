@@ -1,0 +1,615 @@
+{
+  "classification": "actual-original-workbench-crane-elevation-with-isolated-test-data",
+  "renderer": "Real Chromium WebGL2; software renderer when supplied launch options select SwiftShader",
+  "startedAt": "2026-10-13T05:38:50.220Z",
+  "dataDir": "isolated tmp/crane-elevation-*; no production project data",
+  "checks": [
+    {
+      "id": "source-default",
+      "title": "Original crane shape and source elevation remain unchanged by default",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:38:50.859Z",
+      "evidence": {
+        "url": "http://127.0.0.1:5173/",
+        "recordId": "equipment:497d8db3-a4a2-4c35-aeca-29cfc86e2004",
+        "originalElevation": 69.80598827502023,
+        "geometry": {
+          "positionsHash": "6067315aa1eec839507df0659146d3c99ea9785661b369c7d2da8155a11e8962",
+          "positionValues": 515898,
+          "parameters": {
+            "overall_scale": 5,
+            "overall_height_m": 16.18057562479438,
+            "body_height_m": 1.7198410515103113,
+            "boom_length_m": 15.329502801881226,
+            "outrigger_lateral_m": 2.8999999999999613,
+            "outrigger_longitudinal_m": 2.376000125408171,
+            "boom_rotation_deg": 0,
+            "boom_elevation_deg": 69.80598827502023
+          },
+          "placement": [
+            -2177728.9822633746,
+            4388737.413722875,
+            4070069.9083933877
+          ],
+          "orientation": [
+            0.21611162306610093,
+            -0.3640385824779608,
+            -0.9034089939285802,
+            -0.06799901861146883
+          ],
+          "maxExportError": 0,
+          "mappedPositionValues": 515898,
+          "exportedVertices": 40595,
+          "measuredElevationDeg": 69.80598853433287,
+          "angleMeasurement": {
+            "indices": [
+              37347,
+              40508
+            ],
+            "sourceParallelError": 1.6135547197240507e-08
+          },
+          "hanging": {
+            "verticesCompared": 1269,
+            "rigidTranslationErrorM": 6.106809547895201e-07,
+            "meaning": "Hanging hook/block preserves its original upright orientation after pitch; yaw and scale are accounted for"
+          },
+          "hydraulics": [
+            {
+              "fixedBase": [
+                0.024100298086473515,
+                0.868340748987795,
+                0.35421489525851224
+              ],
+              "movingUpperPin": [
+                0.48702194809913113,
+                1.8690420554223566,
+                -0.4738452665416959
+              ],
+              "pinDistanceM": 1.3789065197869166,
+              "barrelCompared": 333,
+              "rodCompared": 168,
+              "barrelRigidityErrorM": 5.242604306232579e-08,
+              "rodRigidityErrorM": 5.047387476031506e-08
+            },
+            {
+              "fixedBase": [
+                -0.2857711184314482,
+                0.8683407902080156,
+                0.18102992672257456
+              ],
+              "movingUpperPin": [
+                0.1769608875115658,
+                1.8690420836550352,
+                -0.6471362058727503
+              ],
+              "pinDistanceM": 1.3789064983560273,
+              "barrelCompared": 329,
+              "rodCompared": 172,
+              "barrelRigidityErrorM": 5.338122524567446e-08,
+              "rodRigidityErrorM": 5.4150708528322156e-08
+            }
+          ],
+          "actualHeightM": 16.18057632446289,
+          "lowestModelYM": 0,
+          "heightErrorM": 6.996685115723267e-07,
+          "camera": [
+            [
+              -2177769.7473761756,
+              4388757.2601513,
+              4070057.066829234
+            ],
+            [
+              0.8604292842110247,
+              -0.34941278069165616,
+              0.37090720613305483
+            ],
+            [
+              -0.0907445653559923,
+              0.6111811737003963,
+              0.7862715795274291
+            ]
+          ],
+          "sourceDefaultMaxError": 0
+        }
+      },
+      "finishedAt": "2026-10-13T05:39:09.956Z"
+    },
+    {
+      "id": "elevation-30",
+      "title": "Actual boom geometry reaches 30° while cab, chassis and station remain fixed",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:39:09.957Z",
+      "evidence": {
+        "positionsHash": "c55d777a9a44bb56049a9d855f5c5ab7b7e5db68cc4b162e89ef4934d773d7e5",
+        "positionValues": 515898,
+        "parameters": {
+          "overall_scale": 5,
+          "overall_height_m": 9.397000961561984,
+          "body_height_m": 1.7198410515103113,
+          "boom_length_m": 15.329502801881226,
+          "outrigger_lateral_m": 2.8999999999999613,
+          "outrigger_longitudinal_m": 2.376000125408171,
+          "boom_rotation_deg": 0,
+          "boom_elevation_deg": 30
+        },
+        "placement": [
+          -2177728.9822633746,
+          4388737.413722875,
+          4070069.9083933877
+        ],
+        "orientation": [
+          0.21611162306610093,
+          -0.3640385824779608,
+          -0.9034089939285802,
+          -0.06799901861146883
+        ],
+        "maxExportError": 0,
+        "mappedPositionValues": 515898,
+        "exportedVertices": 40595,
+        "measuredElevationDeg": 29.99999770040237,
+        "angleMeasurement": {
+          "indices": [
+            37347,
+            40508
+          ],
+          "sourceParallelError": 1.6135547197240507e-08
+        },
+        "hanging": {
+          "verticesCompared": 1269,
+          "rigidTranslationErrorM": 9.73797040579888e-07,
+          "meaning": "Hanging hook/block preserves its original upright orientation after pitch; yaw and scale are accounted for"
+        },
+        "hydraulics": [
+          {
+            "fixedBase": [
+              0.024100298086473515,
+              0.868340748987795,
+              0.35421489525851224
+            ],
+            "movingUpperPin": [
+              0.3745157101641272,
+              1.6675839211268848,
+              -0.2725432654755078
+            ],
+            "pinDistanceM": 1.0744330603993897,
+            "barrelCompared": 333,
+            "rodCompared": 168,
+            "barrelRigidityErrorM": 5.629586583011381e-08,
+            "rodRigidityErrorM": 5.944435202409615e-08
+          },
+          {
+            "fixedBase": [
+              -0.2857711184314482,
+              0.8683407902080156,
+              0.18102992672257456
+            ],
+            "movingUpperPin": [
+              0.06445463615079028,
+              1.6675839689030285,
+              -0.4458341807844757
+            ],
+            "pinDistanceM": 1.074433035206856,
+            "barrelCompared": 329,
+            "rodCompared": 172,
+            "barrelRigidityErrorM": 5.066107028328659e-08,
+            "rodRigidityErrorM": 5.017788403532952e-08
+          }
+        ],
+        "actualHeightM": 9.397001266479492,
+        "lowestModelYM": 0,
+        "heightErrorM": 3.049175081315525e-07,
+        "camera": [
+          [
+            -2177769.7473761756,
+            4388757.2601513,
+            4070057.066829234
+          ],
+          [
+            0.8604292842110247,
+            -0.34941278069165616,
+            0.37090720613305483
+          ],
+          [
+            -0.0907445653559923,
+            0.6111811737003963,
+            0.7862715795274291
+          ]
+        ],
+        "sourceDefaultMaxError": 7.166259765625,
+        "comparison": {
+          "fixedCompared": 30849,
+          "movingCompared": 9746,
+          "fixedMaxDelta": 0,
+          "movingMaxDelta": 10.653394653570404
+        }
+      },
+      "finishedAt": "2026-10-13T05:39:16.046Z"
+    },
+    {
+      "id": "elevation-60",
+      "title": "Actual boom geometry reaches 60° with vertical hook and updated actual height",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:39:16.046Z",
+      "evidence": {
+        "positionsHash": "a5b9876176e34ebb7fce555146d344a730f5d9729ba64a30dcbf1107609c7d57",
+        "positionValues": 515898,
+        "parameters": {
+          "overall_scale": 5,
+          "overall_height_m": 15.067872413230376,
+          "body_height_m": 1.7198410515103113,
+          "boom_length_m": 15.329502801881226,
+          "outrigger_lateral_m": 2.8999999999999613,
+          "outrigger_longitudinal_m": 2.376000125408171,
+          "boom_rotation_deg": 0,
+          "boom_elevation_deg": 60
+        },
+        "placement": [
+          -2177728.9822633746,
+          4388737.413722875,
+          4070069.9083933877
+        ],
+        "orientation": [
+          0.21611162306610093,
+          -0.3640385824779608,
+          -0.9034089939285802,
+          -0.06799901861146883
+        ],
+        "maxExportError": 0,
+        "mappedPositionValues": 515898,
+        "exportedVertices": 40595,
+        "measuredElevationDeg": 59.99999470340678,
+        "angleMeasurement": {
+          "indices": [
+            37347,
+            40508
+          ],
+          "sourceParallelError": 1.6135547197240507e-08
+        },
+        "hanging": {
+          "verticesCompared": 1269,
+          "rigidTranslationErrorM": 6.578829297076033e-07,
+          "meaning": "Hanging hook/block preserves its original upright orientation after pitch; yaw and scale are accounted for"
+        },
+        "hydraulics": [
+          {
+            "fixedBase": [
+              0.024100298086473515,
+              0.868340748987795,
+              0.35421489525851224
+            ],
+            "movingUpperPin": [
+              0.453351742455963,
+              1.8351717171755688,
+              -0.41360078679830825
+            ],
+            "pinDistanceM": 1.3071189101044256,
+            "barrelCompared": 333,
+            "rodCompared": 168,
+            "barrelRigidityErrorM": 4.8742029412629506e-08,
+            "rodRigidityErrorM": 5.6493895839171415e-08
+          },
+          {
+            "fixedBase": [
+              -0.2857711184314482,
+              0.8683407902080156,
+              0.18102992672257456
+            ],
+            "movingUpperPin": [
+              0.1432906792320976,
+              1.8351717519358954,
+              -0.5868917214123581
+            ],
+            "pinDistanceM": 1.307118889942381,
+            "barrelCompared": 329,
+            "rodCompared": 172,
+            "barrelRigidityErrorM": 5.0924026218091e-08,
+            "rodRigidityErrorM": 5.180510410235373e-08
+          }
+        ],
+        "actualHeightM": 15.067872047424316,
+        "lowestModelYM": 0,
+        "heightErrorM": 3.6580605922154064e-07,
+        "camera": [
+          [
+            -2177769.7473761756,
+            4388757.2601513,
+            4070057.066829234
+          ],
+          [
+            0.8604292842110247,
+            -0.34941278069165616,
+            0.37090720613305483
+          ],
+          [
+            -0.0907445653559923,
+            0.6111811737003963,
+            0.7862715795274291
+          ]
+        ],
+        "sourceDefaultMaxError": 2.1227774620056152,
+        "comparison": {
+          "fixedCompared": 30849,
+          "movingCompared": 9746,
+          "fixedMaxDelta": 0,
+          "movingMaxDelta": 2.6746713123219856
+        }
+      },
+      "finishedAt": "2026-10-13T05:39:22.829Z"
+    },
+    {
+      "id": "save-reload",
+      "title": "Saved elevation and exact mesh survive root reload",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:39:22.829Z",
+      "evidence": {
+        "persistedState": {
+          "schemaVersion": 1,
+          "assetId": "crane",
+          "assetVersion": "2026-10-13-v1",
+          "proportional": true,
+          "parameters": {
+            "overall_scale": 5,
+            "overall_height_m": 15.067872413230376,
+            "body_height_m": 1.7198410515103113,
+            "boom_length_m": 15.329502801881226,
+            "boom_rotation_deg": 0,
+            "boom_elevation_deg": 60,
+            "outrigger_lateral_m": 2.8999999999999613,
+            "outrigger_longitudinal_m": 2.376000125408171
+          },
+          "placement": {
+            "longitude": 116.391,
+            "latitude": 39.907,
+            "height": 0,
+            "heading": 35
+          },
+          "visible": true
+        },
+        "geometryHashAfterReload": "a5b9876176e34ebb7fce555146d344a730f5d9729ba64a30dcbf1107609c7d57"
+      },
+      "finishedAt": "2026-10-13T05:39:36.178Z"
+    },
+    {
+      "id": "cancel",
+      "title": "Cancelling after preview and before debounce restores exact saved mesh",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:39:36.179Z",
+      "evidence": {
+        "rejectedAngle": 20,
+        "restoredAngle": 60,
+        "restoredHash": "a5b9876176e34ebb7fce555146d344a730f5d9729ba64a30dcbf1107609c7d57",
+        "immediateCancelDraftAngle": 45,
+        "immediateCancelRestoredHash": "a5b9876176e34ebb7fce555146d344a730f5d9729ba64a30dcbf1107609c7d57"
+      },
+      "finishedAt": "2026-10-13T05:39:38.963Z"
+    },
+    {
+      "id": "combined-pose",
+      "title": "Boom length, elevation, slewing and overall scale combine without losing angles",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:39:38.963Z",
+      "evidence": {
+        "state": {
+          "schemaVersion": 1,
+          "assetId": "crane",
+          "assetVersion": "2026-10-13-v1",
+          "proportional": false,
+          "parameters": {
+            "overall_scale": 6,
+            "overall_height_m": 13.115941490100125,
+            "body_height_m": 2.0638092618123736,
+            "boom_length_m": 22.074484034708966,
+            "boom_rotation_deg": 75,
+            "boom_elevation_deg": 30,
+            "outrigger_lateral_m": 3.4799999999999534,
+            "outrigger_longitudinal_m": 2.851200150489805
+          },
+          "placement": {
+            "longitude": 116.391,
+            "latitude": 39.907,
+            "height": 0,
+            "heading": 35
+          },
+          "visible": true
+        },
+        "geometry": {
+          "positionsHash": "37264fea58f067b5f3bb204279e81d0c5d515a559ceca830e9c21074510fd8fd",
+          "positionValues": 515898,
+          "parameters": {
+            "overall_scale": 6,
+            "overall_height_m": 13.115941490100125,
+            "body_height_m": 2.0638092618123736,
+            "boom_length_m": 22.074484034708966,
+            "outrigger_lateral_m": 3.4799999999999534,
+            "outrigger_longitudinal_m": 2.851200150489805,
+            "boom_rotation_deg": 75,
+            "boom_elevation_deg": 30
+          },
+          "placement": [
+            -2177728.9822633746,
+            4388737.413722875,
+            4070069.9083933877
+          ],
+          "orientation": [
+            0.21611162306610093,
+            -0.3640385824779608,
+            -0.9034089939285802,
+            -0.06799901861146883
+          ],
+          "maxExportError": 0,
+          "mappedPositionValues": 515898,
+          "exportedVertices": 40592,
+          "measuredElevationDeg": 29.999995991253634,
+          "angleMeasurement": {
+            "indices": [
+              37347,
+              40508
+            ],
+            "sourceParallelError": 1.6135547197240507e-08
+          },
+          "hanging": {
+            "verticesCompared": 1269,
+            "rigidTranslationErrorM": 1.4698759518902033e-06,
+            "meaning": "Hanging hook/block preserves its original upright orientation after pitch; yaw and scale are accounted for"
+          },
+          "hydraulics": [
+            {
+              "fixedBase": [
+                -0.38642206287051556,
+                1.0420088987853542,
+                0.11622718274990304
+              ],
+              "movingUpperPin": [
+                0.4488932290897679,
+                2.0011007053522616,
+                0.3277372000908719
+              ],
+              "pinDistanceM": 1.2893196724792673,
+              "barrelCompared": 333,
+              "rodCompared": 168,
+              "barrelRigidityErrorM": 5.415694759314249e-08,
+              "rodRigidityErrorM": 9.140086040804185e-08
+            },
+            {
+              "fixedBase": [
+                -0.2819222112230901,
+                1.0420089482496189,
+                -0.29673646392131986
+              ],
+              "movingUpperPin": [
+                0.5534569804400999,
+                2.0011007626836346,
+                -0.08547918591906883
+              ],
+              "pinDistanceM": 1.2893196422482276,
+              "barrelCompared": 329,
+              "rodCompared": 172,
+              "barrelRigidityErrorM": 5.702353592096365e-08,
+              "rodRigidityErrorM": 8.327038054922742e-08
+            }
+          ],
+          "actualHeightM": 13.115941047668457,
+          "lowestModelYM": 0,
+          "heightErrorM": 4.4243166819057933e-07,
+          "camera": [
+            [
+              -2177758.624248906,
+              4388792.459009393,
+              4070048.5135837803
+            ],
+            [
+              0.40508242364067465,
+              -0.8163543316245636,
+              0.4116719996492463
+            ],
+            [
+              -0.18298608657808957,
+              0.3687681214720786,
+              0.9113320825609018
+            ]
+          ],
+          "sourceDefaultMaxError": 15.389463901519775,
+          "comparison": {
+            "fixedCompared": 30846,
+            "movingCompared": 9746,
+            "fixedMaxDelta": 0,
+            "movingMaxDelta": 11.623776314554117
+          }
+        }
+      },
+      "finishedAt": "2026-10-13T05:39:54.532Z"
+    },
+    {
+      "id": "height-reset",
+      "title": "Height editing is accurate and restoring dimensions retains both angles",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:39:54.532Z",
+      "evidence": {
+        "requestedHeightM": 12,
+        "actualHeightM": 12,
+        "originalDimensionReset": {
+          "overall_scale": 1,
+          "overall_height_m": 1.8794001923123969,
+          "body_height_m": 0.34396821030206226,
+          "boom_length_m": 3.065900560376245,
+          "outrigger_lateral_m": 0.5799999999999923,
+          "outrigger_longitudinal_m": 0.47520002508163417,
+          "boom_rotation_deg": 75,
+          "boom_elevation_deg": 30
+        },
+        "elevationResetPreservesOtherParameters": true,
+        "elevationResetAngle": 69.80598827502023
+      },
+      "finishedAt": "2026-10-13T05:39:59.772Z"
+    },
+    {
+      "id": "slider-bounds",
+      "title": "Actual slider stays within 0°..90° and final rapid input is rendered",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:39:59.773Z",
+      "evidence": {
+        "minimum": 0,
+        "maximum": 90,
+        "horizontalHookLowestYM": -1.187144160270691,
+        "groundAnchorWarningVisible": true,
+        "horizontalLocate": {
+          "cameraRangeM": 88.29793613792013,
+          "sphereRadiusM": 13.3903175257028
+        },
+        "finalAngle": 2.5,
+        "finalMeasuredAngle": 2.4999995852872403
+      },
+      "finishedAt": "2026-10-13T05:40:10.114Z"
+    },
+    {
+      "id": "single-runtime",
+      "title": "Original Viewer stays unique and produces no uncaught browser errors",
+      "status": "passed",
+      "startedAt": "2026-10-13T05:40:10.115Z",
+      "evidence": {
+        "sameViewer": true,
+        "safetySameViewer": true,
+        "sourceCount": 1,
+        "renderLoop": true,
+        "recordCount": 1
+      },
+      "finishedAt": "2026-10-13T05:40:10.131Z"
+    }
+  ],
+  "screenshots": [
+    "01-crane-source-elevation.png",
+    "02-crane-elevation-30.png",
+    "03-crane-elevation-60.png"
+  ],
+  "videos": [
+    "crane-elevation-actual-operation.mp4"
+  ],
+  "pageErrors": [],
+  "consoleErrors": [],
+  "origin": "http://127.0.0.1:5173",
+  "resourceId": "equipment:497d8db3-a4a2-4c35-aeca-29cfc86e2004",
+  "result": "passed",
+  "finishedAt": "2026-10-13T05:40:13.426Z",
+  "videoExport": {
+    "source": "Playwright recordVideo from the actual acceptance session",
+    "encoding": "H.264 MP4,1280×800,25fps,CRF28,faststart",
+    "durationSeconds": 81.16,
+    "byteLength": 899640,
+    "transformation": "Full recording transcoded/resized only; no inserted frames or reconstructed scenes"
+  },
+  "nodeVerification": {
+    "passed": 70,
+    "geometry": 24,
+    "integration": 10,
+    "server": 36
+  },
+  "productionBuild": {
+    "typescript": "passed",
+    "vite": "passed"
+  },
+  "reproducibleAssets": {
+    "manifests": 3,
+    "binaryChunks": 11,
+    "allByteIdentical": true
+  }
+}

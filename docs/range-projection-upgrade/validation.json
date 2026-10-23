@@ -1,0 +1,1008 @@
+{
+  "classification": "cumulative-focused-real-webgl-acceptance",
+  "result": "passed",
+  "passedChecks": 6,
+  "productCommit": "4c946b9",
+  "verificationDate": "2026-10-14",
+  "execution": "Three segmented runs of the same frozen product version; only harness assertions and observation traversal changed between runs.",
+  "browserVersion": "153.0.8010.0",
+  "renderer": "Chromium with SwiftShader software WebGL",
+  "viewport": {
+    "width": 1366,
+    "height": 768
+  },
+  "origin": "http://127.0.0.1:5196",
+  "productionDataReadOrModified": false,
+  "fixture": {
+    "location": {
+      "longitude": 116.391,
+      "latitude": 39.907
+    },
+    "width": 100,
+    "depth": 100,
+    "heightFormula": "12 + 0.12 * east + 0.06 * north (metres)",
+    "limitations": [
+      "Synthetic 3D Tiles geometry; not a surveyed site or accuracy certification",
+      "Software WebGL renderer when supplied launch options use SwiftShader"
+    ]
+  },
+  "runs": [
+    {
+      "report": "output/range-projection/report.json",
+      "startedAt": "2026-10-14T04:16:28.628Z",
+      "finishedAt": "2026-10-14T04:19:23.319Z",
+      "rawResult": "failed",
+      "retainedPassedChecks": [
+        "six-colors-update-real-materials-and-legend",
+        "colors-persist-on-refresh-in-actor-project-scope"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [],
+      "note": "First run retained two passing checks. Later assertion incorrectly required exact RGB for translucent canvas pixels; corrected to exact opaque outline RGB and alpha-bounded premultiplication quantization tolerance ceil(255/(2*alpha)) for nonzero translucent pixels. No product change."
+    },
+    {
+      "report": "output/range-projection-geometry/report.json",
+      "startedAt": "2026-10-14T04:21:49.752Z",
+      "finishedAt": "2026-10-14T04:25:05.618Z",
+      "rawResult": "failed",
+      "retainedPassedChecks": [
+        "continuous-17-and-23-degree-poses-and-mobile-scroll"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [],
+      "note": "Second run retained the passing continuous-direction and scrolling check. Its GPU observation omitted OrderedGroundPrimitiveCollection._collectionsArray; corrected traversal across both regular and ground primitive collections. No product change."
+    },
+    {
+      "report": "output/range-projection-final/report.json",
+      "startedAt": "2026-10-14T04:27:10.902Z",
+      "finishedAt": "2026-10-14T04:31:54.676Z",
+      "rawResult": "passed",
+      "retainedPassedChecks": [
+        "angle-masks-and-real-model-stay-synchronized",
+        "representation-and-right-group-control-projection",
+        "exit-cleans-projection-and-preserves-business-and-original"
+      ],
+      "pageErrors": [],
+      "consoleErrors": [],
+      "note": "Final focused run executed and passed the remaining three checks, including playback/pause, presentation/group visibility, and exit cleanup. This is cumulative acceptance across three runs of the same frozen product, not a single complete passing execution."
+    }
+  ],
+  "checks": [
+    {
+      "id": "six-colors-update-real-materials-and-legend",
+      "status": "passed",
+      "evidence": {
+        "colors": {
+          "responsibility": "#167dff",
+          "workArea": "#12d887",
+          "limit": "#a45bff",
+          "envelope": "#ff7900",
+          "risk": "#ff1456",
+          "support": "#b9d5ec"
+        },
+        "materials": {
+          "responsibility": {
+            "id": "rail-safety:guard:65305c51-1cf2-4acb-bc3b-e1b760489b27:area",
+            "fill": "#167dff",
+            "alpha": 0.25,
+            "line": "#167dff"
+          },
+          "workArea": {
+            "id": "rail-safety:guard:65305c51-1cf2-4acb-bc3b-e1b760489b27:work-area",
+            "fill": "#12d887",
+            "alpha": 0.25,
+            "line": "#12d887"
+          },
+          "limit": {
+            "id": "rail-safety:limit:a9091439-7748-474d-803d-0d5285a48f41:area",
+            "fill": "#a45bff",
+            "alpha": 0.16,
+            "line": "#a45bff"
+          },
+          "envelope": {
+            "id": "rail-safety:machine:projection-crane-01:envelope",
+            "fill": "#ff7900",
+            "alpha": 0.22,
+            "line": "#ff7900"
+          },
+          "support": {
+            "id": "rail-safety:machine:projection-crane-01:support",
+            "fill": "#b9d5ec",
+            "alpha": 0.11,
+            "line": "#b9d5ec"
+          },
+          "risk": {
+            "id": "rail-safety:machine:projection-crane-01:intersection:a9091439-7748-474d-803d-0d5285a48f41:0",
+            "fill": "#ff1456",
+            "alpha": 0.48,
+            "line": "#ff1456"
+          }
+        },
+        "legend": {
+          "limit": "rgb(164, 91, 255)",
+          "responsibility": "rgb(22, 125, 255)",
+          "envelope": "rgb(255, 121, 0)",
+          "risk": "rgb(255, 20, 86)",
+          "workArea": "rgb(18, 216, 135)",
+          "support": "rgb(185, 213, 236)"
+        },
+        "recordsAndRiskUnchanged": true
+      },
+      "evidenceRun": "output/range-projection/report.json"
+    },
+    {
+      "id": "colors-persist-on-refresh-in-actor-project-scope",
+      "status": "passed",
+      "evidence": {
+        "owner": "6ad11968-3c4a-4c38-ad36-40fee8b61d70",
+        "projectId": "safety:project",
+        "storageKey": "rail-safety-display:v1:[\"safety:project\",\"6ad11968-3c4a-4c38-ad36-40fee8b61d70\"]",
+        "restoredColors": {
+          "responsibility": "#167dff",
+          "workArea": "#12d887",
+          "limit": "#a45bff",
+          "envelope": "#ff7900",
+          "risk": "#ff1456",
+          "support": "#b9d5ec"
+        }
+      },
+      "evidenceRun": "output/range-projection/report.json"
+    },
+    {
+      "id": "continuous-17-and-23-degree-poses-and-mobile-scroll",
+      "status": "passed",
+      "evidence": {
+        "viewport": {
+          "width": 1366,
+          "height": 768
+        },
+        "parameterHits": [
+          {
+            "parameter": "direction",
+            "x": 1156.5,
+            "y": 543.078125,
+            "hit": true
+          },
+          {
+            "parameter": "angle",
+            "x": 1156.5,
+            "y": 592.578125,
+            "hit": true
+          }
+        ],
+        "at17": {
+          "state": {
+            "active": true,
+            "loading": false,
+            "direction": 17,
+            "angle": 30,
+            "playing": false,
+            "maxAngle": 90,
+            "modelCreated": true,
+            "sourcePartCount": 12,
+            "sourceTriangleCount": 57483,
+            "entityIds": [
+              "rail-safety:fall-demo:projection-crane-01:model",
+              "rail-safety:fall-demo:projection-crane-01:pivot",
+              "rail-safety:fall-demo:projection-crane-01:footprint"
+            ],
+            "projectionReady": true,
+            "projectionBusy": false,
+            "resourceId": "projection-crane-01",
+            "resourceName": "连续方位投影验收吊机",
+            "actualDirection": 17,
+            "projectionAngle": 30,
+            "projectionDirection": 17,
+            "projectionCellSizeMeters": 0.1,
+            "projectionAreaMeters2": 5.210000000000001,
+            "firstContactAngle": 9.277127885917032e-07,
+            "belowGround": true
+          },
+          "model": {
+            "id": "rail-safety:fall-demo:projection-crane-01:model",
+            "matrix": [
+              -0.8463595507461088,
+              -0.5183287294717401,
+              -0.12251872944597658,
+              0,
+              0.44681343505488225,
+              -0.8161790940082767,
+              0.36634606693437444,
+              0,
+              -0.2898849170193257,
+              0.2553174782658645,
+              0.9223772114361122,
+              0,
+              -2177739.807852572,
+              4388743.372517011,
+              4070078.5634081787,
+              1
+            ],
+            "uri": "blob:http://127.0.0.1:5196/b242c5de-3653-4c07-af13-f4fb75d06cd6"
+          },
+          "primitives": [
+            {
+              "id": "rail-safety:fall-demo:projection-crane-01:model",
+              "ready": true,
+              "show": true,
+              "type": "Model"
+            }
+          ],
+          "mask": {
+            "width": 53,
+            "height": 45,
+            "hash": "d49c8b0",
+            "occupied": 521,
+            "emptyInsideConvexHull": 666,
+            "bounds": {
+              "xMin": -1.0647534164766879,
+              "yMin": -0.7730269407252701,
+              "xMax": 4.235246583523313,
+              "yMax": 3.72697305927473
+            },
+            "cellSizeMeters": 0.1,
+            "areaMeters2": 5.210000000000001,
+            "direction": 17,
+            "angle": 30
+          },
+          "texture": {
+            "occupied": 521,
+            "colors": [
+              "#ff7900",
+              "#ff7b00"
+            ],
+            "opaqueColors": [
+              "#ff7900"
+            ],
+            "maxFillChannelError": 2,
+            "fillToleranceMax": 3,
+            "colorViolations": 0
+          },
+          "footprint": {
+            "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+            "show": true,
+            "classification": 2
+          },
+          "measuredPose": {
+            "angle": 29.999999999999993,
+            "direction": 17
+          },
+          "footprintPrimitives": []
+        },
+        "at23": {
+          "state": {
+            "active": true,
+            "loading": false,
+            "direction": 23,
+            "angle": 30,
+            "playing": false,
+            "maxAngle": 90,
+            "modelCreated": true,
+            "sourcePartCount": 12,
+            "sourceTriangleCount": 57483,
+            "entityIds": [
+              "rail-safety:fall-demo:projection-crane-01:model",
+              "rail-safety:fall-demo:projection-crane-01:pivot",
+              "rail-safety:fall-demo:projection-crane-01:footprint"
+            ],
+            "projectionReady": true,
+            "projectionBusy": false,
+            "resourceId": "projection-crane-01",
+            "resourceName": "连续方位投影验收吊机",
+            "actualDirection": 23,
+            "projectionAngle": 30,
+            "projectionDirection": 23,
+            "projectionCellSizeMeters": 0.1,
+            "projectionAreaMeters2": 5.350000000000001,
+            "firstContactAngle": 1.0892971048469004e-06,
+            "belowGround": true
+          },
+          "model": {
+            "id": "rail-safety:fall-demo:projection-crane-01:model",
+            "matrix": [
+              -0.8245865269311514,
+              -0.5419558625865991,
+              -0.1622988065625768,
+              0,
+              0.452886866093378,
+              -0.8042839432195938,
+              0.3847347465452787,
+              0,
+              -0.3390435755529665,
+              0.2437440905686874,
+              0.9086463955737145,
+              0,
+              -2177739.833002285,
+              4388743.385885817,
+              4070078.5871509146,
+              1
+            ],
+            "uri": "blob:http://127.0.0.1:5196/b242c5de-3653-4c07-af13-f4fb75d06cd6"
+          },
+          "primitives": [
+            {
+              "id": "rail-safety:fall-demo:projection-crane-01:model",
+              "ready": true,
+              "show": true,
+              "type": "Model"
+            }
+          ],
+          "mask": {
+            "width": 57,
+            "height": 43,
+            "hash": "eef8d16",
+            "occupied": 535,
+            "emptyInsideConvexHull": 713,
+            "bounds": {
+              "xMin": -1.017145907196073,
+              "yMin": -0.7835728155068657,
+              "xMax": 4.682854092803927,
+              "yMax": 3.516427184493134
+            },
+            "cellSizeMeters": 0.1,
+            "areaMeters2": 5.350000000000001,
+            "direction": 23,
+            "angle": 30
+          },
+          "texture": {
+            "occupied": 535,
+            "colors": [
+              "#ff7900",
+              "#ff7b00"
+            ],
+            "opaqueColors": [
+              "#ff7900"
+            ],
+            "maxFillChannelError": 2,
+            "fillToleranceMax": 3,
+            "colorViolations": 0
+          },
+          "footprint": {
+            "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+            "show": true,
+            "classification": 2
+          },
+          "measuredPose": {
+            "angle": 30.000000000000036,
+            "direction": 23
+          },
+          "footprintPrimitives": []
+        }
+      },
+      "evidenceRun": "output/range-projection-geometry/report.json"
+    },
+    {
+      "id": "angle-masks-and-real-model-stay-synchronized",
+      "status": "passed",
+      "evidence": {
+        "states": [
+          {
+            "state": {
+              "active": true,
+              "loading": false,
+              "direction": 23,
+              "angle": 0,
+              "playing": false,
+              "maxAngle": 90,
+              "modelCreated": true,
+              "sourcePartCount": 12,
+              "sourceTriangleCount": 57483,
+              "entityIds": [
+                "rail-safety:fall-demo:projection-crane-01:model",
+                "rail-safety:fall-demo:projection-crane-01:pivot",
+                "rail-safety:fall-demo:projection-crane-01:footprint"
+              ],
+              "projectionReady": true,
+              "projectionBusy": false,
+              "resourceId": "projection-crane-01",
+              "resourceName": "连续方位投影验收吊机",
+              "actualDirection": 23,
+              "projectionAngle": 0,
+              "projectionDirection": 23,
+              "projectionCellSizeMeters": 0.1,
+              "projectionAreaMeters2": 4.240000000000001,
+              "firstContactAngle": 1.0892971048469004e-06,
+              "belowGround": false
+            },
+            "model": {
+              "id": "rail-safety:fall-demo:projection-crane-01:model",
+              "matrix": [
+                -0.8957809563638978,
+                -0.44449575725284557,
+                2.7755575615628914e-17,
+                0,
+                0.2851633010807704,
+                -0.5746823234956385,
+                0.7670867739560969,
+                0,
+                -0.34096681646825766,
+                0.6871417239884896,
+                0.6415433588009682,
+                0,
+                -2177739.639402518,
+                4388743.120861519,
+                4070078.145810049,
+                1
+              ],
+              "uri": "blob:http://127.0.0.1:5196/8b39d020-ff5a-4400-b5de-5837caba427b"
+            },
+            "primitives": [
+              {
+                "id": "rail-safety:fall-demo:projection-crane-01:model",
+                "ready": true,
+                "show": true,
+                "type": "Model"
+              }
+            ],
+            "mask": {
+              "width": 38,
+              "height": 41,
+              "hash": "f34bc8e7",
+              "occupied": 424,
+              "emptyInsideConvexHull": 355,
+              "bounds": {
+                "xMin": -1.0576059567457992,
+                "yMin": -1.6134847528934484,
+                "xMax": 2.742394043254201,
+                "yMax": 2.486515247106552
+              },
+              "cellSizeMeters": 0.1,
+              "areaMeters2": 4.240000000000001,
+              "direction": 23,
+              "angle": 0
+            },
+            "texture": {
+              "occupied": 424,
+              "colors": [
+                "#ff7900",
+                "#ff7b00"
+              ],
+              "opaqueColors": [
+                "#ff7900"
+              ],
+              "maxFillChannelError": 2,
+              "fillToleranceMax": 3,
+              "colorViolations": 0
+            },
+            "footprint": {
+              "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+              "show": true,
+              "classification": 2
+            },
+            "measuredPose": {
+              "angle": 0,
+              "direction": null
+            },
+            "footprintPrimitives": [
+              {
+                "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+                "type": "Primitive",
+                "ready": true,
+                "show": true
+              }
+            ]
+          },
+          {
+            "state": {
+              "active": true,
+              "loading": false,
+              "direction": 23,
+              "angle": 30,
+              "playing": false,
+              "maxAngle": 90,
+              "modelCreated": true,
+              "sourcePartCount": 12,
+              "sourceTriangleCount": 57483,
+              "entityIds": [
+                "rail-safety:fall-demo:projection-crane-01:model",
+                "rail-safety:fall-demo:projection-crane-01:pivot",
+                "rail-safety:fall-demo:projection-crane-01:footprint"
+              ],
+              "projectionReady": true,
+              "projectionBusy": false,
+              "resourceId": "projection-crane-01",
+              "resourceName": "连续方位投影验收吊机",
+              "actualDirection": 23,
+              "projectionAngle": 30,
+              "projectionDirection": 23,
+              "projectionCellSizeMeters": 0.1,
+              "projectionAreaMeters2": 5.350000000000001,
+              "firstContactAngle": 1.0892971048469004e-06,
+              "belowGround": true
+            },
+            "model": {
+              "id": "rail-safety:fall-demo:projection-crane-01:model",
+              "matrix": [
+                -0.8245865269311514,
+                -0.5419558625865991,
+                -0.1622988065625768,
+                0,
+                0.452886866093378,
+                -0.8042839432195938,
+                0.3847347465452787,
+                0,
+                -0.3390435755529665,
+                0.2437440905686874,
+                0.9086463955737145,
+                0,
+                -2177739.833002285,
+                4388743.385885817,
+                4070078.5871509146,
+                1
+              ],
+              "uri": "blob:http://127.0.0.1:5196/8b39d020-ff5a-4400-b5de-5837caba427b"
+            },
+            "primitives": [
+              {
+                "id": "rail-safety:fall-demo:projection-crane-01:model",
+                "ready": true,
+                "show": true,
+                "type": "Model"
+              }
+            ],
+            "mask": {
+              "width": 57,
+              "height": 43,
+              "hash": "eef8d16",
+              "occupied": 535,
+              "emptyInsideConvexHull": 713,
+              "bounds": {
+                "xMin": -1.017145907196073,
+                "yMin": -0.7835728155068657,
+                "xMax": 4.682854092803927,
+                "yMax": 3.516427184493134
+              },
+              "cellSizeMeters": 0.1,
+              "areaMeters2": 5.350000000000001,
+              "direction": 23,
+              "angle": 30
+            },
+            "texture": {
+              "occupied": 535,
+              "colors": [
+                "#ff7900",
+                "#ff7b00"
+              ],
+              "opaqueColors": [
+                "#ff7900"
+              ],
+              "maxFillChannelError": 2,
+              "fillToleranceMax": 3,
+              "colorViolations": 0
+            },
+            "footprint": {
+              "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+              "show": true,
+              "classification": 2
+            },
+            "measuredPose": {
+              "angle": 30.000000000000036,
+              "direction": 23
+            },
+            "footprintPrimitives": [
+              {
+                "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+                "type": "Primitive",
+                "ready": true,
+                "show": true
+              }
+            ]
+          },
+          {
+            "state": {
+              "active": true,
+              "loading": false,
+              "direction": 23,
+              "angle": 60,
+              "playing": false,
+              "maxAngle": 90,
+              "modelCreated": true,
+              "sourcePartCount": 12,
+              "sourceTriangleCount": 57483,
+              "entityIds": [
+                "rail-safety:fall-demo:projection-crane-01:model",
+                "rail-safety:fall-demo:projection-crane-01:pivot",
+                "rail-safety:fall-demo:projection-crane-01:footprint"
+              ],
+              "projectionReady": true,
+              "projectionBusy": false,
+              "resourceId": "projection-crane-01",
+              "resourceName": "连续方位投影验收吊机",
+              "actualDirection": 23,
+              "projectionAngle": 60,
+              "projectionDirection": 23,
+              "projectionCellSizeMeters": 0.1,
+              "projectionAreaMeters2": 5.940000000000001,
+              "firstContactAngle": 1.0892971048469004e-06,
+              "belowGround": true
+            },
+            "model": {
+              "id": "rail-safety:fall-demo:projection-crane-01:model",
+              "matrix": [
+                -0.7633060774810492,
+                -0.5397341608233408,
+                -0.3550364315402287,
+                0,
+                0.5972545579091455,
+                -0.7990499418644668,
+                -0.0693266432415733,
+                0,
+                -0.24627388236929768,
+                -0.2649645750788532,
+                0.932278364447034,
+                0,
+                -2177739.999642861,
+                4388743.37984432,
+                4070079.1112643825,
+                1
+              ],
+              "uri": "blob:http://127.0.0.1:5196/8b39d020-ff5a-4400-b5de-5837caba427b"
+            },
+            "primitives": [
+              {
+                "id": "rail-safety:fall-demo:projection-crane-01:model",
+                "ready": true,
+                "show": true,
+                "type": "Model"
+              }
+            ],
+            "mask": {
+              "width": 72,
+              "height": 75,
+              "hash": "140d35e1",
+              "occupied": 594,
+              "emptyInsideConvexHull": 1068,
+              "bounds": {
+                "xMin": -0.938387674983159,
+                "yMin": -0.286013532514085,
+                "xMax": 6.261612325016841,
+                "yMax": 7.213986467485915
+              },
+              "cellSizeMeters": 0.1,
+              "areaMeters2": 5.940000000000001,
+              "direction": 23,
+              "angle": 60
+            },
+            "texture": {
+              "occupied": 594,
+              "colors": [
+                "#ff7900",
+                "#ff7b00"
+              ],
+              "opaqueColors": [
+                "#ff7900"
+              ],
+              "maxFillChannelError": 2,
+              "fillToleranceMax": 3,
+              "colorViolations": 0
+            },
+            "footprint": {
+              "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+              "show": true,
+              "classification": 2
+            },
+            "measuredPose": {
+              "angle": 59.99999999999993,
+              "direction": 23
+            },
+            "footprintPrimitives": [
+              {
+                "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+                "type": "Primitive",
+                "ready": true,
+                "show": true
+              }
+            ]
+          },
+          {
+            "state": {
+              "active": true,
+              "loading": false,
+              "direction": 23,
+              "angle": 90,
+              "playing": false,
+              "maxAngle": 90,
+              "modelCreated": true,
+              "sourcePartCount": 12,
+              "sourceTriangleCount": 57483,
+              "entityIds": [
+                "rail-safety:fall-demo:projection-crane-01:model",
+                "rail-safety:fall-demo:projection-crane-01:pivot",
+                "rail-safety:fall-demo:projection-crane-01:footprint"
+              ],
+              "projectionReady": true,
+              "projectionBusy": false,
+              "resourceId": "projection-crane-01",
+              "resourceName": "连续方位投影验收吊机",
+              "actualDirection": 23,
+              "projectionAngle": 90,
+              "projectionDirection": 23,
+              "projectionCellSizeMeters": 0.1,
+              "projectionAreaMeters2": 5.7200000000000015,
+              "firstContactAngle": 1.0892971048469004e-06,
+              "belowGround": true
+            },
+            "model": {
+              "id": "rail-safety:fall-demo:projection-crane-01:model",
+              "matrix": [
+                -0.7283596549555611,
+                -0.438425955156358,
+                -0.5265689839691008,
+                0,
+                0.6795831700928918,
+                -0.5603827658665461,
+                -0.4734320126969187,
+                0,
+                -0.08751530128789803,
+                -0.7026761968111592,
+                0.7061070984457622,
+                0,
+                -2177740.0946730385,
+                4388743.104355842,
+                4070079.577714671,
+                1
+              ],
+              "uri": "blob:http://127.0.0.1:5196/8b39d020-ff5a-4400-b5de-5837caba427b"
+            },
+            "primitives": [
+              {
+                "id": "rail-safety:fall-demo:projection-crane-01:model",
+                "ready": true,
+                "show": true,
+                "type": "Model"
+              }
+            ],
+            "mask": {
+              "width": 78,
+              "height": 86,
+              "hash": "93103ec5",
+              "occupied": 572,
+              "emptyInsideConvexHull": 1055,
+              "bounds": {
+                "xMin": -0.791026987817637,
+                "yMin": 0.39651985720838834,
+                "xMax": 7.008973012182364,
+                "yMax": 8.996519857208387
+              },
+              "cellSizeMeters": 0.1,
+              "areaMeters2": 5.7200000000000015,
+              "direction": 23,
+              "angle": 90
+            },
+            "texture": {
+              "occupied": 572,
+              "colors": [
+                "#ff7900",
+                "#ff7b00"
+              ],
+              "opaqueColors": [
+                "#ff7900"
+              ],
+              "maxFillChannelError": 2,
+              "fillToleranceMax": 3,
+              "colorViolations": 0
+            },
+            "footprint": {
+              "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+              "show": true,
+              "classification": 2
+            },
+            "measuredPose": {
+              "angle": 90,
+              "direction": 23
+            },
+            "footprintPrimitives": [
+              {
+                "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+                "type": "Primitive",
+                "ready": true,
+                "show": true
+              }
+            ]
+          }
+        ],
+        "playback": {
+          "state": {
+            "active": true,
+            "loading": false,
+            "direction": 23,
+            "angle": 12,
+            "playing": false,
+            "maxAngle": 90,
+            "modelCreated": true,
+            "sourcePartCount": 12,
+            "sourceTriangleCount": 57483,
+            "entityIds": [
+              "rail-safety:fall-demo:projection-crane-01:model",
+              "rail-safety:fall-demo:projection-crane-01:pivot",
+              "rail-safety:fall-demo:projection-crane-01:footprint"
+            ],
+            "projectionReady": true,
+            "projectionBusy": false,
+            "resourceId": "projection-crane-01",
+            "resourceName": "连续方位投影验收吊机",
+            "actualDirection": 23,
+            "projectionAngle": 12,
+            "projectionDirection": 23,
+            "projectionCellSizeMeters": 0.1,
+            "projectionAreaMeters2": 4.650000000000001,
+            "firstContactAngle": 1.0892971048469004e-06,
+            "belowGround": true
+          },
+          "model": {
+            "id": "rail-safety:fall-demo:projection-crane-01:model",
+            "matrix": [
+              -0.867334399133374,
+              -0.49431774155575,
+              -0.05814645701306376,
+              0,
+              0.352179190231841,
+              -0.69205556308567,
+              0.6301023056376014,
+              0,
+              -0.3517113277214626,
+              0.5260314325070312,
+              0.7743320179141547,
+              0,
+              -2177739.716757543,
+              4388743.256342969,
+              4070078.3039283263,
+              1
+            ],
+            "uri": "blob:http://127.0.0.1:5196/8b39d020-ff5a-4400-b5de-5837caba427b"
+          },
+          "primitives": [
+            {
+              "id": "rail-safety:fall-demo:projection-crane-01:model",
+              "ready": true,
+              "show": true,
+              "type": "Model"
+            }
+          ],
+          "mask": {
+            "width": 46,
+            "height": 34,
+            "hash": "29703c2e",
+            "occupied": 465,
+            "emptyInsideConvexHull": 460,
+            "bounds": {
+              "xMin": -1.0575924914581643,
+              "yMin": -0.8987880582715414,
+              "xMax": 3.542407508541836,
+              "yMax": 2.501211941728459
+            },
+            "cellSizeMeters": 0.1,
+            "areaMeters2": 4.650000000000001,
+            "direction": 23,
+            "angle": 12
+          },
+          "texture": {
+            "occupied": 465,
+            "colors": [
+              "#ff7900",
+              "#ff7b00"
+            ],
+            "opaqueColors": [
+              "#ff7900"
+            ],
+            "maxFillChannelError": 2,
+            "fillToleranceMax": 3,
+            "colorViolations": 0
+          },
+          "footprint": {
+            "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+            "show": true,
+            "classification": 2
+          },
+          "measuredPose": {
+            "angle": 11.999999999999808,
+            "direction": 23
+          },
+          "footprintPrimitives": [
+            {
+              "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+              "type": "Primitive",
+              "ready": false,
+              "show": false
+            }
+          ]
+        },
+        "status": "已暂停 · 方向 23° · 当前画面 12.0° · 投影约 4.7 ㎡ · 显示网格 0.10 m · 已超过首次触地角 0.0°，当前为几何续转",
+        "conservativeCellBoundaryError": "At most sqrt(2) times the reported cell size, plus floating-point tolerance; not an exact intersection polygon"
+      },
+      "evidenceRun": "output/range-projection-final/report.json"
+    },
+    {
+      "id": "representation-and-right-group-control-projection",
+      "status": "passed",
+      "evidence": {
+        "modes": [
+          {
+            "mode": "pose",
+            "overview": false,
+            "footprint": {
+              "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+              "show": true,
+              "classification": 2
+            }
+          },
+          {
+            "mode": "overview",
+            "overview": true,
+            "footprint": {
+              "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+              "show": false,
+              "classification": 2
+            }
+          },
+          {
+            "mode": "both",
+            "overview": true,
+            "footprint": {
+              "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+              "show": true,
+              "classification": 2
+            }
+          }
+        ],
+        "hidden": {
+          "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+          "show": false,
+          "classification": 2
+        },
+        "shown": {
+          "id": "rail-safety:fall-demo:projection-crane-01:footprint",
+          "show": true,
+          "classification": 2
+        }
+      },
+      "evidenceRun": "output/range-projection-final/report.json"
+    },
+    {
+      "id": "exit-cleans-projection-and-preserves-business-and-original",
+      "status": "passed",
+      "evidence": {
+        "remainingDemoEntities": {
+          "entities": [],
+          "groundIds": []
+        },
+        "displayBusinessCommands": 0,
+        "originalMatrixUnchanged": true,
+        "riskResultsUnchanged": true,
+        "pageErrors": [],
+        "consoleErrors": []
+      },
+      "evidenceRun": "output/range-projection-final/report.json"
+    }
+  ],
+  "visualReview": {
+    "reviewer": "root agent",
+    "result": "passed",
+    "notes": "30° and 90° actual canvas captures visually reviewed: model pose and noncircular footprint agree. Screenshots remain local and are not committed.",
+    "localScreenshots": [
+      "/workspace/scratch/cf1441d132b1/cesium-oct14/output/range-projection-final/01-projection-30-degrees.png",
+      "/workspace/scratch/cf1441d132b1/cesium-oct14/output/range-projection-final/02-projection-90-degrees.png"
+    ]
+  },
+  "rootVerifiedGates": {
+    "productionBuild": {
+      "result": "passed",
+      "durationSeconds": 17.45,
+      "log": "delivery-projection-oct14/build.log"
+    },
+    "regressions": {
+      "result": "passed",
+      "passed": 112,
+      "total": 112,
+      "durationSeconds": 9.13,
+      "log": "delivery-projection-oct14/regression.log"
+    }
+  },
+  "limitations": [
+    "Synthetic sloped 3D Tiles fixture and software WebGL; not surveyed-site precision or hardware-GPU certification.",
+    "Projection is the conservative raster union of posed mesh triangles, not a physical collapse prediction; below-ground continuation remains explicitly indicated.",
+    "Fixture uses 0.1 m cells: boundary quantization is bounded by the cell diagonal (about 0.142 m), and subcell holes may merge.",
+    "This focused round verifies refresh persistence in one actor/project scope; cross-account behavior is not re-tested.",
+    "Known minute draped-line residual from earlier acceptance was not re-investigated in this focused round."
+  ]
+}

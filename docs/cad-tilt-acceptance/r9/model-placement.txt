@@ -1,0 +1,1 @@
+PASS: GLB geometry anchoring; bounded streamed/Blob metadata; offset/scale/rotation; map click/sky/Escape/abort cleanup; zero empty-model GPU picks; loaded-model selection and rotated-view dragging; numeric translation; camera lock ownership and teardown.

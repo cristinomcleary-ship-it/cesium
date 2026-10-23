@@ -1,10 +1,26 @@
 import type { SpatialObject } from './safetySpatialTypes';
 import type { SafetyMedia } from './safetyTypes';
 import type { SafetyVideoRoamState } from './safetyVideoRoam';
+import type { FieldObjectReference } from './railwayWorkflowTypes';
+
+export type ManagementFieldMachinery = {
+  id: string; name: string; placed: boolean; enabled: boolean; visible: boolean;
+  kind?: string; workpointId?: string; taskId?: string;
+  risk: 'crossing' | 'clear' | 'unknown'; riskLabel: string; riskMessage: string;
+  intersectionCount?: number; draft?: boolean;
+};
+export type ManagementFieldContext = {
+  machinery: ManagementFieldMachinery[];
+  selectedMachineryId?: string;
+  selectedObject?: FieldObjectReference;
+  editor?: 'machinery' | 'rail-safety'; editorTitle?: string;
+  pending: boolean; guardCount: number; limitCount: number;
+};
 
 /** Actual scene capabilities. Business dates/metrics are deliberately absent. */
 export type ManagementSceneContext = {
   mode?: 'presentation' | 'inspection';
+  field?: ManagementFieldContext;
   spatialObjects: SpatialObject[];
   media: SafetyMedia[];
   sourceAssets: SafetyMedia[];

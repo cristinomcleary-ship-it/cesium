@@ -1,4 +1,6 @@
 import { SceneLibrary } from "./sceneLibrary";
+import { detectsSoftwareRenderer, installCameraNavigationPerformance } from "./cameraNavigationPerformance";
+import { SceneDisplayPanel, type SceneDisplayItem } from "./sceneDisplayPanel";
 import { ModelQualityTracker, type ModelQualityState } from "./modelQualityState";
 import type { SafetyWorkspace } from "./safetyWorkspace";
 import type { ManagementWorkspace } from "./managementWorkspace";
@@ -34,11 +36,12 @@ import {
 } from "cesium";
 import { cadImportFileName, readCadImport, type CadImportPackage } from "./cadImport";
 import { createCadImportFromDwgInWorker } from "./cadImportWorkerClient";
-import { clampCadToScene, getCadBoundingSphere, loadCadImport, useSampledCadHeights } from "./dxfLoader";
+import { clampCadToScene, getCadBoundingSphere, getCadModelSamplingExclusions, loadCadImport, useSampledCadHeights } from "./dxfLoader";
 import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader";
 import { loadLocalImagery, type LocalImageryResult } from "./localImagery";
 import { UnavailableMapTileDiscardPolicy } from "./imageryOverzoom";
 import { ModelEditor, type EditMode, type EditableModel } from "./modelEditor";
+import { beginPickPlacement, getPlacementPreviewPosition, createAnchoredModelMatrix, fetchGlbPlacementBounds, type ModelPlacementBounds } from "./modelPlacement";
 import { gaussKrugerToWgs84, inferredZoneNumber, parseLongitude, type GaussAxisOrder, type GaussEllipsoid } from "./coordinateUtils";
 import { SubsurfaceTools, subsurfacePanelHtml } from "./subsurfaceTools";
 import { FoundationPitMonitoring, foundationPitMonitoringPanelHtml } from "./foundationPitMonitoring";
@@ -71,15 +74,21 @@ import {
   type DigitalTwinOverviewSnapshot,
   type DigitalTwinResourceRecord,
 } from "./digitalTwinOverview";
-import { VideoArFusion, videoArFusionPanelHtml } from "./videoArFusion";
+import { VideoArFusion, videoArFusionPanelHtml, type SavedReplaySettings } from "./videoArFusion";
+import { VideoModelOverlay, videoModelOverlayPanelHtml, type SavedVideoOverlaySettings } from "./videoModelOverlay";
+import type { LibraryRecord } from "./projectLibrary";
 import type { CadCoordinateOptions, CadDisplayMode, ImportRecord, TilesetOptions } from "./types";
 import "./style.css";
+
+let sceneDisplayPanel: SceneDisplayPanel | undefined;
+let sceneDisplayReady = false, sceneDisplayQueued = false;
+let sceneDisplayOverrides: Record<string, boolean> = Object.create(null);
 
 const token = import.meta.env.VITE_CESIUM_ION_TOKEN?.trim();
 if (token) Ion.defaultAccessToken = token;
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
-  <div class="shell">
+  <div class="shell workbench-right-dock">
     <header class="app-header">
       <div class="brand">
         <span class="brand-mark">C</span>
@@ -90,6 +99,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <button class="tab" data-tab="sandtable" data-label="电子沙盘" data-menu-icon="◈">电子沙盘</button>
         <button class="tab active" data-tab="cad" data-label="CAD 图纸" data-menu-icon="⌁" aria-current="page">CAD 图纸</button>
         <button class="tab" data-tab="models" data-label="工程模型" data-menu-icon="◆">工程模型</button>
+        <button class="tab" data-tab="machinery" data-label="施工机械" data-menu-icon="⚙">施工机械</button>
+        <button class="tab" data-tab="rail-safety" data-label="邻近营业线管控" data-menu-icon="◇">邻近营业线管控</button>
         <button class="tab" data-tab="tiles" data-label="倾斜摄影" data-menu-icon="▦">倾斜摄影</button>
         <button class="tab" data-tab="gis" data-label="GIS 数据" data-menu-icon="◎">GIS 数据</button>
         <button class="tab" data-tab="videoar" data-label="视频 AR" data-menu-icon="◉">视频 AR</button>
@@ -97,17 +108,22 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <button class="tab" data-tab="monitoring" data-label="基坑监测" data-menu-icon="▥">基坑监测</button>
         <button class="tab" data-tab="report" data-label="3维汇报" data-menu-icon="▣">3维汇报</button>
       </nav>
-      <button id="openSafetyWorkspace" class="text-button safety-entry-button" type="button">项目统筹平台</button>
+      <button id="openSafetyWorkspace" class="text-button safety-entry-button" type="button">现场工作台</button>
       <a href="/ar-v2.html" class="text-button" title="独立视觉定位与融合">AR V2</a>
       <div class="workspace-mode"><span class="workspace-pulse"></span><span>数字孪生工作台</span></div>
     </header>
     <aside class="sidebar">
+      <nav class="workbench-dock-tabs" aria-label="右侧工作区"><button type="button" data-dock="display" aria-pressed="true">场景显示</button><button type="button" data-dock="editor" aria-pressed="false">参数编辑</button></nav>
+      <div id="workbenchDisplayHost"></div>
+      <div id="workbenchEditorHost" hidden>
+      <div class="workbench-parameters">
       <section class="layers-section scene-explorer" aria-labelledby="sceneExplorerTitle">
         <div class="section-title">
           <div class="scene-explorer-title"><small>SCENE CONTENT</small><span id="sceneExplorerTitle">图层与标绘</span></div>
           <button id="clearAll" class="text-button" title="删除全部保存资料，退出软件不需要清空">删除全部资料</button>
         </div>
         <div id="layers" class="layers-empty">尚未加载工程数据</div>
+        <section class="workbench-machinery-objects" aria-label="施工机械对象"><div class="section-title"><strong>施工机械</strong><button type="button" id="openWorkbenchMachinery" class="text-button">添加 / 编辑</button></div><div id="workbenchMachineryObjects" aria-live="polite">正在读取施工机械…</div><button type="button" id="machineryAccountEntry" class="text-button" hidden>统一账号与项目权限</button></section>
         <details class="saved-library">
           <summary>本机资料库 <span id="libraryStatus">正在读取资料…</span></summary>
           <div id="savedLibrary"></div>
@@ -154,6 +170,8 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <button class="secondary" id="exportDigitalTwinCatalog">导出数据目录</button>
           <p class="hint" id="digitalTwinStorageStatus">数据目录元数据保存在本机浏览器；模型、视频和照片不会重复写入目录。</p>
         </section>
+        <section class="panel" data-panel="machinery"><h2>施工机械</h2><p>在当前 Cesium 场景放置吊机、桩机与挖机。右侧面板编辑尺寸与位置，保存到同一工程资源台账。</p><p>关闭编辑面板或切换功能后，已保存的机械仍显示在场景中。可在右侧“场景显示 → 施工机械”中定位和管理全部机械。</p></section>
+        <section class="panel" data-panel="rail-safety"><h2>邻近营业线管控</h2><p>定义防护人员站位与责任区、铁路设备安全限界，并选择机械检查假设倾覆的地面影响范围。</p><p>尺寸单位 m。范围与人员位置由用户定义；相交结果为当前参数下的平面几何筛查。</p><button type="button" id="reopenRailSafety" class="text-button">打开管控面板</button></section>
         <section class="panel active" data-panel="cad">
           <div class="dropzone" id="cadDropzone">
             <input id="cadFile" type="file" accept=".dwg,.cadimport" hidden />
@@ -201,8 +219,9 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <small>DWG · RVT · SKP · GLB</small>
           </div>
           <div id="converterStatus" class="converter-status">正在检测本机转换能力…</div>
-          <label>初始放置方式<select id="modelPlacement"><option value="customGeo">自定义经纬度放置</option><option value="customGauss">自定义高斯-克吕格坐标</option><option value="coordinates">使用模型坐标</option></select></label>
-          <div id="modelCustomFields" class="field-grid">
+          <label>初始放置方式<select id="modelPlacement"><option value="mapPick" selected>在场景中点选位置（推荐）</option><option value="customGeo">自定义经纬度放置</option><option value="customGauss">自定义高斯-克吕格坐标</option><option value="coordinates">使用模型坐标</option></select></label>
+          <p id="modelPickHint" class="hint">上传转换完成后，在场景中点击放置位置；之后可平移、升降和旋转调整。</p>
+          <div id="modelCustomFields" class="field-grid hidden">
             <label>经度<input id="modelLon" type="number" step="any" value="116.3913" /></label>
             <label>纬度<input id="modelLat" type="number" step="any" value="39.9075" /></label>
             <label>高程（米）<input id="modelHeight" type="number" step="any" value="0" /></label>
@@ -224,13 +243,13 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             </div>
             <p class="hint">模型的落点按北坐标、东坐标换算；中央子午线支持任意十进制度或度分秒。</p>
           </div>
-          <div id="modelCoordinateHint" class="notice hidden"><strong>模型坐标要求</strong><p>仅适用于转换结果已经使用 WGS84 地心地固（ECEF）世界坐标的模型。普通建筑局部坐标请选择自定义放置。</p></div>
+          <div id="modelCoordinateHint" class="notice hidden"><strong>模型坐标要求</strong><p>仅适用于转换结果已经使用 WGS84 地心地固（ECEF）世界坐标的模型。普通建筑局部坐标请选择在场景中点选位置。</p></div>
           <div class="model-load-actions">
             <button class="primary" id="loadModel">转换并加载模型</button>
             <button class="secondary hidden" id="cancelModelLoad" type="button">取消当前任务</button>
           </div>
           <p id="modelLoadStatus" class="hint" aria-live="polite">选择文件后会先检查本机转换能力，不可用时不会上传文件。</p>
-          <div class="notice"><strong>源格式说明</strong><p>GLB 可直接加载。DWG、RVT、SKP 会调用本机合法转换器自动生成 GLB；转换器状态显示为“未配置”时，请先按项目示例文件配置。</p></div>
+          <div class="notice"><strong>源格式说明</strong><p>GLB 可直接加载。SKP 使用后台转换组件生成 GLB，不启动 SketchUp 窗口；DWG、RVT 使用配置的转换器。状态不可用时请按安装说明补齐组件。</p></div>
         </section>
         <section class="panel" data-panel="tiles">
           <div class="dropzone compact" id="ccFolderZone">
@@ -267,11 +286,14 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
           <button class="primary" id="loadGis">加载 GIS 数据</button>
         </section>
-        ${videoArFusionPanelHtml}
+        ${videoModelOverlayPanelHtml}
+        <div hidden style="display:none" aria-hidden="true">${videoArFusionPanelHtml.replace('data-panel="videoar"', 'data-panel="legacyvideoar"')}</div>
         ${markupPanelHtml}
         ${foundationPitMonitoringPanelHtml}
         ${threeDReportPanelHtml}
       </main>
+      </div>
+      </div>
       <footer><span class="status-dot"></span><span id="status">Cesium 已就绪</span></footer>
     </aside>
     <section class="viewport">
@@ -304,6 +326,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <p class="hint">文件只在当前页面本地读取，不上传。关闭或刷新页面后需重新选择。</p>
       </div>
       ${subsurfacePanelHtml}
+      <div id="modelPlacementPrompt" class="model-placement-prompt" hidden role="status"><span>请在场景中点击模型放置位置，可先移动或缩放视图。Esc 取消。</span><button id="cancelModelPlacement" type="button">取消放置</button></div>
       <div id="modelTools" class="model-tools hidden">
         <div class="tool-title"><span>模型位置调整</span><small id="editingModelName"></small></div>
         <div class="tool-buttons">
@@ -312,8 +335,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <button data-edit-mode="rotate">↻ 旋转方向</button>
           <button id="resetModelTransform">重置</button>
         </div>
+        <div class="model-transform-fields"><label>向东（m）<input id="modelEditEast" type="number" step="0.1" value="0"></label><label>向北（m）<input id="modelEditNorth" type="number" step="0.1" value="0"></label><label>升高（m）<input id="modelEditUp" type="number" step="0.1" value="0"></label><label>旋转（°）<input id="modelEditHeading" type="number" step="1" value="0"></label></div>
+        <div class="tool-buttons model-transform-actions"><button id="applyModelTransform" type="button">应用数值</button><button id="relocateModel" type="button">重新点选位置</button><button id="locateEditingModel" type="button">定位此模型</button></div>
         <div id="modelTransformReadout">东 0.00m · 北 0.00m · 高 0.00m · 旋转 0.00°</div>
-        <div class="tool-hint">在地图中按住模型并拖动；单击其他模型可切换选择</div>
+        <div class="tool-hint">按住模型拖动，或输入数值调整；修改自动保存。重新点选位置会建立新的调整起点。</div>
       </div>
       ${threeDReportStageHtml}
       <div id="toast" role="status"></div>
@@ -336,13 +361,31 @@ const viewer = new Viewer("cesiumContainer", {
   terrainProvider: undefined,
   useBrowserRecommendedResolution: false,
   showRenderLoopErrors: false,
-  contextOptions: { webgl: { alpha: true } },
+  // A preference lets the browser choose an available GPU without rejecting
+  // integrated/software fallback on devices without a high-performance GPU.
+  contextOptions: { webgl: { alpha: true, powerPreference: "high-performance", failIfMajorPerformanceCaveat: false } },
 });
 // Leave enough headroom for 3D Tiles/CAD interaction while online imagery is
 // filling. Excessive tile fan-out was causing large release bursts on switches.
 RequestScheduler.maximumRequests = 40;
 RequestScheduler.maximumRequestsPerServer = 10;
 viewer.resolutionScale = 1;
+// Software GPUs can stall the page on synchronous navigation depth readback.
+// Keep hardware navigation and every explicit model/survey pick unchanged.
+const cameraNavigationPerformance = installCameraNavigationPerformance(viewer.scene, {
+  enabled: detectsSoftwareRenderer(viewer.canvas),
+  shouldUseLightweightNavigation: () => !viewer.trackedEntity && Matrix4.equals(viewer.camera.transform, Matrix4.IDENTITY),
+});
+function onPageDispose(dispose: () => void): void {
+  // beforeunload may be cancelled while an upload is still pending. Keep the
+  // live scene and drafts intact until navigation actually leaves this page.
+  const listener = (event: PageTransitionEvent) => {
+    if (event.persisted) return;
+    window.removeEventListener("pagehide", listener); dispose();
+  };
+  window.addEventListener("pagehide", listener);
+}
+onPageDispose(() => cameraNavigationPerformance.dispose());
 type CustomBasemap = { type: "xyz" | "tms" | "arcgis"; url: string; maximumLevel: number; credit: string };
 const CUSTOM_BASEMAP_KEY = "cesium-custom-basemap-v1";
 let localImagery: LocalImageryResult | null = null;
@@ -578,6 +621,7 @@ let safetyWorkspaceLoading: Promise<SafetyWorkspace> | undefined;
 let managementWorkspace: ManagementWorkspace | undefined;
 let managementWorkspaceLoading: Promise<ManagementWorkspace> | undefined;
 let projectLibrary: SceneLibrary | undefined;
+let videoModelOverlay: VideoModelOverlay | undefined;
 const tilesetSourceIds = new Map<string, string>();
 const modelQualityTrackers = new Map<string, ModelQualityTracker>();
 const modelQualityResources = new Map<Cesium3DTileset, ModelQualityTracker>();
@@ -655,7 +699,7 @@ videoArFusion.onShowProjectionModels = () => {
 function updateModelTools(item: EditableModel | null, mode: EditMode) {
   $("#modelTools").classList.toggle("hidden", !item);
   document.querySelectorAll<HTMLButtonElement>("[data-edit-mode]").forEach((button) => button.classList.toggle("active", button.dataset.editMode === mode));
-  if (!item) return;
+  if (!item || videoModelOverlay?.active) return;
   videoArFusion.invalidateProjection("model-transform-changed");
   projectLibrary?.queueUpdate(item.id, { settings: {
     matrix: Matrix4.toArray(item.model.modelMatrix), scale: item.model.scale,
@@ -663,15 +707,156 @@ function updateModelTools(item: EditableModel | null, mode: EditMode) {
       east: item.east, north: item.north, up: item.up, heading: item.heading },
   } });
   $("#editingModelName").textContent = item.name;
+  for (const [selector, number] of Object.entries({modelEditEast:item.east,modelEditNorth:item.north,modelEditUp:item.up,modelEditHeading:CesiumMath.toDegrees(item.heading)})) {
+    const input=$<HTMLInputElement>(`#${selector}`); if(document.activeElement!==input)input.value=String(Number(number.toFixed(4)));
+  }
+  viewer.scene.requestRender();
   $("#modelTransformReadout").textContent = `东 ${item.east.toFixed(2)}m · 北 ${item.north.toFixed(2)}m · 高 ${item.up.toFixed(2)}m · 旋转 ${CesiumMath.toDegrees(item.heading).toFixed(2)}°`;
 }
 
 const modelEditor = new ModelEditor(viewer, updateModelTools);
+let resumeVideoOverlayInteractions: (() => void) | undefined;
+videoModelOverlay = new VideoModelOverlay(viewer, {
+  canAccessVideo: () => isLibraryRecordAllowed({ kind: "Drone Video" }),
+  getImports: () => imports.filter(isImportAllowed),
+  getRecord: id => {
+    const record = projectLibrary?.records.get(id);
+    return record && isLibraryRecordAllowed(record) ? record : undefined;
+  },
+  notify: toast,
+  onEnter: () => {
+    videoArFusion.setPanelActive(false);
+    videoArFusion.clear();
+    viewer.camera.cancelFlight();
+    const restores: Array<() => void> = [];
+    const resume = () => {
+      for (const restore of restores.splice(0).reverse()) {
+        try { restore(); } catch (error) { console.warn("[CC video overlay] Interaction restore failed", error); }
+      }
+    };
+    try {
+      restores.push(modelEditor.suspendInteractions());
+      restores.push(subsurfaceTools.suspendInteractions());
+      restores.push(foundationPitMonitoring.suspendInteractions());
+      const resumeMarkup = markupTools?.suspendInteractions();
+      if (resumeMarkup) restores.push(resumeMarkup);
+      resumeVideoOverlayInteractions = resume;
+    } catch (error) { resume(); throw error; }
+  },
+  onExit: () => {
+    resumeVideoOverlayInteractions?.(); resumeVideoOverlayInteractions = undefined;
+    applySceneDisplay(sceneDisplayOverrides, sceneDisplayPanel?.labelsVisible ?? true);
+    projectLibrary?.saveView();
+    viewer.scene.requestRender();
+  },
+});
 projectLibrary = new SceneLibrary({
   viewer, getImports: () => imports, addImport, removeImport, modelEditor,
   waitForModelReady, cacheGisBoundingSphere, replaceImagery: replaceLocalImagery,
   setBasemap, getBasemap: () => activeBasemapKey, notify: toast,
-  restoreVideo: (files, settings) => videoArFusion.restoreReplay(files, settings), clearVideo: () => videoArFusion.clear(), layersChanged: renderLayers,
+  restoreVideo: async (files, settings, recordId) => {
+    if (!isLibraryRecordAllowed({ kind: "Drone Video" })) throw new Error("当前账号没有录像权限，融合方案已保留");
+    if ((settings as SavedVideoOverlaySettings)?.mode === "cc-overlay") {
+      videoArFusion.setPanelActive(false); videoArFusion.clear();
+      await videoModelOverlay!.restoreReplay(files, settings as SavedVideoOverlaySettings, recordId);
+    } else {
+      videoModelOverlay!.clear();
+      await videoArFusion.restoreReplay(files, settings as SavedReplaySettings);
+      videoArFusion.setPanelActive(false);
+    }
+  },
+  clearVideo: () => { videoModelOverlay!.clear(); videoArFusion.clear(); },
+  shouldSaveView: () => !videoModelOverlay?.active,
+  canReadRecord: isLibraryRecordAllowed,
+  libraryChanged: renderVideoOverlaySchemes,
+  layersChanged: renderLayers,
+});
+// Keep a failed first-save ID associated with these files. Retrying from the AR
+// panel must recover the same upload/record, including a lost success response.
+let videoOverlaySaveDraft: { id: string; files: Record<string, File> } | undefined;
+videoModelOverlay.onSave = async (snapshot, existingId, reportProgress) => {
+  await projectLibrary!.ready;
+  if (!isLibraryRecordAllowed({ kind: "Drone Video" })) throw new Error("当前账号没有录像权限，方案草稿已保留");
+  // Preserve File identity for saved frame manifests, including older manifests
+  // that bind to the source timestamp rather than a content fingerprint.
+  const settings = { ...snapshot.settings, fileMetadata: Object.fromEntries(Object.entries(snapshot.files).map(([slot, file]) => [slot,
+    { name: file.name, size: file.size, lastModified: file.lastModified, type: file.type }])) };
+  if (existingId) {
+    reportProgress?.({ phase: "committing", loaded: 0, total: 0 });
+    await projectLibrary!.updateVideoOverlaySettings(existingId, settings, snapshot.files.pos);
+    return existingId;
+  }
+  const previous = videoOverlaySaveDraft;
+  const retrying = !!previous && Object.keys(previous.files).length === Object.keys(snapshot.files).length
+    && Object.entries(snapshot.files).every(([slot, file]) => previous.files[slot] === file);
+  const id = retrying && previous ? previous.id : crypto.randomUUID();
+  videoOverlaySaveDraft = { id, files: { ...snapshot.files } };
+  if (projectLibrary!.records.has(id)) {
+    await projectLibrary!.updateVideoOverlaySettings(id, settings, snapshot.files.pos);
+  } else {
+    const files = Object.fromEntries(Object.entries(snapshot.files).map(([slot, file]) => [slot, { name: file.name, blob: file }]));
+    await projectLibrary!.save(id, snapshot.name, "Drone Video",
+      { video: settings as unknown as Record<string, unknown> }, files, undefined, reportProgress);
+    // SceneLibrary may recover the previous successful PUT after a lost response;
+    // persist any subsequent edits before reporting this retry as saved.
+    if (retrying) await projectLibrary!.updateVideoOverlaySettings(id, settings, snapshot.files.pos);
+  }
+  if (videoOverlaySaveDraft?.id === id) videoOverlaySaveDraft = undefined;
+  return id;
+};
+videoModelOverlay.onSaved = id => projectLibrary!.markVideo(id);
+let videoSchemeActionBusy = false;
+function renderVideoOverlaySchemes(): void {
+  const select = document.querySelector<HTMLSelectElement>("#ccSchemeList");
+  if (!select) return;
+  const previous = select.value, schemes = projectLibrary?.listVideoOverlaySchemes() ?? [];
+  select.replaceChildren(new Option(schemes.length ? "选择已保存的融合方案" : "尚无已保存的融合方案", ""));
+  for (const scheme of schemes) select.add(new Option(`${scheme.name}${scheme.saving ? " · 正在保存" : scheme.error ? " · 需重试" : ""}`, scheme.id));
+  const selected = schemes.some(scheme => scheme.id === previous) ? previous : projectLibrary?.activeVideoRecordId;
+  select.value = selected && schemes.some(scheme => scheme.id === selected) ? selected : "";
+  select.disabled = videoSchemeActionBusy;
+  for (const id of ["ccSchemeOpen", "ccSchemeCopy", "ccSchemeDelete"]) {
+    const button = document.querySelector<HTMLButtonElement>(`#${id}`); if (button) button.disabled = videoSchemeActionBusy || !select.value;
+  }
+  const refresh = document.querySelector<HTMLButtonElement>("#ccSchemeRefresh"); if (refresh) refresh.disabled = videoSchemeActionBusy;
+}
+async function openVideoOverlayScheme(copy: boolean): Promise<void> {
+  const id = document.querySelector<HTMLSelectElement>("#ccSchemeList")?.value;
+  if (!id || videoSchemeActionBusy) return;
+  videoSchemeActionBusy = true; renderVideoOverlaySchemes();
+  try {
+    videoModelOverlay?.setPanelActive(false);
+    await videoModelOverlay?.flushPendingSave();
+    const scheme = projectLibrary!.listVideoOverlaySchemes().find(item => item.id === id);
+    await projectLibrary!.openVideoOverlayScheme(id, copy ? { asCopy: true, name: `${(scheme?.name ?? "融合方案").slice(0, 490)} · 副本` } : {});
+    document.querySelector<HTMLButtonElement>('.tab[data-tab="videoar"]')?.click();
+    toast(copy ? "已载入新方案副本；可修改名称，开始融合后自动保存" : "融合方案已打开，点击开始融合继续");
+  } catch (error) { toast(error instanceof Error ? error.message : String(error), true); }
+  finally { videoSchemeActionBusy = false; renderVideoOverlaySchemes(); }
+}
+document.getElementById("ccSchemeList")?.addEventListener("change", renderVideoOverlaySchemes);
+document.getElementById("ccSchemeOpen")?.addEventListener("click", () => { void openVideoOverlayScheme(false); });
+document.getElementById("ccSchemeCopy")?.addEventListener("click", () => { void openVideoOverlayScheme(true); });
+async function deleteVideoOverlayScheme(): Promise<void> {
+  const id = document.querySelector<HTMLSelectElement>("#ccSchemeList")?.value;
+  if (!id || videoSchemeActionBusy) return;
+  videoSchemeActionBusy = true; renderVideoOverlaySchemes();
+  try {
+    videoModelOverlay?.setPanelActive(false);
+    // Drain autosave before deleting, so an in-flight first upload cannot recreate it.
+    await videoModelOverlay?.flushPendingSave();
+    const scheme = projectLibrary!.listVideoOverlaySchemes().find(item => item.id === id);
+    if (!scheme) throw new Error("方案已不存在，请刷新列表");
+    if (await projectLibrary!.delete(id)) toast("融合方案已删除");
+  } catch (error) { toast(error instanceof Error ? error.message : String(error), true); }
+  finally { videoSchemeActionBusy = false; renderVideoOverlaySchemes(); }
+}
+document.getElementById("ccSchemeDelete")?.addEventListener("click", () => { void deleteVideoOverlayScheme(); });
+document.getElementById("ccSchemeRefresh")?.addEventListener("click", () => {
+  if (videoSchemeActionBusy) return;
+  videoSchemeActionBusy = true; renderVideoOverlaySchemes();
+  void projectLibrary!.ready.then(() => projectLibrary!.refreshVideoOverlaySchemes()).catch(error => toast(error instanceof Error ? error.message : String(error), true))
+    .finally(() => { videoSchemeActionBusy = false; renderVideoOverlaySchemes(); });
 });
 videoArFusion.onReplaySettingsChanged = (controls, sessions, requireSaved) => projectLibrary?.updateVideoControls(controls, sessions, requireSaved);
 videoArFusion.onReplayLoaded = async snapshot => {
@@ -805,12 +990,15 @@ document.querySelectorAll<HTMLButtonElement>("[data-edit-mode]").forEach((button
 $("#resetModelTransform").addEventListener("click", () => modelEditor.reset());
 
 function locateImport(item: ImportRecord) {
+  videoModelOverlay?.setPanelActive(false);
   if (item.kind === "Model") viewer.camera.flyToBoundingSphere((item.resource as Model).boundingSphere, { duration: 1.2 });
   else if (item.kind === "CAD" && item.representation === "primitive" && item.boundingSphere) viewer.camera.flyToBoundingSphere(item.boundingSphere, { duration: 1.2 });
   else void viewer.flyTo(item.resource as never);
 }
 
 function renderLayers() {
+  videoModelOverlay?.refreshResources();
+  scheduleSceneDisplay();
   projectLibrary?.render();
   safetyWorkspace?.layersChanged();
   if (digitalTwinSyncReady) scheduleDigitalTwinSync();
@@ -832,7 +1020,7 @@ function renderLayers() {
     }
     row.querySelector(".visibility")?.addEventListener("click", () => setImportVisibility(item, !item.visible));
     row.querySelector(".fly")?.addEventListener("click", () => locateImport(item));
-    name.addEventListener("click", () => item.kind === "Model" && item.visible && modelEditor.select(item.id));
+    name.addEventListener("click", () => !videoModelOverlay?.active && item.kind === "Model" && item.visible && modelEditor.select(item.id));
     row.querySelector(".remove")?.addEventListener("click", () => {
       if (projectLibrary?.records.has(item.id)) void projectLibrary.delete(item.id);
       else removeImport(item);
@@ -842,8 +1030,12 @@ function renderLayers() {
 
 function setImportVisibility(item: ImportRecord, visible: boolean, options: { silent?: boolean; deferRender?: boolean } = {}) {
   item.visible = visible;
+  sceneDisplayPanel?.setVisibility([`layer:${item.id}`], visible);
   projectLibrary?.queueUpdate(item.id, { visible });
-  if (item.kind === "3D Tiles") {
+  if (videoModelOverlay?.active) {
+    // Map display preferences are retained; the fusion selection owns live visibility.
+    videoModelOverlay.refreshResources();
+  } else if (item.kind === "3D Tiles") {
     (item.resource as Cesium3DTileset).show = visible;
     modelQualityTrackers.get(item.id)?.invalidateView();
     videoArFusion.invalidateProjection("model-visibility-changed");
@@ -860,6 +1052,8 @@ function setImportVisibility(item: ImportRecord, visible: boolean, options: { si
 }
 
 function removeImport(item: ImportRecord) {
+  if(modelEditor.getSelected()?.id===item.id && modelPlacementPending)modelLoadController?.abort();
+  modelPlacementBounds.delete(item.id);
   subsurfaceTools.detachImport(item);
   if (item.kind === "3D Tiles") {
     disposeModelQuality(item.id, item.resource as Cesium3DTileset);
@@ -1087,7 +1281,7 @@ try {
 function sandTableBoundingSphere() {
   const spheres: BoundingSphere[] = [];
   for (const item of imports) {
-    if (!item.visible) continue;
+    if (!isImportDisplayed(item)) continue;
     const resource = item.resource as { isDestroyed?: () => boolean; boundingSphere?: BoundingSphere };
     try {
       if (resource.isDestroyed?.()) continue;
@@ -1147,7 +1341,7 @@ function focusSandTableScene(mode: SandTableFocusMode) {
   }
   const sphere = sandTableBoundingSphere();
   if (!sphere) {
-    const fallback = [...imports].reverse().find((item) => item.visible);
+    const fallback = [...imports].reverse().find((item) => isImportDisplayed(item));
     if (fallback) locateImport(fallback);
     else focusSandTableScene("home");
     return;
@@ -1818,7 +2012,7 @@ try {
       } catch {
         return [];
       }
-      return [{ id: item.id, name: item.name, visible: item.visible && tileset.show, tileset }];
+      return [{ id: item.id, name: item.name, visible: isImportDisplayed(item) && tileset.show, tileset }];
     }),
     canEnterImmersive: () => (
       viewer.scene.mode === SceneMode.SCENE3D
@@ -1899,30 +2093,30 @@ if (sandTableProjectControl) {
 digitalTwinSyncReady = true;
 syncDigitalTwinDataCenter();
 
-window.addEventListener("beforeunload", () => {
+onPageDispose(() => { videoModelOverlay?.destroy(); videoArFusion.destroy(); });
+onPageDispose(() => {
   if (electronicSandTableRefreshFrame) window.cancelAnimationFrame(electronicSandTableRefreshFrame);
   electronicSandTableRefreshFrame = 0;
   sandTablePresentation?.dispose();
   sandTableFacilities?.dispose();
   electronicSandTable?.dispose();
   sandTableProjectControl?.dispose();
-}, { once: true });
-window.addEventListener("beforeunload", () => foundationPitMonitoring.dispose(), { once: true });
-window.addEventListener("beforeunload", () => markupTools?.dispose(), { once: true });
-window.addEventListener("beforeunload", () => threeDReport?.dispose(), { once: true });
-window.addEventListener("beforeunload", () => videoArFusion.destroy(), { once: true });
-window.addEventListener("beforeunload", () => {
+});
+onPageDispose(() => foundationPitMonitoring.dispose());
+onPageDispose(() => markupTools?.dispose());
+onPageDispose(() => threeDReport?.dispose());
+onPageDispose(() => {
   for (const tracker of modelQualityTrackers.values()) tracker.dispose();
   modelQualityTrackers.clear(); modelQualityResources.clear(); modelQualitySubscribers.clear();
   if (modelQualityNotifyTimer !== undefined) clearTimeout(modelQualityNotifyTimer);
-}, { once: true });
-window.addEventListener("beforeunload", () => modelLoadController?.abort(), { once: true });
-window.addEventListener("beforeunload", () => {
+});
+onPageDispose(() => modelLoadController?.abort());
+onPageDispose(() => {
   digitalTwinSyncReady = false;
   window.clearTimeout(digitalTwinSyncTimer);
   for (const unsubscribe of digitalTwinUnsubscribers.splice(0)) unsubscribe();
   digitalTwinOverview.dispose();
-}, { once: true });
+});
 
 const recentDestroyedRenderErrors: number[] = [];
 viewer.scene.renderError.addEventListener((_scene, error) => {
@@ -2036,6 +2230,8 @@ bindDropzone("#gisDropzone", "#gisFile", (file) => { selectedGis = file; showSel
 bindDropzone("#modelDropzone", "#modelFile", (file) => {
   if (modelLoadBusy) return toast("模型正在上传或转换，请先取消当前任务或等待完成", true);
   selectedModelFile = file;
+  $<HTMLSelectElement>("#modelPlacement").value="mapPick";
+  $("#modelPlacement").dispatchEvent(new Event("change"));
   showSelected($("#modelDropzone"), file);
   updateModelLoadUi(`${file.name} 已选择；加载前将先检查格式与本机转换器。`);
 });
@@ -2050,15 +2246,21 @@ type ConverterStatus = {
 };
 let modelLoadController: AbortController | null = null;
 let modelLoadBusy = false;
+let modelPlacementPending = false;
+let modelPlacementSaving = false;
+const modelPlacementBounds = new Map<string, ModelPlacementBounds | null>();
 
 function updateModelLoadUi(message?: string, error = false) {
   const button = $<HTMLButtonElement>("#loadModel");
   const cancel = $<HTMLButtonElement>("#cancelModelLoad");
   const fileInput = $<HTMLInputElement>("#modelFile");
   button.disabled = modelLoadBusy;
-  button.textContent = modelLoadBusy ? "正在处理模型…" : "转换并加载模型";
+  button.textContent = modelPlacementPending ? "请在场景中点选位置" : modelLoadBusy ? "正在处理模型…" : "导入并放置模型";
   cancel.classList.toggle("hidden", !modelLoadBusy);
-  cancel.disabled = !modelLoadBusy;
+  cancel.disabled = !modelLoadBusy || modelPlacementSaving;
+  cancel.textContent = modelPlacementPending ? "取消放置" : "取消当前任务";
+  $<HTMLButtonElement>("#relocateModel").disabled=modelLoadBusy;
+  $<HTMLSelectElement>("#modelPlacement").disabled=modelLoadBusy;
   fileInput.disabled = modelLoadBusy;
   $("#modelDropzone").classList.toggle("busy", modelLoadBusy);
   if (message !== undefined) {
@@ -2127,8 +2329,86 @@ async function refreshConverterStatus(signal?: AbortSignal) {
 }
 void refreshConverterStatus();
 
+async function pickModelLocation(model: Model, controller: AbortController): Promise<Cartesian3> {
+  const drawing = document.querySelector<HTMLButtonElement>("#markupCancelDrawing");
+  if (drawing && !drawing.disabled) throw new Error("请先完成或取消当前标绘，再放置模型");
+  if (managementWorkspace && !managementWorkspace.prepareWorkbenchNavigation()) throw new Error("请先保存或取消当前机械编辑，再放置模型");
+  const restores: Array<() => void> = [];
+  const wasShown = model.show;
+  try {
+    restores.push(modelEditor.suspendInteractions(), subsurfaceTools.suspendInteractions(), foundationPitMonitoring.suspendInteractions());
+    digitalTwinOverview.close(); electronicSandTable?.stopTour();
+    sandTablePresentation?.deactivate(); sandTableFacilities?.deactivate();
+    viewer.camera.cancelFlight();
+    // A temporary model must not intercept the user's click on the target surface.
+    model.show = false;
+    viewer.scene.requestRender();
+    modelPlacementPending = true;
+    $("#modelPlacementPrompt").hidden = false;
+    document.body.classList.add("model-placement-active");
+    updateModelLoadUi("请在场景中点击模型底部的放置位置；可先移动或缩放视图，Esc 取消。");
+    return await beginPickPlacement(viewer, {
+      signal: controller.signal,
+      onInvalidPick: () => updateModelLoadUi("未选中有效位置，请点击地面、地形或已有实景模型。", true),
+    });
+  } finally {
+    if (!model.isDestroyed()) model.show = wasShown;
+    for (const restore of restores.reverse()) restore();
+    modelPlacementPending = false;
+    $("#modelPlacementPrompt").hidden = true;
+    document.body.classList.remove("model-placement-active");
+    viewer.scene.requestRender();
+  }
+}
+
+$("#cancelModelPlacement").addEventListener("click", () => modelLoadController?.abort());
+$("#applyModelTransform").addEventListener("click", () => {
+  if (modelLoadBusy) return;
+  const values = ["East", "North", "Up", "Heading"].map(key => {
+    const text = value(`#modelEdit${key}`).trim();
+    return text === "" ? NaN : Number(text);
+  });
+  if (!values.every(Number.isFinite)) return toast("请输入有效的平移距离和旋转角度", true);
+  if (modelEditor.setTransform({ east: values[0], north: values[1], up: values[2], heading: CesiumMath.toRadians(values[3]) })) toast("位置已调整，正在自动保存");
+});
+$("#locateEditingModel").addEventListener("click", () => {
+  const selected = modelEditor.getSelected();
+  if (selected && !selected.model.isDestroyed()) viewer.camera.flyToBoundingSphere(selected.model.boundingSphere, { duration: 1 });
+});
+$("#relocateModel").addEventListener("click", async () => {
+  if (modelLoadBusy) return;
+  const selected = modelEditor.getSelected();
+  if (!selected || selected.model.isDestroyed()) return;
+  const controller = new AbortController();
+  modelLoadController = controller; modelLoadBusy = true;
+  updateModelLoadUi("正在准备重新放置模型…");
+  try {
+    let bounds = modelPlacementBounds.get(selected.id);
+    if (bounds === undefined) {
+      const record = projectLibrary?.records.get(selected.id);
+      const url = record?.files.data?.url ?? record?.files.source?.url;
+      bounds = url ? await fetchGlbPlacementBounds(url, { signal: controller.signal }) : null;
+      modelPlacementBounds.set(selected.id, bounds);
+    }
+    const target = await pickModelLocation(selected.model, controller);
+    if (controller.signal.aborted || selected.model.isDestroyed()) throw new DOMException("放置已取消", "AbortError");
+    const matrix = createAnchoredModelMatrix(selected.model, target, 0, bounds);
+    const oldCenter = Matrix4.multiplyByPoint(Matrix4.inverse(selected.model.modelMatrix, new Matrix4()), selected.model.boundingSphere.center, new Cartesian3());
+    const center = Matrix4.multiplyByPoint(matrix, oldCenter, new Cartesian3());
+    if (!modelEditor.relocate(selected.id, matrix, center)) throw new Error("模型已移除，无法重新放置");
+    viewer.camera.flyToBoundingSphere(selected.model.boundingSphere, { duration: 1 });
+    updateModelLoadUi("模型已重新放置，调整数值已归零，正在自动保存。");
+  } catch (error) {
+    const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
+    updateModelLoadUi(cancelled ? "已取消重新放置，模型位置保持不变" : error instanceof Error ? error.message : "重新放置失败", !cancelled);
+  } finally {
+    if (modelLoadController === controller) modelLoadController = null;
+    modelLoadBusy = false; updateModelLoadUi();
+  }
+});
+
 $("#cancelModelLoad").addEventListener("click", () => {
-  if (!modelLoadController) return;
+  if (!modelLoadController || modelPlacementSaving) return;
   modelLoadController.abort();
   updateModelLoadUi("正在取消上传或转换任务…");
 });
@@ -2136,6 +2416,7 @@ $("#cancelModelLoad").addEventListener("click", () => {
 $("#modelPlacement").addEventListener("change", () => {
   const placement = value("#modelPlacement");
   $("#modelCustomFields").classList.toggle("hidden", placement !== "customGeo");
+  $("#modelPickHint").classList.toggle("hidden", placement !== "mapPick");
   $("#modelGaussFields").classList.toggle("hidden", placement !== "customGauss");
   $("#modelCoordinateHint").classList.toggle("hidden", placement !== "coordinates");
 });
@@ -2155,14 +2436,17 @@ $("#loadModel").addEventListener("click", async () => {
   if (!selectedModelFile) return toast("请先选择 DWG、RVT、SKP 或 GLB 文件", true);
   const extension = selectedModelFile.name.split(".").pop()?.toLowerCase() ?? "";
   if (!["dwg", "rvt", "skp", "glb"].includes(extension)) return toast("仅支持 DWG、RVT、SKP 和 GLB", true);
+  const sourceFile=selectedModelFile;
+  const selectedPlacement=value("#modelPlacement");
   const controller = new AbortController();
+  let stagedModel: Model | undefined;
   modelLoadController = controller;
   modelLoadBusy = true;
   updateModelLoadUi("正在检查本机模型转换能力…");
   try {
     const converterStatus = await refreshConverterStatus(controller.signal);
     const maxUploadBytes = converterStatus?.maxUploadBytes ?? 1024 * 1024 * 1024;
-    if (selectedModelFile.size > maxUploadBytes) {
+    if (sourceFile.size > maxUploadBytes) {
       throw new Error(`模型文件超过 ${(maxUploadBytes / 1024 / 1024 / 1024).toFixed(0)}GB 限制，未开始上传`);
     }
     if (extension !== "glb") {
@@ -2179,19 +2463,21 @@ $("#loadModel").addEventListener("click", async () => {
     if (controller.signal.aborted) throw new DOMException("模型任务已取消", "AbortError");
     setStatus(extension === "glb" ? "正在加载三维模型…" : `正在转换 ${extension.toUpperCase()}…`);
     updateModelLoadUi(extension === "glb" ? "正在校验并加载 GLB…" : `正在上传并转换 ${extension.toUpperCase()}；可随时取消。`);
-    const response = await fetch(`/__models/import?extension=${encodeURIComponent(extension)}&name=${encodeURIComponent(selectedModelFile.name)}`, {
+    const response = await fetch(`/__models/import?extension=${encodeURIComponent(extension)}&name=${encodeURIComponent(sourceFile.name)}`, {
       method: "POST",
       headers: { "Content-Type": "application/octet-stream" },
-      body: selectedModelFile,
+      body: sourceFile,
       signal: controller.signal,
     });
-    const result = await response.json().catch(() => ({ ok: false, error: `模型服务返回了无法识别的结果（HTTP ${response.status}）` })) as { ok: boolean; url?: string; converted?: boolean; error?: string };
+    const result = await response.json().catch(() => ({ ok: false, error: `模型服务返回了无法识别的结果（HTTP ${response.status}）` })) as { ok: boolean; url?: string; converted?: boolean; error?: string; warnings?: string[] };
     if (!result.ok || !result.url) throw new Error(result.error || "模型转换失败");
     if (controller.signal.aborted) throw new DOMException("模型任务已取消", "AbortError");
-    const placement = value("#modelPlacement");
+    const placement = selectedPlacement;
     let modelMatrix = Matrix4.clone(Matrix4.IDENTITY);
     let modelScale = numeric("#modelScale", 1);
-    if (placement === "customGeo") {
+    if (placement === "mapPick") {
+      modelMatrix=Transforms.eastNorthUpToFixedFrame(getPlacementPreviewPosition(viewer));
+    } else if (placement === "customGeo") {
       modelMatrix = Transforms.headingPitchRollToFixedFrame(Cartesian3.fromDegrees(numeric("#modelLon"), numeric("#modelLat"), numeric("#modelHeight")), new HeadingPitchRoll(CesiumMath.toRadians(numeric("#modelHeading")), 0, 0));
     } else if (placement === "customGauss") {
       const centralMeridian = parseLongitude(value("#modelCentralMeridian"));
@@ -2205,30 +2491,47 @@ $("#loadModel").addEventListener("click", async () => {
       modelMatrix = Transforms.headingPitchRollToFixedFrame(Cartesian3.fromDegrees(longitude, latitude, numeric("#modelGaussHeight")), new HeadingPitchRoll(CesiumMath.toRadians(numeric("#modelGaussHeading")), 0, 0));
       modelScale = numeric("#modelGaussScale", 1);
     }
+    if(!Number.isFinite(modelScale)||modelScale<=0)throw new Error("模型比例必须是大于 0 的有效数字");
+    const bounds=placement==="mapPick" ? await fetchGlbPlacementBounds(extension === "glb" ? sourceFile : result.url,{signal:controller.signal}) : null;
     const id = crypto.randomUUID();
     const model = await Model.fromGltfAsync({ url: result.url, modelMatrix, scale: modelScale, minimumPixelSize: 0, id: { engineeringModelId: id } });
+    stagedModel=model;
+    if(controller.signal.aborted){model.destroy();stagedModel=undefined;throw new DOMException("模型任务已取消","AbortError");}
     viewer.scene.primitives.add(model);
     try { await waitForModelReady(model, 30_000, controller.signal); }
-    catch (error) { viewer.scene.primitives.remove(model); throw error; }
+    catch (error) { throw error; }
+    if(placement==="mapPick") {
+      const target=await pickModelLocation(model,controller);
+      model.modelMatrix=createAnchoredModelMatrix(model,target,0,bounds);
+      viewer.scene.requestRender();
+    }
+    if(controller.signal.aborted)throw new DOMException("模型任务已取消","AbortError");
+    modelPlacementSaving=true;updateModelLoadUi("位置已选定，正在保存模型和放置位置…");
     try {
-      await projectLibrary!.save(id, selectedModelFile.name, "Model", {
+      await projectLibrary!.save(id, sourceFile.name, "Model", {
         matrix: Matrix4.toArray(model.modelMatrix), scale: model.scale,
-      }, { source: { name: selectedModelFile.name, blob: selectedModelFile } },
+      }, { source: { name: sourceFile.name, blob: sourceFile } },
       extension === "glb" ? undefined : { type: "model", url: result.url });
-    } catch (error) { viewer.scene.primitives.remove(model); throw error; }
-    addImport(selectedModelFile.name, "Model", model, id);
-    modelEditor.add(id, selectedModelFile.name, model);
+    } catch (error) { throw error; }
+    stagedModel=undefined;
+    modelPlacementBounds.set(id,bounds);
+    addImport(sourceFile.name, "Model", model, id);
+    modelEditor.add(id, sourceFile.name, model);
     viewer.camera.flyToBoundingSphere(model.boundingSphere, { duration: 1.5 });
-    updateModelLoadUi(`${selectedModelFile.name} 已成功加载。`);
-    toast(result.converted ? `${extension.toUpperCase()} 已自动转换并加载` : "模型已加载，可用鼠标调整位置");
+    const warnings = Array.isArray(result.warnings) ? result.warnings.filter(item => typeof item === "string").join("；") : "";
+    updateModelLoadUi(`${sourceFile.name} 已放置并保存，可直接平移、升降或旋转调整。${warnings ? ` 转换提示：${warnings}` : ""}`);
+    toast(result.converted ? `${extension.toUpperCase()} 已转换并放置，可继续调整位置` : "模型已加载，可用鼠标调整位置");
   } catch (error) {
     const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
-    const message = cancelled ? "模型上传或转换已取消，临时文件已清理" : error instanceof Error ? error.message : "模型加载失败";
+    const message = cancelled ? "模型导入或放置已取消，未加入场景资料" : error instanceof Error ? error.message : "模型加载失败";
     updateModelLoadUi(message, !cancelled);
     toast(message, !cancelled);
   }
   finally {
     if (modelLoadController === controller) modelLoadController = null;
+    if(stagedModel&&!stagedModel.isDestroyed())viewer.scene.primitives.remove(stagedModel);
+    modelPlacementPending=false;modelPlacementSaving=false;
+    $("#modelPlacementPrompt").hidden=true;
     modelLoadBusy = false;
     updateModelLoadUi();
     setStatus("Cesium 已就绪");
@@ -2236,7 +2539,44 @@ $("#loadModel").addEventListener("click", async () => {
   }
 });
 
-document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => tab.addEventListener("click", () => {
+// Capture before older modules' tab handlers: neither module may discard the other's draft.
+let workbenchNavigationGeneration = 0;
+let requestedMachineryRecord: string | undefined;
+let requestedRailDisplayObject: {kind: string; id: string} | undefined;
+document.addEventListener('click', event => {
+  const target = (event.target as Element).closest<HTMLElement>('.tab,#openSafetyWorkspace,#openMarkupWorkspace,#openWorkbenchMachinery,[data-machinery-action="edit"]');
+  if (target && target.dataset.tab!=="models" && modelLoadBusy && !modelPlacementSaving)modelLoadController?.abort();
+  if (!target || managementWorkspace?.isOpen) return;
+  setWorkbenchDock('editor');
+  const machineryEntry = ['machinery', 'rail-safety'].includes(target.dataset.tab || '') || target.id === 'openWorkbenchMachinery' || target.dataset.machineryAction === 'edit';
+  const markupDraft = document.querySelector<HTMLButtonElement>('#markupCancelDrawing');
+  if (machineryEntry && markupDraft && !markupDraft.disabled) {
+    event.preventDefault(); event.stopImmediatePropagation(); toast('请先完成或取消当前标绘，再打开施工机械。', true); return;
+  }
+  if (!machineryEntry && managementWorkspace && !managementWorkspace.prepareWorkbenchNavigation()) {
+    event.preventDefault(); event.stopImmediatePropagation(); return;
+  }
+  if (target.dataset.tab !== "videoar") videoModelOverlay?.setPanelActive(false);
+  ++workbenchNavigationGeneration;
+}, true);
+
+document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => tab.addEventListener("click", async () => {
+  if (tab.dataset.tab === 'machinery') {
+    const navigation = workbenchNavigationGeneration, recordId = requestedMachineryRecord; requestedMachineryRecord = undefined;
+    try {
+      const workspace = await ensureManagementWorkspace();
+      if (navigation !== workbenchNavigationGeneration || !await workspace.openWorkbenchMachinery(recordId, () => navigation === workbenchNavigationGeneration)) return;
+      if (navigation !== workbenchNavigationGeneration) return;
+    } catch (error) { toast(error instanceof Error ? error.message : String(error), true); return; }
+  } else if (tab.dataset.tab === 'rail-safety') {
+    const navigation = workbenchNavigationGeneration;
+    try {
+      const workspace = await ensureManagementWorkspace();
+      if (navigation !== workbenchNavigationGeneration || !await workspace.openWorkbenchRailSafety(() => navigation === workbenchNavigationGeneration)) return;
+      if (requestedRailDisplayObject) { workspace.selectRailDisplayObject(requestedRailDisplayObject.kind, requestedRailDisplayObject.id); requestedRailDisplayObject = undefined; }
+    } catch (error) { toast(error instanceof Error ? error.message : String(error), true); return; }
+  } else if (managementWorkspace && !managementWorkspace.prepareWorkbenchNavigation()) return;
+  setWorkbenchDock("editor");
   const previousTab = document.querySelector<HTMLButtonElement>(".tab.active")?.dataset.tab;
   const leavingSandTable = previousTab === "sandtable"
     && tab.dataset.tab !== "sandtable";
@@ -2255,7 +2595,8 @@ document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => tab.addEve
     sandTableFacilities?.activate();
     sandTablePresentation?.refresh();
   }
-  videoArFusion.setPanelActive(tab.dataset.tab === "videoar");
+  videoArFusion.setPanelActive(false);
+  videoModelOverlay?.setPanelActive(tab.dataset.tab === "videoar");
   document.querySelectorAll(".tab,.panel").forEach((element) => element.classList.remove("active"));
   document.querySelectorAll<HTMLButtonElement>(".tab").forEach((item) => item.removeAttribute("aria-current"));
   tab.classList.add("active");
@@ -2348,7 +2689,6 @@ $("#loadCad").addEventListener("click", async () => {
       data: { name: lowerName.endsWith(".cadimport") ? cadFile.name : cadImportFileName(cadFile.name), blob: lowerName.endsWith(".dwg") ? generatedCadImport!.blob : cadFile },
     });
     let clampedVertices = 0;
-    let skippedClampVertices = 0;
     const hasTileset = imports.some((item) => item.kind === "3D Tiles");
     const hasOrdinaryModel = imports.some((item) => item.kind === "Model");
     const requiresOrdinaryModelSampling = displayMode === "model" && !hasTileset && hasOrdinaryModel;
@@ -2371,9 +2711,10 @@ $("#loadCad").addEventListener("click", async () => {
         controller.signal,
       );
       setStatus("正在分批将 CAD 依附到模型表面…");
-      const clampResult = await clampCadToScene(dataSource, viewer.scene, 2000, controller.signal);
+      const clampResult = await clampCadToScene(dataSource, viewer.scene, {
+        signal: controller.signal, objectsToExclude: getCadModelSamplingExclusions(imports),
+      });
       clampedVertices = clampResult.clamped;
-      skippedClampVertices = clampResult.skipped;
       useSampledCadHeights(dataSource);
       cadBoundingSphere = getCadBoundingSphere(dataSource);
       featureCount = dataSource.entities.values.length;
@@ -2416,7 +2757,7 @@ $("#loadCad").addEventListener("click", async () => {
       : displayMode === "model"
         ? hasTileset
           ? "，已启用倾斜摄影实时贴附"
-          : `，已依附普通模型（采样 ${clampedVertices} 个顶点${skippedClampVertices ? `，为防止内存溢出跳过 ${skippedClampVertices} 个` : ""}）`
+          : `，已依附普通模型（采样全部 ${clampedVertices} 个顶点）`
         : "";
     toast(`CAD 已加载：${featureCount} 个对象${modeLabel}${hidden ? `，已忽略 ${hidden} 个冻结/关闭图层对象` : ""}${skipped ? `，${skipped} 个复杂或无效对象未展开` : ""}${legacyNotice}`);
   } catch (error) {
@@ -2695,10 +3036,13 @@ $("#clearAll").addEventListener("click", async () => {
   await projectLibrary?.ready;
   await projectLibrary?.clear();
 });
-$("#homeView").addEventListener("click", () => viewer.camera.flyTo({
+$("#homeView").addEventListener("click", () => {
+  videoModelOverlay?.setPanelActive(false);
+  viewer.camera.flyTo({
   destination: Cartesian3.fromDegrees(105, 35, 18_000_000),
   orientation: { heading: 0, pitch: CesiumMath.toRadians(-90), roll: 0 },
-}));
+  });
+});
 
 const pointer = new ScreenSpaceEventHandler(viewer.scene.canvas);
 pointer.setInputAction((movement: { endPosition: Cartesian2 }) => {
@@ -2709,12 +3053,11 @@ pointer.setInputAction((movement: { endPosition: Cartesian2 }) => {
   $("#coords").textContent = `经度 ${CesiumMath.toDegrees(position.longitude).toFixed(6)} · 纬度 ${CesiumMath.toDegrees(position.latitude).toFixed(6)} · 高程 ${position.height.toFixed(1)}m`;
 }, ScreenSpaceEventType.MOUSE_MOVE);
 
-async function openSafetyWorkspace(): Promise<void> {
-  try {
+async function ensureManagementWorkspace(): Promise<ManagementWorkspace> {
     safetyWorkspaceLoading ??= import("./safetyWorkspace").then(({ SafetyWorkspace }) => {
       safetyWorkspace = new SafetyWorkspace({
         viewer, host: $("#safetyWorkspaceHost"), ready: () => projectLibrary!.ready,
-        getImports: () => imports,
+        getImports: () => imports.map(item => ({ ...item, visible: isImportDisplayed(item) })),
         getModelQualityStates, subscribeModelQuality,
         getVideoDiagnostics: () => { const diagnostics = videoArFusion.getDiagnostics(); return { ...diagnostics, media: { ...diagnostics.media, recordId: projectLibrary?.activeVideoRecordId || null } }; },
         setVideoTextureQuality: mode => videoArFusion.setTextureQuality(mode),
@@ -2727,15 +3070,17 @@ async function openSafetyWorkspace(): Promise<void> {
           const item = imports.find(record => record.id === id);
           if (item) setImportVisibility(item, visible, { silent: true });
         },
-        setVideoPanelActive: active => videoArFusion.setPanelActive(active),
+        setVideoPanelActive: active => { if (active) videoModelOverlay?.setPanelActive(false); videoArFusion.setPanelActive(active); },
         getPlaybackSource: () => ({ ...videoArFusion.getSharedPlaybackSource(), recordId: projectLibrary!.activeVideoRecordId }),
         syncVideoPlayback: () => videoArFusion.synchronizeSharedPlayback(),
-        clearVideoSource: () => videoArFusion.clear(),
+        clearVideoSource: () => { videoModelOverlay?.clear(); videoArFusion.clear(); },
         loadVideoSource: async recordId => {
+          if (projectLibrary!.records.get(recordId)?.settings.video?.mode === "cc-overlay") throw new Error("这是 CC 空三融合录像，请在“视频 AR”中打开并选择工程对象");
           await projectLibrary!.restore(recordId);
           if (projectLibrary!.activeVideoRecordId !== recordId) throw new Error("视频来源未能加载，请重试");
         },
         prepareOpen: () => {
+          videoModelOverlay?.setPanelActive(false);
           digitalTwinOverview.close();
           electronicSandTable?.stopTour();
           sandTablePresentation?.deactivate();
@@ -2761,23 +3106,209 @@ async function openSafetyWorkspace(): Promise<void> {
       return safetyWorkspace;
     }).catch(error => { safetyWorkspaceLoading = undefined; throw error; });
     const sceneWorkspace = await safetyWorkspaceLoading;
-    if (new URLSearchParams(window.location.search).get("interface") === "legacy") await sceneWorkspace.open();
-    else {
-      managementWorkspaceLoading ??= import("./managementWorkspace").then(({ ManagementWorkspace }) => {
-        managementWorkspace = new ManagementWorkspace(sceneWorkspace, $("#safetyWorkspaceHost"));
-        if (import.meta.env.DEV) Object.assign(window, { __managementWorkspace: managementWorkspace });
-        return managementWorkspace;
-      }).catch(error => { managementWorkspaceLoading = undefined; throw error; });
-      await (await managementWorkspaceLoading).open();
-    }
-  } catch (error) { toast(`项目统筹平台打开失败：${error instanceof Error ? error.message : String(error)}`, true); }
+    managementWorkspaceLoading ??= import("./managementWorkspace").then(({ ManagementWorkspace }) => {
+      managementWorkspace = new ManagementWorkspace(sceneWorkspace, $("#safetyWorkspaceHost"), {
+        panelHost: $("#workbenchEditorHost"), onDisplayManager: () => setWorkbenchDock("display"),
+        onDisplayMount: host => { sceneDisplayPanel?.mount(host ?? $("#workbenchDisplayHost")); scheduleSceneDisplay(); },
+        onChange: renderWorkbenchMachinery,
+        onPanelChange: setWorkbenchMachineryPanelOpen,
+        pickPosition: pixel => {
+          // Imported engineering meshes are primitives; transient entity overlays must
+          // not become a ground position, including a previously rendered depth frame.
+          const sources = Array.from({ length: viewer.dataSources.length }, (_, i) => viewer.dataSources.get(i));
+          const visibility = sources.map(source => source.show), entitiesVisible = viewer.entities.show;
+          try {
+            for (const source of sources) source.show = false;
+            viewer.entities.show = false; viewer.render();
+            const picked = viewer.scene.pick(pixel);
+            const imported = imports.find(item => isImportDisplayed(item) && (item.resource as {show:boolean}).show && (item.kind === '3D Tiles' || item.kind === 'Model') &&
+              (picked?.primitive === item.resource || picked?.primitive?.tileset === item.resource || picked?.tileset === item.resource));
+            if (!imported || !viewer.scene.pickPositionSupported) return undefined;
+            const point = viewer.scene.pickPosition(pixel);
+            if (!point || ![point.x, point.y, point.z].every(Number.isFinite)) return undefined;
+            const position = Cartographic.fromCartesian(point);
+            return { longitude: CesiumMath.toDegrees(position.longitude), latitude: CesiumMath.toDegrees(position.latitude), height: position.height, source: 'model' as const };
+          } finally {
+            sources.forEach((source, index) => { source.show = visibility[index]; });
+            viewer.entities.show = entitiesVisible; viewer.scene.requestRender();
+          }
+        },
+      });
+      if (import.meta.env.DEV) Object.assign(window, { __managementWorkspace: managementWorkspace });
+      return managementWorkspace;
+    }).catch(error => { managementWorkspaceLoading = undefined; throw error; });
+    return managementWorkspaceLoading;
 }
+
+let resumeWorkbenchMachineryInteractions: (() => void) | undefined;
+function setWorkbenchMachineryPanelOpen(open: boolean): void {
+  if (open) setWorkbenchDock("editor");
+  if (!open) {
+    resumeWorkbenchMachineryInteractions?.(); resumeWorkbenchMachineryInteractions = undefined;
+    document.body.classList.remove('workbench-machinery-open'); return;
+  }
+  if (resumeWorkbenchMachineryInteractions) return;
+  const cancelMarkup = document.querySelector<HTMLButtonElement>('#markupCancelDrawing');
+  if (cancelMarkup && !cancelMarkup.disabled) throw new Error('请先完成或取消当前标绘，再打开施工机械。');
+  digitalTwinOverview.close(); electronicSandTable?.stopTour();
+  sandTablePresentation?.deactivate(); sandTableFacilities?.deactivate();
+  videoModelOverlay?.setPanelActive(false);
+  viewer.camera.cancelFlight(); videoArFusion.setPanelActive(false);
+  const restores: Array<() => void> = [];
+  try { restores.push(modelEditor.suspendInteractions(), subsurfaceTools.suspendInteractions(), foundationPitMonitoring.suspendInteractions()); }
+  catch (error) { for (const restore of restores.reverse()) restore(); throw error; }
+  resumeWorkbenchMachineryInteractions = () => { for (const restore of restores.reverse()) restore(); };
+  document.body.classList.add('workbench-machinery-open');
+}
+
+function renderWorkbenchMachinery(): void {
+  // Session changes must also revoke paused AR copies before another frame renders.
+  if (!isLibraryRecordAllowed({ kind: "Drone Video" })) videoModelOverlay?.setPanelActive(false);
+  videoModelOverlay?.refreshResources();
+  projectLibrary?.render();
+  scheduleSceneDisplay();
+}
+
+function setWorkbenchDock(mode: 'display' | 'editor'): void {
+  document.getElementById('workbenchDisplayHost')!.hidden = mode !== 'display';
+  document.getElementById('workbenchEditorHost')!.hidden = mode !== 'editor';
+  document.querySelectorAll<HTMLButtonElement>('[data-dock]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.dock === mode)));
+  if (mode === 'display') scheduleSceneDisplay();
+}
+function scheduleSceneDisplay(): void {
+  if (!sceneDisplayReady || sceneDisplayQueued) return;
+  sceneDisplayQueued = true;
+  queueMicrotask(() => { sceneDisplayQueued = false; if (sceneDisplayReady) syncSceneDisplay(); });
+}
+function syncSceneDisplay(): void {
+  if (!sceneDisplayPanel) return;
+  const state = managementWorkspace?.getWorkbenchMachineryState();
+  const items: SceneDisplayItem[] = [];
+  const context = JSON.stringify([state?.projectId, state?.actorId]);
+  const localRemoval = (action: {remove: () => void | Promise<void>; detail: string} | undefined) => {
+    if (!action || (state && !state.canEdit)) return undefined;
+    return { detail: action.detail, remove: async () => {
+      const current = managementWorkspace?.getWorkbenchMachineryState();
+      if (context !== JSON.stringify([current?.projectId, current?.actorId]) || (current && !current.canEdit)) throw new Error('项目或账号权限已变化，请刷新后再删除');
+      await action.remove(); syncSceneDisplay();
+    } };
+  };
+  foundationPitMonitoring.setDisplayContext(JSON.stringify([state?.projectId ?? 'workbench-local', state?.actorId ?? null]));
+  const layerTypes = { 'CAD': 'CAD 图纸', '3D Tiles': '实景模型', 'GIS': 'GIS 数据', 'Model': '工程模型', 'Drone Video': '无人机视频' };
+  for (const layer of imports.filter(isImportAllowed)) items.push({ id: `layer:${layer.id}`, name: layer.name, category: layerTypes[layer.kind], visible: layer.visible,
+    detail: layer.kind === '3D Tiles' ? modelQualityTrackers.get(layer.id)?.getState().label : undefined,
+    locate: () => { locateImport(layer); },
+    remove: async () => {
+      if(!isImportAllowed(layer))throw new Error('当前账号无法删除此资源');
+      if(projectLibrary?.records.has(layer.id)){if(!await projectLibrary.delete(layer.id,false))throw new Error('删除未完成，请检查资料库提示后重试');}
+      else if(imports.includes(layer))removeImport(layer);
+      syncSceneDisplay();
+    },
+    edit: layer.kind === 'Model' ? () => { if (managementWorkspace?.isOpen && !managementWorkspace.openEngineeringTool('models')) return; setWorkbenchDock('editor'); document.querySelector<HTMLButtonElement>('.tab[data-tab="models"]')?.click(); modelEditor.select(layer.id); } : undefined });
+  for (const record of state?.records ?? []) items.push({ ...managementWorkspace?.getDisplayObjectRemoval('machine', record.id), id: `machine:${record.id}`, name: record.name, category: '施工机械', visible: (record.machinery as {visible?:boolean})?.visible !== false,
+    locate: async () => { await managementWorkspace?.locateWorkbenchMachinery(record.id); },
+    edit: async () => { if (managementWorkspace?.isOpen) { await managementWorkspace.editFieldObject('machine', record.id); return; } requestedMachineryRecord = record.id; document.querySelector<HTMLButtonElement>('.tab[data-tab="machinery"]')?.click(); } });
+  const categories: Record<string,string> = { personnel: '防护人员', responsibility: '防护责任区', workArea: '人员工作区', limit: '铁路安全限界', envelope: '机械倾覆范围' };
+  for (const object of managementWorkspace?.getWorkbenchDisplayObjects() ?? []) items.push({ ...managementWorkspace?.getDisplayObjectRemoval(object.kind, object.id), id: object.key, name: object.name, category: categories[object.kind] ?? object.kind, visible: true,
+    locate: async () => { await managementWorkspace?.locateRailDisplayObject(object.id); },
+    edit: async () => { if (managementWorkspace?.isOpen) { await managementWorkspace.editFieldObject(object.kind, object.id); return; } requestedRailDisplayObject = { kind: object.kind, id: object.id }; document.querySelector<HTMLButtonElement>('.tab[data-tab="rail-safety"]')?.click(); } });
+  for (const object of managementWorkspace?.isOpen && !state?.canView ? [] : markupTools?.getDisplayItems() ?? []) items.push({ ...localRemoval(markupTools?.getDisplayObjectRemoval(object.id)), id: `markup:${object.id}`, name: object.name, category: '标绘对象', visible: object.defaultVisible,
+    edit: () => { if (managementWorkspace?.isOpen && !managementWorkspace.openEngineeringTool('markup')) return; document.querySelector<HTMLButtonElement>('.tab[data-tab="markup"]')?.click(); } });
+  for (const object of managementWorkspace?.isOpen && !state?.canView ? [] : foundationPitMonitoring.getDisplayItems()) items.push({ ...localRemoval(foundationPitMonitoring.getDisplayObjectRemoval(object.id)), id: object.id, name: object.name, category: object.kind === 'model' ? '基坑模型' : object.kind === 'marker' ? '基坑中心提示' : '基坑监测点', visible: object.defaultVisible, edit: () => { if (managementWorkspace?.isOpen && !managementWorkspace.openEngineeringTool('monitoring')) return; document.querySelector<HTMLButtonElement>('.tab[data-tab="monitoring"]')?.click(); } });
+  sceneDisplayPanel.setContext(state?.projectId ?? 'workbench-local', state?.actorId, items);
+  for (const layer of imports) applyImportDisplay(layer);
+}
+function applySceneDisplay(overrides: Record<string,boolean>, labelsVisible: boolean): void {
+  sceneDisplayOverrides = overrides;
+  if (videoModelOverlay?.active) {
+    videoModelOverlay.refreshResources();
+    for (const layer of imports) applyImportDisplay(layer);
+    return;
+  }
+  for (const layer of imports) applyImportDisplay(layer);
+  const markups: Record<string,boolean> = Object.create(null);
+  for (const [key, visible] of Object.entries(overrides)) if (key.startsWith('markup:')) markups[key.slice(7)] = visible;
+  markupTools?.setDisplayVisibility(markups, labelsVisible);
+  const pits = Object.fromEntries(Object.entries(overrides).filter(([key]) => key.startsWith('pit:')));
+  foundationPitMonitoring.setDisplayVisibility(pits, labelsVisible);
+  const pitSwitch = document.querySelector<HTMLInputElement>('#pitMonitoringVisible');
+  if (pitSwitch) {
+    const pitItems = foundationPitMonitoring.getDisplayItems(), shown = pitItems.filter(item => item.visible).length;
+    pitSwitch.checked = !!pitItems.length && shown === pitItems.length; pitSwitch.indeterminate = shown > 0 && shown < pitItems.length;
+  }
+  managementWorkspace?.setWorkbenchDisplayVisibility(overrides, labelsVisible);
+  viewer.scene.requestRender();
+}
+function isImportAllowed(layer: ImportRecord): boolean {
+  const access = managementWorkspace?.getWorkbenchLayerAccess();
+  return !access || (layer.kind === 'CAD' || layer.kind === 'GIS' ? access.files : access.models);
+}
+function isLibraryRecordAllowed(record: Pick<LibraryRecord, "kind">): boolean {
+  const access = managementWorkspace?.getWorkbenchLayerAccess();
+  if (!access) return true;
+  return record.kind === "Drone Video" ? access.media : record.kind === "CAD" || record.kind === "GIS" ? access.files : access.models;
+}
+function isImportDisplayed(layer: ImportRecord): boolean {
+  return isImportAllowed(layer) && (sceneDisplayOverrides[`layer:${layer.id}`] ?? layer.visible);
+}
+function applyImportDisplay(layer: ImportRecord): void {
+  const resource = layer.resource as {show:boolean;isDestroyed?:()=>boolean};
+  if (resource.isDestroyed?.()) return;
+  // AR owns display preferences, but never the account's access permissions.
+  if (videoModelOverlay?.active && isImportAllowed(layer)) return;
+  const visible = isImportDisplayed(layer);
+  if (resource.show === visible) return;
+  resource.show = visible;
+  if (layer.kind === '3D Tiles') { modelQualityTrackers.get(layer.id)?.invalidateView(); videoArFusion.invalidateProjection('display-preference-changed'); }
+  if (!visible && layer.kind === 'Model') modelEditor.select(null);
+}
+
+
+async function openSafetyWorkspace(): Promise<void> {
+  try {
+    const workspace = await ensureManagementWorkspace();
+    if (!workspace.prepareWorkbenchNavigation()) return;
+    videoModelOverlay?.setPanelActive(false);
+    if (new URLSearchParams(window.location.search).get('interface') === 'legacy') await safetyWorkspace!.open();
+    else await workspace.open();
+  } catch (error) { toast(`现场工作台打开失败：${error instanceof Error ? error.message : String(error)}`, true); }
+}
+$('#openWorkbenchMachinery').addEventListener('click', () => document.querySelector<HTMLButtonElement>('.tab[data-tab="machinery"]')?.click());
+$('#reopenRailSafety').addEventListener('click', () => document.querySelector<HTMLButtonElement>('.tab[data-tab="rail-safety"]')?.click());
+$('#machineryAccountEntry').addEventListener('click', () => void openSafetyWorkspace());
 $("#openSafetyWorkspace").addEventListener("click", () => void openSafetyWorkspace());
+// The display dock and business editors share one right-hand column; switching never closes a draft.
+const libraryDetails = document.querySelector<HTMLElement>('.saved-library')!;
+const libraryActions = document.createElement('div'); libraryActions.className = 'workbench-library-actions';
+libraryActions.append(document.getElementById('clearAll')!, document.getElementById('openMarkupWorkspace')!);
+libraryDetails.append(libraryActions);
+document.querySelector('.workbench-parameters .panel-scroll')!.append(libraryDetails);
+sceneDisplayPanel = new SceneDisplayPanel($('#workbenchDisplayHost'), { onApply: applySceneDisplay, onError: message => toast(String(message), true) });
+sceneDisplayReady = true;
+document.querySelectorAll<HTMLButtonElement>('[data-dock]').forEach(button => button.addEventListener('click', () => setWorkbenchDock(button.dataset.dock as 'display' | 'editor')));
+// Existing visual switches also write the single personal display state.
+document.getElementById('markupList')?.addEventListener('click', event => {
+  const button = (event.target as Element).closest<HTMLButtonElement>('[data-action="visibility"]');
+  const id = button?.closest<HTMLElement>('[data-markup-id]')?.dataset.markupId;
+  const item = id && markupTools?.getDisplayItems().find(item => item.id === id);
+  if (!button || !item) return;
+  event.preventDefault(); event.stopImmediatePropagation(); sceneDisplayPanel?.setVisibility([`markup:${item.id}`], !item.visible);
+}, true);
+document.getElementById('pitMonitoringVisible')?.addEventListener('change', event => {
+  const visible = (event.target as HTMLInputElement).checked;
+  event.stopImmediatePropagation(); sceneDisplayPanel?.setVisibility(foundationPitMonitoring.getDisplayItems().map(item => item.id), visible);
+}, true);
+markupTools?.subscribeOverview(scheduleSceneDisplay);
+foundationPitMonitoring.subscribeOverview(scheduleSceneDisplay);
+onPageDispose(() => { sceneDisplayReady = false; sceneDisplayPanel?.dispose(); });
+scheduleSceneDisplay();
 void projectLibrary.start().then(() => {
   renderLayers(); viewer.scene.requestRender();
+  void ensureManagementWorkspace().then(() => renderWorkbenchMachinery()).catch(error => { const list = document.getElementById('workbenchMachineryObjects'); if (list) list.textContent = '施工机械初始化失败：' + (error instanceof Error ? error.message : String(error)); });
   if (["safety", "management"].includes(new URLSearchParams(window.location.search).get("screen") || "")) void openSafetyWorkspace();
 });
 $("#basemap").addEventListener("change", () => projectLibrary?.saveView());
 
 $("#videoArClear").textContent = "关闭回放";
 $("#videoArClear").title = "关闭当前回放，已保存资料仍保留；永久删除请使用本机资料库";
+

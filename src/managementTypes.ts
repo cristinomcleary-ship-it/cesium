@@ -1,3 +1,5 @@
+import type { MachineryMetadata } from "./machineryTypes.ts";
+export type { FieldObjectReference, GuardPersonnel, RailwayPlanSource } from './railwayWorkflowTypes.ts';
 /** Persistent management API. Identities and capabilities come from the server session. */
 export const MANAGEMENT_API = "/__management";
 export type ManagementRole = "owner" | "manager" | "planner" | "quality" | "inspector" | "resource" | "document" | "worker" | "viewer";
@@ -5,10 +7,14 @@ export type ManagementPermission = "read" | "plan" | "confirm" | "field" | "revi
 export type ManagementSession = { userId: string; displayName: string; roles: ManagementRole[]; authMode: "local-owner" | "local-account"; permissions: ManagementPermission[]; expiresAt?: string };
 export type ManagementProject = { id: string; name: string; revision: number; timezone: string; calendar: { workingDays: number[] }; horizontalCrs: string; verticalDatum: string; units: string; isTest: boolean; createdAt: string; updatedAt: string };
 export type ManagementMember = { id: string; projectId: string; revision: number; username: string; displayName: string; roles: ManagementRole[]; active: boolean; resourceAccess: { models: boolean; files: boolean; media: boolean }; taskIds?: string[]; createdAt: string; updatedAt: string };
-export const MANAGEMENT_COLLECTIONS = ["wbs","tasks","baselines","commitments","progress","dailyLogs","checks","issues","inspections","resources","resourceNeeds","allocations","resourceUsage","batches","materialTransactions","tests","documents","documentVersions","documentRequirements","links","technicalQueries","changes","meetings","actions","evidence","anchors","bookmarks","monitoring","reports"] as const;
+export const MANAGEMENT_COLLECTIONS = ["wbs","tasks","baselines","commitments","progress","dailyLogs","checks","issues","inspections","resources","resourceNeeds","allocations","resourceUsage","batches","materialTransactions","tests","documents","documentVersions","documentRequirements","links","technicalQueries","changes","meetings","actions","evidence","anchors","bookmarks","monitoring","reports","railSafety"] as const;
 export type ManagementCollection = typeof MANAGEMENT_COLLECTIONS[number];
-export type ManagementRecord = { id: string; projectId: string; revision: number; name: string; status: string; createdAt: string; updatedAt: string; createdBy: string; taskId?: string; taskIds?: string[]; ownerId?: string; dueDate?: string; evidenceIds?: string[]; [key: string]: unknown };
-export type PlanTask = ManagementRecord & { status: "draft" | "published" | "in-progress" | "pending-completion" | "completed" | "cancelled"; wbsId?: string; areaIds: string[]; predecessorIds: string[]; planStart?: string; planEnd?: string; forecastEnd?: string; forecastReason?: string; targetQuantity?: number; unit?: string; weight?: number; milestone?: boolean; planVersion: number; completionConfirmedAt?: string; qualityAcceptedAt?: string };
+export type ManagementRecord = { id: string; projectId: string; revision: number; name: string; status: string; createdAt: string; updatedAt: string; createdBy: string; taskId?: string; taskIds?: string[]; ownerId?: string; dueDate?: string; evidenceIds?: string[]; machinery?: MachineryMetadata; [key: string]: unknown };
+/** Optional railway planning records. Local minute values use the project's Asia/Shanghai civil time;
+ * recording a window or permit reference never constitutes permission to start work. */
+export type RailwayTaskDetails = { railwayLine?: string; railwaySection?: string; railwayMileage?: string; railwayTrack?: string; railwayWorkType?: string; workWindowStart?: string; workWindowEnd?: string; permitReference?: string; batchLabel?: string };
+export type TaskExecutionEvent = { action: "pause" | "resume"; at: string; by: string; reason: string; taskRevision: number };
+export type PlanTask = ManagementRecord & RailwayTaskDetails & { status: "draft" | "published" | "in-progress" | "paused" | "pending-completion" | "completed" | "cancelled"; wbsId?: string; areaIds: string[]; resourceIds?: string[]; predecessorIds: string[]; planStart?: string; planEnd?: string; forecastEnd?: string; forecastReason?: string; targetQuantity?: number; unit?: string; weight?: number; milestone?: boolean; planVersion: number; completionConfirmedAt?: string; qualityAcceptedAt?: string; pausedAt?: string; pausedBy?: string; pauseReason?: string; resumedAt?: string; resumedBy?: string; resumeReason?: string; executionHistory?: TaskExecutionEvent[] };
 export type ProgressRevision = { revision: number; quantity: number; unit: string; businessDate: string; shift: string; crew: string; measurementKey: string; explanation: string; evidenceIds: string[]; status: "draft" | "submitted" | "returned" | "confirmed"; createdAt: string; submittedAt?: string; confirmedAt?: string; confirmedBy?: string; returnReason?: string };
 export type ProgressEntry = ManagementRecord & { taskId: string; entryId: string; revisions: ProgressRevision[]; confirmations: { entryRevision: number; confirmedAt: string; confirmedBy: string; revokedAt?: string; revokedBy?: string; reason?: string }[] };
 /** User-recorded actual attendance/use. Allocation remains a separate planned record. */
@@ -21,7 +27,7 @@ export type ManagementAudit = { id: number; projectId: string; actorId: string; 
 export type ManagementSnapshot = { schemaVersion: 1; revision: number; projectId: string; session: ManagementSession; projects: ManagementProject[]; members: ManagementMember[]; collections: Record<ManagementCollection, ManagementRecord[]>; updatedAt: string; audit: ManagementAudit[] };
 export type ManagementCommandType =
  | "project.create" | "project.update" | "member.save"
- | "wbs.create" | "wbs.update" | "task.create" | "task.update" | "task.publish" | "task.start" | "task.request-completion" | "task.confirm-completion" | "task.cancel" | "task.forecast"
+ | "wbs.create" | "wbs.update" | "task.create" | "task.update" | "task.publish" | "task.start" | "task.pause" | "task.resume" | "task.request-completion" | "task.confirm-completion" | "task.cancel" | "task.forecast"
  | "task.conditions.configure"
  | "baseline.create" | "baseline.approve" | "commitment.create" | "commitment.publish" | "commitment.change"
  | "progress.create" | "progress.revise" | "progress.submit" | "progress.return" | "progress.confirm" | "progress.revoke" | "dailyLog.create"
@@ -29,6 +35,8 @@ export type ManagementCommandType =
  | "issue.create" | "issue.assign" | "issue.start" | "issue.submit" | "issue.review" | "issue.dismiss" | "issue.reschedule"
  | "inspection.create" | "inspection.record" | "inspection.confirm"
  | "resource.create" | "resource.update" | "need.create" | "need.update" | "need.confirm" | "allocation.create" | "allocation.cancel" | "usage.create" | "usage.confirm"
+ | "machinery.save" | "machinery.remove"
+ | "railSafety.save" | "railSafety.remove" | "railSafety.reportRisk" | "railSafety.personnel"
  | "batch.create" | "batch.receive" | "batch.accept" | "test.create" | "test.confirm" | "material.issue" | "material.return" | "material.correct"
  | "document.create" | "document.version" | "document.submit" | "document.return" | "document.publish" | "document.void" | "document.requirement" | "document.fulfill" | "link.create" | "link.remove"
  | "technical.create" | "technical.comment" | "technical.answer" | "technical.publish" | "change.create" | "change.confirm"

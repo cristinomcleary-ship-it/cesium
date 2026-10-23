@@ -1,0 +1,193 @@
+{
+  "schema": "machinery-asset/v1",
+  "version": "2026-10-13-v1",
+  "id": "pile",
+  "name": "桩机",
+  "type": "pile_rig",
+  "config": {
+    "schema": "machinery-parametric-parts/v1",
+    "type": "pile_rig",
+    "name": "桩机",
+    "coordinate_system": "right-handed Y-up",
+    "units": "m",
+    "source_unit_m_per_unit": 0.001,
+    "unit_evidence": {
+      "fbx_unit_scale_factor_cm": 0.1,
+      "conversion_to_m": 0.001,
+      "world_npz_already_metres": true,
+      "additional_scale_applied": 1.0,
+      "translation_applied": [
+        0,
+        0,
+        0
+      ]
+    },
+    "excluded_meshes": [
+      {
+        "name": "3d66-Editable_mesh-22846218-001",
+        "reason": "user-confirmed oversized scene mesh; omitted from derived output only",
+        "vertices": 30,
+        "triangles": 26
+      }
+    ],
+    "source_preserved": true,
+    "source_vertices_preserved": true,
+    "source_face_order_preserved": true,
+    "source_material_mapping_preserved": true,
+    "default_total_height_m": 1.9759868909710676,
+    "ground_y_m": -5.501109060901399e-07,
+    "fixed_bottom_upper_y_m": 0.3334005312616024,
+    "fixed_bottom_height_m": 0.3334010813725085,
+    "top_head_lower_y_m": 1.835585833952955,
+    "top_head_height_m": 0.1404005069072065,
+    "adjustable_default_span_m": 1.5021853026913525,
+    "original_bounds_m": {
+      "min": [
+        4.030273956298828,
+        -5.501109060901399e-07,
+        2.0534386772807744
+      ],
+      "max": [
+        4.755241790771485,
+        1.9759863408601614,
+        2.8310254227299056
+      ],
+      "size": [
+        0.7249678344726567,
+        1.9759868909710676,
+        0.7775867454491312
+      ]
+    },
+    "parameters": [
+      {
+        "key": "overall_scale",
+        "label": "整体缩放倍率",
+        "unit": "×",
+        "original": 1.0,
+        "min": 0,
+        "min_exclusive": true,
+        "step": 0.1,
+        "description": "1×为原模型大小；调整倍率会同时改变整机及各部件尺寸。"
+      },
+      {
+        "key": "body_height_m",
+        "label": "机身参考高度",
+        "unit": "m",
+        "original": 0.3334010813725085,
+        "min": 0,
+        "min_exclusive": true,
+        "step": 0.01,
+        "description": "地面至底部机体平台上表面；修改此值按比例调整整机。"
+      },
+      {
+        "key": "total_height_m",
+        "label": "整机总高度",
+        "unit": "m",
+        "original": 1.9759868909710676,
+        "step": 0.01,
+        "min": 0,
+        "min_exclusive": true,
+        "description": "联动时整机等比例缩放；独立模式固定底部，仅改变桅杆以达到目标总高。"
+      }
+    ],
+    "parts": [
+      {
+        "id": 0,
+        "key": "fixed_lower_body",
+        "label": "底盘与底部机体",
+        "vertex_count": 3145,
+        "transform": "identity"
+      },
+      {
+        "id": 1,
+        "key": "adjustable_mast",
+        "label": "桅杆及竖向作业机构",
+        "vertex_count": 265,
+        "transform": "Y stretch about fixed_bottom_upper_y_m; X/Z unchanged"
+      },
+      {
+        "id": 2,
+        "key": "rigid_top_head",
+        "label": "顶部帽架",
+        "vertex_count": 40,
+        "transform": "translate Y by requestedHeight-defaultHeight; X/Z unchanged"
+      }
+    ],
+    "deformation": {
+      "method": "piecewise-vertical-extension",
+      "input": "total_height_m",
+      "scale_formula": "s=(requestedHeight-fixed_bottom_height_m-top_head_height_m)/adjustable_default_span_m",
+      "fixed_formula": "y_new=y",
+      "adjustable_formula": "y_new=fixed_bottom_upper_y_m+(y-fixed_bottom_upper_y_m)*s",
+      "head_formula": "y_new=y+(requestedHeight-default_total_height_m)",
+      "default_is_identity": true,
+      "base_vertices_invariant": true,
+      "horizontal_coordinates_invariant": true,
+      "ground_invariant": true,
+      "use_source_every_update": true
+    },
+    "limitations": [
+      "默认尺寸为上传FBX声明单位换算所得，未核定为实机尺寸。",
+      "参数控制现有上部网格的显示高度，不代表真实伸缩节数、机械行程或受力设计。",
+      "保留源网格顶点与面拓扑；跨分区三角形按变形后顶点线性插值，未另行切面。",
+      "底部固定范围内所有原始顶点保持不动；顶部区保留自身高度；总高按真实变形后包围盒计算。"
+    ],
+    "reference_dimensions": {
+      "anchor_m": [
+        4.430911621093751,
+        -5.501109060901399e-07,
+        2.3764096550639726
+      ],
+      "body_height_m": 0.3334010813725085,
+      "definition": "地面至底部机体平台上表面；修改此值按比例调整整机。",
+      "overall_height_m": 1.9759868909710676,
+      "ground_y_m": -5.501109060901399e-07,
+      "body_top_y_m": 0.3334005312616024
+    },
+    "local_parameters": [
+      {
+        "key": "total_height_m",
+        "label": "整机总高度",
+        "unit": "m",
+        "original": 1.9759868909710676,
+        "min": 0.474801588279715,
+        "min_exclusive": true,
+        "step": 0.01
+      }
+    ],
+    "parameter_policy": "默认原比例联动；最后编辑的尺寸为驱动。机身参考高度始终按整机比例调整。"
+  },
+  "vertexCount": 3450,
+  "triangleCount": 4925,
+  "paletteSize": 8,
+  "byteLength": 150381,
+  "arrays": {
+    "positions": {
+      "offset": 0,
+      "byteLength": 82800
+    },
+    "indices": {
+      "offset": 82800,
+      "byteLength": 59100
+    },
+    "partIds": {
+      "offset": 141904,
+      "byteLength": 3450
+    },
+    "palette": {
+      "offset": 145360,
+      "byteLength": 96
+    },
+    "faceColorIndices": {
+      "offset": 145456,
+      "byteLength": 4925
+    }
+  },
+  "chunks": [
+    {
+      "file": "chunk-000.bin",
+      "byteLength": 150381,
+      "sha256": "bd11a9889a8253696e607208bc010b7e02c2f528093185e9c926ae4c9eb8eac5"
+    }
+  ]
+}

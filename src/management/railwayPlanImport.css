@@ -1,0 +1,30 @@
+.rg-plan-dialog{pointer-events:auto;width:min(1160px,94vw);max-height:90vh;padding:0;border:1px solid #dbe4ef;border-radius:18px;color:#172b43;background:#f6f8fc;box-shadow:0 24px 80px #12253b44;font:14px/1.5 system-ui,sans-serif}.rg-plan-dialog::backdrop{background:#152b44a6;backdrop-filter:blur(3px)}.rg-plan-dialog *{box-sizing:border-box}.rg-plan-dialog header,.rg-plan-dialog footer{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 24px;background:#fff}.rg-plan-dialog header{border-bottom:1px solid #dfe7ef}.rg-plan-dialog h2{font-size:21px;margin:0}.rg-plan-dialog h3{font-size:15px;margin:0 0 12px}.rg-plan-dialog p{margin:6px 0;color:#53677c}.rg-plan-dialog button,.rg-plan-dialog input,.rg-plan-dialog select{font:inherit}.rg-plan-dialog button{border:1px solid #cbd8e5;border-radius:8px;padding:8px 14px;background:white;color:#233c55;cursor:pointer}.rg-plan-dialog button:disabled{opacity:.45;cursor:not-allowed}.rg-plan-dialog button.rg-plan-primary{background:#176cd3;color:#fff;border-color:#176cd3}.rg-plan-dialog button:focus-visible,.rg-plan-dialog input:focus-visible,.rg-plan-dialog select:focus-visible{outline:3px solid #8cc4ff;outline-offset:2px}.rg-plan-body{padding:20px 24px;overflow:auto;max-height:calc(90vh - 190px)}.rg-plan-section{background:white;border:1px solid #dfe7ef;padding:18px;border-radius:12px;margin-bottom:14px}.rg-plan-toolbar{display:flex;gap:14px;align-items:end;flex-wrap:wrap}.rg-plan-dialog label{display:grid;gap:5px;font-size:12px;color:#53677c}.rg-plan-dialog input,.rg-plan-dialog select{color:#172b43;min-height:35px;max-width:100%;border:1px solid #cbd8e5;padding:6px 9px;border-radius:6px;background:#fff}.rg-plan-dialog input[type=checkbox]{min-height:auto;width:17px;height:17px}.rg-plan-dialog input[type=file]{max-width:320px}.rg-plan-mapping{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.rg-plan-table-wrap{overflow:auto;max-height:360px;border:1px solid #dfe7ef;border-radius:8px}.rg-plan-dialog table{border-collapse:collapse;width:100%;font-size:12px;text-align:left}.rg-plan-dialog th{position:sticky;top:0;background:#eef3f9;color:#52687e;z-index:1}.rg-plan-dialog th,.rg-plan-dialog td{padding:10px;border-bottom:1px solid #e5ebf2;vertical-align:top;min-width:80px;max-width:270px;overflow-wrap:anywhere}.rg-plan-dialog th:first-child,.rg-plan-dialog td:first-child{min-width:48px;max-width:60px}.rg-plan-dialog td small{display:block;margin-top:4px;color:#61738a}.rg-plan-dialog .rg-plan-error{color:#a82f35}.rg-plan-dialog .rg-plan-warning{color:#98620e}.rg-plan-dialog .rg-plan-success{color:#167447}.rg-plan-alert{border-radius:8px;background:#edf4ff;border:1px solid #d4e3f8;padding:10px 13px;margin:12px 0;color:#2c537f}.rg-plan-alert[role=alert]{background:#fff1f1;border-color:#efcbcb;color:#a82f35}.rg-plan-dialog footer{border-top:1px solid #dfe7ef}.rg-plan-actions{display:flex;gap:8px;flex-wrap:wrap}.rg-plan-check{display:flex!important;align-items:center;gap:8px!important;color:#334c65!important}.rg-plan-source{font-size:12px;overflow-wrap:anywhere}.rg-plan-mini{font-size:12px!important;padding:4px 8px!important}@media(max-width:760px){.rg-plan-mapping{grid-template-columns:repeat(2,minmax(0,1fr))}.rg-plan-dialog header,.rg-plan-dialog footer{padding:15px;align-items:flex-start}.rg-plan-body{padding:12px}.rg-plan-dialog footer{flex-direction:column}.rg-plan-dialog{width:98vw;max-height:96vh}.rg-plan-body{max-height:calc(96vh - 220px)}}
+
+/* Keep this light dialog independent of the surrounding scene's dark controls. */
+.management-studio .rg-plan-dialog { color-scheme:light; }
+.management-studio[data-view] .rg-plan-dialog input,
+.management-studio[data-view] .rg-plan-dialog select {
+  background:#fff;
+  color:#172b43;
+  border-color:#cbd8e5;
+}
+.management-studio[data-view] .rg-plan-dialog button {
+  background:#fff;
+  color:#233c55;
+  border-color:#cbd8e5;
+}
+.management-studio[data-view] .rg-plan-dialog button:not(.rg-plan-primary):hover,
+.management-studio[data-view] .rg-plan-dialog button:not(.rg-plan-primary):focus-visible {
+  background:#edf4ff;
+  color:#233c55;
+  border-color:#7ba7d9;
+}
+.management-studio[data-view] .rg-plan-dialog button.rg-plan-primary {
+  background:#176cd3;
+  color:#fff;
+  border-color:#176cd3;
+}
+.management-studio[data-view] .rg-plan-dialog button.rg-plan-primary:hover:not(:disabled) {
+  background:#1259ae;
+  border-color:#1259ae;
+}

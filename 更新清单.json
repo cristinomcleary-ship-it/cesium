@@ -1,0 +1,201 @@
+{
+  "repository": "cristinomcleary-ship-it/cesium",
+  "branch": "codex/machinery-integration-20261013",
+  "baseCommit": "bd4a6cd4c3827ce763f829ebd62854a7c5bdfb8e",
+  "date": "2026-10-18",
+  "type": "incremental-source-update",
+  "realWindowsSkpConversionVerified": true,
+  "files": [
+    {
+      "path": "Cesium更新说明_20261017.md",
+      "sha256": "d5656e47c9275469ff89a5aa2188ca43d604fd30888259f8a41f69fea5cd870c",
+      "baseGitBlob": null
+    },
+    {
+      "path": "model-converters.example.json",
+      "sha256": "df93b36142a92d7b3ed68f527f8db271a8b622721af3ec0dc5dbe340bf14e6bb",
+      "baseGitBlob": "e710c73abbff5992b59bf67c6264aa72de2ebba1"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "d80c824cc7682009755e928454d19b5edd23ccdb6fde0f81465eecb1660a8058",
+      "baseGitBlob": null
+    },
+    {
+      "path": "package.json",
+      "sha256": "718d0c332a52eb4f1700462e068b2529401da73fbd55f4dc30c034885ec75a0d",
+      "baseGitBlob": "453ea80c7341ee51530d03e0bde2efd13a82bfb6"
+    },
+    {
+      "path": "pnpm-lock.yaml",
+      "sha256": "8998bc83557d0a72b86a5fbcf3c3fc153a3902ba6aa287d1b0c44c1281499b4d",
+      "baseGitBlob": "2a9f3fa39b8e9e10b61180d46fb1ac6765eadf84"
+    },
+    {
+      "path": "server/modelMiddleware.ts",
+      "sha256": "b5750b8722d3ee023c196cf0cba4d7225177666b7ecc70065625be14ce14dfce",
+      "baseGitBlob": "d1eef4e37d26de25c976f2fe98aad492601dea7b"
+    },
+    {
+      "path": "src/foundationPitMonitoring.ts",
+      "sha256": "3fdb6169b038845279111f1e5efdc72ffed098253efd7b1d627c30d55cb91d44",
+      "baseGitBlob": "51c169a396ce09c88c6a1684aa0ca5e5f992b144"
+    },
+    {
+      "path": "src/main.ts",
+      "sha256": "4c2e50424ab4500d39ed490ab8e2c175892aae7d4e51f91ab7160814b50ea597",
+      "baseGitBlob": "33ff74ce1d486f0b089bde1b9461fbc01829458c"
+    },
+    {
+      "path": "src/managementWorkspace.ts",
+      "sha256": "15f9d572cf1fa1191bd900b5b098656c4721438d7244800bd9cde5c3797dcaee",
+      "baseGitBlob": "ba4a2a0716b39186b1193f284c717322edd52b7e"
+    },
+    {
+      "path": "src/markupTools.ts",
+      "sha256": "1ec40ca6d4a2ce7e8586faee35827d144e41b126c0403b591ccbc28eaf3d6267",
+      "baseGitBlob": "7fd676b787df352b50a4d61408c87b61af2babce"
+    },
+    {
+      "path": "src/modelEditor.ts",
+      "sha256": "a839142174c43198ee0bc0e9cb716d0f5c189834d15a2282a68e5f9a0934776c",
+      "baseGitBlob": "6fca2a589057b5d1d1a416880a62fa410e8e3c6f"
+    },
+    {
+      "path": "src/modelPlacement.ts",
+      "sha256": "f9704cb87a90f9cbf1622e35b103dde24d1d7b7b303efe98c519b06b1ba06324",
+      "baseGitBlob": null
+    },
+    {
+      "path": "src/sceneDisplayPanel.css",
+      "sha256": "3e4c6e5743c2f0cf1b2de191458c79d348c45ad96da8318397119797b339e2b0",
+      "baseGitBlob": "9d41a18beda4d14937cc2275bd39fbd56d6e9022"
+    },
+    {
+      "path": "src/sceneDisplayPanel.ts",
+      "sha256": "bf6b62ee5ab8ea34d5c934364a930c704435ff8d90a657149dbfebab403af0a5",
+      "baseGitBlob": "74afab28e3be103e0094a8eb84a4ee48cd34e650"
+    },
+    {
+      "path": "src/sceneDisplayStore.ts",
+      "sha256": "c762a59f792cd70c32c744c8c3420a42c045e6d24b74bd485583d91bb8c5c544",
+      "baseGitBlob": "b644d78d87b1914b58cc7be15f43f52e6fbca978"
+    },
+    {
+      "path": "src/sceneLibrary.ts",
+      "sha256": "63b213ad35fd5f7f1590db99426f52d0de72b03c0164e654f9673c7ec9f212a3",
+      "baseGitBlob": "702ab59a64fd39f8021886ffd73d57c116fb8f05"
+    },
+    {
+      "path": "src/style.css",
+      "sha256": "deb04d6a17b702540062de751c260d43bfdedec5a06c8954c05c6ee7729e7e6b",
+      "baseGitBlob": "59d0da635007405b66e66d636fde89169acfc1dd"
+    },
+    {
+      "path": "tests/business-display-delete-regression.mjs",
+      "sha256": "e1926b0552692ba30bf72a9ff6c55bac3198f6030eb014069936a6489d38a14a",
+      "baseGitBlob": null
+    },
+    {
+      "path": "tests/model-middleware-headless.test.mjs",
+      "sha256": "7dd4aad483bf8640af631a26ae68c422ddfcd9133a780f247133579092e6d761",
+      "baseGitBlob": null
+    },
+    {
+      "path": "tests/model-placement-regression.mjs",
+      "sha256": "b02b9ba1816b4548a3846cbcfd37881936c192206c4400f90d60560ebbf113bf",
+      "baseGitBlob": null
+    },
+    {
+      "path": "tests/scene-display-delete-regression.mjs",
+      "sha256": "1b970953f351e6dc3c51a298f4b31cfe11769c48f32dc425d10b6578e0872dc7",
+      "baseGitBlob": null
+    },
+    {
+      "path": "tests/sketchup-headless.test.mjs",
+      "sha256": "cd0c5f08dd020503c5e60457932907e3fda76d1de168f7d2ff25eeb3f3da94db",
+      "baseGitBlob": null
+    },
+    {
+      "path": "tools/SKP后台导入说明.md",
+      "sha256": "0551470ae0a3faf4e8c3ade0787a870bf1dd7c040dcb059a0ebe9a47e10d7dee",
+      "baseGitBlob": null
+    },
+    {
+      "path": "tools/sketchup-headless.mjs",
+      "sha256": "6f4d4f392984d5eacce0a736c683620f9eb6344167611c06adef9afd7c2945dc",
+      "baseGitBlob": null
+    },
+    {
+      "path": "tools/sketchup-sdk-runtime.d.mts",
+      "sha256": "33af3714c0cffc52a02aede307b72ca604bc35dc01b73d2d0ebfdc699ab2e5dc",
+      "baseGitBlob": null
+    },
+    {
+      "path": "tools/sketchup-sdk-runtime.mjs",
+      "sha256": "884a7e0c4e11cf51ed875a9638d4e88c8fc8325007c2409ef5a9b6ec1f433032",
+      "baseGitBlob": null
+    },
+    {
+      "path": "tools/sketchup-to-glb.cmd",
+      "sha256": "ceec1ededb20b22864a0ff9308165cf0d4622f3d0578d3a2d9f7e061b1fea075",
+      "baseGitBlob": "18ce586bb01dbc9b8dae2386cd89da49cd7a7aee"
+    },
+    {
+      "path": "tools/sketchup/convert.mjs",
+      "sha256": "846670a9a255f0227f07d8310324b1ee422d09a42bdeeeb04d1c8ab3edb25f15",
+      "baseGitBlob": null
+    },
+    {
+      "path": "tools/sketchup/glb-writer.mjs",
+      "sha256": "0431a33187f36ff5f38c2bc24c0924608fb297075e3b2b3a7d5e83ed00cd02fd",
+      "baseGitBlob": null
+    },
+    {
+      "path": "tools/sketchup/sdk-api.mjs",
+      "sha256": "cb43cd4687f443d0065712fa24cd91ead3f1f9d153d70ec9538db34a53b4d8d3",
+      "baseGitBlob": null
+    },
+    {
+      "path": "tools/verify-model-placement.mjs",
+      "sha256": "16ddad83f6e549d66921111cca75e428781efdbf7285ea3e899a94ecf9cbf8dd",
+      "baseGitBlob": null
+    },
+    {
+      "path": "更新Cesium并构建.cmd",
+      "sha256": "347672ff593a5c75a5b3f1235b3e581012054a73c841ae8cc62d435b3a2ebc14",
+      "baseGitBlob": null
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "f9548b69564db29fce878d31ea41d583ae6c6e4c8b1e3435ce1cc9b8cb336746",
+      "baseGitBlob": "35568a9700c65ef4072947c5eeab90a23bb950b1"
+    },
+    {
+      "path": "pnpm-workspace.yaml",
+      "sha256": "10cd587d91a7c47e31f99243deb7eb27d750da6a3875be081a2056087b9d5da2",
+      "baseGitBlob": "d50828903b19cb719ba96c12a7e318b27a69a07a"
+    },
+    {
+      "path": "tools/sketchup/texture-writer-pool.mjs",
+      "sha256": "e0d6de8900ccd9f04bce01eda598e897585a3fd80bac4dafec34f3782258b7e0",
+      "baseGitBlob": null
+    },
+    {
+      "path": "tests/sketchup-texture-writer-pool.test.mjs",
+      "sha256": "fcba377b07830457db3372ca350fbbebc1f40d6beda59d5dff617c9e68c3897b",
+      "baseGitBlob": null
+    },
+    {
+      "path": "验收记录/浏览器验收.json",
+      "sha256": "41c094990fd236b667836628cbf5c4246f7d7089cbe399fa5b1f0bababeba52f",
+      "baseGitBlob": null
+    },
+    {
+      "path": "验收记录/Windows本机验收_20261018.json",
+      "sha256": "09a462f2ab0bf38898f846b2d6a2c28b3e7edd2ecfdec1663fcd720f434f36f1",
+      "baseGitBlob": null
+    }
+  ],
+  "verification": "验收记录/Windows本机验收_20261018.json"
+}

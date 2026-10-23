@@ -14,6 +14,7 @@ import {
   Matrix4,
   NearFarScalar,
   PolygonHierarchy,
+  PrimitiveCollection,
   Scene,
   Transforms,
 } from "cesium";
@@ -21,7 +22,7 @@ import proj4 from "proj4";
 import { cadLineWidth } from "./cadDisplayStyle.ts";
 import type { CadImportEntity, CadImportPackage, CadPoint } from "./cadImport";
 import { createGaussKrugerToWgs84Converter } from "./coordinateUtils.ts";
-import type { CadCoordinateOptions, CadDisplayMode } from "./types";
+import type { CadCoordinateOptions, CadDisplayMode, ImportRecord } from "./types";
 
 type PositionConverter = (point: CadPoint) => Cartesian3;
 
@@ -251,10 +252,31 @@ export function useSampledCadHeights(dataSource: CustomDataSource) {
 
 type ClampBinding = { source: Cartesian3[]; apply: (positions: Cartesian3[]) => void };
 export type CadClampResult = { clamped: number; skipped: number };
+export type CadHeightSamplingOptions = { batchSize?: number; signal?: AbortSignal };
+export type CadSceneSamplingOptions = CadHeightSamplingOptions & { objectsToExclude?: object[]; modelsOnly?: boolean };
+type CadHeightSampler = (positions: Cartesian3[]) => Promise<(Cartesian3 | undefined)[]>;
 
-/** Writes sampled scene heights back to CAD geometry, including ordinary GLB models. */
-export async function clampCadToScene(dataSource: CustomDataSource, scene: Scene, maximumPoints = 2000, signal?: AbortSignal): Promise<CadClampResult> {
-  if (!scene.clampToHeightSupported) return { clamped: 0, skipped: 0 };
+function checkSamplingCancelled(signal?: AbortSignal) {
+  if (signal?.aborted) throw new DOMException("CAD 加载已取消", "AbortError");
+}
+
+async function awaitCadSample(promise: ReturnType<CadHeightSampler>, signal?: AbortSignal) {
+  if (!signal) return promise;
+  return new Promise<Awaited<ReturnType<CadHeightSampler>>>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", abort);
+    const abort = () => { cleanup(); reject(new DOMException("CAD 加载已取消", "AbortError")); };
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(value => { cleanup(); resolve(value); }, error => { cleanup(); reject(error); });
+    if (signal.aborted) abort();
+  });
+}
+
+/** Samples every vertex in bounded batches, and writes nothing unless every sample succeeds. */
+export async function sampleCadHeights(dataSource: CustomDataSource, sample: CadHeightSampler, options: CadHeightSamplingOptions = {}): Promise<CadClampResult> {
+  const { signal } = options;
+  checkSamplingCancelled(signal);
+  const batchSize = Math.min(200, Math.max(1, Math.floor(options.batchSize ?? 200)));
+  if (!Number.isFinite(batchSize)) throw new Error("CAD 高程采样批量大小无效");
   const time = dataSource.clock?.currentTime;
   const bindings: ClampBinding[] = [];
   for (const entity of dataSource.entities.values) {
@@ -268,32 +290,80 @@ export async function clampCadToScene(dataSource: CustomDataSource, scene: Scene
     }
     const hierarchy = entity.polygon?.hierarchy?.getValue(time);
     if (hierarchy?.positions?.length) {
-      bindings.push({ source: hierarchy.positions, apply: (clamped) => { entity.polygon!.hierarchy = new ConstantProperty(new PolygonHierarchy(clamped)); } });
+      const source: Cartesian3[] = [];
+      const collect = (ring: PolygonHierarchy) => {
+        for (const position of ring.positions) source.push(position);
+        for (const hole of ring.holes ?? []) collect(hole);
+      };
+      collect(hierarchy);
+      bindings.push({ source, apply: (clamped) => {
+        let offset = 0;
+        const rebuild = (ring: PolygonHierarchy): PolygonHierarchy => {
+          const positions = clamped.slice(offset, offset + ring.positions.length);
+          offset += ring.positions.length;
+          return new PolygonHierarchy(positions, (ring.holes ?? []).map(rebuild));
+        };
+        entity.polygon!.hierarchy = new ConstantProperty(rebuild(hierarchy));
+      } });
     }
   }
 
   let clampedCount = 0;
-  let sampledCount = 0;
-  let skippedCount = 0;
+  const sampled: Cartesian3[][] = [];
   for (const binding of bindings) {
-    if (signal?.aborted) throw new DOMException("CAD 加载已取消", "AbortError");
-    if (sampledCount + binding.source.length > maximumPoints) {
-      skippedCount += binding.source.length;
-      continue;
-    }
     const output: Cartesian3[] = [];
-    for (let offset = 0; offset < binding.source.length; offset += 200) {
-      if (signal?.aborted) throw new DOMException("CAD 加载已取消", "AbortError");
-      const sourceChunk = binding.source.slice(offset, offset + 200).map((position) => Cartesian3.clone(position));
-      const clampedChunk = await scene.clampToHeightMostDetailed(sourceChunk, [], 0.5);
-      clampedChunk.forEach((position, index) => {
-        output.push(position ?? sourceChunk[index]);
-        if (position) clampedCount += 1;
-      });
-      sampledCount += sourceChunk.length;
+    for (let offset = 0; offset < binding.source.length; offset += batchSize) {
+      checkSamplingCancelled(signal);
+      const sourceChunk = binding.source.slice(offset, offset + batchSize).map((position) => Cartesian3.clone(position));
+      const clampedChunk = await awaitCadSample(sample(sourceChunk), signal);
+      checkSamplingCancelled(signal);
+      if (clampedChunk.length !== sourceChunk.length || sourceChunk.some((_, index) => !isFinitePosition(clampedChunk[index]))) {
+        throw new Error("CAD 存在未能依附到表面的顶点，已停止加载；请检查模型覆盖范围和定位后重试");
+      }
+      for (const position of clampedChunk) output.push(Cartesian3.clone(position!));
+      clampedCount += clampedChunk.length;
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     }
-    binding.apply(output);
+    sampled.push(output);
   }
-  return { clamped: clampedCount, skipped: skippedCount };
+  checkSamplingCancelled(signal);
+  bindings.forEach((binding, index) => binding.apply(sampled[index]));
+  return { clamped: clampedCount, skipped: 0 };
+}
+
+/** Writes complete sampled scene heights back to CAD geometry, including ordinary GLB models. */
+export async function clampCadToScene(dataSource: CustomDataSource, scene: Scene, options: CadSceneSamplingOptions = {}): Promise<CadClampResult> {
+  checkSamplingCancelled(options.signal);
+  if (!scene.clampToHeightSupported) throw new Error("当前浏览器不支持模型表面高程采样，无法完成 CAD 依附");
+  // The newly attached CAD must never become its own sampling surface.
+  const excluded = [...(options.objectsToExclude ?? []), ...dataSource.entities.values];
+  // Globe depth is not always a pickable object, so objectsToExclude alone cannot
+  // prevent a model coverage gap from silently falling back to terrain height.
+  const globe = options.modelsOnly === false ? undefined : scene.globe;
+  const globeShow = globe?.show;
+  try {
+    if (globe) globe.show = false;
+    return await sampleCadHeights(dataSource, positions => scene.clampToHeightMostDetailed(positions, excluded, 0.5), options);
+  } finally {
+    if (globe && !globe.isDestroyed?.()) globe.show = globeShow!;
+    scene.requestRender?.();
+  }
+}
+
+/** Exclusion must contain leaf primitives / entities, not only their public collection. */
+export function getCadModelSamplingExclusions(imports: readonly ImportRecord[]): object[] {
+  const excluded = new Set<object>();
+  const include = (value: unknown) => {
+    if (!value || typeof value !== "object" || excluded.has(value)) return;
+    excluded.add(value);
+    if (value instanceof PrimitiveCollection) {
+      for (let index = 0; index < value.length; index++) include(value.get(index));
+    }
+    const entities = (value as { entities?: { values?: unknown[] } }).entities?.values;
+    if (Array.isArray(entities)) for (const entity of entities) include(entity);
+  };
+  for (const record of imports) {
+    if (record.kind !== "Model" && record.kind !== "3D Tiles") include(record.resource);
+  }
+  return [...excluded];
 }

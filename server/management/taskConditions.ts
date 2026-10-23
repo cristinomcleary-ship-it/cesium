@@ -43,3 +43,15 @@ export function enforceTaskConditions(c:DomainContext,task:ManagementRecord,stag
  const remaining=blocked.filter(r=>!(waiver?.conditionIds as string[]|undefined)?.includes(r.id));if(remaining.length)throw new ManagementError(409,"TASK_CONDITIONS_BLOCKED","任务准入条件未满足，请逐项处理或由有权人员签认例外",{...decision,stage,blockingIds:remaining.map(r=>r.id)});
  const history=Array.isArray(task.conditionDecisions)?task.conditionDecisions as unknown[]:[];history.push({stage,at:c.now,by:c.actor.id,taskRevision:task.revision-1,dataVersion:decision.dataVersion,ruleVersion:decision.policy?.version??null,results,exception:waiver});task.conditionDecisions=history;
 }
+
+/** Resuming requires a fresh start-condition decision and closure of explicitly blocking issues.
+ * Existing completion policies remain unchanged; unverified geometric findings are not promoted
+ * to blockers unless the stored issue or a required blocking-issues rule explicitly marks them. */
+export function enforceTaskResumeIssues(c:DomainContext,task:ManagementRecord){
+ const policy=task.conditionPolicy as TaskConditionPolicy|undefined;
+ const explicit=new Set((policy?.rules||[]).filter(rule=>rule.kind==="blocking-issues"&&rule.mode==="required").flatMap(rule=>rule.referenceIds));
+ const blockers=c.list("issues").filter(issue=>(issue.taskId===task.id||issue.taskIds?.includes(task.id))&&(issue.blocksCompletion===true||explicit.has(issue.id))&&!["closed","false-positive","duplicate"].includes(issue.status));
+ // Authorize every linked issue before including its identifier in an error response.
+ for(const issue of blockers)c.get("issues",issue.id);
+ if(blockers.length)throw new ManagementError(409,"TASK_RESUME_BLOCKED","任务仍有未关闭的阻断问题，请完成核实、整改和复核后再恢复",{taskId:task.id,blockingIssueIds:blockers.map(issue=>issue.id)});
+}

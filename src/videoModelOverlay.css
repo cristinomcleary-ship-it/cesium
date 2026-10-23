@@ -1,0 +1,46 @@
+.cc-overlay-panel .cc-fields {display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}
+.cc-overlay-panel label {display:block;font-size:12px;margin-bottom:8px}
+.cc-overlay-panel input,.cc-overlay-panel select {width:100%;box-sizing:border-box;margin-top:4px}
+.cc-overlay-panel input[type=checkbox] {width:auto;margin:0 8px 0 0}
+.cc-overlay-panel input[type=file] {font-size:11px}
+.cc-overlay-panel button {cursor:pointer}
+.cc-overlay-panel .cc-exit {width:100%;padding:9px;margin-bottom:12px;border:1px solid #6587a4;border-radius:5px;background:#21394d;color:#e4f2ff}
+.cc-overlay-panel #ccSchemeDelete {color:#ffb2b2}
+.cc-overlay-panel .cc-actions {display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+.cc-overlay-panel .cc-actions button {flex:1;min-width:65px}
+.cc-overlay-panel .cc-resource {padding:8px 0;border-bottom:1px solid #365069}
+.cc-overlay-panel .cc-resource label {display:flex;align-items:center;margin:0}
+.cc-overlay-panel small,.cc-overlay-panel .cc-hint {display:block;color:#9bb2c8;line-height:1.6;font-size:12px}
+.cc-overlay-panel [role=status] {padding:10px;background:#142638;border-radius:5px;font-size:12px;line-height:1.6}
+.cc-overlay-panel details {padding:9px 0;border-bottom:1px solid #365069}
+.cc-overlay-panel summary {cursor:pointer;font-size:13px}
+.cc-overlay-panel .cc-nudges {display:grid;grid-template-columns:repeat(3,1fr);gap:5px}
+.cc-video-backdrop {position:absolute;inset:0;z-index:0;background:#070b12}
+.cc-video-backdrop video {position:absolute;object-fit:contain;pointer-events:none}
+.cc-video-active .topbar,.cc-video-active #modelTools,.cc-video-active .cesium-viewer-toolbar {display:none!important}
+.cc-video-active .cesium-viewer,.cc-video-active .cesium-widget {background:transparent!important}
+.cc-video-controls {position:absolute;left:12px;right:12px;bottom:8px;z-index:12;padding:10px;background:#101e30f5;border:1px solid #38526c;border-radius:8px;display:flex;flex-direction:column;gap:8px;color:#dceafa;font-size:12px}
+.cc-video-controls input[type=range] {width:100%;min-width:0;flex:none}
+.cc-video-controls .cc-video-buttons {display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.cc-video-controls button,.cc-video-controls select {padding:6px 8px;border:1px solid #38526c;background:#1b324a;color:#e4f2ff;border-radius:4px;cursor:pointer;flex:0 0 auto;width:auto}
+.cc-video-controls .cc-clock {white-space:nowrap}
+.cc-video-status {position:absolute;top:10px;left:12px;z-index:12;background:#101e30e8;color:#cfe5fa;border:1px solid #38526c;padding:8px 12px;border-radius:5px;font-size:12px;pointer-events:none}
+.cc-video-active [data-cc-drag=horizontal] canvas {cursor:move}
+.cc-video-active [data-cc-drag=vertical] canvas {cursor:ns-resize}
+
+/* Keep the renderer sized and interactive; only committed frame pairs are displayed. */
+.cc-video-active .cesium-widget canvas {opacity:0}
+.cc-video-presentation {position:absolute;pointer-events:none}
+
+.cc-video-editor {position:absolute;z-index:10;pointer-events:none;touch-action:none}
+.cc-cached-preview {z-index:2;object-fit:contain}
+.cc-presentation-editor textarea {width:100%;box-sizing:border-box;min-height:54px;resize:vertical}
+.cc-presentation-editor input[type=color] {height:30px;padding:1px}
+
+/* A finished movie is independent of the shared Cesium canvas. */
+.cc-cache-backdrop {z-index:9}
+
+/* Spatial picking is independent of the older screen-space annotation handles. */
+.cc-video-spatial-editor {position:absolute;z-index:11;pointer-events:none;touch-action:none}
+
+.cc-overlay-panel .cc-tilt-nudges {display:grid;grid-template-columns:1fr 1fr;gap:5px}

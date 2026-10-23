@@ -1,0 +1,419 @@
+{
+  "classification": "actual-original-workbench-extensions-ui-webgl-with-isolated-data",
+  "startedAt": "2026-10-14T01:16:45.228Z",
+  "dataDir": "tmp/rail-safety-extensions-EDBHFa",
+  "productionDataReadOrModified": false,
+  "fixture": {
+    "location": {
+      "longitude": 116.391,
+      "latitude": 39.907
+    },
+    "width": 100,
+    "depth": 100,
+    "heightFormula": "12 + 0.12 * east + 0.06 * north (metres)",
+    "limitations": [
+      "Synthetic 3D Tiles geometry; not a surveyed site or accuracy certification",
+      "Software WebGL renderer when supplied launch options use SwiftShader"
+    ]
+  },
+  "checks": [
+    {
+      "id": "unknown-summary-and-task-entry",
+      "status": "passed",
+      "evidence": {
+        "before": {
+          "risk": 0,
+          "unknown": 1
+        },
+        "explanation": "关联施工任务（可选）\n未关联任务\n\n把当前人员、机械或限界归入施工任务，便于按任务管理。机械只能选用未关联任务或同任务的限界；关联任务不会自动选限界、更新进度或产生告警。\n\n当前项目暂无可见施工任务，可先不关联并保存。任务在“项目统筹平台 → 计划进度 → 任务”中创建。",
+        "createdTaskId": "8a1c5335-6194-4062-a083-bf0c6a94ef23"
+      }
+    },
+    {
+      "id": "independent-work-area-and-device-binding",
+      "status": "passed",
+      "evidence": {
+        "guardId": "5b493d49-fbc1-4301-b677-11e025372b82",
+        "responsibilityVertices": 4,
+        "workAreaVertices": 4,
+        "deviceId": "extension-device-01",
+        "taskId": "8a1c5335-6194-4062-a083-bf0c6a94ef23",
+        "status": {
+          "state": "no-fix",
+          "text": "等待定位",
+          "role": "status",
+          "summary": "人员定位：实测越界 0 · 模拟越界 0 · 待核实 1"
+        }
+      }
+    },
+    {
+      "id": "explicit-simulation-inside-and-outside",
+      "status": "passed",
+      "evidence": {
+        "inside": {
+          "state": "inside",
+          "text": "工作区内",
+          "role": "status",
+          "summary": "人员定位：实测越界 0 · 模拟越界 0 · 待核实 0"
+        },
+        "outside": {
+          "state": "outside",
+          "text": "已离开工作区",
+          "role": "alert",
+          "summary": "人员定位：实测越界 0 · 模拟越界 1 · 待核实 0"
+        },
+        "incompleteDraftKeepsSavedBoundaryAndPosition": true
+      }
+    },
+    {
+      "id": "uncertain-stale-and-cleared-are-not-normal",
+      "status": "passed",
+      "evidence": {
+        "uncertain": {
+          "state": "uncertain",
+          "text": "精度不足 · 待核实",
+          "role": "status",
+          "summary": "人员定位：实测越界 0 · 模拟越界 0 · 待核实 1"
+        },
+        "stale": {
+          "state": "stale",
+          "text": "定位过期",
+          "role": "status",
+          "summary": "人员定位：实测越界 0 · 模拟越界 0 · 待核实 1"
+        },
+        "cleared": {
+          "state": "no-fix",
+          "text": "等待定位",
+          "role": "status",
+          "summary": "人员定位：实测越界 0 · 模拟越界 0 · 待核实 1"
+        },
+        "unchangedSavedRecords": true,
+        "unchangedAssessment": true,
+        "generatedCommands": 0
+      }
+    },
+    {
+      "id": "manual-limit-association-counts-real-overlap",
+      "status": "passed",
+      "evidence": {
+        "before": {
+          "risk": 0,
+          "unknown": 1
+        },
+        "after": {
+          "risk": 1,
+          "unknown": 0
+        },
+        "limitId": "a482fb63-e550-4297-a79e-6c5ddd0781fa",
+        "result": {
+          "resourceId": "extensions-acceptance-crane",
+          "resourceName": "吊机 · 扩展验收",
+          "recordId": "919938bd-2c50-4c27-a6ff-a64ccd5331b2",
+          "status": "overlap",
+          "label": "平面潜在侵限",
+          "message": "倾覆几何外包与用户定义限界存在平面重叠",
+          "draft": false,
+          "warnings": [
+            "支承来自当前模型支脚底面，需核对实际支腿落地情况与模型尺寸。",
+            "模型几何推算，未包含首次接触停止、吊载和地基变化，不作为机械稳定性或作业许可结论。",
+            "仅进行平面几何筛查；不代表三维碰撞判定或施工安全批准"
+          ],
+          "limits": [
+            {
+              "id": "a482fb63-e550-4297-a79e-6c5ddd0781fa",
+              "name": "相交验收限界",
+              "status": "overlap",
+              "distanceMeters": 0
+            }
+          ],
+          "guards": [
+            {
+              "id": "5b493d49-fbc1-4301-b677-11e025372b82",
+              "name": "防护员 · 工作区验收",
+              "known": true,
+              "containsStation": false,
+              "message": "仅判断机械站位；不代表全部作业范围已有防护"
+            }
+          ],
+          "signature": "1cea2c4f",
+          "maxDistanceMeters": 11.726197359812872,
+          "supportSource": "model-outriggers",
+          "nearestDistanceMeters": 0
+        }
+      }
+    },
+    {
+      "id": "real-model-demo-direction-and-angle",
+      "status": "passed",
+      "evidence": {
+        "start": {
+          "state": {
+            "active": true,
+            "loading": false,
+            "direction": 90,
+            "angle": 0,
+            "playing": false,
+            "maxAngle": 90,
+            "modelCreated": true,
+            "sourcePartCount": 12,
+            "sourceTriangleCount": 57483,
+            "entityIds": [
+              "rail-safety:fall-demo:extensions-acceptance-crane:model",
+              "rail-safety:fall-demo:extensions-acceptance-crane:pivot"
+            ],
+            "resourceId": "extensions-acceptance-crane",
+            "resourceName": "吊机 · 扩展验收",
+            "actualDirection": 90
+          },
+          "model": {
+            "id": "rail-safety:fall-demo:extensions-acceptance-crane:model",
+            "matrix": [
+              -0.8957809563638978,
+              -0.44449575725284557,
+              2.7755575615628914e-17,
+              0,
+              0.2851633010807704,
+              -0.5746823234956385,
+              0.7670867739560969,
+              0,
+              -0.34096681646825766,
+              0.6871417239884896,
+              0.6415433588009682,
+              0,
+              -2177739.639402518,
+              4388743.120861519,
+              4070078.145810049,
+              1
+            ],
+            "uri": "blob:http://127.0.0.1:5194/7ce69774-17e9-499e-8a5d-f65b4c8b054c"
+          },
+          "primitives": [
+            {
+              "id": "rail-safety:fall-demo:extensions-acceptance-crane:model",
+              "ready": true,
+              "show": true,
+              "type": "Model"
+            }
+          ]
+        },
+        "angled": {
+          "state": {
+            "active": true,
+            "loading": false,
+            "direction": 90,
+            "angle": 45,
+            "playing": false,
+            "maxAngle": 90,
+            "modelCreated": true,
+            "sourcePartCount": 12,
+            "sourceTriangleCount": 57483,
+            "entityIds": [
+              "rail-safety:fall-demo:extensions-acceptance-crane:model",
+              "rail-safety:fall-demo:extensions-acceptance-crane:pivot"
+            ],
+            "resourceId": "extensions-acceptance-crane",
+            "resourceName": "吊机 · 扩展验收",
+            "actualDirection": 90
+          },
+          "model": {
+            "id": "rail-safety:fall-demo:extensions-acceptance-crane:model",
+            "matrix": [
+              -0.3923128406183891,
+              -0.8001885368306126,
+              -0.45363965943335893,
+              0,
+              0.2851633010807705,
+              -0.5746823234956386,
+              0.767086773956097,
+              0,
+              -0.8745127367869769,
+              0.17157660850633938,
+              0.45363965943335915,
+              0,
+              -2177740.1151798875,
+              4388743.456991196,
+              4070078.574499527,
+              1
+            ],
+            "uri": "blob:http://127.0.0.1:5194/7ce69774-17e9-499e-8a5d-f65b4c8b054c"
+          },
+          "primitives": [
+            {
+              "id": "rail-safety:fall-demo:extensions-acceptance-crane:model",
+              "ready": true,
+              "show": true,
+              "type": "Model"
+            }
+          ]
+        },
+        "changed": {
+          "state": {
+            "active": true,
+            "loading": false,
+            "direction": 180,
+            "angle": 45,
+            "playing": false,
+            "maxAngle": 90,
+            "modelCreated": true,
+            "sourcePartCount": 12,
+            "sourceTriangleCount": 57483,
+            "entityIds": [
+              "rail-safety:fall-demo:extensions-acceptance-crane:model",
+              "rail-safety:fall-demo:extensions-acceptance-crane:pivot"
+            ],
+            "resourceId": "extensions-acceptance-crane",
+            "resourceName": "吊机 · 扩展验收",
+            "actualDirection": 180
+          },
+          "model": {
+            "id": "rail-safety:fall-demo:extensions-acceptance-crane:model",
+            "matrix": [
+              -0.8957809563638978,
+              -0.4444957572528456,
+              8.326672684688674e-17,
+              0,
+              -0.03945904414453999,
+              0.07952080469666861,
+              0.9960519190562275,
+              0,
+              -0.4427408520240479,
+              0.8922443406402832,
+              -0.08877260018950928,
+              0,
+              -2177739.906388174,
+              4388743.658910898,
+              4070078.334122438,
+              1
+            ],
+            "uri": "blob:http://127.0.0.1:5194/7ce69774-17e9-499e-8a5d-f65b4c8b054c"
+          },
+          "primitives": [
+            {
+              "id": "rail-safety:fall-demo:extensions-acceptance-crane:model",
+              "ready": true,
+              "show": true,
+              "type": "Model"
+            }
+          ]
+        },
+        "originalModelUnchanged": true
+      }
+    },
+    {
+      "id": "demo-play-pause-reset-exit-preserve-business",
+      "status": "passed",
+      "evidence": {
+        "paused": {
+          "active": true,
+          "loading": false,
+          "direction": 180,
+          "angle": 54.99840000000014,
+          "playing": false,
+          "maxAngle": 90,
+          "modelCreated": true,
+          "sourcePartCount": 12,
+          "sourceTriangleCount": 57483,
+          "entityIds": [
+            "rail-safety:fall-demo:extensions-acceptance-crane:model",
+            "rail-safety:fall-demo:extensions-acceptance-crane:pivot"
+          ],
+          "resourceId": "extensions-acceptance-crane",
+          "resourceName": "吊机 · 扩展验收",
+          "actualDirection": 180
+        },
+        "reset": {
+          "active": true,
+          "loading": false,
+          "direction": 180,
+          "angle": 0,
+          "playing": false,
+          "maxAngle": 90,
+          "modelCreated": true,
+          "sourcePartCount": 12,
+          "sourceTriangleCount": 57483,
+          "entityIds": [
+            "rail-safety:fall-demo:extensions-acceptance-crane:model",
+            "rail-safety:fall-demo:extensions-acceptance-crane:pivot"
+          ],
+          "resourceId": "extensions-acceptance-crane",
+          "resourceName": "吊机 · 扩展验收",
+          "actualDirection": 180
+        },
+        "stopped": {
+          "active": false,
+          "loading": false,
+          "direction": 90,
+          "angle": 0,
+          "playing": false,
+          "maxAngle": 90,
+          "modelCreated": false,
+          "sourcePartCount": 0,
+          "sourceTriangleCount": 0,
+          "entityIds": []
+        },
+        "originalPoseUnchanged": true,
+        "recordsUnchanged": true,
+        "assessmentUnchanged": true,
+        "generatedCommands": 0
+      }
+    },
+    {
+      "id": "reload-preserves-configuration-clears-simulation",
+      "status": "passed",
+      "evidence": {
+        "recordsPreserved": true,
+        "state": {
+          "state": "no-fix",
+          "text": "等待定位",
+          "role": "status",
+          "summary": "人员定位：实测越界 0 · 模拟越界 0 · 待核实 1"
+        },
+        "demoActive": false
+      }
+    },
+    {
+      "id": "runtime-clean",
+      "status": "passed",
+      "evidence": {
+        "canvasCount": 1,
+        "pageErrors": [],
+        "consoleErrors": []
+      }
+    }
+  ],
+  "screenshots": [
+    "output/rail-safety-extensions/01-explicit-simulated-outside.png",
+    "output/rail-safety-extensions/02-real-machine-fall-demo.png"
+  ],
+  "pageErrors": [],
+  "consoleErrors": [],
+  "requests": [
+    {
+      "type": "task.create"
+    },
+    {
+      "type": "railSafety.save"
+    },
+    {
+      "type": "railSafety.save"
+    },
+    {
+      "type": "railSafety.save"
+    }
+  ],
+  "origin": "http://127.0.0.1:5194",
+  "browserVersion": "153.0.8010.0",
+  "result": "passed",
+  "finishedAt": "2026-10-14T01:20:09.109Z",
+  "testedProductRevision": "23951963c897aefb67a33eddcdd1d39c258851c3",
+  "renderer": "Chromium 153.0.8010.0; real WebGL2 with --use-angle=swiftshader launch option",
+  "evidenceHandling": "Two screenshots were visually inspected and remain local generated evidence. They are not committed or included in the source patch.",
+  "simulationScope": "All positioning samples in this run came from explicit product canvas clicks using the ellipsoid fallback. No tracker was connected; samples are labelled simulated and remain in memory.",
+  "knownDisplayLimitation": "Previously recorded tiny orange overlay residue can occur in some clamped views. This run did not investigate it or claim artifact-free rendering.",
+  "separateRootVerification": {
+    "productionBuild": "passed",
+    "relatedUnitTests": 50,
+    "status": "passed",
+    "scope": "src/railSafety*.test.ts and server/management/railSafetyHttp.test.ts"
+  }
+}

@@ -1,0 +1,258 @@
+{
+  "classification": "task-workbench-and-mechanical-risk-validation",
+  "coreBusinessProductCommit": "f105e7e",
+  "finalUiProductCommit": "ff2a36c",
+  "businessRun": {
+    "classification": "actual-browser-task-workbench-and-mechanical-risk-lifecycle",
+    "startedAt": "2026-10-14T07:36:56.971Z",
+    "dataDir": "/workspace/scratch/cf1441d132b1/cesium-oct14/tmp/rail-task-workbench-RaA41l",
+    "productionDataReadOrModified": false,
+    "personnelPositioning": {
+      "configured": false,
+      "samplesSubmitted": 0,
+      "requests": []
+    },
+    "fixture": {
+      "synthetic": true,
+      "tasks": 2,
+      "equipment": 3,
+      "models": 2,
+      "unconfiguredEquipment": 1,
+      "limitations": [
+        "Synthetic horizontal surface and saved geometric screening, not a surveyed site or physical accident validation",
+        "Software WebGL renderer when supplied launch options use SwiftShader"
+      ]
+    },
+    "checks": [
+      {
+        "id": "task-counts-include-unconfigured-equipment-and-filter-only-the-list",
+        "status": "passed",
+        "evidence": {
+          "all": {
+            "resources": 3,
+            "configured": 2,
+            "missing": 1,
+            "guards": 0,
+            "own-limits": 0,
+            "shared-limits": 1,
+            "open-issues": 0
+          },
+          "taskA": {
+            "resources": 2,
+            "configured": 1,
+            "missing": 1,
+            "guards": 0,
+            "own-limits": 0,
+            "shared-limits": 1,
+            "open-issues": 0
+          },
+          "taskB": {
+            "resources": 1,
+            "configured": 1,
+            "missing": 0,
+            "guards": 0,
+            "own-limits": 0,
+            "shared-limits": 1,
+            "open-issues": 0
+          },
+          "unconfiguredResource": "rail-machine-unconfigured",
+          "filterChangesSceneResults": false,
+          "filterChangesSavedRecords": false,
+          "viewport": {
+            "width": 1366,
+            "height": 768
+          },
+          "panelBounds": {
+            "x": 947,
+            "y": 119,
+            "width": 419,
+            "height": 613
+          }
+        }
+      },
+      {
+        "id": "saved-overlap-registers-one-risk-and-opens-existing-issue",
+        "status": "passed",
+        "evidence": {
+          "issueId": "issue:6901880e-12a7-4cdb-8109-e9dc7cb4029a",
+          "status": "pending-verification",
+          "taskId": "rail-task-A",
+          "issueCount": 1,
+          "reopenCreatesNewIssue": false,
+          "sourceFields": [
+            "discovery",
+            "railSafetyRisk"
+          ]
+        }
+      },
+      {
+        "id": "existing-issue-ui-completes-assign-rectify-review-and-retains-source",
+        "status": "passed",
+        "evidence": {
+          "issueId": "issue:6901880e-12a7-4cdb-8109-e9dc7cb4029a",
+          "status": "closed",
+          "rounds": 1,
+          "closedAt": "2026-10-14T07:37:58.249Z",
+          "operations": [
+            "issue.assign",
+            "issue.start",
+            "issue.submit",
+            "issue.review"
+          ],
+          "frozenSourceUnchanged": true,
+          "sceneRemediationClaimed": false
+        }
+      },
+      {
+        "id": "closed-history-survives-reload-and-current-overlap-remains-visible",
+        "status": "passed",
+        "evidence": {
+          "issueId": "issue:6901880e-12a7-4cdb-8109-e9dc7cb4029a",
+          "persistedStatus": "closed",
+          "currentGeometricResult": "overlap",
+          "openIssueCount": 0,
+          "allowsExplicitNewEpisode": true,
+          "personnelPositioningRequests": 0,
+          "pageErrors": [],
+          "consoleErrors": []
+        }
+      }
+    ],
+    "screenshots": [
+      "/workspace/scratch/cf1441d132b1/cesium-oct14/output/rail-task-workbench-final/01-task-overview-three-equipment.png",
+      "/workspace/scratch/cf1441d132b1/cesium-oct14/output/rail-task-workbench-final/02-registered-risk-history.png",
+      "/workspace/scratch/cf1441d132b1/cesium-oct14/output/rail-task-workbench-final/03-existing-issue-workflow-closed.png",
+      "/workspace/scratch/cf1441d132b1/cesium-oct14/output/rail-task-workbench-final/04-persisted-closed-history.png"
+    ],
+    "pageErrors": [],
+    "consoleErrors": [],
+    "commands": [
+      {
+        "type": "railSafety.reportRisk",
+        "id": "issue:6901880e-12a7-4cdb-8109-e9dc7cb4029a"
+      },
+      {
+        "type": "issue.assign",
+        "id": "issue:6901880e-12a7-4cdb-8109-e9dc7cb4029a"
+      },
+      {
+        "type": "issue.start",
+        "id": "issue:6901880e-12a7-4cdb-8109-e9dc7cb4029a"
+      },
+      {
+        "type": "issue.submit",
+        "id": "issue:6901880e-12a7-4cdb-8109-e9dc7cb4029a"
+      },
+      {
+        "type": "issue.review",
+        "id": "issue:6901880e-12a7-4cdb-8109-e9dc7cb4029a"
+      }
+    ],
+    "origin": "http://127.0.0.1:5198",
+    "browserVersion": "153.0.8010.0",
+    "result": "passed",
+    "finishedAt": "2026-10-14T07:38:36.352Z"
+  },
+  "visualFollowUp": {
+    "classification": "visual-follow-up-risk-history-and-issue-drawer",
+    "startedAt": "2026-10-14T07:43:02.199Z",
+    "dataDir": "/workspace/scratch/cf1441d132b1/cesium-oct14/tmp/rail-task-workbench-oNxAby",
+    "productionDataReadOrModified": false,
+    "personnelPositioning": {
+      "configured": false,
+      "samplesSubmitted": 0,
+      "requests": []
+    },
+    "fixture": {
+      "synthetic": true,
+      "tasks": 2,
+      "equipment": 3,
+      "models": 2,
+      "unconfiguredEquipment": 1,
+      "limitations": [
+        "Synthetic horizontal surface and saved geometric screening, not a surveyed site or physical accident validation",
+        "Software WebGL renderer when supplied launch options use SwiftShader"
+      ]
+    },
+    "checks": [
+      {
+        "id": "compact-risk-history-filters-and-visible-card",
+        "status": "passed",
+        "evidence": {
+          "issueId": "issue:63dd5d02-4a96-4a76-8328-b1f2e852bb2f",
+          "status": "pending-verification",
+          "archivedCount": 0,
+          "allCount": 1,
+          "cardBounds": {
+            "x": 961,
+            "y": 665.4375,
+            "width": 391,
+            "height": 220.9375
+          },
+          "visibleCardInInitialViewport": true,
+          "bodyText": "查看范围\n全部可见数据\nA · 邻线吊装作业\nB · 机械准备作业\n未关联可见任务\n未闭环\n1\n待核查\n1\n已归档\n0\n处置状态\n未闭环\n全部状态\n已关闭 / 已归档\n\n处置单保留登记时的几何筛查快照；当前现场状态需另行核实。\n\n机械风险处置单 · 1\nA任务吊机 · 潜在相交 · 铁路设备安全限界 · 潜在侵限\n待核查\n\nA任务吊机 · 潜在相交 · 铁路设备安全限界\n\n登记依据：潜在侵限 · 0.00 m\n\n筛查快照：2026/10/14 03:43:21（本机时间）\n\n登记时任务：A · 邻线吊装作业\n\n查看 / 办理处置单\n定位当前机械"
+        }
+      },
+      {
+        "id": "stable-management-risk-drawer",
+        "status": "passed",
+        "evidence": {
+          "opacity": "1",
+          "background": "rgb(255, 255, 255)",
+          "animation": "drawer-in",
+          "activeAnimations": 0,
+          "bodyBackground": "rgba(0, 0, 0, 0)"
+        }
+      }
+    ],
+    "screenshots": [
+      "/workspace/scratch/cf1441d132b1/cesium-oct14/output/rail-task-workbench-visual-final/05-compact-risk-card.png",
+      "/workspace/scratch/cf1441d132b1/cesium-oct14/output/rail-task-workbench-visual-final/05b-complete-risk-card.png",
+      "/workspace/scratch/cf1441d132b1/cesium-oct14/output/rail-task-workbench-visual-final/06-stable-risk-source-drawer.png"
+    ],
+    "pageErrors": [],
+    "consoleErrors": [],
+    "commands": [
+      {
+        "type": "railSafety.reportRisk",
+        "id": "issue:63dd5d02-4a96-4a76-8328-b1f2e852bb2f"
+      }
+    ],
+    "origin": "http://127.0.0.1:5198",
+    "browserVersion": "153.0.8010.0",
+    "result": "passed",
+    "finishedAt": "2026-10-14T07:43:57.994Z"
+  },
+  "rootValidation": {
+    "regression": {
+      "passed": 184,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 16.88
+    },
+    "productionBuild": {
+      "commit": "ff2a36c",
+      "passed": true,
+      "seconds": 16.81
+    },
+    "visualReview": "Task overview, compact risk history and opaque stable drawer visually reviewed by root"
+  },
+  "observationAdjustments": [
+    {
+      "attempt": "output/rail-task-workbench/report.json",
+      "countedAsFullPass": false,
+      "reason": "Screenshot observer waited for a hidden Cesium renderer after management issue workflow; corrected observer and reran the entire four-case suite on unchanged product."
+    },
+    {
+      "attempt": "output/rail-task-workbench-visual/report.json",
+      "countedAsFullPass": false,
+      "reason": "An old bootstrap metrics request raced with isolated fixture login and received 401 before checks; identity setup was moved before first page navigation, then visual-only checks reran cleanly."
+    }
+  ],
+  "limitations": [
+    "Browser fixtures use synthetic geometry and isolated records, not a surveyed site",
+    "No personnel locator configuration or samples",
+    "No physical prediction, safety approval, external notifications or continuous backend alarm certification",
+    "Four business checks ran at f105e7e; later changes limited to compact issue presentation and one history label, verified separately"
+  ]
+}

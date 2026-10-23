@@ -21,6 +21,7 @@ import {
 } from "cesium";
 import type { ImportRecord } from "./types";
 import type { CadPolylineFeature } from "./cadPrimitiveLoader";
+import { recoverDestroyedClippingReferences } from "./destroyedClippingRecovery";
 
 export const subsurfacePanelHtml = `
   <div id="subsurfacePanel" class="subsurface-panel hidden">
@@ -270,7 +271,8 @@ export class SubsurfaceTools {
   ) {
     this.originalCollision = viewer.scene.screenSpaceCameraController.enableCollisionDetection;
     this.originalDepthTest = viewer.scene.globe.depthTestAgainstTerrain;
-    viewer.scene.pickTranslucentDepth = true;
+    // Keep Cesium's opaque-depth default for camera navigation. Translucent
+    // depth requires an extra render/readback and belongs only to an explicit pick.
     void viewer.dataSources.add(this.overlay);
     this.disableGlobePolygonClipping();
     this.handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
@@ -379,7 +381,12 @@ export class SubsurfaceTools {
           continue;
         }
         if (collection.isDestroyed()) {
-          if (candidate[publicKey] === collection || candidate[privateKey] === collection) candidate[privateKey] = undefined;
+          if (candidate[publicKey] === collection || candidate[privateKey] === collection) {
+            candidate[privateKey] = undefined;
+            // A directly imported Model may already have commands whose
+            // uniforms captured the deleted clipping texture.
+            (target as { resetDrawCommands?: () => void }).resetDrawCommands?.();
+          }
           targets.delete(target);
           detached += 1;
         } else {
@@ -396,6 +403,7 @@ export class SubsurfaceTools {
     for (const target of candidates) {
       const candidate = target as Record<string, unknown> & { isDestroyed?: () => boolean };
       if (candidate.isDestroyed?.()) continue;
+      detached += recoverDestroyedClippingReferences(target);
       for (const [publicKey, privateKey] of [["clippingPlanes", "_clippingPlanes"], ["clippingPolygons", "_clippingPolygons"]] as const) {
         const collection = candidate[publicKey] as { enabled: boolean; isDestroyed: () => boolean } | undefined;
         if (!collection) continue;
@@ -505,10 +513,18 @@ export class SubsurfaceTools {
     const scene = this.viewer.scene;
     const object = scene.pick(screenPosition) as { primitive?: unknown; content?: unknown; id?: unknown } | undefined;
     if (scene.pickPositionSupported) {
-      const picked = scene.pickPosition(screenPosition);
-      if (picked && Cartesian3.magnitude(picked) > 1) {
-        const modelSurface = Boolean(object && (object.primitive instanceof Model || object.primitive instanceof Cesium3DTileset || object.content));
-        return { position: picked, source: modelSurface ? "倾斜摄影/模型表面" : "场景表面" };
+      const previousTranslucentDepth = scene.pickTranslucentDepth;
+      try {
+        // Underground tools may intentionally pick transparent surfaces. Do not
+        // leave this expensive mode enabled for later camera drag/zoom events.
+        scene.pickTranslucentDepth = true;
+        const picked = scene.pickPosition(screenPosition);
+        if (picked && Cartesian3.magnitude(picked) > 1) {
+          const modelSurface = Boolean(object && (object.primitive instanceof Model || object.primitive instanceof Cesium3DTileset || object.content));
+          return { position: picked, source: modelSurface ? "倾斜摄影/模型表面" : "场景表面" };
+        }
+      } finally {
+        scene.pickTranslucentDepth = previousTranslucentDepth;
       }
     }
     const ray = this.viewer.camera.getPickRay(screenPosition);

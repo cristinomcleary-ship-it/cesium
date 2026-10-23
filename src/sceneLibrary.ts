@@ -1,11 +1,12 @@
 import type { SavedReplaySettings } from "./videoArFusion";
+import type { SavedVideoOverlaySettings } from "./videoModelOverlay";
 import {
   Cartesian3, Cesium3DTileset, Color, CzmlDataSource, GeoJsonDataSource, IonResource,
   KmlDataSource, Matrix4, Model, UrlTemplateImageryProvider, type Viewer,
 } from "cesium";
 import { readCadImport } from "./cadImport";
 import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader";
-import { clampCadToScene, getCadBoundingSphere, loadCadImport, useSampledCadHeights } from "./dxfLoader";
+import { clampCadToScene, getCadBoundingSphere, getCadModelSamplingExclusions, loadCadImport, useSampledCadHeights } from "./dxfLoader";
 import { loadLocalImagery, type LocalImageryResult } from "./localImagery";
 import type { ModelEditor } from "./modelEditor";
 import type { ImportRecord } from "./types";
@@ -20,11 +21,20 @@ type Hooks = {
   replaceImagery: (result: LocalImageryResult) => void;
   setBasemap: (kind: string) => void; getBasemap: () => string;
   notify: (message: string, error?: boolean) => void;
-  restoreVideo: (files: Record<string, File>, settings: SavedReplaySettings) => Promise<void>;
+  restoreVideo: (files: Record<string, File>, settings: SavedReplaySettings | SavedVideoOverlaySettings, recordId?: string) => Promise<void>;
+  shouldSaveView?: () => boolean;
   clearVideo: () => void;
   layersChanged: () => void;
+  canReadRecord?: (record: Pick<LibraryRecord, "kind">) => boolean;
+  libraryChanged?: () => void;
 };
 type Draft = { id: string; name: string; kind: LibraryKind; settings: LibrarySettings; files: Record<string, { name: string; blob: Blob }>; copy?: { type: "tiles"; path: string } | { type: "model"; url: string } };
+export type VideoOverlaySaveProgress = { phase: "uploading" | "committing"; loaded: number; total: number };
+export type VideoOverlaySchemeSummary = { id: string; name: string; updatedAt: string; active: boolean; saving: boolean; error?: string };
+function videoSchemeName(record: Pick<LibraryRecord, "name" | "settings">): string {
+  const name = record.settings.video?.schemeName;
+  return record.settings.video?.mode === "cc-overlay" && typeof name === "string" && name.trim() ? name.trim() : record.name;
+}
 export class SceneLibrary {
   readonly records = new Map<string, LibraryRecord>();
   private failures = new Map<string, string>();
@@ -41,6 +51,9 @@ export class SceneLibrary {
   private deleting = new Set<string>();
   private cameraTimer = 0;
   private viewReady = false;
+  private lastMapView?: SceneView;
+  private saveProgress = new Map<string, VideoOverlaySaveProgress>();
+  private schemeRefreshGeneration = 0;
   ready: Promise<void> = Promise.resolve();
   constructor(private hooks: Hooks) {
     window.addEventListener("beforeunload", event => {
@@ -50,6 +63,28 @@ export class SceneLibrary {
     hooks.viewer.camera.moveEnd.addEventListener(() => this.saveView());
   }
   get activeVideoRecordId(): string { return this.activeVideoId; }
+  listVideoOverlaySchemes(): VideoOverlaySchemeSummary[] {
+    return [...this.records.values()].filter(record => record.kind === "Drone Video" && record.settings.video?.mode === "cc-overlay" && this.hooks.canReadRecord?.(record) !== false)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id))
+      .map(record => ({ id: record.id, name: videoSchemeName(record), updatedAt: record.updatedAt, active: record.id === this.activeVideoId,
+        saving: this.saveProgress.has(record.id) || this.updates.has(record.id), ...(this.failures.has(record.id) ? { error: this.failures.get(record.id) } : {}) }));
+  }
+  async refreshVideoOverlaySchemes(): Promise<VideoOverlaySchemeSummary[]> {
+    const generation = ++this.schemeRefreshGeneration;
+    const previous = new Map([...this.records.values()].filter(record => record.kind === "Drone Video" && record.settings.video?.mode === "cc-overlay").map(record => [record.id, record.updatedAt]));
+    const listing = await libraryRequest<LibraryListing>("/records");
+    if (generation !== this.schemeRefreshGeneration) return this.listVideoOverlaySchemes();
+    const incoming = listing.records.filter(record => record.kind === "Drone Video" && record.settings.video?.mode === "cc-overlay" && this.hooks.canReadRecord?.(record) !== false);
+    const available = new Set(incoming.map(record => record.id));
+    for (const [id, updatedAt] of previous) {
+      if (!available.has(id) && this.records.get(id)?.updatedAt === updatedAt && !this.drafts.has(id) && !this.updates.has(id) && !this.saveProgress.has(id)) this.records.delete(id);
+    }
+    for (const record of incoming) {
+      const current = this.records.get(record.id);
+      if (!current || current.updatedAt <= record.updatedAt) this.records.set(record.id, record);
+    }
+    this.render(); return this.listVideoOverlaySchemes();
+  }
   get busy() { return this.starting || this.pending > 0 || this.restoring.size > 0; }
   start() {
     this.ready = this.initialize();
@@ -77,12 +112,13 @@ export class SceneLibrary {
         const select = document.querySelector<HTMLSelectElement>("#basemap");
         if (select) select.value = this.hooks.getBasemap();
       }
+      this.lastMapView = this.captureView();
       this.viewReady = true;
     } catch (error) { this.error = this.message(error); }
     finally { this.starting = false; this.render(); }
   }
   private message(error: unknown) { return error instanceof Error ? error.message : String(error); }
-  async save(id: string, name: string, kind: LibraryKind, settings: LibrarySettings, files: Draft["files"] = {}, copy?: Draft["copy"]) {
+  async save(id: string, name: string, kind: LibraryKind, settings: LibrarySettings, files: Draft["files"] = {}, copy?: Draft["copy"], reportProgress?: (progress: VideoOverlaySaveProgress) => void) {
     const retrying = this.drafts.has(id);
     const draft: Draft = { id, name, kind, settings, files, copy };
     this.drafts.set(id, draft);
@@ -98,8 +134,16 @@ export class SceneLibrary {
         if (response.status !== 404) throw new Error("暂时无法核实上次保存结果，请稍后重试");
       }
       const savedFiles: Record<string, LibraryFile> = {};
+      const total = Object.values(files).reduce((sum, file) => sum + file.blob.size, 0); let uploaded = 0;
+      const progress = (phase: VideoOverlaySaveProgress["phase"], loaded: number) => {
+        const value = { phase, loaded, total }; this.saveProgress.set(id, value); reportProgress?.(value); this.render();
+      };
       for (const [slot, file] of Object.entries(files)) {
-        savedFiles[slot] = await libraryRequest<LibraryFile>("/records/" + id + "/files/" + slot + "?name=" + encodeURIComponent(file.name), { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file.blob });
+        if (kind === "Drone Video") {
+          progress("uploading", uploaded);
+          savedFiles[slot] = await this.uploadVideoFile(id, slot, file, loaded => progress("uploading", uploaded + loaded));
+          uploaded += file.blob.size;
+        } else savedFiles[slot] = await libraryRequest<LibraryFile>("/records/" + id + "/files/" + slot + "?name=" + encodeURIComponent(file.name), { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file.blob });
       }
       const savedSettings = { ...settings };
       if (copy) {
@@ -107,15 +151,35 @@ export class SceneLibrary {
         if (copy.type === "tiles") { savedSettings.url = file.url; savedSettings.localPath = copy.path; savedFiles.tiles = file; }
         else savedFiles.data = file;
       }
+      if (kind === "Drone Video") progress("committing", total);
       const record = await libraryRequest<LibraryRecord>("/records/" + id, jsonRequest("PUT", {
         version: 1, id, name, kind, visible: true, createdAt: "", updatedAt: "", settings: savedSettings, files: savedFiles,
       }));
       this.records.set(id, record); this.failures.delete(id); this.drafts.delete(id); this.error = "";
       return record;
     } catch (error) {
-      this.error = "尚未保存：" + name + "。请在资料库重试，保存完成前不要退出。";
+      this.error = "尚未保存：" + name + "。请在资料库重试，保存完成前不要关闭浏览器或服务。";
       this.failures.set(id, this.message(error)); throw error;
-    } finally { this.pending--; this.render(); }
+    } finally { this.saveProgress.delete(id); this.pending--; this.render(); }
+  }
+  private uploadVideoFile(id: string, slot: string, file: { name: string; blob: Blob }, progress: (loaded: number) => void): Promise<LibraryFile> {
+    return new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open("POST", "/__library/records/" + id + "/files/" + slot + "?name=" + encodeURIComponent(file.name));
+      request.setRequestHeader("X-Cesium-Library", "1"); request.setRequestHeader("Content-Type", "application/octet-stream");
+      request.responseType = "json";
+      request.upload.onprogress = event => progress(Math.min(file.blob.size, event.loaded));
+      request.onload = () => {
+        const body = request.response as (LibraryFile & { error?: string }) | null;
+        if (request.status < 200 || request.status >= 300 || body?.error || !body?.url) {
+          reject(new Error(body?.error || `录像上传失败（HTTP ${request.status}），保存草稿已保留`)); return;
+        }
+        progress(file.blob.size); resolve(body);
+      };
+      request.onerror = () => reject(new Error("录像上传连接中断，保存草稿已保留，可稍后重试"));
+      request.onabort = () => reject(new Error("录像上传已中断，保存草稿已保留"));
+      request.send(file.blob);
+    });
   }
   queueUpdate(id: string, patch: { visible?: boolean; settings?: LibrarySettings }) {
     if (!this.records.has(id) || this.restoring.has(id) || this.deleting.has(id)) return;
@@ -146,13 +210,20 @@ export class SceneLibrary {
       } finally { this.pending--; this.render(); }
     }
   }
+  private captureView(): SceneView {
+    const camera = this.hooks.viewer.camera;
+    const v = (p: Cartesian3) => [p.x, p.y, p.z];
+    return { position: v(camera.positionWC), direction: v(camera.directionWC), up: v(camera.upWC), basemap: this.hooks.getBasemap(), activeImageryId: this.activeImageryId, activeVideoId: this.activeVideoId };
+  }
   saveView() {
     if (!this.viewReady || this.starting || this.restoring.size) return;
     window.clearTimeout(this.cameraTimer);
+    // Capture before the delayed write. A CC video camera must never replace the
+    // user's map view, while selecting/saving a video still persists its record ID.
+    if (this.hooks.shouldSaveView?.() !== false) this.lastMapView = this.captureView();
+    if (!this.lastMapView) return;
+    const view: SceneView = { ...this.lastMapView, activeImageryId: this.activeImageryId, activeVideoId: this.activeVideoId };
     this.cameraTimer = window.setTimeout(() => {
-      const camera = this.hooks.viewer.camera;
-      const v = (p: Cartesian3) => [p.x, p.y, p.z];
-      const view: SceneView = { position: v(camera.positionWC), direction: v(camera.directionWC), up: v(camera.upWC), basemap: this.hooks.getBasemap(), activeImageryId: this.activeImageryId, activeVideoId: this.activeVideoId };
       void libraryRequest("/view", { ...jsonRequest("PUT", view), keepalive: true }).catch(error => {
         this.error = "视角未保存：" + this.message(error); this.render();
       });
@@ -162,11 +233,71 @@ export class SceneLibrary {
     const file = record.files[slot]; if (!file) throw new Error("缺少已保存的 " + slot + " 文件");
     const response = await fetch(file.url);
     if (!response.ok) throw new Error("保存文件无法读取（HTTP " + response.status + "）");
-    return new File([await response.blob()], file.name);
+    const blob = await response.blob();
+    const metadata = (record.settings.video?.fileMetadata as Record<string, { name?: string; size?: number; lastModified?: number; type?: string }> | undefined)?.[slot];
+    if (metadata && (metadata.name !== file.name || metadata.size !== blob.size)) throw new Error("保存文件与融合方案的文件信息不一致，请保留资料并重新核验");
+    const lastModified = typeof metadata?.lastModified === "number" && Number.isFinite(metadata.lastModified) ? metadata.lastModified : undefined;
+    return new File([blob], file.name, { type: typeof metadata?.type === "string" ? metadata.type : blob.type, ...(lastModified === undefined ? {} : { lastModified }) });
+  }
+  private async readableRecord(id: string): Promise<LibraryRecord> {
+    // A cached catalogue is not an authorization decision after an account switch.
+    const record = await libraryRequest<LibraryRecord>("/records/" + encodeURIComponent(id));
+    if (this.hooks.canReadRecord?.(record) === false) throw new Error("当前账号没有此类资料权限，原方案已保留");
+    this.records.set(record.id, record);
+    return record;
+  }
+  private async videoOverlayDependencies(settings: SavedVideoOverlaySettings): Promise<void> {
+    const ids = new Set(settings.selectedIds ?? []);
+    if (settings.sceneReference) ids.add(settings.sceneReference.recordId);
+    if (settings.occlusion?.enabled) ids.add(settings.occlusion.sourceId);
+    const records: LibraryRecord[] = [];
+    for (const id of ids) {
+      let record: LibraryRecord;
+      try { record = await this.readableRecord(id); }
+      catch { throw new Error("融合方案引用的工程资料不可用或当前账号无权读取，原方案已保留"); }
+      if (!["CAD", "Model", "3D Tiles"].includes(record.kind)) throw new Error("融合方案引用了不支持的工程资料，原方案已保留");
+      records.push(record);
+    }
+    const priority = (kind: LibraryKind) => kind === "3D Tiles" ? 0 : kind === "Model" ? 1 : 2;
+    for (const record of records.sort((a, b) => priority(a.kind) - priority(b.kind))) {
+      if (!this.hooks.getImports().some(item => item.id === record.id)) await this.restore(record.id);
+      if (!this.hooks.getImports().some(item => item.id === record.id) || this.hooks.canReadRecord?.(record) === false) {
+        throw new Error("融合方案依赖的工程资料尚未恢复，原方案已保留，请在资料库重试");
+      }
+    }
+  }
+  private async restoreVideoOverlay(record: LibraryRecord, options: { asCopy?: boolean; name?: string } = {}): Promise<void> {
+    const settings = structuredClone(record.settings.video) as unknown as SavedVideoOverlaySettings;
+    await this.videoOverlayDependencies(settings);
+    const files: Record<string, File> = {};
+    for (const slot of Object.keys(record.files)) files[slot] = await this.file(record, slot);
+    // Large video reads can outlive a permission change. Recheck before handing
+    // already downloaded bytes and scene objects to the controller.
+    await this.readableRecord(record.id); await this.videoOverlayDependencies(settings);
+    if (options.asCopy) {
+      const name = options.name?.trim() || `${videoSchemeName(record).slice(0, 490)} · 副本`;
+      if (name.length > 500) throw new Error("融合方案名称不能超过 500 个字符");
+      (settings as SavedVideoOverlaySettings & { schemeName?: string }).schemeName = name;
+    }
+    await this.hooks.restoreVideo(files, settings, options.asCopy ? undefined : record.id);
+  }
+  async openVideoOverlayScheme(id: string, options: { asCopy?: boolean; name?: string } = {}): Promise<void> {
+    await this.ready;
+    if (this.restoring.has(id) || this.deleting.has(id)) throw new Error("方案正在打开或删除，请稍候");
+    this.restoring.add(id); this.render();
+    try {
+      const record = await this.readableRecord(id);
+      if (record.kind !== "Drone Video" || record.settings.video?.mode !== "cc-overlay") throw new Error("该资料不是 CC 视频融合方案");
+      await this.restoreVideoOverlay(record, options);
+      if (!options.asCopy) this.activeVideoId = id;
+      this.failures.delete(id);
+    } catch (error) { this.failures.set(id, this.message(error)); throw error; }
+    finally { this.restoring.delete(id); this.render(); this.hooks.layersChanged(); this.saveView(); }
   }
   async restore(id: string) {
-    const record = this.records.get(id);
+    let record = this.records.get(id);
     if (!record || this.restoring.has(id) || this.deleting.has(id)) return;
+    if (this.hooks.canReadRecord?.(record) === false) { this.failures.set(id, "当前账号没有此类资料权限"); this.render(); return; }
     const existing = this.hooks.getImports().find(i => i.id === id);
     if (existing) {
       if (existing.boundingSphere) this.hooks.viewer.camera.flyToBoundingSphere(existing.boundingSphere);
@@ -207,7 +338,8 @@ export class SceneLibrary {
         if (displayMode === "model" && !loaded.some(i => i.kind === "3D Tiles")) {
           const data = await loadCadImport(imported, s.coordinates, displayMode);
           await h.viewer.dataSources.add(data); cleanup = () => { h.viewer.dataSources.remove(data, true); };
-          await clampCadToScene(data, h.viewer.scene, 2000); useSampledCadHeights(data);
+          await clampCadToScene(data, h.viewer.scene, { objectsToExclude: getCadModelSamplingExclusions(loaded) });
+          useSampledCadHeights(data);
           h.addImport(record.name, "CAD", data, id, { representation: "dataSource", boundingSphere: getCadBoundingSphere(data) });
           data.show = record.visible;
         } else {
@@ -239,9 +371,13 @@ export class SceneLibrary {
         h.replaceImagery(result); this.activeImageryId = id;
         const select = document.querySelector<HTMLSelectElement>("#basemap"); if (select) select.value = "local";
       } else if (record.kind === "Drone Video") {
-        const files: Record<string, File> = {};
-        for (const slot of Object.keys(record.files)) files[slot] = await this.file(record, slot);
-        await h.restoreVideo(files, s.video as unknown as SavedReplaySettings);
+        record = await this.readableRecord(id);
+        if (record.settings.video?.mode === "cc-overlay") await this.restoreVideoOverlay(record);
+        else {
+          const files: Record<string, File> = {};
+          for (const slot of Object.keys(record.files)) files[slot] = await this.file(record, slot);
+          await h.restoreVideo(files, record.settings.video as unknown as SavedReplaySettings, record.id);
+        }
         this.activeVideoId = id;
       }
       const item = h.getImports().find(i => i.id === id); if (item) item.visible = record.visible;
@@ -259,7 +395,7 @@ export class SceneLibrary {
 
   async updateVideoControls(controls: Record<string, string | boolean>, calibrationSessions?: SavedReplaySettings["calibrationSessions"], requireSaved = false) {
     const record = this.records.get(this.activeVideoId);
-    if (!record || record.kind !== "Drone Video") {
+    if (!record || record.kind !== "Drone Video" || record.settings.video?.mode === "cc-overlay") {
       if (requireSaved) throw new Error("视频尚未保存到资料库，请先完成加载保存再记录校准");
       return;
     }
@@ -272,12 +408,36 @@ export class SceneLibrary {
     }
   }
 
+  async updateVideoOverlaySettings(id: string, settings: SavedVideoOverlaySettings, pos?: File): Promise<void> {
+    const record = this.records.get(id);
+    if (!record || record.kind !== "Drone Video" || record.settings.video?.mode !== "cc-overlay") throw new Error("找不到对应的 CC 融合录像，请重新保存录像");
+    if (this.restoring.has(id) || this.deleting.has(id)) throw new Error("录像正在恢复或删除，请稍后保存");
+    const metadata = (record.settings.video.fileMetadata as Record<string, { name: string; size: number; lastModified: number }> | undefined)?.pos;
+    if (pos && (!record.files.pos || !metadata || metadata.name !== pos.name || metadata.size !== pos.size || metadata.lastModified !== pos.lastModified)) {
+      await this.flush();
+      this.pending++; this.render();
+      try {
+        const form = new FormData();
+        form.append("pos", pos, pos.name);
+        form.append("settings", JSON.stringify({ video: structuredClone(settings) }));
+        const saved = await libraryRequest<LibraryRecord>("/records/" + id + "/pos", { method: "POST", body: form });
+        if (!this.records.has(id) || this.deleting.has(id)) throw new Error("方案正在删除，未保存 POS 附件");
+        this.records.set(id, saved);
+      } finally { this.pending--; this.render(); }
+    }
+    this.queueUpdate(id, { settings: { video: structuredClone(settings) as unknown as Record<string, unknown> } });
+    await this.flush();
+    if (this.failures.has(id)) throw new Error(this.failures.get(id));
+    if (!this.records.has(id)) throw new Error("录像已被删除，融合参数未能保存");
+  }
+
   markVideo(id: string) { this.activeVideoId = id; this.render(); this.saveView(); }
   markImagery(id: string) { this.activeImageryId = id; this.render(); this.saveView(); }
-  async delete(id: string, confirm = true) {
-    if (this.restoring.has(id) || this.pending) return;
+  async delete(id: string, confirm = true): Promise<boolean> {
+    if (this.restoring.has(id) || this.pending) { this.hooks.notify("请等待当前资料保存或恢复完成后再删除",true); return false; }
     const name = this.records.get(id)?.name ?? this.drafts.get(id)?.name ?? id;
-    if (confirm && !window.confirm("删除“" + name + "”及其本机保存副本？原始导入文件不会被删除。")) return;
+    if (confirm && !window.confirm("删除“" + name + "”及其本机保存副本？原始导入文件不会被删除。")) return false;
+    const unsaved = this.updates.get(id);
     this.deleting.add(id); this.updates.delete(id); this.pending++; this.render();
     try {
       await libraryRequest("/records/" + id, { method: "DELETE" });
@@ -288,9 +448,16 @@ export class SceneLibrary {
         this.hooks.setBasemap("street"); this.activeImageryId = "";
         const select = document.querySelector<HTMLSelectElement>("#basemap"); if (select) select.value = "street";
       }
-      this.saveView();
-    } catch (error) { this.error = "删除未完成，资料保留：" + this.message(error); this.hooks.notify(this.error, true); }
-    finally { this.deleting.delete(id); this.pending--; this.render(); }
+      this.error = ""; this.saveView();return true;
+    } catch (error) {
+      if (unsaved) this.updates.set(id, unsaved);
+      this.error = "删除未完成，资料保留：" + this.message(error); this.hooks.notify(this.error, true);return false;
+    }
+    finally {
+      this.deleting.delete(id); this.pending--;
+      if (this.updates.has(id) && !this.updateTimer) this.updateTimer = window.setTimeout(() => { this.updateTimer = 0; void this.flush(); }, 120);
+      this.render();
+    }
   }
   async clear() {
     if (this.busy) return this.hooks.notify("请等待资料保存或恢复完成", true);
@@ -299,16 +466,20 @@ export class SceneLibrary {
     this.render();
   }
   render() {
+    this.hooks.libraryChanged?.();
     const status = document.querySelector<HTMLElement>("#libraryStatus");
     const list = document.querySelector<HTMLElement>("#savedLibrary");
     if (!status || !list) return;
-    status.textContent = this.error || (this.starting ? "正在恢复上次资料…" : this.pending ? "正在保存，请稍候…" : this.failures.size ? "已保存到本机 · " + this.failures.size + " 项需展开重试" : this.updates.size ? "正在保存，请稍候…" : "已保存到本机 · 关闭后自动恢复");
+    const upload = [...this.saveProgress.values()].find(progress => progress.phase === "uploading");
+    const saving = upload ? `录像正在后台保存${upload.total ? ` · ${Math.floor(upload.loaded / upload.total * 100)}%` : ""}；可切换模块，请保留浏览器页面` : "正在保存，请稍候…";
+    status.textContent = this.error || (this.starting ? "正在恢复上次资料…" : this.pending ? saving : this.failures.size ? "已保存到本机 · " + this.failures.size + " 项需展开重试" : this.updates.size ? saving : "已保存到本机 · 关闭后自动恢复");
     status.classList.toggle("error-text", Boolean(this.error || this.failures.size));
     list.replaceChildren();
     for (const id of new Set([...this.records.keys(), ...this.drafts.keys()])) {
       const record = this.records.get(id); const draft = this.drafts.get(id);
+      if (this.hooks.canReadRecord?.(record ?? draft!) === false) continue;
       const row = document.createElement("div"); row.className = "saved-record"; row.dataset.savedId = id;
-      const title = document.createElement("span"); title.textContent = record?.name ?? draft!.name; title.title = title.textContent;
+      const title = document.createElement("span"); title.textContent = record ? videoSchemeName(record) : draft!.name; title.title = title.textContent;
       const detail = document.createElement("small");
       detail.textContent = this.restoring.has(id) ? "恢复中…" : this.failures.get(id) ?? (record ? record.kind + " · 已保存" : "等待保存");
       const retry = document.createElement("button"); retry.textContent = draft ? "重试保存" : this.failures.has(id) ? "重试" : record?.kind === "Imagery" || record?.kind === "Drone Video" ? "使用" : this.hooks.getImports().some(item => item.id === id) ? "定位" : "恢复";
@@ -329,3 +500,4 @@ export class SceneLibrary {
     const clear = document.querySelector<HTMLButtonElement>("#clearAll"); if (clear) clear.disabled = this.busy;
   }
 }
+

@@ -1,0 +1,95 @@
+{
+  "date": "2026-10-18",
+  "ok": true,
+  "build": "production",
+  "dataIsolation": true,
+  "syntheticSkp": {
+    "scope": "Real browser, real Cesium WebGL, real library persistence; SKP conversion mocked explicitly",
+    "checks": [
+      {
+        "name": "SKP UI → map pick → real offset GLB visible and saved",
+        "status": "passed",
+        "renderedPixels": 2251,
+        "renderEvidence": "Red fixture pixels"
+      },
+      {
+        "name": "Translation and rotation persist across real page reload",
+        "status": "passed"
+      },
+      {
+        "name": "Escape cancels relocation without moving saved model",
+        "status": "passed"
+      },
+      {
+        "name": "Existing model can be re-placed with a new map click",
+        "status": "passed"
+      },
+      {
+        "name": "Cancel before map pick creates no persistent record",
+        "status": "passed"
+      },
+      {
+        "name": "Failed backend delete retains both resources and group memberships",
+        "status": "passed"
+      },
+      {
+        "name": "Display delete removes only selected saved resource and its group reference, including reload",
+        "status": "passed"
+      }
+    ],
+    "pageErrors": []
+  },
+  "realSkp": {
+    "scope": "Real browser, Cesium WebGL, library persistence and Windows SketchUp SDK conversion",
+    "checks": [
+      {
+        "name": "Actual SKP → Windows SDK conversion → map pick → visibly rendered and saved",
+        "status": "passed",
+        "renderedPixels": 71026,
+        "renderEvidence": "Model visible/hidden canvas difference"
+      },
+      {
+        "name": "Translation and rotation persist across real page reload",
+        "status": "passed"
+      },
+      {
+        "name": "Escape cancels relocation without moving saved model",
+        "status": "passed"
+      },
+      {
+        "name": "Existing model can be re-placed with a new map click",
+        "status": "passed"
+      },
+      {
+        "name": "Cancel before map pick creates no persistent record",
+        "status": "passed"
+      },
+      {
+        "name": "Failed backend delete retains both resources and group memberships",
+        "status": "passed"
+      },
+      {
+        "name": "Display delete removes only selected saved resource and its group reference, including reload",
+        "status": "passed"
+      }
+    ],
+    "pageErrors": [],
+    "conversionDurationMs": [
+      7516,
+      195545
+    ]
+  },
+  "mouse": {
+    "modes": [
+      "horizontal",
+      "vertical",
+      "rotate"
+    ],
+    "refreshRestored": true,
+    "pageErrors": []
+  },
+  "deletion": {
+    "ownedRecordDirectoryRemoved": true,
+    "unrelatedRecordRetained": true
+  }
+}

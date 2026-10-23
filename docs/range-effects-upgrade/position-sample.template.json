@@ -1,0 +1,13 @@
+{
+  "projectId": "safety:project",
+  "deviceId": "tracker-01",
+  "coordinateSystem": "WGS84",
+  "position": {
+    "longitude": null,
+    "latitude": null,
+    "height": null
+  },
+  "timestamp": "REPLACE_WITH_DEVICE_CAPTURE_TIME_ISO8601",
+  "accuracyMeters": null,
+  "source": "measured"
+}

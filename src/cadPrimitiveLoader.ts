@@ -28,6 +28,7 @@ import {
 } from "cesium";
 import proj4 from "proj4";
 import { cadLineWidth, createCadPolylineAppearance } from "./cadDisplayStyle.ts";
+import { cadSpatialBatchKey, CadSpatialBatcher } from "./cadSpatialBatcher.ts";
 import type { CadImportEntity, CadImportPackage, CadPoint } from "./cadImport";
 import { createGaussKrugerToWgs84Converter } from "./coordinateUtils.ts";
 import type { CadCoordinateOptions, CadDisplayMode } from "./types";
@@ -55,6 +56,8 @@ export type CadPolylineFeature = {
 export type CadPrimitiveCollection = PrimitiveCollection & {
   readonly cadName: string;
   readonly cadPolylineFeatures: CadPolylineFeature[];
+  /** Actual face vertices remain available for local editing pivots after GPU upload. */
+  readonly cadFacePositions: Cartesian3[][];
   readonly cadFeatureCount: number;
 };
 
@@ -70,6 +73,12 @@ export type CadPrimitiveLoadOptions = {
   scene?: Scene;
   /** Lets the caller attach the empty collection early so batches can compile and release CPU geometry while loading continues. */
   beforePopulate?: (collection: PrimitiveCollection) => void | Promise<void>;
+  /** Freeze a draped layer to sampled world positions before building absolute geometry.
+   * Called in source batches; it must return one finite position for every input.
+   */
+  transformPositions?: (positions: Cartesian3[]) => Promise<Cartesian3[]>;
+  /** Maximum world-space interval between samples along lines / face boundaries. */
+  surfaceSampleSpacing?: number;
 };
 
 export type CadPrimitiveLoadResult = {
@@ -148,6 +157,20 @@ function closeLine(positions: Cartesian3[], closed: boolean): Cartesian3[] {
   return [...positions, Cartesian3.clone(positions[0])];
 }
 
+/** Preserve the rendered path between sparse CAD vertices when freezing a surface. */
+function densifyPositions(positions: Cartesian3[], spacing: number): Cartesian3[] {
+  if (positions.length < 2) return positions;
+  const result = [positions[0]];
+  for (let index = 1; index < positions.length; index++) {
+    const from = positions[index - 1], to = positions[index];
+    const segments = Math.max(1, Math.ceil(Cartesian3.distance(from, to) / spacing));
+    if (result.length + segments > 250_000) throw new Error("CAD 单条线过长，表面高程采样超过 250000 点，请拆分图纸后再融合");
+    for (let step = 1; step < segments; step++) result.push(Cartesian3.lerp(from, to, step / segments, new Cartesian3()));
+    result.push(to);
+  }
+  return result;
+}
+
 function validFace(positions: Cartesian3[]): boolean {
   if (positions.length < 3) return false;
   const origin = positions[0];
@@ -212,6 +235,9 @@ export async function loadCadPrimitiveCollection(
   if (displayMode !== "absolute" && !options.scene) {
     throw new Error("贴地或依附模型加载 CAD 时需要传入 viewer.scene，以便文字正确贴附");
   }
+  if (options.transformPositions && displayMode !== "absolute") throw new Error("表面高程采样后的 CAD 必须以绝对高程显示");
+  const surfaceSpacing = options.surfaceSampleSpacing;
+  if (surfaceSpacing !== undefined && (!Number.isFinite(surfaceSpacing) || surfaceSpacing <= 0)) throw new Error("CAD 表面采样间距必须为正数");
   const sourceBatchSize = Math.max(100, Math.floor(options.batchSize ?? 500));
   const primitiveBatchSize = Math.max(50, Math.floor(options.primitiveBatchSize ?? 600));
   const classificationType = displayMode === "model" ? ClassificationType.CESIUM_3D_TILE : ClassificationType.TERRAIN;
@@ -223,14 +249,12 @@ export async function loadCadPrimitiveCollection(
     handedToCaller = true;
   }
   const cadPolylineFeatures: CadPolylineFeature[] = [];
+  const cadFacePositions: Cartesian3[][] = [];
   let minimum: Cartesian3 | undefined;
   let maximum: Cartesian3 | undefined;
   let featureCount = 0;
   let skippedCount = 0;
 
-  let lineInstances: GeometryInstance[] = [];
-  let faceInstances: GeometryInstance[] = [];
-  const groundFacesByColor = new Map<string, GeometryInstance[]>();
   let labels: LabelCollection | undefined;
 
   const heightReference = displayMode === "terrain"
@@ -254,8 +278,7 @@ export async function loadCadPrimitiveCollection(
     Cartesian3.maximumByComponent(maximum, position, maximum);
   };
 
-  const flushLines = () => {
-    if (!lineInstances.length) return;
+  const lineBatches = new CadSpatialBatcher<GeometryInstance>({ maxBatchSize: primitiveBatchSize, emit: lineInstances => {
     if (displayMode === "absolute") {
       collection.add(new Primitive({
         geometryInstances: lineInstances,
@@ -276,51 +299,50 @@ export async function loadCadPrimitiveCollection(
         allowPicking: true,
       }));
     }
-    lineInstances = [];
-  };
+  } });
 
-  const flushAbsoluteFaces = () => {
-    if (!faceInstances.length) return;
-    collection.add(new Primitive({
-      geometryInstances: faceInstances,
-      appearance: new PerInstanceColorAppearance({ flat: true, translucent: true, closed: false }),
-      asynchronous: true,
-      releaseGeometryInstances: true,
-      vertexCacheOptimize: true,
-      compressVertices: true,
-      allowPicking: true,
-    }));
-    faceInstances = [];
-  };
+  const faceBatches = new CadSpatialBatcher<GeometryInstance>({
+    maxBatchSize: Math.max(50, Math.floor(primitiveBatchSize / 2)),
+    emit: instances => {
+      if (displayMode === "absolute") {
+        collection.add(new Primitive({
+          geometryInstances: instances,
+          appearance: new PerInstanceColorAppearance({ flat: true, translucent: true, closed: false }),
+          asynchronous: true,
+          releaseGeometryInstances: true,
+          vertexCacheOptimize: true,
+          compressVertices: true,
+          allowPicking: true,
+        }));
+        return;
+      }
+      // Ground/classification primitives require a uniform color on every
+      // supported GPU, so different CAD colors are deliberately split here.
+      collection.add(new GroundPrimitive({
+        geometryInstances: instances,
+        appearance: new PerInstanceColorAppearance({ flat: true, translucent: true, closed: false }),
+        asynchronous: true,
+        releaseGeometryInstances: true,
+        vertexCacheOptimize: true,
+        compressVertices: true,
+        classificationType,
+        allowPicking: true,
+      }));
+    },
+  });
 
-  const flushGroundFaceColor = (colorKey: string) => {
-    const instances = groundFacesByColor.get(colorKey);
-    if (!instances?.length) return;
-    // Ground/classification primitives require a uniform color on every
-    // supported GPU, so different CAD colors are deliberately split here.
-    collection.add(new GroundPrimitive({
-      geometryInstances: instances,
-      appearance: new PerInstanceColorAppearance({ flat: true, translucent: true, closed: false }),
-      asynchronous: true,
-      releaseGeometryInstances: true,
-      vertexCacheOptimize: true,
-      compressVertices: true,
-      classificationType,
-      allowPicking: true,
-    }));
-    groundFacesByColor.set(colorKey, []);
-  };
+  const batchKey = (positions: Cartesian3[], partition?: string) =>
+    cadSpatialBatchKey(BoundingSphere.fromPoints(positions).center, partition);
 
   const addLine = (positions: Cartesian3[], width: number, color: Color, id: CadPrimitiveFeatureId) => {
     const geometry = displayMode === "absolute"
       ? new PolylineGeometry({ positions, width, arcType: ArcType.NONE, vertexFormat: PolylineColorAppearance.VERTEX_FORMAT })
       : new GroundPolylineGeometry({ positions, width, granularity: 0, arcType: ArcType.GEODESIC });
-    lineInstances.push(new GeometryInstance({
+    lineBatches.add(batchKey(positions), new GeometryInstance({
       geometry,
       id,
       attributes: { color: ColorGeometryInstanceAttribute.fromColor(color) },
-    }));
-    if (lineInstances.length >= primitiveBatchSize) flushLines();
+    }), positions.length);
   };
 
   const addFace = (positions: Cartesian3[], color: Color, id: CadPrimitiveFeatureId) => {
@@ -335,25 +357,37 @@ export async function loadCadPrimitiveCollection(
       id,
       attributes: { color: ColorGeometryInstanceAttribute.fromColor(faceColor) },
     });
-    if (displayMode === "absolute") {
-      faceInstances.push(instance);
-      if (faceInstances.length >= Math.max(50, Math.floor(primitiveBatchSize / 2))) flushAbsoluteFaces();
-      return;
-    }
-    const colorKey = faceColor.toCssHexString();
-    const instances = groundFacesByColor.get(colorKey) ?? [];
-    instances.push(instance);
-    groundFacesByColor.set(colorKey, instances);
-    if (instances.length >= Math.max(50, Math.floor(primitiveBatchSize / 2))) flushGroundFaceColor(colorKey);
+    const partition = displayMode === "absolute" ? "" : faceColor.toCssHexString();
+    faceBatches.add(batchKey(positions, partition), instance, positions.length, partition);
   };
 
+  let sampledBatch: Cartesian3[][] = [];
   for (let index = 0; index < value.entities.length; index += 1) {
     abortIfRequested(options.signal);
+    if (options.transformPositions && index % sourceBatchSize === 0) {
+      const batch = value.entities.slice(index, index + sourceBatchSize).map(entity => {
+        if (entity.type === "POINT") return [];
+        let points = convertPoints(entity.vertices, convert);
+        if (surfaceSpacing && (entity.type === "POLYLINE" || entity.type === "3DFACE")) {
+          points = closeLine(points, entity.type === "3DFACE" || Boolean(entity.closed));
+          points = densifyPositions(points, surfaceSpacing);
+        }
+        return points;
+      });
+      const flattened = batch.flat();
+      const transformed = flattened.length ? await options.transformPositions(flattened) : [];
+      abortIfRequested(options.signal);
+      if (transformed.length !== flattened.length || transformed.some(point => !isFinitePosition(point))) {
+        throw new Error("CAD 表面高程采样不完整，不能用图纸原始高程代替缺失结果");
+      }
+      let offset = 0;
+      sampledBatch = batch.map(points => { const result = transformed.slice(offset, offset + points.length); offset += points.length; return result; });
+    }
     const entity = value.entities[index];
     const id = featureIdentity(entity, index);
     const color = entityColor(entity);
     const width = cadLineWidth(entity);
-    const converted = convertPoints(entity.vertices, convert);
+    const converted = options.transformPositions ? sampledBatch[index % sourceBatchSize] : convertPoints(entity.vertices, convert);
 
     if (entity.type === "POLYLINE") {
       const positions = closeLine(converted, Boolean(entity.closed));
@@ -369,6 +403,7 @@ export async function loadCadPrimitiveCollection(
       else {
         converted.forEach(include);
         addFace(converted, color, id);
+        cadFacePositions.push(converted);
         if (entity.sourceType === "3DFACE") {
           addLine(closeLine(converted, true), Math.max(1, Math.min(width, 2)), color, id);
         }
@@ -410,9 +445,8 @@ export async function loadCadPrimitiveCollection(
     }
   }
 
-  flushLines();
-  flushAbsoluteFaces();
-  for (const colorKey of groundFacesByColor.keys()) flushGroundFaceColor(colorKey);
+  lineBatches.flush();
+  faceBatches.flush();
   abortIfRequested(options.signal);
   options.onProgress?.(value.entities.length, value.entities.length);
 
@@ -424,6 +458,7 @@ export async function loadCadPrimitiveCollection(
   Object.defineProperties(collection, {
     cadName: { value: value.source.name, enumerable: true },
     cadPolylineFeatures: { value: cadPolylineFeatures, enumerable: false },
+    cadFacePositions: { value: cadFacePositions, enumerable: false },
     cadFeatureCount: { value: featureCount, enumerable: true },
   });
 

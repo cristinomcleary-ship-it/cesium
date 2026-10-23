@@ -3,6 +3,10 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "overrides": {
+    "@cesium/engine": "26.2.0",
+    "@cesium/widgets": "16.1.1"
+  },
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc && vite build",
@@ -13,6 +17,8 @@
     "cesium": "1.144.0",
     "echarts": "6.1.0",
     "geotiff": "^3.0.5",
+    "koffi": "3.3.2",
+    "mediabunny": "1.61.6",
     "proj4": "^2.19.10",
     "sql.js": "^1.14.1",
     "three": "0.180.0"
@@ -21,6 +27,7 @@
     "@types/node": "^24.3.0",
     "@types/sql.js": "^1.4.11",
     "@types/three": "0.180.0",
+    "esbuild": "0.28.2",
     "typescript": "^5.9.2",
     "vite": "^7.1.2",
     "vite-plugin-static-copy": "^3.1.2"

@@ -1,0 +1,250 @@
+{
+  "pass": true,
+  "checks": [
+    {
+      "name": "Default tilt nudge remains 0.1 degrees and the full-width playback slider is preserved",
+      "controls": 914,
+      "slider": 906,
+      "speed": 62
+    },
+    {
+      "name": "Group mode disables tilt; individual CAD geometry and its surface-snapped annotation move together",
+      "originalPixel": {
+        "x": 0.6562500000022526,
+        "y": 0.08333333321184094,
+        "depth": 59.99999999831505
+      },
+      "tiltedPixel": {
+        "x": 0.6822268114342995,
+        "y": 0.14060634745505124,
+        "depth": 56.10815382052327
+      },
+      "picked": {
+        "x": 11.99999999976717,
+        "y": -5.820766091346741e-10,
+        "z": 0
+      }
+    },
+    {
+      "name": "Tilt validation, configurable nudges, angle-only reset, undo and redo preserve placement and heading",
+      "adjusted": {
+        "east": 1.5,
+        "north": -1,
+        "up": 2,
+        "heading": 12,
+        "tiltEast": 8.25,
+        "tiltNorth": -6.25
+      },
+      "reset": {
+        "east": 1.5,
+        "north": -1,
+        "up": 2,
+        "heading": 12,
+        "tiltEast": 0,
+        "tiltNorth": 0
+      }
+    },
+    {
+      "name": "Fusion save/reopen restores both tilt angles and unchanged local annotation anchors"
+    },
+    {
+      "name": "Tilted CAD/label bake into all 18 native 640×360 frames; changing tilt invalidates and rebuilds cache",
+      "frames": 18,
+      "magentaPixels": 345,
+      "sourceFps": 15,
+      "pts": [
+        0,
+        0.067,
+        0.133,
+        0.2,
+        0.267,
+        0.333,
+        0.4,
+        0.467,
+        0.533,
+        0.6,
+        0.667,
+        0.733,
+        0.8,
+        0.867,
+        0.933,
+        1,
+        1.067,
+        1.133
+      ],
+      "firstHash": "5971f3ed6847e80a419017d41b009891eb4f36311f9efe8c8b935149e1592cda",
+      "cadHash": "c9d96a933e2db5af0f439a567a1a47aad1cfbf917706ea2f8048a41501e856a6",
+      "firstPixelHash": "9796e7769619ad95651570813eb3b4272d5826f5ca5ad15855c4655677d385a5",
+      "cadPixelHash": "346080552e9ea353df45118a21c234144b0462eea48e4555bf50896521c8e72e"
+    },
+    {
+      "name": "Model tilt and translation invalidate CAD cache and rebuild different rendered media",
+      "modelAdjustment": {
+        "east": 4,
+        "north": 0,
+        "up": 0,
+        "heading": 0,
+        "tiltEast": 0,
+        "tiltNorth": 15
+      },
+      "modelHash": "c1dcb7b3a5c2e1c6e49d1e3fa8df3e428494642fb2853d621cbb8c754cfd7795",
+      "modelPixelHash": "0097d31048c85a037fe5bf10c860eaefb50e32ddf20c7b5cc7b3bdaeebccc709"
+    },
+    {
+      "name": "Unsaved map-model placement changes invalidate cache while AR adjustment keeps its base signature stable",
+      "mapMovedHash": "751ea37ba5ed7940e25a7a9803388e4223ea0f0d5e0350f15c05298b340a8c80",
+      "mapMovedPixelHash": "b2d90dec6cb77c398d4aa51da256e4d679a7d2b8cf91fadc68eb0fa7943a35f4"
+    },
+    {
+      "name": "Legacy schemes without tilt fields default to zero; final exit restores original geometry and listeners"
+    },
+    {
+      "name": "Five consecutive AR enter/exit cycles restore camera, real map pan/zoom/picking and release session resources",
+      "cycles": [
+        {
+          "cycle": 1,
+          "pick": {
+            "picked": true,
+            "glError": 0
+          },
+          "lifecycle": {
+            "preUpdate": 0,
+            "preRender": 0,
+            "postRender": 2,
+            "tileLoad": 0,
+            "tileVisible": 0,
+            "tileFailed": 1,
+            "primitives": 10,
+            "postProcesses": 0
+          },
+          "pendingCallbacks": 0,
+          "inputResponseMs": 6206,
+          "cameraMaxComponentError": {
+            "position": 0,
+            "direction": 0,
+            "up": 0,
+            "transform": 0
+          }
+        },
+        {
+          "cycle": 2,
+          "pick": {
+            "picked": true,
+            "glError": 0
+          },
+          "lifecycle": {
+            "preUpdate": 0,
+            "preRender": 0,
+            "postRender": 2,
+            "tileLoad": 0,
+            "tileVisible": 0,
+            "tileFailed": 1,
+            "primitives": 10,
+            "postProcesses": 0
+          },
+          "pendingCallbacks": 0,
+          "inputResponseMs": 7993,
+          "cameraMaxComponentError": {
+            "position": 0,
+            "direction": 2.1217269607909373e-9,
+            "up": 1.8374694543688008e-9,
+            "transform": 0
+          }
+        },
+        {
+          "cycle": 3,
+          "pick": {
+            "picked": true,
+            "glError": 0
+          },
+          "lifecycle": {
+            "preUpdate": 0,
+            "preRender": 0,
+            "postRender": 2,
+            "tileLoad": 0,
+            "tileVisible": 0,
+            "tileFailed": 1,
+            "primitives": 10,
+            "postProcesses": 0
+          },
+          "pendingCallbacks": 0,
+          "inputResponseMs": 3741,
+          "cameraMaxComponentError": {
+            "position": 0,
+            "direction": 2.1217269607909373e-9,
+            "up": 1.8374694543688008e-9,
+            "transform": 0
+          }
+        },
+        {
+          "cycle": 4,
+          "pick": {
+            "picked": true,
+            "glError": 0
+          },
+          "lifecycle": {
+            "preUpdate": 0,
+            "preRender": 0,
+            "postRender": 2,
+            "tileLoad": 0,
+            "tileVisible": 0,
+            "tileFailed": 1,
+            "primitives": 10,
+            "postProcesses": 0
+          },
+          "pendingCallbacks": 0,
+          "inputResponseMs": 6482,
+          "cameraMaxComponentError": {
+            "position": 0,
+            "direction": 2.1217269607909373e-9,
+            "up": 1.8374694543688008e-9,
+            "transform": 0
+          }
+        },
+        {
+          "cycle": 5,
+          "pick": {
+            "picked": true,
+            "glError": 0
+          },
+          "lifecycle": {
+            "preUpdate": 0,
+            "preRender": 0,
+            "postRender": 2,
+            "tileLoad": 0,
+            "tileVisible": 0,
+            "tileFailed": 1,
+            "primitives": 10,
+            "postProcesses": 0
+          },
+          "pendingCallbacks": 0,
+          "inputResponseMs": 3094,
+          "cameraMaxComponentError": {
+            "position": 0,
+            "direction": 2.1217269607909373e-9,
+            "up": 1.8374694543688008e-9,
+            "transform": 0
+          }
+        }
+      ]
+    }
+  ],
+  "browserErrors": [],
+  "loadErrors": [],
+  "scope": "Synthetic Cesium geometry and generated 640x360 15fps video. Save/reopen covers frontend settings serialization and restoreReplay, not server persistence/restart or main.ts application tool suspension. Real user DWG, video, machine performance and full application tools require on-site acceptance.",
+  "final": {
+    "renderErrors": [],
+    "lifecycle": {
+      "preUpdate": 0,
+      "preRender": 0,
+      "postRender": 2,
+      "tileLoad": 0,
+      "tileVisible": 0,
+      "tileFailed": 1,
+      "primitives": 10,
+      "postProcesses": 0
+    },
+    "enterCount": 11,
+    "exitCount": 11
+  }
+}

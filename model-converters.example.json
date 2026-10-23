@@ -12,9 +12,7 @@
     "validated": true
   },
   "skp": {
-    "executable": "F:\\codex\\cesium\\tools\\sketchup-to-glb.cmd",
-    "args": ["{input}", "{output}"],
-    "timeoutMinutes": 30,
-    "validated": false
+    "provider": "sketchup-sdk"
   }
 }
+

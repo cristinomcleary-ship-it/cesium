@@ -1,0 +1,20 @@
+{
+  "at": "2026-10-22T05:33:27.542Z",
+  "pass": true,
+  "isolated": true,
+  "productionDataTouched": false,
+  "checks": [
+    "real frontend save appends POS atomically to the existing scheme without another record",
+    "unchanged POS subsequent saves use PATCH without duplicate attachments",
+    "POS replacement uses a distinct path and preserves previous POS bytes",
+    "fresh API read and frontend reopen restore POS metadata and exact contents",
+    "CAD and model tilt, translation and heading survive real save/update, frontend reopen and a fresh server instance",
+    "video and XML hashes, URLs and video mtime unchanged; neither is reuploaded or copied",
+    "ordinary committed uploads and record PUT remain immutable with HTTP 409",
+    "cross-site, missing request marker, malformed/duplicate fields, invalid metadata and oversized CSV fail without changing the old record or attachments",
+    "POS transaction is restricted to committed CC overlay video records",
+    "concurrent POS append and delete serialize; durable tombstone rejects later attachment saves without resurrection",
+    "new scheme initial POS upload through the original immutable-file creation workflow still succeeds"
+  ],
+  "requestCount": 43
+}

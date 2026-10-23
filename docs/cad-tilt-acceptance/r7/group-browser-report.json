@@ -1,0 +1,274 @@
+{
+  "pass": true,
+  "checks": [
+    {
+      "name": "Default tilt nudge remains 0.1 degrees and the full-width playback slider is preserved",
+      "controls": 914,
+      "slider": 906,
+      "speed": 62
+    },
+    {
+      "name": "Individual CAD geometry and its surface-snapped annotation move together",
+      "originalPixel": {
+        "x": 0.6562500000068161,
+        "y": 0.08333333323503937,
+        "depth": 59.99999999857907
+      },
+      "tiltedPixel": {
+        "x": 0.6822268114272733,
+        "y": 0.14060634746493506,
+        "depth": 56.10815382095774
+      },
+      "picked": {
+        "x": 11.999999999301508,
+        "y": -5.820766091346741e-10,
+        "z": 0
+      }
+    },
+    {
+      "name": "Tilt validation, configurable nudges, angle-only reset, undo and redo preserve placement and heading",
+      "adjusted": {
+        "east": 1.5,
+        "north": -1,
+        "up": 2,
+        "heading": 12,
+        "tiltEast": 8.25,
+        "tiltNorth": -6.25
+      },
+      "reset": {
+        "east": 1.5,
+        "north": -1,
+        "up": 2,
+        "heading": 12,
+        "tiltEast": 0,
+        "tiltNorth": 0
+      }
+    },
+    {
+      "name": "Whole-group two-axis tilt is enabled, moves CAD/models rigidly about one fixed pivot, and supports angle-only reset/undo/redo",
+      "group": {
+        "anchor": [
+          -2764258.2234569844,
+          4787535.688267582,
+          3170373.7353836372
+        ],
+        "values": {
+          "east": 1,
+          "north": -0.5,
+          "up": 0.25,
+          "heading": 2,
+          "tiltEast": 0.6,
+          "tiltNorth": -0.4
+        }
+      },
+      "independentDistances": 66,
+      "groupPixel": {
+        "x": 0.6964736445471239,
+        "y": 0.04100883728212202,
+        "depth": 57.361148744968894
+      }
+    },
+    {
+      "name": "Fusion save/reopen restores whole-group pivot, both group angles, individual placement and annotation anchors"
+    },
+    {
+      "name": "Whole-group tilted CAD/models/label bake into 18 native 640×360 frames; editing group tilt from cached playback invalidates and rebuilds changed pixels",
+      "frames": 18,
+      "magentaPixels": 223,
+      "sourceFps": 15,
+      "pts": [
+        0,
+        0.067,
+        0.133,
+        0.2,
+        0.267,
+        0.333,
+        0.4,
+        0.467,
+        0.533,
+        0.6,
+        0.667,
+        0.733,
+        0.8,
+        0.867,
+        0.933,
+        1,
+        1.067,
+        1.133
+      ],
+      "firstHash": "5be97cc30c707d21618392eb0e6c793012041a7f5aba80d70f03a07a58ae4958",
+      "cadHash": "e9c67dc8c07da701e7dba2d32e04397cc5d9071068e91e1b31d2d32708d028a2",
+      "firstPixelHash": "d3b07fde8de5d92a449edb9701e4ae14f0cf304877c864af167ed61a3ea038aa",
+      "cadPixelHash": "914d9bf73e66f5ffa6f6e6814ee2289309e38779843168b77ea4c7a0586e4f88"
+    },
+    {
+      "name": "Model tilt and translation invalidate CAD cache and rebuild different rendered media",
+      "modelAdjustment": {
+        "east": 4,
+        "north": 0,
+        "up": 0,
+        "heading": 0,
+        "tiltEast": 0,
+        "tiltNorth": 15
+      },
+      "modelHash": "d690c266a6015ee696d8db8f058557da0068581d5dd89fc928d8d164f4b6677f",
+      "modelPixelHash": "ea71a0e8517a410a85cc1383612b054546289c2896f89110f41c5209861394e0"
+    },
+    {
+      "name": "Unsaved map-model placement changes invalidate cache while AR adjustment keeps its base signature stable",
+      "mapMovedHash": "2e7deeca8f6a5e761b95925cff81f37260d671e3958c5ca39860c4be39d0c30a",
+      "mapMovedPixelHash": "56d7308d3fbacc3e230b4d4cbec4f1c7426b6025cadd62a09adb142e7bdb23aa"
+    },
+    {
+      "name": "Legacy schemes without individual tilt or whole-group fields default to zero; final exit restores original geometry and listeners"
+    },
+    {
+      "name": "Five consecutive AR enter/exit cycles restore camera, real map pan/zoom/picking and release session resources",
+      "cycles": [
+        {
+          "cycle": 1,
+          "pick": {
+            "picked": true,
+            "glError": 0
+          },
+          "lifecycle": {
+            "preUpdate": 0,
+            "preRender": 0,
+            "postRender": 2,
+            "tileLoad": 0,
+            "tileVisible": 0,
+            "tileFailed": 1,
+            "primitives": 10,
+            "postProcesses": 0
+          },
+          "pendingCallbacks": 0,
+          "inputResponseMs": 7624,
+          "cameraMaxComponentError": {
+            "position": 0,
+            "direction": 0,
+            "up": 0,
+            "transform": 0
+          }
+        },
+        {
+          "cycle": 2,
+          "pick": {
+            "picked": true,
+            "glError": 0
+          },
+          "lifecycle": {
+            "preUpdate": 0,
+            "preRender": 0,
+            "postRender": 2,
+            "tileLoad": 0,
+            "tileVisible": 0,
+            "tileFailed": 1,
+            "primitives": 10,
+            "postProcesses": 0
+          },
+          "pendingCallbacks": 0,
+          "inputResponseMs": 3877,
+          "cameraMaxComponentError": {
+            "position": 0,
+            "direction": 2.1217269607909373e-9,
+            "up": 1.8374694543688008e-9,
+            "transform": 0
+          }
+        },
+        {
+          "cycle": 3,
+          "pick": {
+            "picked": true,
+            "glError": 0
+          },
+          "lifecycle": {
+            "preUpdate": 0,
+            "preRender": 0,
+            "postRender": 2,
+            "tileLoad": 0,
+            "tileVisible": 0,
+            "tileFailed": 1,
+            "primitives": 10,
+            "postProcesses": 0
+          },
+          "pendingCallbacks": 0,
+          "inputResponseMs": 3433,
+          "cameraMaxComponentError": {
+            "position": 0,
+            "direction": 2.1217269607909373e-9,
+            "up": 1.8374694543688008e-9,
+            "transform": 0
+          }
+        },
+        {
+          "cycle": 4,
+          "pick": {
+            "picked": true,
+            "glError": 0
+          },
+          "lifecycle": {
+            "preUpdate": 0,
+            "preRender": 0,
+            "postRender": 2,
+            "tileLoad": 0,
+            "tileVisible": 0,
+            "tileFailed": 1,
+            "primitives": 10,
+            "postProcesses": 0
+          },
+          "pendingCallbacks": 0,
+          "inputResponseMs": 4173,
+          "cameraMaxComponentError": {
+            "position": 0,
+            "direction": 2.1217269607909373e-9,
+            "up": 1.8374694543688008e-9,
+            "transform": 0
+          }
+        },
+        {
+          "cycle": 5,
+          "pick": {
+            "picked": true,
+            "glError": 0
+          },
+          "lifecycle": {
+            "preUpdate": 0,
+            "preRender": 0,
+            "postRender": 2,
+            "tileLoad": 0,
+            "tileVisible": 0,
+            "tileFailed": 1,
+            "primitives": 10,
+            "postProcesses": 0
+          },
+          "pendingCallbacks": 0,
+          "inputResponseMs": 11480,
+          "cameraMaxComponentError": {
+            "position": 0,
+            "direction": 2.1217269607909373e-9,
+            "up": 1.8374694543688008e-9,
+            "transform": 0
+          }
+        }
+      ]
+    }
+  ],
+  "browserErrors": [],
+  "loadErrors": [],
+  "scope": "Synthetic absolute-height Cesium CAD/entities/models and generated 640x360 15fps video. This suite does not cover GroundPrimitive CAD draping or conversion from source DWG. Save/reopen covers frontend settings serialization and restoreReplay, not server persistence/restart or main.ts application tool suspension. Real user DWG, video, machine performance and full application tools require on-site acceptance.",
+  "final": {
+    "renderErrors": [],
+    "lifecycle": {
+      "preUpdate": 0,
+      "preRender": 0,
+      "postRender": 2,
+      "tileLoad": 0,
+      "tileVisible": 0,
+      "tileFailed": 1,
+      "primitives": 10,
+      "postProcesses": 0
+    },
+    "enterCount": 11,
+    "exitCount": 11
+  }
+}

@@ -42,3 +42,6 @@ acad.err
 /project-data/
 
 /ar_v2/.venv/
+
+# Proprietary standalone SDK runtime, installed locally only
+/tools/sketchup-sdk/

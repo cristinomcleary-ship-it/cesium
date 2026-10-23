@@ -1,0 +1,86 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { BoundingSphere, Cartesian3, Intersect, PerspectiveFrustum } from 'cesium';
+import { cadSpatialBatchKey, CadSpatialBatcher } from './cadSpatialBatcher.ts';
+
+test('spatial buffers retain every whole item and partition while bounding pending work', () => {
+  const emitted: Array<Array<{ id: number; key: string; partition: string; vertices: number }>> = [];
+  const batches = new CadSpatialBatcher<{ id: number; key: string; partition: string; vertices: number }>({ maxBatchSize: 5, maxBufferedItems: 9,
+    maxBufferedVertices: 25, maxBufferedBuckets: 3, emit: items => emitted.push(items) });
+  const input = Array.from({ length: 100 }, (_, id) => ({ id,
+    key: cadSpatialBatchKey({ x: (id % 7) * 300 - 1000, y: 0, z: 0 }, id % 2 ? 'red' : 'blue'),
+    partition: id % 2 ? 'red' : 'blue',
+    vertices: id === 13 ? 100 : 2 + id % 4,
+  }));
+  for (const item of input) {
+    batches.add(item.key, item, item.vertices, item.partition);
+    assert.ok(batches.bufferedItems <= 9);
+    assert.ok(batches.bufferedVertices <= 25);
+    assert.ok(batches.bufferedBuckets <= 3);
+  }
+  batches.flush();
+  assert.equal(batches.bufferedItems + batches.bufferedVertices + batches.bufferedBuckets, 0);
+  const output = emitted.flat().sort((a, b) => a.id - b.id);
+  assert.equal(output.length, input.length);
+  output.forEach((item, index) => assert.equal(item, input[index]));
+  for (const batch of emitted) {
+    assert.ok(batch.length <= 5);
+    assert.equal(new Set(batch.map(item => item.partition)).size, 1);
+    if (batch.some(item => item.vertices > 25)) assert.equal(batch.length, 1);
+  }
+});
+
+test('129 interleaved cells degrade to bounded shared batches without one primitive per line', () => {
+  const emitted: Array<Array<{ id: number; partition: string }>> = [];
+  const batches = new CadSpatialBatcher<{ id: number; partition: string }>({ maxBatchSize: 1000,
+    emit: items => emitted.push(items) });
+  const count = 129 * 100;
+  for (let id = 0; id < count; id++) {
+    const partition = id % 2 ? 'red' : 'blue';
+    batches.add(cadSpatialBatchKey({ x: id % 129 * 1024, y: 0, z: 0 }, partition), { id, partition }, 2, partition);
+    assert.ok(batches.bufferedBuckets <= 128);
+    assert.ok(batches.bufferedItems <= 4000);
+    assert.ok(batches.bufferedVertices <= 131072);
+  }
+  batches.flush();
+  assert.ok(emitted.length <= Math.ceil(count / 1000) + 128 + 2, `${emitted.length} batches for ${count} short lines`);
+  assert.ok(emitted.every(batch => batch.length <= 1000 && new Set(batch.map(item => item.partition)).size === 1));
+  assert.deepEqual(emitted.flat().map(item => item.id).sort((a, b) => a - b), Array.from({ length: count }, (_, index) => index));
+});
+
+test('many short lines in one cell still use the original instance limit', () => {
+  const emitted: number[][] = [];
+  const batches = new CadSpatialBatcher<number>({ maxBatchSize: 1000, emit: items => emitted.push(items) });
+  for (let i = 0; i < 10_000; i++) batches.add('one-cell', i, 2);
+  batches.flush();
+  assert.equal(emitted.length, 10);
+  assert.ok(emitted.every(batch => batch.length === 1000));
+});
+
+test('interleaved distant short lines submit less geometry in a nearby synthetic frustum', () => {
+  type Item = { id: number; sphere: BoundingSphere; vertices: number };
+  const input: Item[] = [];
+  for (let repeat = 0; repeat < 64; repeat++) for (let site = 0; site < 32; site++) {
+    input.push({ id: input.length, sphere: new BoundingSphere(new Cartesian3(site * 1024 + 1, 1, 0), 1), vertices: 2 });
+  }
+  const spatial: Item[][] = [];
+  const batches = new CadSpatialBatcher<Item>({ maxBatchSize: 1000, emit: items => spatial.push(items) });
+  for (const item of input) batches.add(cadSpatialBatchKey(item.sphere.center), item, item.vertices);
+  batches.flush();
+  const original: Item[][] = [];
+  for (let i = 0; i < input.length; i += 1000) original.push(input.slice(i, i + 1000));
+  // Same center-average / enclosing-radius rule as Cesium's combineInstances.
+  const sphere = (items: Item[]) => {
+    const center = items.reduce((sum, item) => Cartesian3.add(sum, item.sphere.center, sum), new Cartesian3());
+    Cartesian3.divideByScalar(center, items.length, center);
+    return new BoundingSphere(center, Math.max(...items.map(item => Cartesian3.distance(center, item.sphere.center) + item.sphere.radius)));
+  };
+  const frustum = new PerspectiveFrustum({ fov: Math.PI / 3, aspectRatio: 1, near: .1, far: 1000 });
+  const view = frustum.computeCullingVolume(new Cartesian3(1, 1, 100), new Cartesian3(0, 0, -1), Cartesian3.UNIT_Y);
+  const submitted = (groups: Item[][]) => groups.filter(items => view.computeVisibility(sphere(items)) !== Intersect.OUTSIDE)
+    .reduce((sum, items) => sum + items.reduce((total, item) => total + item.vertices, 0), 0);
+  assert.equal(submitted(original), 4096);
+  assert.equal(submitted(spatial), 128);
+  assert.equal(spatial.length, 32, 'one batch per populated cell, not per short line');
+  assert.deepEqual(spatial.flat().map(item => item.id).sort((a, b) => a - b), input.map(item => item.id));
+});

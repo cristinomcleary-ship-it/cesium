@@ -1,3 +1,4 @@
+import { fieldObjectReferences, validateWorkflowFile, workflowCategory } from "./management/railwayWorkflow.ts";
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { mkdirSync, existsSync, readFileSync, realpathSync, writeFileSync, renameSync, unlinkSync, createReadStream } from "node:fs";
@@ -16,8 +17,10 @@ import { calculateMetrics } from "./management/metrics.ts";
 import { createLibraryEvidenceResolver, type LibraryEvidence } from "./management/libraryEvidence.ts";
 import { loadProjectModelRegistry } from "./safetySpatialStore.ts";
 import type { ModelRegistryEntry } from "../src/safetySpatialTypes.ts";
+import type { RailSafetyRecord } from "../src/railSafetyTypes.ts";
+import { PositioningGateway, loadPositioningGatewayConfig, validatePositioningGatewayConfig, type PositioningGatewayConfig } from "./management/positioningGateway.ts";
 export { ManagementError } from "./management/domain.ts";
-export type ManagementStoreOptions={dataDir?:string;projectId?:string;projectName?:string;libraryDataDir?:string;spatialDataDir?:string;modelRegistry?:ModelRegistryEntry[]|(()=>Promise<ModelRegistryEntry[]>);localCompatibility?:boolean;now?:()=>string;
+export type ManagementStoreOptions={dataDir?:string;projectId?:string;projectName?:string;libraryDataDir?:string;spatialDataDir?:string;modelRegistry?:ModelRegistryEntry[]|(()=>Promise<ModelRegistryEntry[]>);localCompatibility?:boolean;now?:()=>string;positioningConfig?:PositioningGatewayConfig;
  resolveSpatialReference?:(projectId:string,objectId:string)=>unknown|Promise<unknown>;
  resolveLibraryEvidence?:(projectId:string,recordId:string,fileKey:string)=>LibraryEvidence|undefined|Promise<LibraryEvidence|undefined>};
 type DbRow={data:string};
@@ -27,7 +30,15 @@ const COOKIE="cesium_management_session",SESSION_MS=8*60*60*1000;
 const emptyCollections=()=>Object.fromEntries(MANAGEMENT_COLLECTIONS.map(k=>[k,[]])) as unknown as Record<ManagementCollection,ManagementRecord[]>;
 const hash=(s:string|Buffer)=>createHash("sha256").update(s).digest("hex");
 function output(res:ServerResponse,status:number,value:unknown){if(res.destroyed||res.headersSent)return;res.statusCode=status;res.setHeader("Content-Type","application/json; charset=utf-8");res.setHeader("Cache-Control","no-store");res.end(JSON.stringify(value));}
-function errorOutput(res:ServerResponse,error:unknown){const e=error instanceof ManagementError?error:new ManagementError(500,"INTERNAL_ERROR","管理服务失败，输入未写入，请重试");output(res,e.status,{error:e.message,code:e.code,details:e.details,current:e.current});}
+/** Geometry capabilities also govern nested historical records in reports and conflict details.
+ * Return a detached public projection; domain reads and persisted resources retain the full value. */
+function withoutUnauthorizedMachinery<T>(value:T,actor?:Actor):T{
+ if(actor?.permissions.includes("models"))return value;
+ const redact=(v:unknown):unknown=>Array.isArray(v)?v.filter(item=>!(item&&typeof item==="object"&&(item as {kind?:unknown}).kind==="railSafety")).map(redact):v&&typeof v==="object"?Object.fromEntries(Object.entries(v).filter(([key])=>key!=="machinery"&&key!=="definition"&&key!=="railSafetyRisk").map(([key,item])=>[key,redact(item)])):v;
+ return redact(value) as T;
+}
+function publicError(error:unknown,actor?:Actor){return error instanceof ManagementError?new ManagementError(error.status,error.code,error.message,withoutUnauthorizedMachinery(error.details,actor),withoutUnauthorizedMachinery(error.current,actor)):error;}
+function errorOutput(res:ServerResponse,error:unknown,actor?:Actor){const e=publicError(error instanceof ManagementError?error:new ManagementError(500,"INTERNAL_ERROR","管理服务失败，输入未写入，请重试"),actor) as ManagementError;output(res,e.status,{error:e.message,code:e.code,details:e.details,current:e.current});}
 function loopback(req:IncomingMessage){return ["127.0.0.1","::1","::ffff:127.0.0.1"].includes(req.socket.remoteAddress||"");}
 function sameOrigin(req:IncomingMessage){const origin=req.headers.origin;if(!origin)return;let host="";try{host=new URL(origin).host;}catch{/* denied */}if(!host||host!==req.headers.host)throw new ManagementError(403,"CROSS_ORIGIN","不允许跨站访问管理数据");}
 function canonical(value:unknown):string{if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+canonical((value as Record<string,unknown>)[k])).join(',')+'}';return JSON.stringify(value);}
@@ -43,6 +54,7 @@ export function createManagementStore(options:ManagementStoreOptions={}){
  const legacyEventPath=join(options.spatialDataDir||process.env.CESIUM_SAFETY_DATA_DIR||root,"safety-events.json");
  const libraryRoot=resolve(options.libraryDataDir||process.env.CESIUM_DATA_DIR||join(process.cwd(),"project-data"));
  const legacyProjectId=options.projectId||"safety:project",now=options.now||(()=>new Date().toISOString());
+ const positioning=new PositioningGateway(options.positioningConfig?validatePositioningGatewayConfig(options.positioningConfig):loadPositioningGatewayConfig(),()=>Date.parse(now()));
  const resolveLibraryEvidence=options.resolveLibraryEvidence||createLibraryEvidenceResolver(libraryRoot,legacyProjectId);
  const db=new DatabaseSync(join(root,"management.sqlite"));db.exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
  const version=Number((db.prepare("PRAGMA user_version").get() as {user_version:number}).user_version);if(version>1){db.close();throw new ManagementError(500,"SCHEMA_UNSUPPORTED","管理数据库版本比应用更新，原库保留");}
@@ -74,12 +86,12 @@ export function createManagementStore(options:ManagementStoreOptions={}){
  function recordSource(projectId:string):RecordSource{return{get:(kind,key)=>get(projectId,kind,key),list:kind=>list(projectId,kind)};}
  function visible(actor:Actor,record:ManagementRecord,kind:ManagementCollection){return canAccessRecord(actor,kind,record,recordSource(record.projectId));}
  function authorizedGet(projectId:string,actor:Actor,kind:ManagementCollection,key:string){const record=get(projectId,kind,key);authorizeRecord(actor,kind,record,recordSource(projectId));return record;}
- function publicRecord(kind:ManagementCollection,record:ManagementRecord){return kind==="checks"?{...record,checklistVersion:checklistVersion(record)}:record;}
+ function publicRecord(kind:ManagementCollection,record:ManagementRecord,actor:Actor){return withoutUnauthorizedMachinery(kind==="checks"?{...record,checklistVersion:checklistVersion(record)}:record,actor);}
 
  function list(projectId:string,kind:ManagementCollection):ManagementRecord[]{return (db.prepare("SELECT data FROM records WHERE project_id=? AND collection=? ORDER BY rowid").all(projectId,kind) as DbRow[]).map(r=>JSON.parse(r.data));}
  function get(projectId:string,kind:ManagementCollection,key:string){const row=db.prepare("SELECT data FROM records WHERE project_id=? AND collection=? AND id=?").get(projectId,kind,key) as DbRow|undefined;if(!row)throw new ManagementError(404,"RECORD_NOT_FOUND","记录不存在");return JSON.parse(row.data) as ManagementRecord;}
  function collections(projectId:string,actor:Actor,F?:string){const out=emptyCollections();const rows=F?db.prepare(`SELECT v.collection,v.data FROM record_versions v WHERE v.project_id=? AND v.recorded_at<=? AND v.revision=(SELECT max(x.revision) FROM record_versions x WHERE x.project_id=v.project_id AND x.collection=v.collection AND x.id=v.id AND x.recorded_at<=?)`).all(projectId,F,F):db.prepare("SELECT collection,data FROM records WHERE project_id=?").all(projectId);
-  for(const row of rows as {collection:ManagementCollection;data:string}[]){const record=JSON.parse(row.data) as ManagementRecord;if(visible(actor,record,row.collection))out[row.collection].push(publicRecord(row.collection,record));}return out;}
+  for(const row of rows as {collection:ManagementCollection;data:string}[]){const record=JSON.parse(row.data) as ManagementRecord;if(visible(actor,record,row.collection))out[row.collection].push(publicRecord(row.collection,record,actor));}return out;}
  function publicSession(actor:Actor):ManagementSession{return {userId:actor.id,displayName:actor.displayName,roles:actor.roles,authMode:actor.authMode,permissions:actor.permissions,expiresAt:actor.expiresAt};}
  function snapshot(projectId:string,actor:Actor):ManagementSnapshot{getProject(projectId);allow(actor,"read");const projects=(db.prepare("SELECT data FROM projects").all() as DbRow[]).map(v=>JSON.parse(v.data) as ManagementProject).filter(p=>actor.authMode==="local-owner"||getMember(p.id,actor.id)?.active);
   const members=(db.prepare("SELECT data FROM members WHERE project_id=?").all(projectId) as DbRow[]).map(v=>JSON.parse(v.data) as ManagementMember).filter(m=>actor.permissions.includes("admin")||m.id===actor.id||!actor.taskIds);
@@ -137,8 +149,8 @@ export function createManagementStore(options:ManagementStoreOptions={}){
     member.taskIds?.forEach(t=>get(m.projectId,"tasks",t));if(oldMember?.roles.includes("owner")&&(!member.active||!member.roles.includes("owner"))){const owners=(db.prepare("SELECT data FROM members WHERE project_id=?").all(m.projectId) as DbRow[]).map(r=>JSON.parse(r.data) as ManagementMember).filter(v=>v.active&&v.roles.includes("owner"));ensure(owners.length>1,"LAST_OWNER","不能停用最后一个项目所有者");}
     db.prepare("INSERT INTO members VALUES(?,?,?) ON CONFLICT(project_id,user_id) DO UPDATE SET data=excluded.data").run(m.projectId,key,JSON.stringify(member));after=member.revision;
    }else if(m.type==="evidence.register"){
-    ensure(actor.permissions.some(p=>["field","document","inspect","resource"].includes(p)),"EVIDENCE_PERMISSION","当前身份不能登记证据");ensure(imported,"LIBRARY_REFERENCE_INVALID","附件未核验");if(imported.requiredPermission&&!actor.permissions.includes(imported.requiredPermission))throw new ManagementError(403,"LIBRARY_RESOURCE_FORBIDDEN","当前账号无权引用该原资料资源");key=m.id?id(m.id):randomUUID();const e:ManagementRecord={id:key,projectId:m.projectId,revision:1,name:imported.name,status:"ready",createdAt:time,updatedAt:time,createdBy:actor.id,recordId:m.payload.recordId||m.payload.sourceRecordId,fileKey:m.payload.fileKey||"video",url:imported.url,size:imported.size,sha256:imported.sha256,requiredPermission:imported.requiredPermission,sourceModifiedAtMs:imported.modifiedAtMs,mediaSeconds:m.payload.mediaSeconds===undefined?undefined:num(m.payload.mediaSeconds,"媒体秒"),taskId:m.payload.taskId?id(m.payload.taskId):undefined};if(e.taskId)authorizedGet(m.projectId,actor,"tasks",e.taskId);
-    if(m.payload.fileId){const upload=authorizedGet(m.projectId,actor,"evidence",id(m.payload.fileId));validateEvidence(m.projectId,upload.id);ensure(upload.storageName&&upload.mime==="image/png","CAPTURE_SOURCE_INVALID","取证截图必须是已受控上传的PNG");ensure(m.payload.mediaId===undefined||m.payload.mediaId===`video:${m.payload.sourceRecordId}`,"MEDIA_MISMATCH","取证录像身份不一致");Object.assign(e,{name:String(m.payload.name||upload.name),fileId:upload.id,sourceRecordId:m.payload.sourceRecordId,mediaId:`video:${m.payload.sourceRecordId}`,storageName:upload.storageName,size:upload.size,sha256:upload.sha256,mime:upload.mime,url:`${MANAGEMENT_API}/files/${key}/original?projectId=${encodeURIComponent(m.projectId)}`});}
+    ensure(actor.permissions.some(p=>["field","document","inspect","resource"].includes(p)),"EVIDENCE_PERMISSION","当前身份不能登记证据");ensure(imported,"LIBRARY_REFERENCE_INVALID","附件未核验");if(imported.requiredPermission&&!actor.permissions.includes(imported.requiredPermission))throw new ManagementError(403,"LIBRARY_RESOURCE_FORBIDDEN","当前账号无权引用该原资料资源");key=m.id?id(m.id):randomUUID();const e:ManagementRecord={id:key,projectId:m.projectId,revision:1,name:imported.name,status:"ready",createdAt:time,updatedAt:time,createdBy:actor.id,recordId:m.payload.recordId||m.payload.sourceRecordId,fileKey:m.payload.fileKey||"video",url:imported.url,size:imported.size,sha256:imported.sha256,requiredPermission:imported.requiredPermission,sourceModifiedAtMs:imported.modifiedAtMs,mediaSeconds:m.payload.mediaSeconds===undefined?undefined:num(m.payload.mediaSeconds,"媒体秒"),taskId:m.payload.taskId?id(m.payload.taskId):undefined,...fieldObjectReferences({actor,projectId:m.projectId,now:time,get:(kind,key)=>authorizedGet(m.projectId,actor,kind,key)},m.payload.objectRefs)};if(e.taskId)authorizedGet(m.projectId,actor,"tasks",e.taskId);
+    if(m.payload.fileId){authorizeEvidence(m.projectId,actor,id(m.payload.fileId));const upload=authorizedGet(m.projectId,actor,"evidence",id(m.payload.fileId));validateEvidence(m.projectId,upload.id);ensure(upload.storageName&&upload.mime==="image/png","CAPTURE_SOURCE_INVALID","取证截图必须是已受控上传的PNG");ensure(m.payload.mediaId===undefined||m.payload.mediaId===`video:${m.payload.sourceRecordId}`,"MEDIA_MISMATCH","取证录像身份不一致");Object.assign(e,{...fieldObjectReferences({actor,projectId:m.projectId,now:time,get:(kind,key)=>authorizedGet(m.projectId,actor,kind,key)},m.payload.objectRefs??upload.objectRefs),name:String(m.payload.name||upload.name),fileId:upload.id,sourceRecordId:m.payload.sourceRecordId,mediaId:`video:${m.payload.sourceRecordId}`,storageName:upload.storageName,size:upload.size,sha256:upload.sha256,mime:upload.mime,url:`${MANAGEMENT_API}/files/${key}/original?projectId=${encodeURIComponent(m.projectId)}`});}
     authorizeRecord(actor,"evidence",e,recordSource(m.projectId),true);storeRecord(m.projectId,"evidence",e);
    }else{
     const payload=structuredClone(m.payload);if(m.type==="issue.create")payload.discovery=validateIssueDiscovery(payload,{actor,projectId:m.projectId,recordId:m.id,get:(kind,key)=>authorizedGet(m.projectId,actor,kind,key),evidence:key=>authorizeEvidence(m.projectId,actor,key),spatial:key=>areas.get(key) as Record<string,unknown>,legacy:key=>readLegacyEvents(legacyEventPath).events.find(e=>e.id===key)});if(m.type.startsWith("anchor."))payload.serverValidated=anchorValidated;if(m.type==="issue.create"){if(payload.riskPointId){allow(actor,"models");const source=areas.get(String(payload.riskPointId)) as Record<string,unknown>;ensure(source.kind==="risk-point"||source.type==="risk-point","RISK_POINT_REQUIRED","必须关联正式用户风险点");payload.positionSnapshot=structuredClone(source);}else ensure(!payload.positionSnapshot,"UNVERIFIED_POSITION","问题位置必须引用服务器核验的用户风险点");}
@@ -149,7 +161,7 @@ export function createManagementStore(options:ManagementStoreOptions={}){
     key=result.record.id;after=result.record.revision;before=after===1?null:after-1;
    }
    bump();audit(m.projectId,actor,m,key,before,after,time);db.prepare("INSERT INTO receipts VALUES(?,?,?,?,?,?)").run(m.projectId,actor.id,m.idempotencyKey,signature,key,time);db.exec("COMMIT");return snapshot(m.projectId,actor);
-  }catch(e){db.exec("ROLLBACK");throw e;}
+  }catch(e){db.exec("ROLLBACK");throw publicError(e,actor);}
  }
  function command(m:ManagementCommand,actor:Actor){const run=queue.catch(()=>undefined).then(()=>execute(m,actor));queue=run;return run;}
  const eventBridge=createManagementEventBridge({projectId:legacyProjectId,legacy:()=>readLegacyEvents(legacyEventPath),fresh:actor=>fresh(actor,legacyProjectId),snapshot:actor=>snapshot(legacyProjectId,fresh(actor,legacyProjectId)),command});
@@ -183,14 +195,28 @@ export function createManagementStore(options:ManagementStoreOptions={}){
   }catch(e){errorOutput(res,e);}
  }
  async function upload(req:IncomingMessage,res:ServerResponse,projectId:string,actor:Actor,url:URL){
-  if(!actor.permissions.some(p=>["field","document","inspect","resource"].includes(p)))throw new ManagementError(403,"UPLOAD_FORBIDDEN","当前身份不能上传附件");
+  const category=workflowCategory(url.searchParams.get("workflowCategory")||undefined);
+  const authorizeUpload=(current:Actor)=>{allow(current,"files");if(!current.permissions.some(p=>["field","document","inspect","resource"].includes(p))&&!(current.permissions.includes("plan")&&(category==="construction-plan"||category==="supervision-plan")))throw new ManagementError(403,"UPLOAD_FORBIDDEN","当前身份不能上传此类附件");};
+  authorizeUpload(actor);
   const name=basename(str(url.searchParams.get("name"),"文件名",250));ensure(!/[\r\n]/.test(name),"FILE_NAME_INVALID","文件名无效");const mime=String(req.headers["content-type"]||"application/octet-stream").split(";")[0];ensure(!['text/html','image/svg+xml','application/javascript'].includes(mime),"ACTIVE_CONTENT_UNSUPPORTED","此入口不接受可执行网页附件");
+  validateWorkflowFile(category,{name,mime});
+  let objectRefs:unknown;const rawRefs=url.searchParams.get("objectRefs");if(rawRefs!==null){try{objectRefs=JSON.parse(rawRefs);}catch{throw new ManagementError(400,"INVALID_OBJECT_REFS","对象关联JSON无效");}}
+  fieldObjectReferences({actor,projectId,now:now(),get:(kind,key)=>authorizedGet(projectId,actor,kind,key)},objectRefs);
   const data=await body(req,100*1024*1024);ensure(data.length>0,"EMPTY_FILE","附件为空");const taskId=url.searchParams.get("taskId")||undefined;if(taskId)authorizedGet(projectId,actor,"tasks",id(taskId));allow(actor,"files");const key=randomUUID(),folder=join(root,"management-files"),destination=join(folder,key),tmp=destination+".pending";mkdirSync(folder,{recursive:true});writeFileSync(tmp,data,{flag:"wx"});renameSync(tmp,destination);
-  const task=queue.catch(()=>undefined).then(()=>{db.exec("BEGIN IMMEDIATE");try{const current=fresh(actor,projectId),at=now();allow(current,"files");if(taskId)authorizedGet(projectId,current,"tasks",taskId);const record:ManagementRecord={id:key,projectId,revision:1,name,status:"ready",createdAt:at,updatedAt:at,createdBy:current.id,taskId,storageName:key,size:data.length,mime,sha256:hash(data),url:`${MANAGEMENT_API}/files/${key}/original?projectId=${encodeURIComponent(projectId)}`};storeRecord(projectId,"evidence",record);bump();audit(projectId,current,{type:"evidence.register",projectId,idempotencyKey:key,payload:{reason:"受控二进制上传"}},key,null,1,at);db.exec("COMMIT");return record;}catch(e){db.exec("ROLLBACK");try{unlinkSync(destination);}catch{/* original error retained */}throw e;}});queue=task;output(res,201,await task);
+  const task=queue.catch(()=>undefined).then(()=>{db.exec("BEGIN IMMEDIATE");try{const current=fresh(actor,projectId),at=now();authorizeUpload(current);if(taskId)authorizedGet(projectId,current,"tasks",taskId);const record:ManagementRecord={id:key,projectId,revision:1,name,status:"ready",createdAt:at,updatedAt:at,createdBy:current.id,taskId,workflowCategory:category,...fieldObjectReferences({actor:current,projectId,now:at,get:(kind,key)=>authorizedGet(projectId,current,kind,key)},objectRefs),storageName:key,size:data.length,mime,sha256:hash(data),url:`${MANAGEMENT_API}/files/${key}/original?projectId=${encodeURIComponent(projectId)}`};authorizeRecord(current,"evidence",record,recordSource(projectId),true);storeRecord(projectId,"evidence",record);bump();audit(projectId,current,{type:"evidence.register",projectId,idempotencyKey:key,payload:{reason:"受控二进制上传"}},key,null,1,at);db.exec("COMMIT");return record;}catch(e){db.exec("ROLLBACK");try{unlinkSync(destination);}catch{/* original error retained */}throw e;}});queue=task;output(res,201,await task);
  }
  async function middleware(req:IncomingMessage,res:ServerResponse,next:()=>void){
   let url:URL;try{url=new URL(req.url||"/","http://localhost");}catch{next();return;}if(url.pathname==="/__safety/events"){try{sameOrigin(req);const actor=authenticate(req,legacyProjectId);await eventBridge.middleware(req,res,actor);}catch(e){errorOutput(res,e);}return;}if(!url.pathname.startsWith(MANAGEMENT_API+"/")&&url.pathname!==MANAGEMENT_API){next();return;}
+  let responseActor:Actor|undefined;
   try{sameOrigin(req);const projectId=url.searchParams.get("projectId")||legacyProjectId;
+   if(url.pathname===MANAGEMENT_API+"/positioning/ingest"){
+    if(req.method!=="POST")throw new ManagementError(405,"METHOD_NOT_ALLOWED","设备上报仅支持POST");
+    // Device auth never falls back to browser cookies or the local-owner compatibility path.
+    const device=positioning.authenticate(req.headers.authorization);getProject(device.projectId);
+    ensure(req.headers["content-type"]?.startsWith("application/json"),"CONTENT_TYPE","请求必须为JSON");
+    let input:unknown;try{input=JSON.parse((await body(req,16_384)).toString("utf8"));}catch(e){if(e instanceof ManagementError)throw e;throw new ManagementError(400,"INVALID_JSON","JSON格式无效");}
+    output(res,202,positioning.ingest(device,input,list(device.projectId,"railSafety") as RailSafetyRecord[]));return;
+   }
    if(url.pathname===MANAGEMENT_API+"/session"){
     if(req.method==="POST"){
      requestMarker(req);const input=await jsonBody(req);const loginKey=(req.socket.remoteAddress||"")+":"+String(input.username).toLowerCase(),attempt=failedLogins.get(loginKey);if(attempt&&attempt.count>=10&&Date.now()-attempt.since<300000)throw new ManagementError(429,"LOGIN_RATE_LIMIT","登录尝试过多，请稍后重试");
@@ -200,23 +226,28 @@ export function createManagementStore(options:ManagementStoreOptions={}){
     if(req.method==="GET"){output(res,200,publicSession(authenticate(req,projectId)));return;}throw new ManagementError(405,"METHOD_NOT_ALLOWED","身份接口不支持该方法");
    }
    if(req.method==="POST"&&[MANAGEMENT_API+"/commands",MANAGEMENT_API+"/command"].includes(url.pathname)){
-    requestMarker(req);const input=await jsonBody(req) as ManagementCommand;const actor=authenticate(req,input.projectId),bootstrap=actor.authMode==="local-owner"&&input.type==="member.save";
+    requestMarker(req);const input=await jsonBody(req) as ManagementCommand;const actor=authenticate(req,input.projectId),bootstrap=actor.authMode==="local-owner"&&input.type==="member.save";responseActor=actor;
     const result=await command(input,actor);if(bootstrap){const logged=login(String(input.payload.username),String(input.payload.password),input.projectId);cookie(res,logged.token);result.session=publicSession(logged.actor);}output(res,200,result);return;
    }
-   const actor=authenticate(req,projectId);
+   const actor=authenticate(req,projectId);responseActor=actor;
+   if(url.pathname===MANAGEMENT_API+"/positioning"){
+    if(req.method!=="GET")throw new ManagementError(405,"METHOD_NOT_ALLOWED","定位状态仅支持GET");
+    allow(actor,"read");allow(actor,"models");const all=list(projectId,"railSafety") as RailSafetyRecord[];
+    output(res,200,positioning.snapshot(projectId,all.filter(record=>visible(actor,record,"railSafety")),all));return;
+   }
    if(req.method==="GET"&&[MANAGEMENT_API+"/state",MANAGEMENT_API+"/snapshot"].includes(url.pathname)){output(res,200,snapshot(projectId,actor));return;}
    if(req.method==="GET"&&url.pathname===MANAGEMENT_API+"/metrics"){
     const filters:ManagementFilters={taskIds:url.searchParams.getAll("taskId"),areaIds:url.searchParams.getAll("areaId"),ownerId:url.searchParams.get("ownerId")||undefined,status:url.searchParams.get("status")||undefined,query:url.searchParams.get("query")||undefined,periodStart:url.searchParams.get("periodStart")||undefined,periodEnd:url.searchParams.get("periodEnd")||undefined};output(res,200,metrics(projectId,actor,url.searchParams.get("D")||now().slice(0,10),url.searchParams.get("F")||now(),filters));return;
    }
    if(req.method==="POST"&&[MANAGEMENT_API+"/upload",MANAGEMENT_API+"/uploads"].includes(url.pathname)){requestMarker(req);await upload(req,res,projectId,actor,url);return;}
    const conditionsMatch=url.pathname.match(/^\/__management\/tasks\/([^/]+)\/conditions$/);if(req.method==="GET"&&conditionsMatch){const task=authorizedGet(projectId,actor,"tasks",id(conditionsMatch[1]));output(res,200,evaluateTaskConditions({now:now(),businessDate:businessDate(projectId),list:k=>list(projectId,k),get:(k,key)=>authorizedGet(projectId,actor,k,key),evidence:key=>authorizeEvidence(projectId,actor,key)},task,revision()));return;}
-   const recordMatch=url.pathname.match(/^\/__management\/records\/([^/]+)\/([^/]+)$/);if(req.method==="GET"&&recordMatch){const kind=recordMatch[1] as ManagementCollection;ensure(MANAGEMENT_COLLECTIONS.includes(kind),"COLLECTION_INVALID","资料集合不存在");const record=get(projectId,kind,id(recordMatch[2]));if(!visible(actor,record,kind))throw new ManagementError(403,"RECORD_FORBIDDEN","记录不在任务授权范围");output(res,200,publicRecord(kind,record));return;}
+   const recordMatch=url.pathname.match(/^\/__management\/records\/([^/]+)\/([^/]+)$/);if(req.method==="GET"&&recordMatch){const kind=recordMatch[1] as ManagementCollection;ensure(MANAGEMENT_COLLECTIONS.includes(kind),"COLLECTION_INVALID","资料集合不存在");const record=get(projectId,kind,id(recordMatch[2]));if(!visible(actor,record,kind))throw new ManagementError(403,"RECORD_FORBIDDEN","记录不在任务授权范围");output(res,200,publicRecord(kind,record,actor));return;}
    const fileMatch=url.pathname.match(/^\/__management\/files\/([^/]+)\/(original|preview)$/);if((req.method==="GET"||req.method==="HEAD")&&fileMatch){
     allow(actor,"files");const e=get(projectId,"evidence",id(fileMatch[1]));if(!visible(actor,e,"evidence"))throw new ManagementError(403,"FILE_FORBIDDEN","附件不在授权任务范围");validateEvidence(projectId,e.id);ensure(e.storageName,"FILE_EXTERNAL","原资料附件应使用其已授权资料地址");const path=join(root,"management-files",id(e.storageName));const real=realpathSync(path);ensure(real.startsWith(realpathSync(join(root,"management-files"))+sep),"FILE_PATH_INVALID","附件路径无效");
     res.setHeader("Content-Type",String(e.mime||"application/octet-stream"));res.setHeader("Content-Length",String(e.size));res.setHeader("X-Content-Type-Options","nosniff");res.setHeader("Content-Security-Policy","sandbox");res.setHeader("Cache-Control","private, no-store");res.setHeader("Vary","Cookie");res.setHeader("Content-Disposition",`inline; filename*=UTF-8''${encodeURIComponent(e.name)}`);if(req.method==="HEAD")res.end();else createReadStream(path).pipe(res);return;
    }
    throw new ManagementError(404,"ENDPOINT_NOT_FOUND","管理接口不存在");
-  }catch(e){errorOutput(res,e);}
+  }catch(e){errorOutput(res,e,responseActor);}
  }
  return {middleware,accessMiddleware,command,load:snapshot,metrics,authenticate,localActor,root,close:()=>{if(!closed){closed=true;db.close();}}};
 }

@@ -1,0 +1,31 @@
+{
+  "status": "passed",
+  "testedAt": "2026-10-13T08:38:46.963Z",
+  "rollbackCommit": "55ce544c765be42bdfc3c64f40768e3b828aa3fc",
+  "rollbackTree": "c798130ab3a93007250cc931c734d90906d208dd",
+  "source": "isolated browser acceptance database; opened read-only and copied with SQLite backup",
+  "sourcePath": "/workspace/scratch/9597ccec8aac/cesium-integration/tmp/rail-safety-browser-UmDUSh/management.sqlite",
+  "copyPath": "/workspace/scratch/9597ccec8aac/cesium-integration/tmp/rail-safety-rollback-data-tdbvzU/management.sqlite",
+  "originalProductionDataReadOrModified": false,
+  "newDefinitions": 5,
+  "machinery": 3,
+  "before": {
+    "sha256": "608a1fefa13f3170c0f79faca184a40ba4035051eda3452a0b83a15c29bd0042",
+    "counts": {
+      "records": 8,
+      "record_versions": 14,
+      "audit": 16,
+      "receipts": 16
+    }
+  },
+  "after": {
+    "sha256": "608a1fefa13f3170c0f79faca184a40ba4035051eda3452a0b83a15c29bd0042",
+    "counts": {
+      "records": 8,
+      "record_versions": 14,
+      "audit": 16,
+      "receipts": 16
+    }
+  },
+  "limitation": "Verifies retained data-layer rollback; not compatibility with d0ed4a5 or earlier code."
+}
