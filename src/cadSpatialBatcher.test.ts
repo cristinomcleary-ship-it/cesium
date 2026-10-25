@@ -57,6 +57,41 @@ test('many short lines in one cell still use the original instance limit', () =>
   assert.ok(emitted.every(batch => batch.length === 1000));
 });
 
+test('per-primitive vertex budgets bound local and overflow emissions without losing logical items', () => {
+  for (const cells of [1, 9]) {
+    const emitted: Array<Array<{ id: number; vertices: number; partition: string }>> = [];
+    const batches = new CadSpatialBatcher<{ id: number; vertices: number; partition: string }>({
+      maxBatchSize: 1000, maxBatchVertices: 32, maxBufferedVertices: 200, maxBufferedBuckets: 3,
+      emit: items => emitted.push(items),
+    });
+    const source = Array.from({ length: 200 }, (_, id) => ({ id, vertices: 7 + id % 12, partition: id % 2 ? 'a' : 'b' }));
+    for (const item of source) batches.add(`${item.id % cells}:${item.partition}`, item, item.vertices, item.partition);
+    batches.flush();
+    assert.deepEqual(emitted.flat().sort((a, b) => a.id - b.id), source);
+    assert.ok(emitted.every(items => items.reduce((total, item) => total + item.vertices, 0) <= 32));
+    assert.ok(emitted.every(items => new Set(items.map(item => item.partition)).size === 1));
+    assert.throws(() => batches.add('oversized', { id: 999, vertices: 33, partition: 'a' }, 33), /vertex budget/);
+    assert.equal(batches.bufferedItems, 0);
+  }
+});
+
+test('indivisible oversized items opt into complete isolated batches', () => {
+  const emitted: Array<Array<{ id: number; vertices: number }>> = [];
+  const batches = new CadSpatialBatcher<{ id: number; vertices: number }>({ maxBatchSize: 100,
+    maxBatchVertices: 32, maxBufferedVertices: 128, allowOversizedItem: true, emit: items => emitted.push(items) });
+  const source = [{ id: 0, vertices: 4 }, { id: 1, vertices: 33 }, { id: 2, vertices: 4 },
+    { id: 3, vertices: 256 }, { id: 4, vertices: 4 }];
+  for (const item of source) batches.add('same-cell', item, item.vertices);
+  batches.flush();
+  assert.deepEqual(emitted.flat(), source);
+  for (const group of emitted) {
+    if (group.some(item => item.vertices > 32)) assert.equal(group.length, 1);
+    else assert.ok(group.reduce((sum, item) => sum + item.vertices, 0) <= 32);
+    for (const item of group) assert.equal(item, source[item.id]);
+  }
+  assert.equal(batches.bufferedItems + batches.bufferedVertices, 0);
+});
+
 test('interleaved distant short lines submit less geometry in a nearby synthetic frustum', () => {
   type Item = { id: number; sphere: BoundingSphere; vertices: number };
   const input: Item[] = [];

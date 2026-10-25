@@ -80,7 +80,13 @@ function modelOpacityBinding(target: VisibleResource): OpacityBinding {
   return {
     apply: opacity => { if (alive(resource) && resource.customShader === shader) shader.setUniform(uniform, opacity); },
     restore: () => {
-      try { if (alive(resource) && resource.customShader === shader) resource.customShader = original; }
+      try {
+        if (alive(resource) && resource.customShader === shader) {
+          // The original owner can release its shader while AR temporarily
+          // replaces it. Never put a destroyed shader back into the render loop.
+          resource.customShader = original?.isDestroyed() ? undefined : original;
+        }
+      }
       finally { if (!shader.isDestroyed()) shader.destroy(); }
     },
   };
@@ -567,7 +573,7 @@ export class VideoOverlayResources {
     this.throwIfCancelled();
     const result = await loadCadPrimitiveCollection(imported, saved.settings.coordinates, {
       displayMode: "absolute", scene: this.options.viewer.scene, signal: this.controller.signal,
-      batchSize: 2000, primitiveBatchSize: 1000,
+      batchSize: 2000, primitiveBatchSize: 1000, showWhileLoading: false,
       transformPositions: createCadSurfaceSampler(this.options.viewer, saved.settings.displayMode === "model" ? "model" : "terrain", this.options.imports(), this.controller.signal),
       surfaceSampleSpacing: 5,
       beforePopulate: collection => {

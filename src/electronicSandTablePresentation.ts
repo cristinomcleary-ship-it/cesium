@@ -769,7 +769,7 @@ export class ElectronicSandTablePresentation {
     this.tilesetContours.delete(state.tileset);
     try {
       if (this.tilesetIsAlive(state.tileset) && state.tileset.customShader === state.shader) {
-        state.tileset.customShader = state.previousCustomShader;
+        state.tileset.customShader = state.previousCustomShader?.isDestroyed() ? undefined : state.previousCustomShader;
       }
     } catch (error) {
       this.report(`恢复模型着色器：${state.name}`, error);

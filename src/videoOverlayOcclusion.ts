@@ -337,7 +337,14 @@ export class VideoOverlayOcclusion {
         // Each property has independent ownership. Preserve a new shader/style
         // owner while still restoring debug/point-cloud state left in our care.
         for (const [key, value] of this.previous) {
-          try { if (object[key] === this.applied.get(key) && object[key] !== value) object[key] = value; }
+          try {
+            if (object[key] === this.applied.get(key)) {
+              // A temporary depth role must not revive a shader released by
+              // its original owner while that role was active.
+              const restored = key === 'customShader' && (value as CustomShader | undefined)?.isDestroyed() ? undefined : value;
+              if (object[key] !== restored) object[key] = restored;
+            }
+          }
           catch { /* Continue restoring other properties after a failed setter. */ }
         }
         // Only schedules eviction. Cesium keeps the next map frame's selected

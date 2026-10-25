@@ -1,4 +1,5 @@
 import { SceneLibrary } from "./sceneLibrary";
+import { installRenderErrorRecovery, renderErrorSummaryHtml } from "./renderErrorRecovery";
 import { detectsSoftwareRenderer, installCameraNavigationPerformance } from "./cameraNavigationPerformance";
 import { SceneDisplayPanel, type SceneDisplayItem } from "./sceneDisplayPanel";
 import { ModelQualityTracker, type ModelQualityState } from "./modelQualityState";
@@ -2118,86 +2119,87 @@ onPageDispose(() => {
   digitalTwinOverview.dispose();
 });
 
-const recentDestroyedRenderErrors: number[] = [];
-viewer.scene.renderError.addEventListener((_scene, error) => {
-  const details = error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ""}` : String(error);
-  console.error("[Cesium render error]", details);
-  const camera = viewer.camera.positionCartographic;
-  const report = {
-    occurredAt: new Date().toISOString(),
-    details,
-    cesiumVersion: "1.144.0",
-    camera: {
-      longitude: CesiumMath.toDegrees(camera.longitude),
-      latitude: CesiumMath.toDegrees(camera.latitude),
-      height: camera.height,
-    },
-    layers: imports.map((item) => ({
-      id: item.id,
-      name: item.name,
-      kind: item.kind,
-      visible: item.visible,
-      destroyed: (() => {
-        try { return Boolean((item.resource as { isDestroyed?: () => boolean }).isDestroyed?.()); }
-        catch { return true; }
-      })(),
-    })),
-    sectionEnabled: $<HTMLInputElement>("#sectionEnabled").checked,
-    excavationClippingEnabled: $<HTMLInputElement>("#clipExcavationSurface").checked,
-  };
-  try { localStorage.setItem("cesium-last-render-error-v1", JSON.stringify(report)); } catch { /* Diagnostics are best effort. */ }
-  (window as Window & { __CESIUM_LAST_RENDER_ERROR__?: typeof report }).__CESIUM_LAST_RENDER_ERROR__ = report;
-  void fetch("/__diagnostics/render-error", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(report),
-    keepalive: true,
-  }).catch(() => undefined);
-  if (!/object was destroyed|destroy\(\) was called/i.test(details)) {
-    viewer.cesiumWidget.showErrorPanel("三维场景渲染发生错误", "请展开详细信息并保留错误内容。", error);
-    return;
-  }
-
-  const now = Date.now();
-  recentDestroyedRenderErrors.push(now);
-  while (recentDestroyedRenderErrors.length && recentDestroyedRenderErrors[0] < now - 5000) recentDestroyedRenderErrors.shift();
-  viewer.camera.cancelFlight();
-  viewer.scene.screenSpaceCameraController.enableInputs = true;
-  const detachedClippingResources = subsurfaceTools.recoverFromDestroyedResources();
-  const prunedEditorModels = modelEditor.pruneDestroyed();
-  let prunedLayers = 0;
-  for (let index = imports.length - 1; index >= 0; index -= 1) {
-    const item = imports[index];
-    let destroyed = false;
-    try { destroyed = Boolean((item.resource as { isDestroyed?: () => boolean }).isDestroyed?.()); }
-    catch { destroyed = true; }
-    if (!destroyed) continue;
-    if (item.kind === "3D Tiles") { disposeModelQuality(item.id, item.resource as Cesium3DTileset); videoArFusion.invalidateProjection("destroyed-model-pruned"); }
-    subsurfaceTools.detachImport(item);
-    imports.splice(index, 1);
-    prunedLayers += 1;
-  }
-  for (let index = viewer.imageryLayers.length - 1; index >= 0; index -= 1) {
-    const layer = viewer.imageryLayers.get(index);
-    if (layer.isDestroyed()) viewer.imageryLayers.remove(layer, false);
-  }
-  if (prunedLayers) renderLayers();
-  console.warn("[Cesium recovery]", { detachedClippingResources, prunedEditorModels, prunedLayers });
-  if (recentDestroyedRenderErrors.length > 3) {
-    const diagnosticError = new Error(`${details}\n\nRecovery: detachedClipping=${detachedClippingResources}, prunedEditorModels=${prunedEditorModels}, prunedLayers=${prunedLayers}`);
-    viewer.cesiumWidget.showErrorPanel("三维场景连续恢复失败", "请展开详细信息；错误堆栈也已保存在浏览器本地诊断记录中。", diagnosticError.stack ?? diagnosticError.message);
-    return;
-  }
-
-  setStatus("正在隔离失效的瓦片或裁剪资源…");
-  toast(detachedClippingResources || prunedLayers ? "已隔离失效资源，正在恢复场景" : "正在重建缩放渲染帧");
-  window.setTimeout(() => {
-    if (viewer.isDestroyed()) return;
-    viewer.useDefaultRenderLoop = true;
-    viewer.scene.requestRender();
+const disposeRenderErrorRecovery = installRenderErrorRecovery(viewer, {
+  record: (_error, details) => {
+    console.error("[Cesium render error]", details);
+    const camera = viewer.camera.positionCartographic;
+    const report = {
+      occurredAt: new Date().toISOString(),
+      details,
+      cesiumVersion: "1.144.0",
+      activeModule: document.querySelector<HTMLElement>(".tab.active")?.dataset.tab,
+      canvas: { width: viewer.canvas.width, height: viewer.canvas.height, clientWidth: viewer.canvas.clientWidth, clientHeight: viewer.canvas.clientHeight },
+      camera: {
+        longitude: CesiumMath.toDegrees(camera.longitude),
+        latitude: CesiumMath.toDegrees(camera.latitude),
+        height: camera.height,
+      },
+      layers: imports.map((item) => ({
+        id: item.id,
+        name: item.name,
+        kind: item.kind,
+        visible: item.visible,
+        destroyed: (() => {
+          try { return Boolean((item.resource as { isDestroyed?: () => boolean }).isDestroyed?.()); }
+          catch { return true; }
+        })(),
+      })),
+      sectionEnabled: $<HTMLInputElement>("#sectionEnabled").checked,
+      excavationClippingEnabled: $<HTMLInputElement>("#clipExcavationSurface").checked,
+    };
+    try { localStorage.setItem("cesium-last-render-error-v1", JSON.stringify(report)); } catch { /* Diagnostics are best effort. */ }
+    (window as Window & { __CESIUM_LAST_RENDER_ERROR__?: typeof report }).__CESIUM_LAST_RENDER_ERROR__ = report;
+    void fetch("/__diagnostics/render-error", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(report),
+      keepalive: true,
+    }).catch(() => undefined);
+  },
+  repair: () => {
+    const detachedClippingResources = subsurfaceTools.recoverFromDestroyedResources();
+    const prunedEditorModels = modelEditor.pruneDestroyed();
+    let prunedLayers = 0;
+    let prunedImagery = 0;
+    for (let index = imports.length - 1; index >= 0; index -= 1) {
+      const item = imports[index];
+      let destroyed = false;
+      try { destroyed = Boolean((item.resource as { isDestroyed?: () => boolean }).isDestroyed?.()); }
+      catch { destroyed = true; }
+      if (!destroyed) continue;
+      if (item.kind === "3D Tiles") { disposeModelQuality(item.id, item.resource as Cesium3DTileset); videoArFusion.invalidateProjection("destroyed-model-pruned"); }
+      subsurfaceTools.detachImport(item);
+      imports.splice(index, 1);
+      prunedLayers += 1;
+    }
+    for (let index = viewer.imageryLayers.length - 1; index >= 0; index -= 1) {
+      const layer = viewer.imageryLayers.get(index);
+      if (layer.isDestroyed()) { viewer.imageryLayers.remove(layer, false); prunedImagery++; }
+    }
+    if (prunedLayers) renderLayers();
+    console.warn("[Cesium recovery]", { detachedClippingResources, prunedEditorModels, prunedLayers });
+    return detachedClippingResources + prunedEditorModels + prunedLayers + prunedImagery;
+  },
+  canResume: () => {
+    // A user can switch to the management-only view while recovery is pending.
+    if (managementWorkspace?.isOpen && !managementWorkspace.isSceneOpen) return false;
+    const context = viewer.canvas.getContext("webgl2") || viewer.canvas.getContext("webgl");
+    return Boolean(context && !context.isContextLost());
+  },
+  failure: (_error, details) => {
+    setStatus("三维渲染已暂停，请查看错误详情");
+    // Keep the actual exception visible without requiring the English disclosure.
+    viewer.cesiumWidget.showErrorPanel("三维场景渲染发生错误", renderErrorSummaryHtml(details), details);
+  },
+  recovering: () => {
+    setStatus("已修复失效引用，正在恢复场景…");
+  },
+  recovered: () => {
     setStatus("Cesium 已就绪");
-  }, 180);
+    toast("场景渲染已恢复");
+  },
 });
+onPageDispose(disposeRenderErrorRecovery);
 
 function bindDropzone(zoneSelector: string, inputSelector: string, assign: (file: File) => void) {
   const zone = $(zoneSelector);

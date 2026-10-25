@@ -13,6 +13,9 @@ type Options<T> = {
   maxBufferedItems?: number;
   maxBufferedVertices?: number;
   maxBufferedBuckets?: number;
+  /** Per-emission limit; large indivisible items can opt into isolated emission. */
+  maxBatchVertices?: number;
+  allowOversizedItem?: boolean;
 };
 
 /** Stream whole entities into local batches without retaining every cell until
@@ -24,6 +27,7 @@ export class CadSpatialBatcher<T> {
   private readonly maxItems: number;
   private readonly maxVertices: number;
   private readonly maxBuckets: number;
+  private readonly maxBatchVertices: number;
   private itemCount = 0;
   private vertexCount = 0;
 
@@ -31,8 +35,10 @@ export class CadSpatialBatcher<T> {
     this.maxItems = options.maxBufferedItems ?? options.maxBatchSize * 4;
     this.maxVertices = options.maxBufferedVertices ?? 131_072;
     this.maxBuckets = options.maxBufferedBuckets ?? 128;
+    this.maxBatchVertices = options.maxBatchVertices ?? Number.POSITIVE_INFINITY;
     if (![options.maxBatchSize, this.maxItems, this.maxVertices, this.maxBuckets]
-      .every(value => Number.isInteger(value) && value > 0)) {
+      .every(value => Number.isInteger(value) && value > 0)
+      || options.maxBatchVertices !== undefined && (!Number.isInteger(options.maxBatchVertices) || options.maxBatchVertices < 1)) {
       throw new RangeError("CAD batch limits must be positive integers");
     }
   }
@@ -42,9 +48,13 @@ export class CadSpatialBatcher<T> {
   get bufferedBuckets(): number { return this.buffers.size + this.overflow.size; }
 
   add(key: string, item: T, vertices: number, partition = ""): void {
+    if (!Number.isInteger(vertices) || vertices < 1
+      || vertices > this.maxBatchVertices && !this.options.allowOversizedItem) {
+      throw new RangeError("CAD item exceeds the geometry batch vertex budget");
+    }
     // A large entity cannot fit the budget without changing its geometry. Submit
     // it intact and do not make unrelated local entities share its large bounds.
-    if (vertices > this.maxVertices) {
+    if (vertices > this.maxVertices || vertices > this.maxBatchVertices) {
       this.emitBuffer(this.buffers, key);
       this.options.emit([item]);
       return;
@@ -62,6 +72,10 @@ export class CadSpatialBatcher<T> {
       }
     }
     let buffer = this.buffers.get(key);
+    if (buffer && buffer.vertices + vertices > this.maxBatchVertices) {
+      this.emitBuffer(this.buffers, key);
+      buffer = undefined;
+    }
     if (!buffer) {
       buffer = { entries: [], vertices: 0, partition };
       this.buffers.set(key, buffer);
@@ -111,6 +125,10 @@ export class CadSpatialBatcher<T> {
     // batches with the same material partition, degrading toward source batching.
     for (const entry of buffer.entries) {
       let overflow = this.overflow.get(buffer.partition);
+      if (overflow && overflow.vertices + entry.vertices > this.maxBatchVertices) {
+        this.emitBuffer(this.overflow, buffer.partition);
+        overflow = undefined;
+      }
       if (!overflow) {
         overflow = { entries: [], vertices: 0, partition: buffer.partition };
         this.overflow.set(buffer.partition, overflow);

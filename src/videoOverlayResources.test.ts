@@ -11,21 +11,45 @@ import type { CadImportPackage } from "./cadImport.ts";
 import type { LibraryRecord } from "./projectLibrary.ts";
 import type { ImportRecord } from "./types.ts";
 import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader.ts";
+import { getCadGeometrySchedulerStats } from "./cadGeometryScheduler.ts";
 
 const center = Cartesian3.fromDegrees(120, 30, 25);
 const base = Transforms.eastNorthUpToFixedFrame(center);
-function viewer(primitives = new PrimitiveCollection(), autoCompile = true): Viewer {
+function viewer(primitives = new PrimitiveCollection(), autoCompile = true, onCompile?: (primitive: Primitive) => void): Viewer {
   const postRender = new Event();
   let queued = false;
-  const compile = (resource: unknown) => {
+  const installed = new WeakSet<object>();
+  const installCompiler = (resource: unknown) => {
+    if (!resource || typeof resource !== 'object' || installed.has(resource)) return;
+    installed.add(resource);
     if (resource instanceof PrimitiveCollection) {
-      if (resource.show) for (let index = 0; index < resource.length; index++) compile(resource.get(index));
-    } else if (resource instanceof Primitive) (resource as unknown as { _ready: boolean })._ready = true;
+      const add = resource.add;
+      resource.add = (primitive, index) => {
+        // Install the CPU leaf before the scheduler captures and wraps update.
+        installCompiler(primitive);
+        return add.call(resource, primitive, index);
+      };
+      for (let index = 0; index < resource.length; index++) installCompiler(resource.get(index));
+    } else if (resource instanceof Primitive) {
+      (resource as unknown as { update(): void }).update = () => {
+        onCompile?.(resource);
+        (resource as unknown as { _ready: boolean })._ready = true;
+      };
+    } else if (resource instanceof GroundPolylinePrimitive) {
+      // The already-loaded ground source has no GPU context in this unit test.
+      (resource as unknown as { update(): void }).update = () => {};
+    }
   };
+  if (autoCompile) installCompiler(primitives);
   return { terrainProvider: new EllipsoidTerrainProvider(), clock: { currentTime: JulianDate.now() }, scene: { primitives, postRender, requestRender() {
     if (!autoCompile || queued || !postRender.numberOfListeners) return;
     queued = true;
-    queueMicrotask(() => { queued = false; compile(primitives); postRender.raiseEvent(); });
+    queueMicrotask(() => {
+      queued = false;
+      // Real collection updates exercise hidden compilation and queue permits.
+      (primitives as unknown as { update(frameState: object): void }).update({});
+      postRender.raiseEvent();
+    });
   } } } as unknown as Viewer;
 }
 function model(id: string, show = true) {
@@ -520,9 +544,14 @@ test("ground CAD freezes map surface height instead of restoring source Z, and d
   const root = new PrimitiveCollection(), original = new PrimitiveCollection();
   original.add(groundSource()); root.add(original);
   const record: ImportRecord = { id: "cad", name: "ground", kind: "CAD", representation: "primitive", resource: original, visible: true };
+  const compilationVisibility: boolean[] = [];
+  const view = viewer(root, true, primitive => compilationVisibility.push(primitive.show));
   try {
-    const session = await VideoOverlayResources.create({ viewer: viewer(root), imports: () => [record], getRecord: savedCad });
+    const session = await VideoOverlayResources.create({ viewer: view, imports: () => [record], getRecord: savedCad });
     assert.equal(session.get("cad")!.available, true);
+    assert.ok(compilationVisibility.length > 0, 'the hidden copy compiles through its update wrapper');
+    assert.ok(compilationVisibility.every(show => !show), 'compiling the AR copy never draws it');
+    assert.deepEqual(getCadGeometrySchedulerStats(view.scene), { active: 0, queued: 0, pending: 0, maxActive: 1 });
     assert.match(session.get("cad")!.description, /保留地图贴附表面高程/);
     assert.equal(root.length, 2);
     session.setSelection(["cad"]);
@@ -735,6 +764,28 @@ test('model effects preserve material alpha and original shader, reuse one trans
   assert.equal(resource.customShader, original); assert.equal(resource.color, originalColor);
   assert.equal(owned.isDestroyed(), true); assert.equal(original.isDestroyed(), false);
   original.destroy();
+});
+
+test('AR opacity exit never restores a shader destroyed by its original owner', async () => {
+  for (const kind of ['Model', '3D Tiles'] as const) for (const replaced of [false, true]) {
+    const first = model('model'); first.record.kind = kind;
+    const original = new CustomShader({ fragmentShaderText: 'void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) { material.alpha *= 0.7; }' });
+    const resource = Object.assign(first.resource, { customShader: original as CustomShader | undefined, color: Color.RED.withAlpha(.7) });
+    const matrix = Matrix4.clone(resource.modelMatrix), color = resource.color;
+    const session = await VideoOverlayResources.create({ viewer: viewer(), imports: () => [first.record], getRecord: () => undefined });
+    session.setSelection(['model']); session.setTimelineOpacity({ model: { opacity: .5, visible: true } });
+    const owned = resource.customShader!;
+    original.destroy();
+    const external = replaced ? new CustomShader({}) : undefined;
+    if (external) resource.customShader = external;
+    assert.doesNotThrow(() => { session.restore(); session.restore(); });
+    assert.equal(resource.customShader, external, 'only a live external owner may remain; a destroyed previous shader cannot be restored');
+    assert.equal(original.isDestroyed(), true); assert.equal(owned.isDestroyed(), true);
+    assert.equal(resource.color, color); assert.equal(resource.color.alpha, .7);
+    assert.ok(Matrix4.equals(resource.modelMatrix, matrix)); assert.equal(resource.show, true);
+    assert.equal(first.record.visible, true, 'saved layer visibility is unchanged');
+    if (external) { assert.equal(external.isDestroyed(), false); external.destroy(); }
+  }
 });
 
 test('model command rebuild readiness gates fused output while alpha-hidden or unselected objects do not block', async () => {
