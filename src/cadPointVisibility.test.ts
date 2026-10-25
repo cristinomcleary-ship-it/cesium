@@ -120,5 +120,5 @@ test("hidden points still advance progress and honor cancellation at batch bound
     beforePopulate: value => { collection = value; },
     onProgress: () => controller.abort(),
   }), error => error instanceof DOMException && error.name === "AbortError");
-  collection?.destroy();
+  assert.equal(collection?.isDestroyed(), true, 'cancelled loads release their incomplete collection');
 });

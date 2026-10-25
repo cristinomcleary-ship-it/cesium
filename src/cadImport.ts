@@ -461,16 +461,26 @@ export async function createCadImportFromDwg(file: File): Promise<CadImportPacka
   }
 }
 
-export async function readCadImport(file: File): Promise<CadImportPackage> {
+/** Keep the same format checks in the main-thread fallback and the parse worker. */
+export function parseCadImportText(text: string): CadImportPackage {
   let parsed: unknown;
-  try { parsed = JSON.parse(await file.text()); }
+  try { parsed = JSON.parse(text); }
   catch { throw new Error("导入文件不是有效的 .cadimport 文件"); }
-  const value = parsed as Partial<CadImportPackage>;
-  if (value.format !== "cesium-cad-import" || (value.version !== 1 && value.version !== 2) || !Array.isArray(value.entities)) {
+  const value = parsed as Partial<CadImportPackage> | null;
+  if (!value || value.format !== "cesium-cad-import" || (value.version !== 1 && value.version !== 2) || !Array.isArray(value.entities)) {
     throw new Error("不支持的 .cadimport 格式或版本");
   }
   if (!value.entities.every((entity) => entity && Array.isArray(entity.vertices))) throw new Error(".cadimport 中的几何数据不完整");
   return value as CadImportPackage;
+}
+
+export async function readCadImport(file: File, signal?: AbortSignal): Promise<CadImportPackage> {
+  if (signal?.aborted) throw new DOMException("CAD 加载已取消", "AbortError");
+  let text: string;
+  try { text = await file.text(); }
+  catch { throw new Error("导入文件不是有效的 .cadimport 文件"); }
+  if (signal?.aborted) throw new DOMException("CAD 加载已取消", "AbortError");
+  return parseCadImportText(text);
 }
 
 export function cadImportBlob(value: CadImportPackage): Blob {

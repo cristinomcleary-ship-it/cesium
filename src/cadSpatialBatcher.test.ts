@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { BoundingSphere, Cartesian3, Intersect, PerspectiveFrustum } from 'cesium';
 import { cadSpatialBatchKey, CadSpatialBatcher } from './cadSpatialBatcher.ts';
+import { CAD_PRIMITIVE_VERTEX_BUDGET, CAD_SOURCE_BUFFER_VERTEX_BUDGET } from './cadPrimitiveLoader.ts';
 
 test('spatial buffers retain every whole item and partition while bounding pending work', () => {
   const emitted: Array<Array<{ id: number; key: string; partition: string; vertices: number }>> = [];
@@ -55,6 +56,67 @@ test('many short lines in one cell still use the original instance limit', () =>
   batches.flush();
   assert.equal(emitted.length, 10);
   assert.ok(emitted.every(batch => batch.length === 1000));
+});
+
+test('per-primitive vertex budgets bound local and overflow emissions without losing logical items', () => {
+  for (const cells of [1, 9]) {
+    const emitted: Array<Array<{ id: number; vertices: number; partition: string }>> = [];
+    const batches = new CadSpatialBatcher<{ id: number; vertices: number; partition: string }>({
+      maxBatchSize: 1000, maxBatchVertices: 32, maxBufferedVertices: 200, maxBufferedBuckets: 3,
+      emit: items => emitted.push(items),
+    });
+    const source = Array.from({ length: 200 }, (_, id) => ({ id, vertices: 7 + id % 12, partition: id % 2 ? 'a' : 'b' }));
+    for (const item of source) batches.add(`${item.id % cells}:${item.partition}`, item, item.vertices, item.partition);
+    batches.flush();
+    assert.deepEqual(emitted.flat().sort((a, b) => a.id - b.id), source);
+    assert.ok(emitted.every(items => items.reduce((total, item) => total + item.vertices, 0) <= 32));
+    assert.ok(emitted.every(items => new Set(items.map(item => item.partition)).size === 1));
+    assert.throws(() => batches.add('oversized', { id: 999, vertices: 33, partition: 'a' }, 33), /vertex budget/);
+    assert.equal(batches.bufferedItems, 0);
+  }
+});
+
+test('indivisible oversized items opt into complete isolated batches', () => {
+  const emitted: Array<Array<{ id: number; vertices: number }>> = [];
+  const batches = new CadSpatialBatcher<{ id: number; vertices: number }>({ maxBatchSize: 100,
+    maxBatchVertices: 32, maxBufferedVertices: 128, allowOversizedItem: true, emit: items => emitted.push(items) });
+  const source = [{ id: 0, vertices: 4 }, { id: 1, vertices: 33 }, { id: 2, vertices: 4 },
+    { id: 3, vertices: 256 }, { id: 4, vertices: 4 }];
+  for (const item of source) batches.add('same-cell', item, item.vertices);
+  batches.flush();
+  assert.deepEqual(emitted.flat(), source);
+  for (const group of emitted) {
+    if (group.some(item => item.vertices > 32)) assert.equal(group.length, 1);
+    else assert.ok(group.reduce((sum, item) => sum + item.vertices, 0) <= 32);
+    for (const item of group) assert.equal(item, source[item.id]);
+  }
+  assert.equal(batches.bufferedItems + batches.bufferedVertices, 0);
+});
+
+test('100000 interleaved curved entities stay in bounded full batches under source-cache pressure', () => {
+  for (const cells of [32, 129]) for (const [budget, cache] of [
+    [1024, 4096], // The former small cache must also avoid one primitive per entity.
+    [CAD_PRIMITIVE_VERTEX_BUDGET.ground, CAD_SOURCE_BUFFER_VERTEX_BUDGET],
+    [CAD_PRIMITIVE_VERTEX_BUDGET.absolute, CAD_SOURCE_BUFFER_VERTEX_BUDGET],
+  ]) {
+    const count = 100_000, points = 128, seen = new Uint8Array(count);
+    let emitted = 0, singletons = 0;
+    const batches = new CadSpatialBatcher<number>({ maxBatchSize: 1000, maxBatchVertices: budget,
+      maxBufferedVertices: cache, emit: items => {
+        emitted++; if (items.length === 1) singletons++;
+        assert.ok(items.length * points <= budget);
+        for (const id of items) { assert.equal(seen[id], 0); seen[id]++; }
+      } });
+    for (let id = 0; id < count; id++) {
+      batches.add(String(id % cells), id, points);
+      assert.ok(batches.bufferedVertices <= cache);
+    }
+    batches.flush();
+    assert.ok(seen.every(value => value === 1), 'every source entity is emitted exactly once');
+    assert.ok(emitted <= Math.ceil(count * points / budget) * 5 + 129, `${emitted} primitives for budget=${budget}, cells=${cells}`);
+    assert.ok(singletons <= 129, `only final spatial tails may be singletons, got ${singletons}`);
+    if (budget === CAD_PRIMITIVE_VERTEX_BUDGET.ground) assert.ok(emitted <= 3255, `${emitted} ground batches`);
+  }
 });
 
 test('interleaved distant short lines submit less geometry in a nearby synthetic frustum', () => {

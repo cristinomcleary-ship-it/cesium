@@ -29,6 +29,7 @@ import {
 import proj4 from "proj4";
 import { cadLineWidth, createCadPolylineAppearance } from "./cadDisplayStyle.ts";
 import { cadSpatialBatchKey, CadSpatialBatcher } from "./cadSpatialBatcher.ts";
+import { createCadGeometryScheduler } from "./cadGeometryScheduler.ts";
 import type { CadImportEntity, CadImportPackage, CadPoint } from "./cadImport";
 import { createGaussKrugerToWgs84Converter } from "./coordinateUtils.ts";
 import type { CadCoordinateOptions, CadDisplayMode } from "./types";
@@ -42,6 +43,9 @@ export type CadPrimitiveFeatureId = {
   sourceType: string;
   type: CadImportEntity["type"];
   entityIndex: number;
+  /** Render fragments retain one logical feature and use distinct Cesium pick/attribute IDs. */
+  featureId?: string;
+  renderPart?: number;
 };
 
 /** Lightweight collision data retained after GPU geometry instances are released. */
@@ -73,6 +77,10 @@ export type CadPrimitiveLoadOptions = {
   scene?: Scene;
   /** Lets the caller attach the empty collection early so batches can compile and release CPU geometry while loading continues. */
   beforePopulate?: (collection: PrimitiveCollection) => void | Promise<void>;
+  /** AR compiles its temporary copy without displaying it over the normal map. */
+  showWhileLoading?: boolean;
+  /** A paused management view resumes preparation when its render loop resumes. */
+  isRenderActive?: () => boolean;
   /** Freeze a draped layer to sampled world positions before building absolute geometry.
    * Called in source batches; it must return one finite position for every input.
    */
@@ -91,6 +99,16 @@ export type CadPrimitiveLoadResult = {
 
 const DEFAULT_COLOR = Color.fromCssColorString("#32d6ff");
 const FACE_ALPHA = 0.18;
+
+/** Pinned Cesium worker packing: about 400 B/source point for absolute lines,
+ * and 2656 B/source segment for ground lines, in addition to created geometry.
+ * Bound each packed result while avoiding thousands of tiny draw batches.
+ * These are worker budgets; cached source descriptions do not expand to packed geometry.
+ */
+export const CAD_PRIMITIVE_VERTEX_BUDGET = Object.freeze({ absolute: 32768, ground: 4096 });
+export const CAD_SOURCE_BUFFER_VERTEX_BUDGET = 131_072;
+const SURFACE_SAMPLE_VERTEX_BUDGET = 8192;
+const LOAD_WORK_SLICE_MS = 10;
 
 function entityColor(entity: CadImportEntity): Color {
   return entity.color ? Color.fromCssColorString(entity.color) ?? DEFAULT_COLOR : DEFAULT_COLOR;
@@ -229,6 +247,7 @@ export async function loadCadPrimitiveCollection(
   coordinateOptions: CadCoordinateOptions,
   options: CadPrimitiveLoadOptions = {},
 ): Promise<CadPrimitiveLoadResult> {
+  abortIfRequested(options.signal);
   if (!value.entities.length) throw new Error("导入文件中没有可显示的 CAD 几何");
 
   const displayMode = options.displayMode ?? "absolute";
@@ -240,235 +259,303 @@ export async function loadCadPrimitiveCollection(
   if (surfaceSpacing !== undefined && (!Number.isFinite(surfaceSpacing) || surfaceSpacing <= 0)) throw new Error("CAD 表面采样间距必须为正数");
   const sourceBatchSize = Math.max(100, Math.floor(options.batchSize ?? 500));
   const primitiveBatchSize = Math.max(50, Math.floor(options.primitiveBatchSize ?? 600));
+  const vertexBudget = displayMode === "absolute" ? CAD_PRIMITIVE_VERTEX_BUDGET.absolute : CAD_PRIMITIVE_VERTEX_BUDGET.ground;
   const classificationType = displayMode === "model" ? ClassificationType.CESIUM_3D_TILE : ClassificationType.TERRAIN;
   const convert = createConverter(coordinateOptions);
   const collection = new PrimitiveCollection({ destroyPrimitives: true });
-  let handedToCaller = false;
-  if (options.beforePopulate) {
-    await options.beforePopulate(collection);
-    handedToCaller = true;
-  }
-  const cadPolylineFeatures: CadPolylineFeature[] = [];
-  const cadFacePositions: Cartesian3[][] = [];
-  let minimum: Cartesian3 | undefined;
-  let maximum: Cartesian3 | undefined;
-  let featureCount = 0;
-  let skippedCount = 0;
-
-  let labels: LabelCollection | undefined;
-
-  const heightReference = displayMode === "terrain"
-    ? HeightReference.CLAMP_TO_TERRAIN
-    : displayMode === "model"
-      ? HeightReference.CLAMP_TO_3D_TILE
-      : HeightReference.NONE;
-
-  const labelCollection = () => labels ?? (labels = collection.add(new LabelCollection({
-    scene: options.scene,
-    blendOption: BlendOption.OPAQUE_AND_TRANSLUCENT,
-  })));
-
-  const include = (position: Cartesian3) => {
-    if (!minimum || !maximum) {
-      minimum = Cartesian3.clone(position);
-      maximum = Cartesian3.clone(position);
-      return;
+  const scheduler = createCadGeometryScheduler({ scene: options.scene, collection, signal: options.signal,
+    enabled: Boolean(options.scene && options.beforePopulate), showWhileLoading: options.showWhileLoading ?? true,
+    isRenderActive: options.isRenderActive });
+  try {
+    if (options.beforePopulate) {
+      await options.beforePopulate(collection);
     }
-    Cartesian3.minimumByComponent(minimum, position, minimum);
-    Cartesian3.maximumByComponent(maximum, position, maximum);
-  };
+    const cadPolylineFeatures: CadPolylineFeature[] = [];
+    const cadFacePositions: Cartesian3[][] = [];
+    let minimum: Cartesian3 | undefined;
+    let maximum: Cartesian3 | undefined;
+    let featureCount = 0;
+    let skippedCount = 0;
+    let workSliceStart = performance.now();
+    const yieldIfNeeded = (): Promise<void> | undefined => {
+      if (performance.now() - workSliceStart < LOAD_WORK_SLICE_MS) return;
+      return nextFrame().then(() => { workSliceStart = performance.now(); abortIfRequested(options.signal); });
+    };
+    const waitForCapacity = async () => {
+      const pending = scheduler.pendingCount;
+      await scheduler.waitForCapacity();
+      // A completed batch already yielded to rendering. Do not add another
+      // frame of latency every time geometry becomes ready.
+      if (scheduler.pendingCount < pending) workSliceStart = performance.now();
+      else {
+        const yielding = yieldIfNeeded();
+        if (yielding) await yielding;
+      }
+    };
 
-  const lineBatches = new CadSpatialBatcher<GeometryInstance>({ maxBatchSize: primitiveBatchSize, emit: lineInstances => {
-    if (displayMode === "absolute") {
-      collection.add(new Primitive({
-        geometryInstances: lineInstances,
-        appearance: createCadPolylineAppearance(),
-        asynchronous: true,
-        releaseGeometryInstances: true,
-        vertexCacheOptimize: true,
-        compressVertices: true,
-        allowPicking: true,
-      }));
-    } else {
-      collection.add(new GroundPolylinePrimitive({
-        geometryInstances: lineInstances,
-        appearance: new PolylineColorAppearance({ translucent: false }),
-        asynchronous: true,
-        releaseGeometryInstances: true,
-        classificationType,
-        allowPicking: true,
-      }));
-    }
-  } });
+    let labels: LabelCollection | undefined;
 
-  const faceBatches = new CadSpatialBatcher<GeometryInstance>({
-    maxBatchSize: Math.max(50, Math.floor(primitiveBatchSize / 2)),
-    emit: instances => {
+    const heightReference = displayMode === "terrain"
+      ? HeightReference.CLAMP_TO_TERRAIN
+      : displayMode === "model"
+        ? HeightReference.CLAMP_TO_3D_TILE
+        : HeightReference.NONE;
+
+    const labelCollection = () => labels ?? (labels = collection.add(new LabelCollection({
+      scene: options.scene,
+      blendOption: BlendOption.OPAQUE_AND_TRANSLUCENT,
+    })));
+
+    const include = (position: Cartesian3) => {
+      if (!minimum || !maximum) {
+        minimum = Cartesian3.clone(position);
+        maximum = Cartesian3.clone(position);
+        return;
+      }
+      Cartesian3.minimumByComponent(minimum, position, minimum);
+      Cartesian3.maximumByComponent(maximum, position, maximum);
+    };
+
+    const lineBatches = new CadSpatialBatcher<GeometryInstance>({ maxBatchSize: primitiveBatchSize,
+      maxBatchVertices: vertexBudget, maxBufferedVertices: CAD_SOURCE_BUFFER_VERTEX_BUDGET, emit: lineInstances => {
       if (displayMode === "absolute") {
-        collection.add(new Primitive({
-          geometryInstances: instances,
-          appearance: new PerInstanceColorAppearance({ flat: true, translucent: true, closed: false }),
+        scheduler.add(new Primitive({
+          geometryInstances: lineInstances,
+          appearance: createCadPolylineAppearance(),
           asynchronous: true,
           releaseGeometryInstances: true,
           vertexCacheOptimize: true,
           compressVertices: true,
           allowPicking: true,
         }));
-        return;
+      } else {
+        scheduler.add(new GroundPolylinePrimitive({
+          geometryInstances: lineInstances,
+          appearance: new PolylineColorAppearance({ translucent: false }),
+          asynchronous: true,
+          releaseGeometryInstances: true,
+          classificationType,
+          allowPicking: true,
+        }));
       }
-      // Ground/classification primitives require a uniform color on every
-      // supported GPU, so different CAD colors are deliberately split here.
-      collection.add(new GroundPrimitive({
-        geometryInstances: instances,
-        appearance: new PerInstanceColorAppearance({ flat: true, translucent: true, closed: false }),
-        asynchronous: true,
-        releaseGeometryInstances: true,
-        vertexCacheOptimize: true,
-        compressVertices: true,
-        classificationType,
-        allowPicking: true,
-      }));
-    },
-  });
+    } });
 
-  const batchKey = (positions: Cartesian3[], partition?: string) =>
-    cadSpatialBatchKey(BoundingSphere.fromPoints(positions).center, partition);
-
-  const addLine = (positions: Cartesian3[], width: number, color: Color, id: CadPrimitiveFeatureId) => {
-    const geometry = displayMode === "absolute"
-      ? new PolylineGeometry({ positions, width, arcType: ArcType.NONE, vertexFormat: PolylineColorAppearance.VERTEX_FORMAT })
-      : new GroundPolylineGeometry({ positions, width, granularity: 0, arcType: ArcType.GEODESIC });
-    lineBatches.add(batchKey(positions), new GeometryInstance({
-      geometry,
-      id,
-      attributes: { color: ColorGeometryInstanceAttribute.fromColor(color) },
-    }), positions.length);
-  };
-
-  const addFace = (positions: Cartesian3[], color: Color, id: CadPrimitiveFeatureId) => {
-    const geometry = PolygonGeometry.fromPositions({
-      positions,
-      perPositionHeight: displayMode === "absolute",
-      vertexFormat: PerInstanceColorAppearance.FLAT_VERTEX_FORMAT,
-    });
-    const faceColor = color.withAlpha(FACE_ALPHA);
-    const instance = new GeometryInstance({
-      geometry,
-      id,
-      attributes: { color: ColorGeometryInstanceAttribute.fromColor(faceColor) },
-    });
-    const partition = displayMode === "absolute" ? "" : faceColor.toCssHexString();
-    faceBatches.add(batchKey(positions, partition), instance, positions.length, partition);
-  };
-
-  let sampledBatch: Cartesian3[][] = [];
-  for (let index = 0; index < value.entities.length; index += 1) {
-    abortIfRequested(options.signal);
-    if (options.transformPositions && index % sourceBatchSize === 0) {
-      const batch = value.entities.slice(index, index + sourceBatchSize).map(entity => {
-        if (entity.type === "POINT") return [];
-        let points = convertPoints(entity.vertices, convert);
-        if (surfaceSpacing && (entity.type === "POLYLINE" || entity.type === "3DFACE")) {
-          points = closeLine(points, entity.type === "3DFACE" || Boolean(entity.closed));
-          points = densifyPositions(points, surfaceSpacing);
+    const faceVertexCounts = new WeakMap<GeometryInstance, number>();
+    const faceBatches = new CadSpatialBatcher<GeometryInstance>({
+      maxBatchSize: Math.max(50, Math.floor(primitiveBatchSize / 2)),
+      maxBatchVertices: vertexBudget, maxBufferedVertices: CAD_SOURCE_BUFFER_VERTEX_BUDGET,
+      allowOversizedItem: true,
+      emit: instances => {
+        // Preserve indivisible polygon boundaries. An oversized face compiles
+        // alone, without the allocations from another CAD batch in flight.
+        const exclusive = instances.reduce((sum, instance) => sum + (faceVertexCounts.get(instance) ?? 0), 0) > vertexBudget;
+        if (displayMode === "absolute") {
+          scheduler.add(new Primitive({
+            geometryInstances: instances,
+            appearance: new PerInstanceColorAppearance({ flat: true, translucent: true, closed: false }),
+            asynchronous: true,
+            releaseGeometryInstances: true,
+            vertexCacheOptimize: true,
+            compressVertices: true,
+            allowPicking: true,
+          }), { exclusive });
+          return;
         }
-        return points;
+        // Ground/classification primitives require a uniform color on every
+        // supported GPU, so different CAD colors are deliberately split here.
+        scheduler.add(new GroundPrimitive({
+          geometryInstances: instances,
+          appearance: new PerInstanceColorAppearance({ flat: true, translucent: true, closed: false }),
+          asynchronous: true,
+          releaseGeometryInstances: true,
+          vertexCacheOptimize: true,
+          compressVertices: true,
+          classificationType,
+          allowPicking: true,
+        }), { exclusive });
+      },
+    });
+
+    const batchKey = (positions: Cartesian3[], partition?: string) =>
+      cadSpatialBatchKey(BoundingSphere.fromPoints(positions).center, partition);
+
+    const addLine = async (positions: Cartesian3[], width: number, color: Color, id: CadPrimitiveFeatureId) => {
+      for (let start = 0, part = 0; start < positions.length - 1; part++) {
+        abortIfRequested(options.signal);
+        const end = Math.min(positions.length, start + vertexBudget);
+        const fragment = positions.length <= vertexBudget ? positions : positions.slice(start, end);
+        const renderId = positions.length <= vertexBudget ? id : { ...id, id: `${id.id}:render:${part}`, featureId: id.id, renderPart: part };
+        const geometry = displayMode === "absolute"
+          ? new PolylineGeometry({ positions: fragment, width, arcType: ArcType.NONE, vertexFormat: PolylineColorAppearance.VERTEX_FORMAT })
+          : new GroundPolylineGeometry({ positions: fragment, width, granularity: 0, arcType: ArcType.GEODESIC });
+        lineBatches.add(batchKey(fragment), new GeometryInstance({
+          geometry, id: renderId,
+          attributes: { color: ColorGeometryInstanceAttribute.fromColor(color) },
+        }), fragment.length);
+        await waitForCapacity();
+        if (end === positions.length) break;
+        // Two shared segments retain an interior join with both neighbours. They
+        // are opaque with the same style/feature; no source segment is lost or bent.
+        start = end - 3;
+      }
+    };
+
+    const addFace = (positions: Cartesian3[], color: Color, id: CadPrimitiveFeatureId) => {
+      const geometry = PolygonGeometry.fromPositions({
+        positions,
+        perPositionHeight: displayMode === "absolute",
+        vertexFormat: PerInstanceColorAppearance.FLAT_VERTEX_FORMAT,
       });
-      const flattened = batch.flat();
-      const transformed = flattened.length ? await options.transformPositions(flattened) : [];
+      const faceColor = color.withAlpha(FACE_ALPHA);
+      const instance = new GeometryInstance({
+        geometry,
+        id,
+        attributes: { color: ColorGeometryInstanceAttribute.fromColor(faceColor) },
+      });
+      const partition = displayMode === "absolute" ? "" : faceColor.toCssHexString();
+      faceVertexCounts.set(instance, positions.length);
+      faceBatches.add(batchKey(positions, partition), instance, positions.length, partition);
+    };
+
+    let sampledBatch: Cartesian3[][] = [];
+    let sampledStart = 0, sampledEnd = 0;
+    let pendingSamplePoints: Cartesian3[] | undefined;
+    for (let index = 0; index < value.entities.length; index += 1) {
       abortIfRequested(options.signal);
-      if (transformed.length !== flattened.length || transformed.some(point => !isFinitePosition(point))) {
-        throw new Error("CAD 表面高程采样不完整，不能用图纸原始高程代替缺失结果");
-      }
-      let offset = 0;
-      sampledBatch = batch.map(points => { const result = transformed.slice(offset, offset + points.length); offset += points.length; return result; });
-    }
-    const entity = value.entities[index];
-    const id = featureIdentity(entity, index);
-    const color = entityColor(entity);
-    const width = cadLineWidth(entity);
-    const converted = options.transformPositions ? sampledBatch[index % sourceBatchSize] : convertPoints(entity.vertices, convert);
-
-    if (entity.type === "POLYLINE") {
-      const positions = closeLine(converted, Boolean(entity.closed));
-      if (positions.length < 2) skippedCount += 1;
-      else {
-        positions.forEach(include);
-        addLine(positions, width, color, id);
-        cadPolylineFeatures.push({ layer: id.layer, name: id.name, sourceType: id.sourceType, positions, entity: id });
-        featureCount += 1;
-      }
-    } else if (entity.type === "3DFACE") {
-      if (!validFace(converted)) skippedCount += 1;
-      else {
-        converted.forEach(include);
-        addFace(converted, color, id);
-        cadFacePositions.push(converted);
-        if (entity.sourceType === "3DFACE") {
-          addLine(closeLine(converted, true), Math.max(1, Math.min(width, 2)), color, id);
+      if (options.transformPositions && index >= sampledEnd) {
+        const batch: Cartesian3[][] = [];
+        let pointCount = 0;
+        sampledStart = sampledEnd = index;
+        while (sampledEnd < value.entities.length && batch.length < sourceBatchSize) {
+          abortIfRequested(options.signal);
+          const entity = value.entities[sampledEnd];
+          let points = pendingSamplePoints;
+          pendingSamplePoints = undefined;
+          if (!points) {
+            points = entity.type === "POINT" ? [] : convertPoints(entity.vertices, convert);
+            if (surfaceSpacing && (entity.type === "POLYLINE" || entity.type === "3DFACE")) {
+              points = closeLine(points, entity.type === "3DFACE" || Boolean(entity.closed));
+              points = densifyPositions(points, surfaceSpacing);
+            }
+          }
+          if (batch.length && pointCount + points.length > SURFACE_SAMPLE_VERTEX_BUDGET) {
+            pendingSamplePoints = points;
+            break;
+          }
+          batch.push(points); pointCount += points.length; sampledEnd++;
+          // A single long feature keeps its topology and is sampled alone. It is
+          // subsequently split only for line rendering; faces retain their boundary.
+          if (pointCount >= SURFACE_SAMPLE_VERTEX_BUDGET) break;
+          const yielding = yieldIfNeeded();
+          if (yielding) await yielding;
         }
-        featureCount += 1;
+        const flattened = batch.flat();
+        const transformed = flattened.length ? await options.transformPositions(flattened) : [];
+        abortIfRequested(options.signal);
+        if (transformed.length !== flattened.length || transformed.some(point => !isFinitePosition(point))) {
+          throw new Error("CAD 表面高程采样不完整，不能用图纸原始高程代替缺失结果");
+        }
+        let offset = 0;
+        sampledBatch = batch.map(points => { const result = transformed.slice(offset, offset + points.length); offset += points.length; return result; });
       }
-    } else if (entity.type === "TEXT") {
-      const position = converted[0];
-      const text = cleanCadText(entity.text ?? "");
-      if (!position || !text) skippedCount += 1;
-      else {
-        labelCollection().add({
-          id,
-          position,
-          text,
-          font: `${Math.max(13, Math.min(28, Math.round((entity.textHeight || 2.5) * 4)))}px sans-serif`,
-          fillColor: color,
-          outlineColor: Color.BLACK,
-          outlineWidth: 2,
-          style: LabelStyle.FILL_AND_OUTLINE,
-          pixelOffset: new Cartesian2(0, -8),
-          scaleByDistance: new NearFarScalar(100, 1, 500_000, 0.2),
-          distanceDisplayCondition: new DistanceDisplayCondition(0, 100_000),
-          heightReference,
-          disableDepthTestDistance: displayMode === "absolute" ? 0 : Number.POSITIVE_INFINITY,
-        });
-        include(position);
-        featureCount += 1;
+      const entity = value.entities[index];
+      const id = featureIdentity(entity, index);
+      const color = entityColor(entity);
+      const width = cadLineWidth(entity);
+      const converted = options.transformPositions ? sampledBatch[index - sampledStart] : convertPoints(entity.vertices, convert);
+
+      if (entity.type === "POLYLINE") {
+        const positions = closeLine(converted, Boolean(entity.closed));
+        if (positions.length < 2) skippedCount += 1;
+        else {
+          positions.forEach(include);
+          await addLine(positions, width, color, id);
+          cadPolylineFeatures.push({ layer: id.layer, name: id.name, sourceType: id.sourceType, positions, entity: id });
+          featureCount += 1;
+        }
+      } else if (entity.type === "3DFACE") {
+        if (!validFace(converted)) skippedCount += 1;
+        else {
+          converted.forEach(include);
+          addFace(converted, color, id);
+          cadFacePositions.push(converted);
+          if (entity.sourceType === "3DFACE") {
+            await addLine(closeLine(converted, true), Math.max(1, Math.min(width, 2)), color, id);
+          }
+          featureCount += 1;
+        }
+      } else if (entity.type === "TEXT") {
+        const position = converted[0];
+        const text = cleanCadText(entity.text ?? "");
+        if (!position || !text) skippedCount += 1;
+        else {
+          labelCollection().add({
+            id,
+            position,
+            text,
+            font: `${Math.max(13, Math.min(28, Math.round((entity.textHeight || 2.5) * 4)))}px sans-serif`,
+            fillColor: color,
+            outlineColor: Color.BLACK,
+            outlineWidth: 2,
+            style: LabelStyle.FILL_AND_OUTLINE,
+            pixelOffset: new Cartesian2(0, -8),
+            scaleByDistance: new NearFarScalar(100, 1, 500_000, 0.2),
+            distanceDisplayCondition: new DistanceDisplayCondition(0, 100_000),
+            heightReference,
+            disableDepthTestDistance: displayMode === "absolute" ? 0 : Number.POSITIVE_INFINITY,
+          });
+          include(position);
+          featureCount += 1;
+        }
+      } else if (entity.type !== "POINT") {
+        // POINT is retained in the import package but intentionally has no
+        // display object. Unknown entities must never become fallback dots.
+        skippedCount += 1;
       }
-    } else if (entity.type !== "POINT") {
-      // POINT is retained in the import package but intentionally has no
-      // display object. Unknown entities must never become fallback dots.
-      skippedCount += 1;
+
+      await waitForCapacity();
+      const completed = index + 1;
+      if (completed % sourceBatchSize === 0) {
+        options.onProgress?.(completed, value.entities.length);
+      }
     }
 
-    const completed = index + 1;
-    if (completed % sourceBatchSize === 0) {
-      options.onProgress?.(completed, value.entities.length);
-      await nextFrame();
+    lineBatches.flush();
+    faceBatches.flush();
+    await scheduler.finish();
+    abortIfRequested(options.signal);
+    options.onProgress?.(value.entities.length, value.entities.length);
+
+    if (!featureCount && !value.entities.every((entity) => entity.type === "POINT")) {
+      throw new Error("CAD 已解析，但没有生成可显示对象");
     }
+
+    Object.defineProperties(collection, {
+      cadName: { value: value.source.name, enumerable: true },
+      cadPolylineFeatures: { value: cadPolylineFeatures, enumerable: false },
+      cadFacePositions: { value: cadFacePositions, enumerable: false },
+      cadFeatureCount: { value: featureCount, enumerable: true },
+    });
+
+    return {
+      collection: collection as CadPrimitiveCollection,
+      boundingSphere: minimum && maximum ? BoundingSphere.fromCornerPoints(minimum, maximum) : undefined,
+      featureCount,
+      skippedCount,
+      cadPolylineFeatures,
+    };
+  } catch (error) {
+    scheduler.dispose(error);
+    // Unregister before destroying so the scene cannot update an orphan after
+    // cancellation, a rejected sample, or a failed worker batch.
+    try {
+      const root = options.scene?.primitives;
+      if (root && !root.isDestroyed() && root.contains(collection)) root.remove(collection);
+    } finally {
+      if (!collection.isDestroyed()) collection.destroy();
+    }
+    throw error;
   }
-
-  lineBatches.flush();
-  faceBatches.flush();
-  abortIfRequested(options.signal);
-  options.onProgress?.(value.entities.length, value.entities.length);
-
-  if (!featureCount && !value.entities.every((entity) => entity.type === "POINT")) {
-    if (!handedToCaller) collection.destroy();
-    throw new Error("CAD 已解析，但没有生成可显示对象");
-  }
-
-  Object.defineProperties(collection, {
-    cadName: { value: value.source.name, enumerable: true },
-    cadPolylineFeatures: { value: cadPolylineFeatures, enumerable: false },
-    cadFacePositions: { value: cadFacePositions, enumerable: false },
-    cadFeatureCount: { value: featureCount, enumerable: true },
-  });
-
-  return {
-    collection: collection as CadPrimitiveCollection,
-    boundingSphere: minimum && maximum ? BoundingSphere.fromCornerPoints(minimum, maximum) : undefined,
-    featureCount,
-    skippedCount,
-    cadPolylineFeatures,
-  };
 }
 
 /** Short alias for callers migrating from the Entity-based loader. */

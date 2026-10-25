@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CAD 几何内存调度 · 浏览器验收</title>
+  <style>
+    *{box-sizing:border-box}html,body{margin:0;height:100%;background:#0a1520;color:#e6eff7;font-family:system-ui,sans-serif}
+    main{display:grid;grid-template-columns:400px minmax(0,1fr);height:100vh}aside{padding:22px;overflow:auto;background:#132333;border-right:1px solid #32495d}
+    h1{font-size:21px;margin:0 0 12px}p{font-size:13px;color:#adc1d1;line-height:1.65}button{padding:11px 18px;border:0;border-radius:6px;background:#38cfb0;color:#052e2b;font-weight:700;cursor:pointer}button:disabled{opacity:.5;cursor:wait}
+    #status{display:block;margin:16px 0;line-height:1.6}progress{width:100%;height:10px}#results{padding-left:22px;font-size:13px;line-height:1.7}li{padding:6px 0}li[data-result=pass]{color:#8ce6bf}li[data-result=fail]{color:#ff9c9c}
+    #metrics{font:12px/1.8 ui-monospace,monospace;white-space:pre-wrap;background:#0c1a27;padding:12px;border-radius:6px}#viewer{position:absolute;inset:0}section{position:relative;min-width:0}
+    #legend{position:absolute;bottom:28px;left:20px;z-index:2;background:#102333e8;padding:10px 14px;border-radius:6px;font-size:12px;pointer-events:none}details{margin-top:18px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;line-height:1.6}
+    @media(max-width:850px){main{grid-template-columns:1fr;grid-template-rows:48vh 52vh}aside{border-right:0;border-bottom:1px solid #32495d}}
+  </style>
+</head>
+<body>
+  <main data-state="initializing" id="fixture">
+    <aside>
+      <h1>CAD 几何内存调度验收</h1>
+      <p>使用程序生成的长折线、多批短线和参考模型。真实 Cesium / WebGL / Worker；不读取任何项目文件。</p>
+      <button id="run" disabled>运行验证</button>
+      <output id="status" role="status" aria-live="polite">正在初始化三维场景…</output>
+      <progress id="progress" value="0" max="1"></progress>
+      <ol id="results"></ol>
+      <div id="metrics">等待验证</div>
+      <details><summary>验证记录</summary><pre id="report">尚未运行</pre></details>
+    </aside>
+    <section aria-label="合成 CAD 三维验收场景"><div id="viewer"></div><div id="legend">青色：已加载 CAD　橙色：参考模型　黄色：参考图层<br>隐藏副本为品红色；编译期间画面不得出现品红色。</div></section>
+  </main>
+  <script type="module" src="./cad-memory-scheduler.ts"></script>
+</body>
+</html>

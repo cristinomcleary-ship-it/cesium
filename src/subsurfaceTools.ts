@@ -261,6 +261,7 @@ export class SubsurfaceTools {
   private readonly archiveOverviewListeners = new Set<HiddenWorkArchiveOverviewListener>();
   private clippingTargets = new Map<object, ClippingPlaneCollection>();
   private excavationClipTargets = new Map<object, ClippingPolygonCollection>();
+  private clippingFailedTiles?: WeakSet<object>;
   private originalCollision: boolean;
   private originalDepthTest: boolean;
 
@@ -360,18 +361,22 @@ export class SubsurfaceTools {
   /**
    * Render-error recovery must not call Cesium's public clipping setters with
    * an already-destroyed collection: those setters try to destroy the old
-   * value again. Live collections are disabled; stale private owner slots are
-   * cleared only as a last-resort repair after Cesium has already stopped.
+   * value again. Only stale private owner slots are cleared after Cesium has
+   * already stopped. Preserve healthy clipping and the user's settings; rebuild
+   * our affected owners from the existing section/excavation configuration.
    */
   recoverFromDestroyedResources() {
-    element<HTMLInputElement>("#sectionEnabled").checked = false;
-    element<HTMLInputElement>("#clipExcavationSurface").checked = false;
     let detached = 0;
+    let failedClippingTiles = 0;
+    const failedTiles = this.clippingFailedTiles ??= new WeakSet<object>();
+    const sectionRestores = new Set<object>();
+    const excavationRestores = new Set<object>();
 
     const repair = (
       targets: Map<object, ClippingPlaneCollection | ClippingPolygonCollection>,
       publicKey: "clippingPlanes" | "clippingPolygons",
       privateKey: "_clippingPlanes" | "_clippingPolygons",
+      restores: Set<object>,
     ) => {
       for (const [target, collection] of targets) {
         const candidate = target as Record<string, unknown> & { isDestroyed?: () => boolean };
@@ -383,37 +388,85 @@ export class SubsurfaceTools {
         if (collection.isDestroyed()) {
           if (candidate[publicKey] === collection || candidate[privateKey] === collection) {
             candidate[privateKey] = undefined;
+            restores.add(target);
             // A directly imported Model may already have commands whose
             // uniforms captured the deleted clipping texture.
             (target as { resetDrawCommands?: () => void }).resetDrawCommands?.();
           }
           targets.delete(target);
           detached += 1;
-        } else {
-          collection.enabled = false;
         }
       }
     };
 
-    repair(this.clippingTargets, "clippingPlanes", "_clippingPlanes");
-    repair(this.excavationClipTargets, "clippingPolygons", "_clippingPolygons");
+    repair(this.clippingTargets, "clippingPlanes", "_clippingPlanes", sectionRestores);
+    repair(this.excavationClipTargets, "clippingPolygons", "_clippingPolygons", excavationRestores);
 
+    const imports = this.imports();
     const candidates: object[] = [this.viewer.scene.globe];
-    for (const item of this.imports()) if (item.kind === "Model" || item.kind === "3D Tiles") candidates.push(item.resource as object);
+    for (const item of imports) if (item.kind === "Model" || item.kind === "3D Tiles") candidates.push(item.resource as object);
     for (const target of candidates) {
       const candidate = target as Record<string, unknown> & { isDestroyed?: () => boolean };
       if (candidate.isDestroyed?.()) continue;
-      detached += recoverDestroyedClippingReferences(target);
-      for (const [publicKey, privateKey] of [["clippingPlanes", "_clippingPlanes"], ["clippingPolygons", "_clippingPolygons"]] as const) {
-        const collection = candidate[publicKey] as { enabled: boolean; isDestroyed: () => boolean } | undefined;
-        if (!collection) continue;
-        if (collection.isDestroyed()) {
-          candidate[privateKey] = undefined;
-          detached += 1;
-        } else {
-          collection.enabled = false;
+      const root = (target as Cesium3DTileset).root;
+      const pending = root ? [root] : [];
+      const tiles: typeof pending = [];
+      const visited = new Set<object>();
+      let repaired = 0;
+      while (pending.length) {
+        const tile = pending.pop()!;
+        const state = tile as typeof tile & { isDestroyed?(): boolean; contentFailed?: boolean };
+        if (visited.has(tile) || state.isDestroyed?.()) continue;
+        visited.add(tile);
+        tiles.push(tile);
+        const content = tile.content;
+        const contentRepairs = content ? recoverDestroyedClippingReferences(content) : 0;
+        repaired += contentRepairs;
+        // Cesium3DTile.update marks a thrown content update FAILED. Clearing
+        // clipping cannot make that tile available again; a later successful
+        // frame can otherwise hide a missing tile. Do not reset private state
+        // or revive unrelated download/parse failures without causal evidence.
+        if (contentRepairs && state.contentFailed) failedTiles.add(tile);
+        if (failedTiles.has(tile)) {
+          if (state.contentFailed) failedClippingTiles += 1;
+          else failedTiles.delete(tile);
+        }
+        pending.push(...(tile.children ?? []));
+      }
+      repaired += recoverDestroyedClippingReferences(target);
+      detached += repaired;
+      if (repaired || sectionRestores.has(target) || excavationRestores.has(target)) {
+        // Cesium compares clipping state by plane/polygon count, not owner
+        // identity. Rebinding an equal-sized replacement therefore needs an
+        // explicit content refresh after its old borrowed references were cut.
+        for (const tile of tiles) {
+          const state = tile as typeof tile & { clippingPlanesDirty: boolean; clippingPolygonsDirty: boolean };
+          state.clippingPlanesDirty = true;
+          state.clippingPolygonsDirty = true;
         }
       }
+    }
+    // First clear borrowed tile-model references, then replace only owners that
+    // belonged to this tool. A live replacement supplied elsewhere is untouched.
+    if (sectionRestores.size && element<HTMLInputElement>("#sectionEnabled").checked && this.sectionAnchor) {
+      const worldFrame = Transforms.eastNorthUpToFixedFrame(this.sectionAnchor);
+      const globe = this.viewer.scene.globe;
+      if (sectionRestores.has(globe)) this.updateSectionCollection(globe, worldFrame);
+      for (const item of imports) {
+        if (item.kind !== "Model" && item.kind !== "3D Tiles") continue;
+        const target = item.resource as Model | Cesium3DTileset;
+        if (sectionRestores.has(target)) this.updateSectionCollection(target, this.targetClipMatrix(item, worldFrame));
+      }
+    }
+    if (excavationRestores.size && element<HTMLInputElement>("#clipExcavationSurface").checked && this.excavationFinished && this.excavationPoints.length >= 3) {
+      for (const item of imports) {
+        if (item.kind !== "Model" && item.kind !== "3D Tiles") continue;
+        const target = item.resource as Model | Cesium3DTileset;
+        if (excavationRestores.has(target)) this.updateExcavationCollection(target);
+      }
+    }
+    if (failedClippingTiles) {
+      throw new Error(`已清理失效裁剪引用，但 ${failedClippingTiles} 个倾斜摄影瓦片仍处于失败状态，已停止自动恢复；请保留原始错误详情并重新加载对应资源。`);
     }
     this.viewer.scene.requestRender();
     return detached;

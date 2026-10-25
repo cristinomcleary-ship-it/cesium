@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import test, { after, before } from 'node:test';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import * as Cesium from 'cesium';
 import { BoundingSphere, Color, GeometryInstance, GroundPrimitive, GroundPolylinePrimitive, Primitive,
-  LabelCollection, type Scene } from 'cesium';
+  GroundPolylineGeometry, PolylineGeometry, PrimitiveCollection, LabelCollection, type Scene } from 'cesium';
 import type { CadImportEntity, CadImportPackage } from './cadImport.ts';
-import { loadCadPrimitiveCollection } from './cadPrimitiveLoader.ts';
+import { CAD_PRIMITIVE_VERTEX_BUDGET, loadCadPrimitiveCollection } from './cadPrimitiveLoader.ts';
 import type { CadCoordinateOptions } from './types.ts';
 
 // GroundPolylinePrimitive validates the context's line-width range during
@@ -93,6 +95,195 @@ test('ground face batches respect both local cells and uniform classification co
     assert.deepEqual(ids.sort((a, b) => a - b), entities.map((_, index) => index));
     assert.equal(result.collection.cadFacePositions.length, entities.length);
   } finally { result.collection.destroy(); }
+});
+
+for (const displayMode of ['absolute', 'terrain'] as const) test(`${displayMode} long lines preserve every source segment and keep real Cesium worker packs below 16 MiB`, async () => {
+  const budget = displayMode === 'absolute' ? CAD_PRIMITIVE_VERTEX_BUDGET.absolute : CAD_PRIMITIVE_VERTEX_BUDGET.ground;
+  const long: CadImportEntity = { type: 'POLYLINE', sourceType: 'LWPOLYLINE', layer: 'dense', closed: true,
+    color: '#52AACC', lineweightMm: .6,
+    vertices: Array.from({ length: budget * 2 + 37 }, (_, index) => ({ x: index * .01, y: (index % 3) * .01, z: 3 })),
+  };
+  const small = Array.from({ length: 25 }, (_, index): CadImportEntity => ({ type: 'POLYLINE', sourceType: 'LINE', layer: 'dense',
+    color: '#52AACC', vertices: [{ x: index, y: 5 }, { x: index + .1, y: 5 }] }));
+  const source = drawing([long, ...small]), unchanged = JSON.stringify(source);
+  const result = await loadCadPrimitiveCollection(source, coordinates, { displayMode, scene: {} as Scene, primitiveBatchSize: 1000 });
+  const terrain = (Cesium as unknown as { ApproximateTerrainHeights: { _terrainHeights: Record<string, number[]> | undefined } }).ApproximateTerrainHeights;
+  const previousTerrain = terrain._terrainHeights;
+  terrain._terrainHeights ??= {}; // Deterministic fallback heights; no external terrain request.
+  try {
+    const requireFromCesium = createRequire(import.meta.resolve('cesium'));
+    const engine = pathToFileURL(requireFromCesium.resolve('@cesium/engine'));
+    const { default: pipeline } = await import(new URL('./Source/Scene/PrimitivePipeline.js', engine).href);
+    const full = result.cadPolylineFeatures[0].positions;
+    assert.equal(full.length, long.vertices.length + 1);
+    assert.equal(result.featureCount, source.entities.length); assert.equal(result.skippedCount, 0);
+    assert.equal(result.cadPolylineFeatures[0].entity.id, 'cad-0');
+    const pointIndex = new Map(full.map((position, index) => [position, index]));
+    const coveredSegments = new Set<number>(), renderIds = new Set<string>();
+    const fragments: Array<{ part: number; positions: typeof full }> = [];
+    for (let index = 0; index < result.collection.length; index++) {
+      const group = instances(result.collection.get(index));
+      const description = (instance: GeometryInstance) => (instance.geometry as unknown as { _positions: typeof full })._positions;
+      assert.ok(group.reduce((total, instance) => total + description(instance).length, 0) <= budget);
+      for (const instance of group) {
+        assert.ok(!renderIds.has(instance.id.id), 'Cesium render IDs are unique even when one feature is split');
+        renderIds.add(instance.id.id);
+        if (instance.id.entityIndex !== 0) continue;
+        assert.equal(instance.id.featureId, 'cad-0');
+        assert.deepEqual(Array.from(instance.attributes.color.value), Color.fromCssColorString(long.color!)!.toBytes());
+        const positions = description(instance), geometry = instance.geometry as unknown as { _width?: number; width?: number };
+        assert.equal(geometry._width ?? geometry.width, 3);
+        fragments.push({ part: instance.id.renderPart, positions });
+        for (let point = 1; point < positions.length; point++) {
+          const a = pointIndex.get(positions[point - 1])!, b = pointIndex.get(positions[point])!;
+          assert.equal(b, a + 1, 'rendering never invents a shortcut or changes the source path');
+          coveredSegments.add(a);
+        }
+      }
+      const geometries = group.map(instance => displayMode === 'absolute'
+        ? PolylineGeometry.createGeometry(instance.geometry as unknown as PolylineGeometry)
+        : (GroundPolylineGeometry as unknown as { createGeometry(value: GroundPolylineGeometry): Cesium.Geometry | undefined }).createGeometry(instance.geometry as unknown as GroundPolylineGeometry));
+      const packed = pipeline.packCreateGeometryResults(geometries, []);
+      assert.ok(packed.packedData.byteLength < 16 * 1024 * 1024, `actual createGeometry worker result is ${packed.packedData.byteLength} bytes`);
+    }
+    assert.ok(fragments.length >= 3);
+    fragments.sort((a, b) => a.part - b.part);
+    for (let index = 1; index < fragments.length; index++) assert.deepEqual(fragments[index].positions.slice(0, 3), fragments[index - 1].positions.slice(-3), 'adjacent rendering pieces retain both neighbours at the shared join');
+    assert.equal(coveredSegments.size, full.length - 1, 'all original segments, including the closing edge, remain present');
+    assert.equal(JSON.stringify(source), unchanged);
+  } finally { terrain._terrainHeights = previousTerrain; result.collection.destroy(); }
+});
+
+test('surface sampling groups by total point count and keeps an oversized single line separate', async () => {
+  const counts = [3000, 3000, 3000, 9000, 3000];
+  const entities: CadImportEntity[] = [{ type: 'POINT', sourceType: 'POINT', layer: '0', vertices: [{ x: 0, y: 0 }] },
+    ...counts.map((count, line): CadImportEntity => ({ type: 'POLYLINE', sourceType: 'LWPOLYLINE', layer: `line-${line}`,
+      vertices: Array.from({ length: count }, (_, index) => ({ x: index * .01, y: line * 10, z: line })) })),
+  ];
+  const source = drawing(entities), unchanged = JSON.stringify(source), calls: number[] = [];
+  const baseline = await loadCadPrimitiveCollection(source, coordinates);
+  const sampled = await loadCadPrimitiveCollection(source, coordinates, { batchSize: 2000,
+    transformPositions: async positions => { calls.push(positions.length); return positions.map(point => new Cesium.Cartesian3(point.x, point.y, point.z + 123)); },
+  });
+  try {
+    assert.deepEqual(calls, [6000, 3000, 9000, 3000]);
+    assert.equal(sampled.cadPolylineFeatures.length, counts.length);
+    for (let line = 0; line < counts.length; line++) {
+      const feature = sampled.cadPolylineFeatures[line];
+      assert.equal(feature.entity.entityIndex, line + 1); assert.equal(feature.positions.length, counts[line]);
+      for (let point = 0; point < counts[line]; point++) {
+        const before = baseline.cadPolylineFeatures[line].positions[point], after = feature.positions[point];
+        assert.equal(after.x, before.x); assert.equal(after.y, before.y); assert.equal(after.z, before.z + 123);
+      }
+    }
+    assert.equal(JSON.stringify(source), unchanged);
+  } finally { baseline.collection.destroy(); sampled.collection.destroy(); }
+});
+
+for (const displayMode of ['absolute', 'terrain'] as const) test(`${displayMode} oversized faces remain complete and isolated from neighboring faces`, async () => {
+  const budget = displayMode === 'absolute' ? CAD_PRIMITIVE_VERTEX_BUDGET.absolute : CAD_PRIMITIVE_VERTEX_BUDGET.ground;
+  const face: CadImportEntity = { type: '3DFACE', sourceType: 'SOLID', layer: '0', color: '#10A0CC',
+    vertices: Array.from({ length: budget + 1 }, (_, index) => ({ x: Math.cos(index / (budget + 1) * Math.PI * 2), y: Math.sin(index / (budget + 1) * Math.PI * 2) })) };
+  const small: CadImportEntity = { ...face, vertices: [{ x: 0, y: 0 }, { x: 3, y: 0 }, { x: 0, y: 3 }] };
+  const source = drawing([small, face, small]), unchanged = JSON.stringify(source);
+  const result = await loadCadPrimitiveCollection(source, coordinates, { displayMode, scene: {} as Scene });
+  try {
+    const ids: number[] = [];
+    for (let index = 0; index < result.collection.length; index++) {
+      const group = instances(result.collection.get(index));
+      if (group.some(instance => instance.id.entityIndex === 1)) assert.equal(group.length, 1, 'the large polygon gets its own primitive');
+      for (const instance of group) {
+        ids.push(instance.id.entityIndex);
+        const positions = (instance.geometry as unknown as { _polygonHierarchy: { positions: Cesium.Cartesian3[] } })._polygonHierarchy.positions;
+        assert.equal(positions, result.collection.cadFacePositions[instance.id.entityIndex]);
+        assert.equal(positions.length, source.entities[instance.id.entityIndex].vertices.length);
+        assert.deepEqual(Array.from(instance.attributes.color.value), Color.fromCssColorString(face.color!)!.withAlpha(.18).toBytes());
+      }
+    }
+    assert.deepEqual(ids.sort((a, b) => a - b), [0, 1, 2]);
+    assert.equal(result.featureCount, 3); assert.equal(result.skippedCount, 0);
+    assert.equal(JSON.stringify(source), unchanged);
+  } finally { result.collection.destroy(); }
+});
+
+test('surface sampling preserves an oversized densified face boundary and its outline', async () => {
+  const source = drawing([{ type: '3DFACE', sourceType: '3DFACE', layer: '0',
+    vertices: [{ x: 0, y: 0 }, { x: 10000, y: 0 }, { x: 0, y: 10000 }] }]);
+  const unchanged = JSON.stringify(source);
+  let sampled: Cesium.Cartesian3[] = [];
+  const result = await loadCadPrimitiveCollection(source, coordinates, { surfaceSampleSpacing: 1,
+    transformPositions: async positions => { sampled = positions.map(point => new Cesium.Cartesian3(point.x, point.y, point.z + 42)); return sampled; } });
+  try {
+    const full = result.collection.cadFacePositions[0];
+    assert.ok(full.length > CAD_PRIMITIVE_VERTEX_BUDGET.absolute);
+    assert.deepEqual(full, sampled); assert.equal(result.featureCount, 1);
+    const covered = new Set<Cesium.Cartesian3>(); let faces = 0;
+    for (let index = 0; index < result.collection.length; index++) for (const instance of instances(result.collection.get(index))) {
+      const geometry = instance.geometry as unknown as { _polygonHierarchy?: { positions: Cesium.Cartesian3[] }; _positions?: Cesium.Cartesian3[] };
+      assert.equal(instance.id.entityIndex, 0);
+      if (geometry._polygonHierarchy) { assert.equal(geometry._polygonHierarchy.positions, full); faces++; }
+      else geometry._positions!.forEach(point => covered.add(point));
+    }
+    assert.equal(faces, 1); assert.ok(full.every(point => covered.has(point)));
+    assert.equal(JSON.stringify(source), unchanged);
+  } finally { result.collection.destroy(); }
+});
+
+test('interleaved ground curves retain complete features without creating one primitive per curve', async () => {
+  const entities: CadImportEntity[] = Array.from({ length: 1024 }, (_, id) => ({ type: 'POLYLINE', sourceType: 'CIRCLE',
+    layer: '0', closed: true, vertices: Array.from({ length: 128 }, (_, index) => ({
+      x: id % 32 * 1000 + Math.cos(index / 128 * 2 * Math.PI), y: Math.sin(index / 128 * 2 * Math.PI),
+    })) }));
+  const result = await loadCadPrimitiveCollection(drawing(entities), coordinates, { displayMode: 'terrain', scene: {} as Scene,
+    primitiveBatchSize: 1000, batchSize: 2000 });
+  try {
+    assert.ok(result.collection.length <= 80, `${result.collection.length} primitives for 1024 interleaved circles`);
+    assert.equal(result.featureCount, entities.length); assert.equal(result.cadPolylineFeatures.length, entities.length);
+    for (const feature of result.cadPolylineFeatures) assert.equal(feature.positions.length, 129, 'all circle vertices and closing edge remain');
+  } finally { result.collection.destroy(); }
+});
+
+test('conversion yields within a CPU time slice even before the source progress batch fills', async context => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'requestAnimationFrame');
+  let clock = 0, converted = 0;
+  const yieldedAt: number[] = [];
+  context.mock.method(performance, 'now', () => clock);
+  Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: (callback: FrameRequestCallback) => {
+    yieldedAt.push(converted); queueMicrotask(() => callback(clock)); return 0;
+  } });
+  const entities: CadImportEntity[] = Array.from({ length: 100 }, (): CadImportEntity => ({ type: 'POLYLINE', sourceType: 'LINE', layer: '0',
+    get vertices() { converted++; clock += 3; return [{ x: 0, y: 0 }, { x: 1, y: 1 }]; },
+  }));
+  try {
+    const result = await loadCadPrimitiveCollection(drawing(entities), coordinates, { batchSize: 2000 });
+    try {
+      assert.equal(result.featureCount, 100); assert.ok(yieldedAt.length >= 20);
+      assert.ok(yieldedAt[0] <= 4, 'rendering is not blocked until 2000 entities have converted');
+      for (let index = 1; index < yieldedAt.length; index++) assert.ok(yieldedAt[index] - yieldedAt[index - 1] <= 4);
+    } finally { result.collection.destroy(); }
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'requestAnimationFrame', descriptor);
+    else Reflect.deleteProperty(globalThis, 'requestAnimationFrame');
+  }
+});
+
+test('cancellation and incomplete surface samples detach collections and retain other scene resources', async () => {
+  for (const mode of ['cancel', 'sample'] as const) {
+    const root = new PrimitiveCollection(), existing = root.add(new PrimitiveCollection());
+    const controller = new AbortController(); let incomplete: PrimitiveCollection | undefined;
+    const source = drawing(mode === 'cancel' ? Array.from({ length: 101 }, (): CadImportEntity => ({ type: 'POINT', sourceType: 'POINT', layer: '0', vertices: [{ x: 0, y: 0 }] }))
+      : [{ type: '3DFACE', sourceType: '3DFACE', layer: '0', vertices: [{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 0, y: 2 }] }]);
+    try {
+      await assert.rejects(loadCadPrimitiveCollection(source, coordinates, { scene: { primitives: root } as Scene,
+        signal: controller.signal, batchSize: 100,
+        beforePopulate: collection => { incomplete = collection; root.add(collection); },
+        ...(mode === 'cancel' ? { onProgress: () => controller.abort() }
+          : { surfaceSampleSpacing: 1, transformPositions: async (positions: Cesium.Cartesian3[]) => positions.slice(1) }),
+      }), mode === 'cancel' ? /取消/ : /采样不完整/);
+      assert.equal(incomplete?.isDestroyed(), true); assert.equal(root.length, 1);
+      assert.equal(root.get(0), existing); assert.equal(existing.isDestroyed(), false);
+    } finally { root.destroy(); }
+  }
 });
 
 test('text-only drawings retain one label collection across many world cells', async () => {

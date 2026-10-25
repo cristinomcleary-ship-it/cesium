@@ -129,6 +129,28 @@ test('depth role uses an opaque replace shader and restores exact material/debug
   originalShader.destroy();
 });
 
+test('depth role exit discards a destroyed previous shader without overwriting another live owner', () => {
+  for (const replaced of [false, true]) {
+    const original = new CustomShader({}), style = new Cesium3DTileStyle({ color: "color('red')" });
+    const shading = new PointCloudShading({ attenuation: true });
+    const value = source({ customShader: original, style, pointCloudShading: shading });
+    const matrix = value.modelMatrix, view = viewer();
+    const owner = new VideoOverlayOcclusion('survey', value, view.scene), owned = value.customShader!;
+    original.destroy();
+    const external = replaced ? new CustomShader({}) : undefined;
+    if (external) value.customShader = external;
+    assert.doesNotThrow(() => { owner.restore(); owner.restore(); });
+    assert.equal(value.customShader, external);
+    assert.equal(owned.isDestroyed(), true); assert.equal(original.isDestroyed(), true);
+    assert.equal(value.modelMatrix, matrix); assert.equal(value.show, true);
+    assert.equal(value.style, style); assert.equal(value.pointCloudShading, shading);
+    assert.equal(value.debugWireframe, true); assert.equal(value.skipLevelOfDetail, true);
+    assert.equal(value.tileLoad.numberOfListeners, 0); assert.equal(value.tileVisible.numberOfListeners, 0);
+    assert.equal(view.scene.preRender.numberOfListeners, 0);
+    if (external) { assert.equal(external.isDestroyed(), false); external.destroy(); }
+  }
+});
+
 test('entry avoids a full cached tree scan and leaves unchanged style/debug setters alone', () => {
   const root = tile(); let branches = 0, styleWrites = 0, debugWrites = 0;
   Object.defineProperty(root, 'children', { get: () => { branches++; return []; }, configurable: true });
