@@ -97,7 +97,7 @@ test('ground face batches respect both local cells and uniform classification co
   } finally { result.collection.destroy(); }
 });
 
-for (const displayMode of ['absolute', 'terrain'] as const) test(`${displayMode} long lines preserve every source segment and keep real Cesium worker packs below 4 MiB`, async () => {
+for (const displayMode of ['absolute', 'terrain'] as const) test(`${displayMode} long lines preserve every source segment and keep real Cesium worker packs below 16 MiB`, async () => {
   const budget = displayMode === 'absolute' ? CAD_PRIMITIVE_VERTEX_BUDGET.absolute : CAD_PRIMITIVE_VERTEX_BUDGET.ground;
   const long: CadImportEntity = { type: 'POLYLINE', sourceType: 'LWPOLYLINE', layer: 'dense', closed: true,
     color: '#52AACC', lineweightMm: .6,
@@ -144,7 +144,7 @@ for (const displayMode of ['absolute', 'terrain'] as const) test(`${displayMode}
         ? PolylineGeometry.createGeometry(instance.geometry as unknown as PolylineGeometry)
         : (GroundPolylineGeometry as unknown as { createGeometry(value: GroundPolylineGeometry): Cesium.Geometry | undefined }).createGeometry(instance.geometry as unknown as GroundPolylineGeometry));
       const packed = pipeline.packCreateGeometryResults(geometries, []);
-      assert.ok(packed.packedData.byteLength < 4 * 1024 * 1024, `actual createGeometry worker result is ${packed.packedData.byteLength} bytes`);
+      assert.ok(packed.packedData.byteLength < 16 * 1024 * 1024, `actual createGeometry worker result is ${packed.packedData.byteLength} bytes`);
     }
     assert.ok(fragments.length >= 3);
     fragments.sort((a, b) => a.part - b.part);
@@ -208,7 +208,7 @@ for (const displayMode of ['absolute', 'terrain'] as const) test(`${displayMode}
 
 test('surface sampling preserves an oversized densified face boundary and its outline', async () => {
   const source = drawing([{ type: '3DFACE', sourceType: '3DFACE', layer: '0',
-    vertices: [{ x: 0, y: 0 }, { x: 3000, y: 0 }, { x: 0, y: 3000 }] }]);
+    vertices: [{ x: 0, y: 0 }, { x: 10000, y: 0 }, { x: 0, y: 10000 }] }]);
   const unchanged = JSON.stringify(source);
   let sampled: Cesium.Cartesian3[] = [];
   const result = await loadCadPrimitiveCollection(source, coordinates, { surfaceSampleSpacing: 1,
@@ -227,6 +227,44 @@ test('surface sampling preserves an oversized densified face boundary and its ou
     assert.equal(faces, 1); assert.ok(full.every(point => covered.has(point)));
     assert.equal(JSON.stringify(source), unchanged);
   } finally { result.collection.destroy(); }
+});
+
+test('interleaved ground curves retain complete features without creating one primitive per curve', async () => {
+  const entities: CadImportEntity[] = Array.from({ length: 1024 }, (_, id) => ({ type: 'POLYLINE', sourceType: 'CIRCLE',
+    layer: '0', closed: true, vertices: Array.from({ length: 128 }, (_, index) => ({
+      x: id % 32 * 1000 + Math.cos(index / 128 * 2 * Math.PI), y: Math.sin(index / 128 * 2 * Math.PI),
+    })) }));
+  const result = await loadCadPrimitiveCollection(drawing(entities), coordinates, { displayMode: 'terrain', scene: {} as Scene,
+    primitiveBatchSize: 1000, batchSize: 2000 });
+  try {
+    assert.ok(result.collection.length <= 80, `${result.collection.length} primitives for 1024 interleaved circles`);
+    assert.equal(result.featureCount, entities.length); assert.equal(result.cadPolylineFeatures.length, entities.length);
+    for (const feature of result.cadPolylineFeatures) assert.equal(feature.positions.length, 129, 'all circle vertices and closing edge remain');
+  } finally { result.collection.destroy(); }
+});
+
+test('conversion yields within a CPU time slice even before the source progress batch fills', async context => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'requestAnimationFrame');
+  let clock = 0, converted = 0;
+  const yieldedAt: number[] = [];
+  context.mock.method(performance, 'now', () => clock);
+  Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: (callback: FrameRequestCallback) => {
+    yieldedAt.push(converted); queueMicrotask(() => callback(clock)); return 0;
+  } });
+  const entities: CadImportEntity[] = Array.from({ length: 100 }, (): CadImportEntity => ({ type: 'POLYLINE', sourceType: 'LINE', layer: '0',
+    get vertices() { converted++; clock += 3; return [{ x: 0, y: 0 }, { x: 1, y: 1 }]; },
+  }));
+  try {
+    const result = await loadCadPrimitiveCollection(drawing(entities), coordinates, { batchSize: 2000 });
+    try {
+      assert.equal(result.featureCount, 100); assert.ok(yieldedAt.length >= 20);
+      assert.ok(yieldedAt[0] <= 4, 'rendering is not blocked until 2000 entities have converted');
+      for (let index = 1; index < yieldedAt.length; index++) assert.ok(yieldedAt[index] - yieldedAt[index - 1] <= 4);
+    } finally { result.collection.destroy(); }
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'requestAnimationFrame', descriptor);
+    else Reflect.deleteProperty(globalThis, 'requestAnimationFrame');
+  }
 });
 
 test('cancellation and incomplete surface samples detach collections and retain other scene resources', async () => {

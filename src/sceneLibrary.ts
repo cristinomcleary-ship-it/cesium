@@ -4,7 +4,8 @@ import {
   Cartesian3, Cesium3DTileset, Color, CzmlDataSource, GeoJsonDataSource, IonResource,
   KmlDataSource, Matrix4, Model, UrlTemplateImageryProvider, type Viewer,
 } from "cesium";
-import { readCadImport } from "./cadImport";
+import { readCadImportInWorker } from "./cadImportWorkerClient";
+import type { CadLoadRegistry } from "./cadLoadRegistry";
 import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader";
 import { clampCadToScene, getCadBoundingSphere, getCadModelSamplingExclusions, loadCadImport, useSampledCadHeights } from "./dxfLoader";
 import { loadLocalImagery, type LocalImageryResult } from "./localImagery";
@@ -14,7 +15,8 @@ import { libraryRequest, jsonRequest, type LibraryRecord, type LibrarySettings, 
 
 type Hooks = {
   viewer: Viewer; getImports: () => ImportRecord[];
-  addImport: (name: string, kind: ImportRecord["kind"], resource: unknown, id: string, metadata?: Pick<ImportRecord, "representation" | "boundingSphere">) => string;
+  cadLoads: CadLoadRegistry;
+  addImport: (name: string, kind: ImportRecord["kind"], resource: unknown, id: string, metadata?: Pick<ImportRecord, "representation" | "boundingSphere"> & { visible?: boolean }) => string;
   removeImport: (item: ImportRecord) => void; modelEditor: ModelEditor;
   waitForModelReady: (model: Model, timeout: number) => Promise<void>;
   cacheGisBoundingSphere: (id: string, data: GeoJsonDataSource | KmlDataSource | CzmlDataSource) => Promise<void>;
@@ -51,17 +53,31 @@ export class SceneLibrary {
   private deleting = new Set<string>();
   private cameraTimer = 0;
   private viewReady = false;
+  private startupViewAllowed = true;
   private lastMapView?: SceneView;
   private saveProgress = new Map<string, VideoOverlaySaveProgress>();
   private schemeRefreshGeneration = 0;
   ready: Promise<void> = Promise.resolve();
+  /** The catalogue is available before potentially slow GPU restoration finishes. */
+  catalogueReady: Promise<void> = Promise.resolve();
+  private catalogueLoaded?: () => void;
   constructor(private hooks: Hooks) {
     window.addEventListener("beforeunload", event => {
       if (this.pending || this.updates.size || this.drafts.size) { event.preventDefault(); event.returnValue = ""; }
     });
     window.addEventListener("pagehide", () => { void this.flush(true); });
     hooks.viewer.camera.moveEnd.addEventListener(() => this.saveView());
+    const camera = hooks.viewer.camera;
+    const initialPosition = Cartesian3.clone(camera.positionWC), initialDirection = Cartesian3.clone(camera.directionWC), initialUp = Cartesian3.clone(camera.upWC);
+    camera.moveStart.addEventListener(() => {
+      // Cesium can emit main's initial setView on its next frame, after this
+      // library is constructed. Only a changed pose represents a new takeover.
+      if (!Cartesian3.equals(camera.positionWC, initialPosition) || !Cartesian3.equals(camera.directionWC, initialDirection)
+        || !Cartesian3.equals(camera.upWC, initialUp)) this.markSceneInteraction();
+    });
   }
+  /** A late background restore must not move a camera the user has already taken over. */
+  markSceneInteraction(): void { this.startupViewAllowed = false; }
   get activeVideoRecordId(): string { return this.activeVideoId; }
   listVideoOverlaySchemes(): VideoOverlaySchemeSummary[] {
     return [...this.records.values()].filter(record => record.kind === "Drone Video" && record.settings.video?.mode === "cc-overlay" && this.hooks.canReadRecord?.(record) !== false)
@@ -85,8 +101,9 @@ export class SceneLibrary {
     }
     this.render(); return this.listVideoOverlaySchemes();
   }
-  get busy() { return this.starting || this.pending > 0 || this.restoring.size > 0; }
+  get busy() { return this.starting || this.pending > 0 || this.restoring.size > 0 || Boolean(this.hooks.cadLoads?.values().length); }
   start() {
+    this.catalogueReady = new Promise(resolve => { this.catalogueLoaded = resolve; });
     this.ready = this.initialize();
     return this.ready;
   }
@@ -95,6 +112,7 @@ export class SceneLibrary {
     try {
       const listing = await libraryRequest<LibraryListing>("/records");
       for (const record of listing.records) this.records.set(record.id, record);
+      this.catalogueLoaded?.(); this.catalogueLoaded = undefined;
       if (listing.problems.length) this.error = listing.problems.map(p => p.error).join("；");
       const priority = (kind: LibraryKind) => ({ "3D Tiles": 0, Model: 1, CAD: 2, GIS: 3, Imagery: 4, "Drone Video": 5 })[kind];
       const selectedImagery = listing.view?.activeImageryId || listing.records.filter(r => r.kind === "Imagery").at(-1)?.id;
@@ -106,8 +124,10 @@ export class SceneLibrary {
       }
       if (listing.view) {
         const v = listing.view;
-        this.hooks.viewer.camera.cancelFlight();
-        this.hooks.viewer.camera.setView({ destination: Cartesian3.fromArray(v.position), orientation: { direction: Cartesian3.fromArray(v.direction), up: Cartesian3.fromArray(v.up) } });
+        if (this.startupViewAllowed) {
+          this.hooks.viewer.camera.cancelFlight();
+          this.hooks.viewer.camera.setView({ destination: Cartesian3.fromArray(v.position), orientation: { direction: Cartesian3.fromArray(v.direction), up: Cartesian3.fromArray(v.up) } });
+        }
         if (v.basemap !== "local" || this.activeImageryId) this.hooks.setBasemap(v.basemap);
         const select = document.querySelector<HTMLSelectElement>("#basemap");
         if (select) select.value = this.hooks.getBasemap();
@@ -115,7 +135,7 @@ export class SceneLibrary {
       this.lastMapView = this.captureView();
       this.viewReady = true;
     } catch (error) { this.error = this.message(error); }
-    finally { this.starting = false; this.render(); }
+    finally { this.catalogueLoaded?.(); this.catalogueLoaded = undefined; this.starting = false; this.render(); }
   }
   private message(error: unknown) { return error instanceof Error ? error.message : String(error); }
   async save(id: string, name: string, kind: LibraryKind, settings: LibrarySettings, files: Draft["files"] = {}, copy?: Draft["copy"], reportProgress?: (progress: VideoOverlaySaveProgress) => void) {
@@ -229,9 +249,9 @@ export class SceneLibrary {
       });
     }, 150);
   }
-  private async file(record: LibraryRecord, slot: string) {
+  private async file(record: LibraryRecord, slot: string, signal?: AbortSignal) {
     const file = record.files[slot]; if (!file) throw new Error("缺少已保存的 " + slot + " 文件");
-    const response = await fetch(file.url);
+    const response = await fetch(file.url, { signal });
     if (!response.ok) throw new Error("保存文件无法读取（HTTP " + response.status + "）");
     const blob = await response.blob();
     const metadata = (record.settings.video?.fileMetadata as Record<string, { name?: string; size?: number; lastModified?: number; type?: string }> | undefined)?.[slot];
@@ -295,6 +315,8 @@ export class SceneLibrary {
     finally { this.restoring.delete(id); this.render(); this.hooks.layersChanged(); this.saveView(); }
   }
   async restore(id: string) {
+    const inFlight = this.hooks.cadLoads?.get(id);
+    if (inFlight) { await inFlight.settled; return; }
     let record = this.records.get(id);
     if (!record || this.restoring.has(id) || this.deleting.has(id)) return;
     if (this.hooks.canReadRecord?.(record) === false) { this.failures.set(id, "当前账号没有此类资料权限"); this.render(); return; }
@@ -307,6 +329,7 @@ export class SceneLibrary {
     }
     this.restoring.add(id); this.render();
     const h = this.hooks; const s = record.settings;
+    const cadLoad = record.kind === 'CAD' ? h.cadLoads.begin(id, record.name, record.visible) : undefined;
     let cleanup: (() => void) | undefined;
     try {
       if (record.kind === "3D Tiles") {
@@ -331,23 +354,30 @@ export class SceneLibrary {
         model.show = record.visible;
       } else if (record.kind === "CAD") {
         if (!s.coordinates) throw new Error("CAD 坐标参数缺失");
-        const imported = await readCadImport(await this.file(record, "data"));
+        const imported = await readCadImportInWorker(await this.file(record, "data", cadLoad!.signal), message => cadLoad!.progress(message), cadLoad!.signal);
+        cadLoad!.check();
+        cadLoad!.progress('正在恢复 CAD 图形…');
         const displayMode = s.displayMode ?? "absolute";
         const loaded = h.getImports();
         if (displayMode === "model" && !loaded.some(i => i.kind === "3D Tiles" || i.kind === "Model")) throw new Error("依附的模型尚未恢复；加载模型后可重试此图纸");
         if (displayMode === "model" && !loaded.some(i => i.kind === "3D Tiles")) {
-          const data = await loadCadImport(imported, s.coordinates, displayMode);
-          await h.viewer.dataSources.add(data); cleanup = () => { h.viewer.dataSources.remove(data, true); };
-          await clampCadToScene(data, h.viewer.scene, { objectsToExclude: getCadModelSamplingExclusions(loaded) });
+          const data = await loadCadImport(imported, s.coordinates, displayMode,
+            (done, total) => cadLoad!.progress(`正在恢复 CAD… ${Math.round(done / total * 100)}%`),
+            async created => {
+              cleanup = () => { h.viewer.dataSources.remove(created, true); };
+              cadLoad!.attach(created, cleanup); await h.viewer.dataSources.add(created); cadLoad!.check();
+            }, cadLoad!.signal);
+          await clampCadToScene(data, h.viewer.scene, { signal: cadLoad!.signal, objectsToExclude: getCadModelSamplingExclusions(loaded) });
           useSampledCadHeights(data);
-          h.addImport(record.name, "CAD", data, id, { representation: "dataSource", boundingSphere: getCadBoundingSphere(data) });
-          data.show = record.visible;
+          cadLoad!.commit(() => h.addImport(record!.name, "CAD", data, id, { representation: "dataSource", boundingSphere: getCadBoundingSphere(data), visible: cadLoad!.visible }));
         } else {
-          const result = await loadCadPrimitiveCollection(imported, s.coordinates, { displayMode, scene: h.viewer.scene, beforePopulate: collection => {
-            h.viewer.scene.primitives.add(collection); cleanup = () => { h.viewer.scene.primitives.remove(collection); };
+          const result = await loadCadPrimitiveCollection(imported, s.coordinates, { displayMode, scene: h.viewer.scene,
+            signal: cadLoad!.signal, isRenderActive: () => h.viewer.useDefaultRenderLoop,
+            onProgress: (done, total) => cadLoad!.progress(`正在恢复 CAD… ${Math.round(done / total * 100)}%`), beforePopulate: collection => {
+            cleanup = () => { const removed = h.viewer.scene.primitives.remove(collection); if (!removed && !collection.isDestroyed()) collection.destroy(); };
+            cadLoad!.attach(collection, cleanup); h.viewer.scene.primitives.add(collection);
           } });
-          result.collection.show = record.visible;
-          h.addImport(record.name, "CAD", result.collection, id, { representation: "primitive", boundingSphere: result.boundingSphere });
+          cadLoad!.commit(() => h.addImport(record!.name, "CAD", result.collection, id, { representation: "primitive", boundingSphere: result.boundingSphere, visible: cadLoad!.visible }));
         }
       } else if (record.kind === "GIS") {
         const file = await this.file(record, "source");
@@ -380,13 +410,13 @@ export class SceneLibrary {
         }
         this.activeVideoId = id;
       }
-      const item = h.getImports().find(i => i.id === id); if (item) item.visible = record.visible;
+      const item = h.getImports().find(i => i.id === id); if (item) item.visible = cadLoad?.visible ?? record.visible;
       this.failures.delete(id); h.viewer.scene.requestRender();
     } catch (error) {
       const partial = h.getImports().find(i => i.id === id);
-      if (partial) h.removeImport(partial); else cleanup?.();
+      if (partial) h.removeImport(partial); else if (!cadLoad) cleanup?.();
       this.failures.set(id, this.message(error));
-    } finally { this.restoring.delete(id); this.render(); this.hooks.layersChanged(); if (!this.starting) this.saveView(); }
+    } finally { cadLoad?.fail(); this.restoring.delete(id); this.render(); this.hooks.layersChanged(); if (!this.starting) this.saveView(); }
   }
   projectionModelRecord(id: string) {
     const record = this.records.get(id);
@@ -433,13 +463,25 @@ export class SceneLibrary {
 
   markVideo(id: string) { this.activeVideoId = id; this.render(); this.saveView(); }
   markImagery(id: string) { this.activeImageryId = id; this.render(); this.saveView(); }
+  /** Roll back only the fresh CAD ID created by the current, failed import. */
+  async discardNewCad(id: string): Promise<void> {
+    if (this.records.get(id)?.kind !== 'CAD') return;
+    await libraryRequest('/records/' + id, { method: 'DELETE' });
+    this.records.delete(id); this.failures.delete(id); this.drafts.delete(id); this.updates.delete(id);
+    this.render();
+  }
   async delete(id: string, confirm = true): Promise<boolean> {
-    if (this.restoring.has(id) || this.pending) { this.hooks.notify("请等待当前资料保存或恢复完成后再删除",true); return false; }
+    if (this.deleting.has(id)) return false;
+    if (this.pending) { this.hooks.notify("请等待当前资料保存完成后再删除",true); return false; }
     const name = this.records.get(id)?.name ?? this.drafts.get(id)?.name ?? id;
     if (confirm && !window.confirm("删除“" + name + "”及其本机保存副本？原始导入文件不会被删除。")) return false;
     const unsaved = this.updates.get(id);
     this.deleting.add(id); this.updates.delete(id); this.pending++; this.render();
     try {
+      const loading = this.hooks.cadLoads?.get(id);
+      if (loading) { loading.cancel(); await loading.settled; }
+      if (this.restoring.has(id)) { this.hooks.notify("请等待当前资料恢复完成后再删除",true); return false; }
+      if (!this.records.has(id) && !this.drafts.has(id)) return true;
       await libraryRequest("/records/" + id, { method: "DELETE" });
       this.records.delete(id); this.failures.delete(id); this.drafts.delete(id);
       const item = this.hooks.getImports().find(i => i.id === id); if (item) this.hooks.removeImport(item);
@@ -480,16 +522,18 @@ export class SceneLibrary {
       if (this.hooks.canReadRecord?.(record ?? draft!) === false) continue;
       const row = document.createElement("div"); row.className = "saved-record"; row.dataset.savedId = id;
       const title = document.createElement("span"); title.textContent = record ? videoSchemeName(record) : draft!.name; title.title = title.textContent;
+      const loading = this.hooks.cadLoads?.get(id);
       const detail = document.createElement("small");
-      detail.textContent = this.restoring.has(id) ? "恢复中…" : this.failures.get(id) ?? (record ? record.kind + " · 已保存" : "等待保存");
-      const retry = document.createElement("button"); retry.textContent = draft ? "重试保存" : this.failures.has(id) ? "重试" : record?.kind === "Imagery" || record?.kind === "Drone Video" ? "使用" : this.hooks.getImports().some(item => item.id === id) ? "定位" : "恢复";
-      retry.disabled = this.busy;
+      detail.textContent = loading?.status ?? (this.restoring.has(id) ? "恢复中…" : this.failures.get(id) ?? (record ? record.kind + " · 已保存" : "等待保存"));
+      const retry = document.createElement("button"); retry.textContent = loading ? "取消加载" : draft ? "重试保存" : this.failures.has(id) ? "重试" : record?.kind === "Imagery" || record?.kind === "Drone Video" ? "使用" : this.hooks.getImports().some(item => item.id === id) ? "定位" : "恢复";
+      retry.disabled = loading ? loading.signal.aborted : this.pending > 0 || this.restoring.has(id) || this.deleting.has(id);
       retry.addEventListener("click", () => {
-        if (draft) void this.save(draft.id, draft.name, draft.kind, draft.settings, draft.files, draft.copy).then(() => this.restore(id)).catch(e => this.hooks.notify(this.message(e), true));
+        if (loading) loading.cancel();
+        else if (draft) void this.save(draft.id, draft.name, draft.kind, draft.settings, draft.files, draft.copy).then(() => this.restore(id)).catch(e => this.hooks.notify(this.message(e), true));
         else if (this.updates.has(id)) void this.flush();
         else void this.restore(id);
       });
-      const remove = document.createElement("button"); remove.textContent = "删除"; remove.disabled = this.busy;
+      const remove = document.createElement("button"); remove.textContent = "删除"; remove.disabled = this.pending > 0 || this.deleting.has(id) || (this.restoring.has(id) && !loading);
       remove.addEventListener("click", () => void this.delete(id));
       row.append(title, detail, retry, remove);
       const source = record?.files.source;

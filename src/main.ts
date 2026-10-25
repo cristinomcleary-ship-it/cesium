@@ -1,6 +1,8 @@
 import { SceneLibrary } from "./sceneLibrary";
+import { CadLoadRegistry } from "./cadLoadRegistry";
 import { installRenderErrorRecovery, renderErrorSummaryHtml } from "./renderErrorRecovery";
 import { detectsSoftwareRenderer, installCameraNavigationPerformance } from "./cameraNavigationPerformance";
+import { CursorCoordinates } from "./cursorCoordinates";
 import { SceneDisplayPanel, type SceneDisplayItem } from "./sceneDisplayPanel";
 import { ModelQualityTracker, type ModelQualityState } from "./modelQualityState";
 import type { SafetyWorkspace } from "./safetyWorkspace";
@@ -35,8 +37,8 @@ import {
   UrlTemplateImageryProvider,
   Viewer,
 } from "cesium";
-import { cadImportFileName, readCadImport, type CadImportPackage } from "./cadImport";
-import { createCadImportFromDwgInWorker } from "./cadImportWorkerClient";
+import { cadImportFileName, type CadImportPackage } from "./cadImport";
+import { createCadImportFromDwgInWorker, readCadImportInWorker } from "./cadImportWorkerClient";
 import { clampCadToScene, getCadBoundingSphere, getCadModelSamplingExclusions, loadCadImport, useSampledCadHeights } from "./dxfLoader";
 import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader";
 import { loadLocalImagery, type LocalImageryResult } from "./localImagery";
@@ -617,6 +619,9 @@ viewer.scene.fog.enabled = true;
 viewer.camera.setView({ destination: Cartesian3.fromDegrees(105, 35, 18_000_000) });
 
 const imports: ImportRecord[] = [];
+const cadLoads = new CadLoadRegistry(() => {
+  renderLayerDirectory(); scheduleSceneDisplay(); projectLibrary?.render();
+});
 let safetyWorkspace: SafetyWorkspace | undefined;
 let safetyWorkspaceLoading: Promise<SafetyWorkspace> | undefined;
 let managementWorkspace: ManagementWorkspace | undefined;
@@ -752,7 +757,7 @@ videoModelOverlay = new VideoModelOverlay(viewer, {
   },
 });
 projectLibrary = new SceneLibrary({
-  viewer, getImports: () => imports, addImport, removeImport, modelEditor,
+  viewer, getImports: () => imports, addImport, removeImport, modelEditor, cadLoads,
   waitForModelReady, cacheGisBoundingSphere, replaceImagery: replaceLocalImagery,
   setBasemap, getBasemap: () => activeBasemapKey, notify: toast,
   restoreVideo: async (files, settings, recordId) => {
@@ -1004,8 +1009,13 @@ function renderLayers() {
   safetyWorkspace?.layersChanged();
   if (digitalTwinSyncReady) scheduleDigitalTwinSync();
   scheduleElectronicSandTableRefresh();
+  renderLayerDirectory();
+}
+
+function renderLayerDirectory() {
   const root = $("#layers");
-  if (!imports.length) { root.className = "layers-empty"; root.textContent = "尚未加载工程数据"; return; }
+  const pending = cadLoads.values();
+  if (!imports.length && !pending.length) { root.className = "layers-empty"; root.textContent = "尚未加载工程数据"; return; }
   root.className = "layers-list";
   root.innerHTML = imports.map((item) => `<div class="layer-row${item.visible ? "" : " layer-hidden"}" data-id="${item.id}" data-visible="${item.visible}"><span class="layer-badge">${item.kind === "CAD" ? "CAD" : item.kind === "GIS" ? "GIS" : item.kind === "Model" ? "MOD" : "3D"}</span><span class="layer-name"></span><button class="visibility" title="${item.visible ? "隐藏图层" : "显示图层"}" aria-label="${item.visible ? "隐藏图层" : "显示图层"}" aria-pressed="${item.visible}">${item.visible ? "◉" : "○"}</button><button class="fly" title="${item.visible ? "定位" : "请先显示图层"}" ${item.visible ? "" : "disabled"}>◎</button><button class="remove" title="移除">×</button></div>`).join("");
   root.querySelectorAll<HTMLElement>(".layer-row").forEach((row) => {
@@ -1027,6 +1037,14 @@ function renderLayers() {
       else removeImport(item);
     });
   });
+  for (const load of pending) {
+    const row = document.createElement('div'); row.className = 'layer-row'; row.dataset.id = load.id;
+    const badge = document.createElement('span'); badge.className = 'layer-badge'; badge.textContent = 'CAD';
+    const name = document.createElement('span'); name.className = 'layer-name'; name.textContent = `${load.name} · ${load.status}`;
+    const cancel = document.createElement('button'); cancel.textContent = '取消'; cancel.disabled = load.signal.aborted;
+    cancel.addEventListener('click', () => cadLoads.get(load.id)?.cancel());
+    row.append(badge, name, cancel); root.append(row);
+  }
 }
 
 function setImportVisibility(item: ImportRecord, visible: boolean, options: { silent?: boolean; deferRender?: boolean } = {}) {
@@ -1081,12 +1099,20 @@ function addImport(
   kind: ImportRecord["kind"],
   resource: unknown,
   id: string = crypto.randomUUID(),
-  metadata: Pick<ImportRecord, "representation" | "boundingSphere"> = {},
+  metadata: Pick<ImportRecord, "representation" | "boundingSphere"> & { visible?: boolean } = {},
 ) {
-  imports.push({ id, name, kind, resource, visible: true, adjustable: kind === "Model", ...metadata });
-  if (kind === "3D Tiles") { trackModelQuality(id, name, resource as Cesium3DTileset); videoArFusion.invalidateProjection("model-added-or-restored"); }
-  subsurfaceTools?.refreshClipping();
-  renderLayers();
+  if (imports.some(item => item.id === id)) throw new Error('此工程资料已在场景中，请勿重复加载');
+  const item = { id, name, kind, resource, visible: true, adjustable: kind === "Model", ...metadata };
+  imports.push(item);
+  try {
+    if (kind === "3D Tiles") { trackModelQuality(id, name, resource as Cesium3DTileset); videoArFusion.invalidateProjection("model-added-or-restored"); }
+    subsurfaceTools?.refreshClipping();
+    renderLayers();
+  } catch (error) {
+    const index = imports.indexOf(item); if (index >= 0) imports.splice(index, 1);
+    if (kind === '3D Tiles') disposeModelQuality(id, resource as Cesium3DTileset);
+    scheduleSceneDisplay(); throw error;
+  }
   return id;
 }
 
@@ -2112,6 +2138,7 @@ onPageDispose(() => {
   if (modelQualityNotifyTimer !== undefined) clearTimeout(modelQualityNotifyTimer);
 });
 onPageDispose(() => modelLoadController?.abort());
+onPageDispose(() => cadLoads.cancelAll());
 onPageDispose(() => {
   digitalTwinSyncReady = false;
   window.clearTimeout(digitalTwinSyncTimer);
@@ -2433,7 +2460,7 @@ $("#modelCentralMeridian").addEventListener("input", updateModelZoneNumber);
 $("#modelZoneWidth").addEventListener("change", updateModelZoneNumber);
 
 $("#loadModel").addEventListener("click", async () => {
-  await projectLibrary?.ready;
+  await projectLibrary?.catalogueReady;
   if (modelLoadBusy) return;
   if (!selectedModelFile) return toast("请先选择 DWG、RVT、SKP 或 GLB 文件", true);
   const extension = selectedModelFile.name.split(".").pop()?.toLowerCase() ?? "";
@@ -2642,7 +2669,6 @@ updateZoneNumber();
 updateModelZoneNumber();
 
 $("#loadCad").addEventListener("click", async () => {
-  await projectLibrary?.ready;
   if (cadLoadBusy) return;
   if (!selectedCad) return toast("请先选择 DWG 或 .cadimport 文件", true);
   const cadFile = selectedCad;
@@ -2661,35 +2687,38 @@ $("#loadCad").addEventListener("click", async () => {
   } else {
     options = { mode: "crs", sourceCrs: value("#sourceCrs"), heightOffset: numeric("#cadHeight") };
   }
+  const displayMode = value("#cadDisplayMode") as CadDisplayMode;
   const loadButton = $<HTMLButtonElement>("#loadCad");
-  let pendingCadDataSource: Awaited<ReturnType<typeof loadCadImport>> | null = null;
-  let pendingCadPrimitive: PrimitiveCollection | null = null;
   const controller = new AbortController();
+  const load = cadLoads.begin(cadId, cadFile.name, true, controller);
+  projectLibrary?.markSceneInteraction();
+  const progress = (message: string) => { load.progress(message); setStatus(message); };
   cadLoadController = controller;
   cadLoadBusy = true;
   loadButton.disabled = true;
+  let savedNewCad = false, committed = false;
+  let cadDataBlob: Blob = cadFile;
   try {
+    await projectLibrary?.catalogueReady;
+    load.check();
     let imported: CadImportPackage;
     if (lowerName.endsWith(".dwg")) {
-      setStatus("正在本地解析 DWG 并生成导入文件…");
-      const generated = await createCadImportFromDwgInWorker(cadFile, setStatus, controller.signal);
+      progress("正在本地解析 DWG 并生成导入文件…");
+      const generated = await createCadImportFromDwgInWorker(cadFile, progress, controller.signal);
       imported = generated.value;
+      cadDataBlob = generated.blob;
       generatedCadImport = { name: cadImportFileName(cadFile.name), blob: generated.blob };
       $("#downloadCadImport").classList.remove("hidden");
     } else {
-      setStatus("正在读取 CAD 导入文件…");
-      imported = await readCadImport(cadFile);
+      progress("正在读取 CAD 导入文件…");
+      imported = await readCadImportInWorker(cadFile, progress, controller.signal);
     }
     if (controller.signal.aborted) throw new DOMException("CAD 加载已取消", "AbortError");
-    setStatus("正在将 CAD 放置到地球上…");
-    const displayMode = value("#cadDisplayMode") as CadDisplayMode;
+    load.name = imported.source.name;
+    progress("正在将 CAD 放置到地球上…");
     if (displayMode === "model" && !imports.some((item) => item.kind === "3D Tiles" || item.kind === "Model")) {
       throw new Error("依附模型模式需要先加载倾斜摄影或三维模型");
     }
-    await projectLibrary!.save(cadId, imported.source.name, "CAD", { coordinates: options, displayMode }, {
-      source: { name: cadFile.name, blob: cadFile },
-      data: { name: lowerName.endsWith(".cadimport") ? cadFile.name : cadImportFileName(cadFile.name), blob: lowerName.endsWith(".dwg") ? generatedCadImport!.blob : cadFile },
-    });
     let clampedVertices = 0;
     const hasTileset = imports.some((item) => item.kind === "3D Tiles");
     const hasOrdinaryModel = imports.some((item) => item.kind === "Model");
@@ -2697,6 +2726,8 @@ $("#loadCad").addEventListener("click", async () => {
     let cadBoundingSphere: ImportRecord["boundingSphere"];
     let featureCount = 0;
     let runtimeSkipped = 0;
+    let readyResource: unknown;
+    let representation: ImportRecord['representation'];
 
     if (requiresOrdinaryModelSampling) {
       // Ordinary glTF/GLB models cannot classify GroundPrimitives. Keep the
@@ -2705,14 +2736,15 @@ $("#loadCad").addEventListener("click", async () => {
         imported,
         options,
         displayMode,
-        (completed, total) => setStatus(`正在分批放置 CAD… ${Math.round(completed / total * 100)}%`),
+        (completed, total) => progress(`正在分批放置 CAD… ${Math.round(completed / total * 100)}%`),
         async (created) => {
-          pendingCadDataSource = created;
+          load.attach(created, () => { viewer.dataSources.remove(created, true); });
           await viewer.dataSources.add(created);
+          load.check();
         },
         controller.signal,
       );
-      setStatus("正在分批将 CAD 依附到模型表面…");
+      progress("正在分批将 CAD 依附到模型表面…");
       const clampResult = await clampCadToScene(dataSource, viewer.scene, {
         signal: controller.signal, objectsToExclude: getCadModelSamplingExclusions(imports),
       });
@@ -2720,21 +2752,21 @@ $("#loadCad").addEventListener("click", async () => {
       useSampledCadHeights(dataSource);
       cadBoundingSphere = getCadBoundingSphere(dataSource);
       featureCount = dataSource.entities.values.length;
-      addImport(imported.source.name, "CAD", dataSource, cadId, {
-        representation: "dataSource",
-        boundingSphere: cadBoundingSphere,
-      });
-      pendingCadDataSource = null;
+      readyResource = dataSource; representation = 'dataSource';
     } else {
       const result = await loadCadPrimitiveCollection(imported, options, {
         displayMode,
         scene: viewer.scene,
+        isRenderActive: () => viewer.useDefaultRenderLoop,
         signal: controller.signal,
         batchSize: 2000,
         primitiveBatchSize: 1000,
-        onProgress: (completed, total) => setStatus(`正在批量绘制 CAD… ${Math.round(completed / total * 100)}%`),
+        onProgress: (completed, total) => progress(`正在批量绘制 CAD… ${Math.round(completed / total * 100)}%`),
         beforePopulate: (created) => {
-          pendingCadPrimitive = created;
+          load.attach(created, () => {
+            const removed = viewer.scene.primitives.remove(created);
+            if (!removed && !created.isDestroyed()) created.destroy();
+          });
           viewer.scene.primitives.add(created);
           viewer.scene.requestRender();
         },
@@ -2742,12 +2774,20 @@ $("#loadCad").addEventListener("click", async () => {
       cadBoundingSphere = result.boundingSphere;
       featureCount = result.featureCount;
       runtimeSkipped = result.skippedCount;
-      addImport(imported.source.name, "CAD", result.collection, cadId, {
-        representation: "primitive",
-        boundingSphere: cadBoundingSphere,
-      });
-      pendingCadPrimitive = null;
+      readyResource = result.collection; representation = 'primitive';
     }
+    load.check();
+    progress('CAD 绘制完成，正在保存工程资料…');
+    await projectLibrary!.save(cadId, imported.source.name, "CAD", { coordinates: options, displayMode }, {
+      source: { name: cadFile.name, blob: cadFile },
+      data: { name: lowerName.endsWith(".cadimport") ? cadFile.name : cadImportFileName(cadFile.name), blob: cadDataBlob },
+    });
+    savedNewCad = true;
+    load.check();
+    load.commit(() => addImport(imported.source.name, "CAD", readyResource, cadId, {
+      representation, boundingSphere: cadBoundingSphere, visible: load.visible,
+    }));
+    committed = true;
     if (cadBoundingSphere) viewer.camera.flyToBoundingSphere(cadBoundingSphere, { duration: 1.2 });
     const skipped = imported.statistics.skippedEntities + imported.statistics.unknownEntities + runtimeSkipped;
     const hidden = imported.statistics.hiddenEntities ?? 0;
@@ -2763,17 +2803,17 @@ $("#loadCad").addEventListener("click", async () => {
         : "";
     toast(`CAD 已加载：${featureCount} 个对象${modeLabel}${hidden ? `，已忽略 ${hidden} 个冻结/关闭图层对象` : ""}${skipped ? `，${skipped} 个复杂或无效对象未展开` : ""}${legacyNotice}`);
   } catch (error) {
-    if (pendingCadDataSource) viewer.dataSources.remove(pendingCadDataSource, true);
-    const orphanedCadPrimitive = pendingCadPrimitive as PrimitiveCollection | null;
-    if (orphanedCadPrimitive) {
-      const removed = viewer.scene.primitives.remove(orphanedCadPrimitive);
-      if (!removed && !orphanedCadPrimitive.isDestroyed()) orphanedCadPrimitive.destroy();
+    if (savedNewCad && !committed) {
+      try { await projectLibrary!.discardNewCad(cadId); }
+      catch (cleanupError) { toast(`本次 CAD 未完成加载，保存记录清理失败，资料库中的文件已保留：${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`, true); }
     }
+    load.fail();
     if (!(error instanceof DOMException && error.name === "AbortError") && !controller.signal.aborted) {
       toast(error instanceof Error ? error.message : "CAD 加载失败", true);
     }
   }
   finally {
+    load.fail();
     if (cadLoadController === controller) cadLoadController = null;
     cadLoadBusy = false;
     loadButton.disabled = false;
@@ -2977,7 +3017,7 @@ async function createAndLoadTileset(url: string, assetId: number, localFolderPat
 }
 
 $("#loadCcFolder").addEventListener("click", async () => {
-  await projectLibrary?.ready;
+  await projectLibrary?.catalogueReady;
   const folderPath = value("#ccFolderPath").trim().replace(/^['\"]|['\"]$/g, "");
   if (!folderPath) return toast("请粘贴 CC 的 Data 文件夹或生产目录完整路径", true);
   if (tilesLoadBusy) return toast("倾斜摄影正在加载，请稍候");
@@ -2990,7 +3030,7 @@ $("#loadCcFolder").addEventListener("click", async () => {
 });
 
 $("#loadTiles").addEventListener("click", async () => {
-  await projectLibrary?.ready;
+  await projectLibrary?.catalogueReady;
   if (tilesLoadBusy) return toast("倾斜摄影正在加载，请稍候");
   setTilesLoadBusy(true);
   try {
@@ -3013,7 +3053,7 @@ $("#loadTiles").addEventListener("click", async () => {
 });
 
 $("#loadGis").addEventListener("click", async () => {
-  await projectLibrary?.ready;
+  await projectLibrary?.catalogueReady;
   if (!selectedGis) return toast("请先选择 GIS 文件", true);
   const gisFile = selectedGis;
   const extension = gisFile.name.split(".").pop()?.toLowerCase();
@@ -3035,7 +3075,7 @@ $("#loadGis").addEventListener("click", async () => {
 });
 
 $("#clearAll").addEventListener("click", async () => {
-  await projectLibrary?.ready;
+  await projectLibrary?.catalogueReady;
   await projectLibrary?.clear();
 });
 $("#homeView").addEventListener("click", () => {
@@ -3047,18 +3087,26 @@ $("#homeView").addEventListener("click", () => {
 });
 
 const pointer = new ScreenSpaceEventHandler(viewer.scene.canvas);
-pointer.setInputAction((movement: { endPosition: Cartesian2 }) => {
-  const ray = viewer.camera.getPickRay(movement.endPosition);
-  const point = ray && viewer.scene.globe.pick(ray, viewer.scene);
-  if (!point) return;
-  const position = viewer.scene.globe.ellipsoid.cartesianToCartographic(point);
-  $("#coords").textContent = `经度 ${CesiumMath.toDegrees(position.longitude).toFixed(6)} · 纬度 ${CesiumMath.toDegrees(position.latitude).toFixed(6)} · 高程 ${position.height.toFixed(1)}m`;
-}, ScreenSpaceEventType.MOUSE_MOVE);
+const coordinateStatus = $("#coords");
+const cursorCoordinates = new CursorCoordinates({
+  sample: screen => {
+    const ray = viewer.camera.getPickRay(new Cartesian2(screen.x, screen.y));
+    const point = ray && viewer.scene.globe.pick(ray, viewer.scene);
+    if (!point) return;
+    const position = viewer.scene.globe.ellipsoid.cartesianToCartographic(point);
+    return `经度 ${CesiumMath.toDegrees(position.longitude).toFixed(6)} · 纬度 ${CesiumMath.toDegrees(position.latitude).toFixed(6)} · 高程 ${position.height.toFixed(1)}m`;
+  },
+  publish: text => { coordinateStatus.textContent = text; },
+});
+pointer.setInputAction((movement: { endPosition: Cartesian2 }) => cursorCoordinates.move(movement.endPosition), ScreenSpaceEventType.MOUSE_MOVE);
+const removeCoordinateMoveStart = viewer.camera.moveStart.addEventListener(() => cursorCoordinates.setCameraMoving(true));
+const removeCoordinateMoveEnd = viewer.camera.moveEnd.addEventListener(() => cursorCoordinates.setCameraMoving(false));
+onPageDispose(() => { cursorCoordinates.dispose(); removeCoordinateMoveStart(); removeCoordinateMoveEnd(); pointer.destroy(); });
 
 async function ensureManagementWorkspace(): Promise<ManagementWorkspace> {
     safetyWorkspaceLoading ??= import("./safetyWorkspace").then(({ SafetyWorkspace }) => {
       safetyWorkspace = new SafetyWorkspace({
-        viewer, host: $("#safetyWorkspaceHost"), ready: () => projectLibrary!.ready,
+        viewer, host: $("#safetyWorkspaceHost"), ready: () => projectLibrary!.catalogueReady,
         getImports: () => imports.map(item => ({ ...item, visible: isImportDisplayed(item) })),
         getModelQualityStates, subscribeModelQuality,
         getVideoDiagnostics: () => { const diagnostics = videoArFusion.getDiagnostics(); return { ...diagnostics, media: { ...diagnostics.media, recordId: projectLibrary?.activeVideoRecordId || null } }; },
@@ -3207,6 +3255,10 @@ function syncSceneDisplay(): void {
       syncSceneDisplay();
     },
     edit: layer.kind === 'Model' ? () => { if (managementWorkspace?.isOpen && !managementWorkspace.openEngineeringTool('models')) return; setWorkbenchDock('editor'); document.querySelector<HTMLButtonElement>('.tab[data-tab="models"]')?.click(); modelEditor.select(layer.id); } : undefined });
+  if (isLibraryRecordAllowed({ kind: 'CAD' })) for (const load of cadLoads.values()) items.push({
+    id: `layer:${load.id}`, name: load.name, category: 'CAD 图纸', visible: load.visible,
+    detail: load.status, cancel: load.signal.aborted ? undefined : async () => { cadLoads.get(load.id)?.cancel(); await load.settled; },
+  });
   for (const record of state?.records ?? []) items.push({ ...managementWorkspace?.getDisplayObjectRemoval('machine', record.id), id: `machine:${record.id}`, name: record.name, category: '施工机械', visible: (record.machinery as {visible?:boolean})?.visible !== false,
     locate: async () => { await managementWorkspace?.locateWorkbenchMachinery(record.id); },
     edit: async () => { if (managementWorkspace?.isOpen) { await managementWorkspace.editFieldObject('machine', record.id); return; } requestedMachineryRecord = record.id; document.querySelector<HTMLButtonElement>('.tab[data-tab="machinery"]')?.click(); } });
@@ -3219,9 +3271,11 @@ function syncSceneDisplay(): void {
   for (const object of managementWorkspace?.isOpen && !state?.canView ? [] : foundationPitMonitoring.getDisplayItems()) items.push({ ...localRemoval(foundationPitMonitoring.getDisplayObjectRemoval(object.id)), id: object.id, name: object.name, category: object.kind === 'model' ? '基坑模型' : object.kind === 'marker' ? '基坑中心提示' : '基坑监测点', visible: object.defaultVisible, edit: () => { if (managementWorkspace?.isOpen && !managementWorkspace.openEngineeringTool('monitoring')) return; document.querySelector<HTMLButtonElement>('.tab[data-tab="monitoring"]')?.click(); } });
   sceneDisplayPanel.setContext(state?.projectId ?? 'workbench-local', state?.actorId, items);
   for (const layer of imports) applyImportDisplay(layer);
+  applyPendingCadDisplay();
 }
 function applySceneDisplay(overrides: Record<string,boolean>, labelsVisible: boolean): void {
   sceneDisplayOverrides = overrides;
+  applyPendingCadDisplay();
   if (videoModelOverlay?.active) {
     videoModelOverlay.refreshResources();
     for (const layer of imports) applyImportDisplay(layer);
@@ -3240,6 +3294,13 @@ function applySceneDisplay(overrides: Record<string,boolean>, labelsVisible: boo
   }
   managementWorkspace?.setWorkbenchDisplayVisibility(overrides, labelsVisible);
   viewer.scene.requestRender();
+}
+function applyPendingCadDisplay(): void {
+  for (const load of cadLoads.values()) {
+    load.visible = sceneDisplayOverrides[`layer:${load.id}`] ?? load.visible;
+    if (load.resource && !load.resource.isDestroyed?.()) load.resource.show = !load.signal.aborted && !videoModelOverlay?.active
+      && isLibraryRecordAllowed({ kind: 'CAD' }) && load.visible;
+  }
 }
 function isImportAllowed(layer: ImportRecord): boolean {
   const access = managementWorkspace?.getWorkbenchLayerAccess();

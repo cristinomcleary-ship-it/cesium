@@ -6,7 +6,7 @@ import {
   PrimitiveCollection, Transforms, UniformType,
   type CustomDataSource, type JulianDate, type Property, type Viewer,
 } from "cesium";
-import { readCadImport } from "./cadImport.ts";
+import { readCadImportInWorker } from "./cadImportWorkerClient.ts";
 import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader.ts";
 import { createCadSurfaceSampler } from "./videoOverlayDrapedCad.ts";
 import type { LibraryRecord } from "./projectLibrary.ts";
@@ -569,11 +569,12 @@ export class VideoOverlayResources {
     if (!file || !saved.settings.coordinates) throw new Error("贴附 CAD 需要已保存的 .cadimport 和坐标参数，请先在资料库保存图纸");
     const response = await fetch(file.url, { signal: this.controller.signal });
     if (!response.ok) throw new Error(`CAD 源文件读取失败（HTTP ${response.status}）`);
-    const imported = await readCadImport(new File([await response.blob()], file.name));
+    const imported = await readCadImportInWorker(new File([await response.blob()], file.name), undefined, this.controller.signal);
     this.throwIfCancelled();
     const result = await loadCadPrimitiveCollection(imported, saved.settings.coordinates, {
       displayMode: "absolute", scene: this.options.viewer.scene, signal: this.controller.signal,
       batchSize: 2000, primitiveBatchSize: 1000, showWhileLoading: false,
+      isRenderActive: () => this.options.viewer.useDefaultRenderLoop !== false,
       transformPositions: createCadSurfaceSampler(this.options.viewer, saved.settings.displayMode === "model" ? "model" : "terrain", this.options.imports(), this.controller.signal),
       surfaceSampleSpacing: 5,
       beforePopulate: collection => {

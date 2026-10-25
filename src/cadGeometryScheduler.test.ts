@@ -168,7 +168,7 @@ test('abort cancels queued jobs but retains worker permits until already submitt
   assert.equal(getCadGeometrySchedulerStats(f.scene).pending, 0); f.primitives.destroy();
 });
 
-test('removal without destruction and a paused scene reject waiters without affecting previous resources', async () => {
+test('removal without destruction and an unexplained stalled scene reject waiters without affecting previous resources', async () => {
   const f = fixture(), collection = f.collection();
   const session = createCadGeometryScheduler({ scene: f.scene, collection, enabled: true });
   const geometry = new Geometry(); session.add(geometry.cesium());
@@ -180,6 +180,93 @@ test('removal without destruction and a paused scene reject waiters without affe
   timed.add(new Geometry().cesium()); await assert.rejects(timed.finish(), /超时/);
   await Promise.resolve(); assert.equal(paused.isDestroyed(), true);
   assert.equal(getCadGeometrySchedulerStats(f.scene).active, 0); f.primitives.destroy();
+});
+
+test('a deliberate viewer pause preserves pending geometry past its deadline and resumes to completion', async t => {
+  let now = 0, renderActive = true;
+  t.mock.method(Date, 'now', () => now);
+  const f = fixture(), collection = f.collection();
+  const session = createCadGeometryScheduler({ scene: f.scene, collection, enabled: true,
+    timeoutMs: 100, isRenderActive: () => renderActive });
+  const geometry = new Geometry(); session.add(geometry.cesium());
+  let finished = false;
+  const done = session.finish().then(() => { finished = true; });
+  f.render();
+  now = 70; renderActive = false; session.check();
+  now = 10_070; session.check();
+  await Promise.resolve();
+  assert.equal(finished, false); assert.equal(collection.isDestroyed(), false);
+  assert.equal(session.pendingCount, 1); assert.equal(session.activeCount, 1);
+  renderActive = true; session.check(); now = 10_090;
+  geometry.complete(); f.render(); await done;
+  assert.equal(finished, true); assert.equal(collection.isDestroyed(), false);
+  assert.equal(getCadGeometrySchedulerStats(f.scene).pending, 0); f.primitives.destroy();
+});
+
+test('pause and resume retain the consumed active timeout instead of granting a new full deadline', async t => {
+  let now = 0, renderActive = true;
+  t.mock.method(Date, 'now', () => now);
+  const f = fixture(), collection = f.collection();
+  const session = createCadGeometryScheduler({ scene: f.scene, collection, enabled: true,
+    timeoutMs: 100, isRenderActive: () => renderActive });
+  session.add(new Geometry().cesium());
+  const rejected = assert.rejects(session.finish(), /超时/);
+  now = 70; renderActive = false; session.check();
+  now = 10_070; session.check(); renderActive = true; session.check();
+  now = 10_099; session.check(); assert.equal(collection.isDestroyed(), false);
+  now = 10_101; session.check(); await rejected; await Promise.resolve();
+  assert.equal(collection.isDestroyed(), true);
+  assert.equal(getCadGeometrySchedulerStats(f.scene).pending, 0); f.primitives.destroy();
+});
+
+test('a worker completing during a pause grants the remaining batch only one fresh active timeout', async t => {
+  let now = 0, renderActive = true;
+  t.mock.method(Date, 'now', () => now);
+  const f = fixture(), collection = f.collection();
+  const session = createCadGeometryScheduler({ scene: f.scene, collection, enabled: true,
+    timeoutMs: 100, isRenderActive: () => renderActive });
+  const first = new Geometry(), second = new Geometry();
+  session.add(first.cesium()); session.add(second.cesium());
+  const rejected = assert.rejects(session.finish(), /超时/);
+  f.render(); now = 70; renderActive = false; session.check();
+  now = 10_000; first.complete(); f.postRender.raiseEvent(f.scene);
+  assert.equal(session.pendingCount, 1);
+  now = 10_100; renderActive = true; session.check();
+  now = 10_199; session.check(); assert.equal(collection.isDestroyed(), false);
+  now = 10_201; session.check(); await rejected; await Promise.resolve();
+  assert.equal(collection.isDestroyed(), true);
+  second._state = 2; f.postRender.raiseEvent(f.scene);
+  assert.equal(getCadGeometrySchedulerStats(f.scene).pending, 0); f.primitives.destroy();
+});
+
+test('worker errors remain observable while a deliberately paused viewer is not rendering', async t => {
+  let now = 0, renderActive = true;
+  t.mock.method(Date, 'now', () => now);
+  const f = fixture(), collection = f.collection();
+  const session = createCadGeometryScheduler({ scene: f.scene, collection, enabled: true,
+    timeoutMs: 100, isRenderActive: () => renderActive });
+  const geometry = new Geometry(); session.add(geometry.cesium());
+  const rejected = assert.rejects(session.finish(), /paused worker failed/);
+  f.render(); renderActive = false; session.check(); now = 10_000;
+  geometry._error = new RangeError('paused worker failed'); geometry._state = 6; geometry.ready = true;
+  // The queue polls independently of the viewer. Raise its polling callback
+  // without invoking Primitive.update to model a stopped render loop.
+  f.postRender.raiseEvent(f.scene); await rejected; await Promise.resolve();
+  assert.equal(collection.isDestroyed(), true); assert.equal(geometry.calls, 1);
+  assert.equal(getCadGeometrySchedulerStats(f.scene).pending, 0); f.primitives.destroy();
+});
+
+test('cancelling a deliberately paused import rejects capacity and finish waiters without requiring a frame', async () => {
+  const f = fixture(), collection = f.collection(), controller = new AbortController();
+  const session = createCadGeometryScheduler({ scene: f.scene, collection, enabled: true,
+    signal: controller.signal, isRenderActive: () => false });
+  const geometries = Array.from({ length: 4 }, () => new Geometry());
+  geometries.forEach(geometry => session.add(geometry.cesium()));
+  const capacity = assert.rejects(session.waitForCapacity(), { name: 'AbortError' });
+  const finished = assert.rejects(session.finish(), { name: 'AbortError' });
+  controller.abort(); await Promise.all([capacity, finished]); await Promise.resolve();
+  assert.equal(collection.isDestroyed(), true); assert.equal(geometries.every(geometry => !geometry.starts), true);
+  assert.equal(getCadGeometrySchedulerStats(f.scene).pending, 0); f.primitives.destroy();
 });
 
 test('queue registration failure after collection.add rejects and destroys only the new collection', async () => {

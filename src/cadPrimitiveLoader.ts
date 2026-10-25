@@ -79,6 +79,8 @@ export type CadPrimitiveLoadOptions = {
   beforePopulate?: (collection: PrimitiveCollection) => void | Promise<void>;
   /** AR compiles its temporary copy without displaying it over the normal map. */
   showWhileLoading?: boolean;
+  /** A paused management view resumes preparation when its render loop resumes. */
+  isRenderActive?: () => boolean;
   /** Freeze a draped layer to sampled world positions before building absolute geometry.
    * Called in source batches; it must return one finite position for every input.
    */
@@ -100,9 +102,13 @@ const FACE_ALPHA = 0.18;
 
 /** Pinned Cesium worker packing: about 400 B/source point for absolute lines,
  * and 2656 B/source segment for ground lines, in addition to created geometry.
- * Keep each packed result in the low MiB range, even for one long source feature.
+ * Bound each packed result while avoiding thousands of tiny draw batches.
+ * These are worker budgets; cached source descriptions do not expand to packed geometry.
  */
-export const CAD_PRIMITIVE_VERTEX_BUDGET = Object.freeze({ absolute: 8192, ground: 1024 });
+export const CAD_PRIMITIVE_VERTEX_BUDGET = Object.freeze({ absolute: 32768, ground: 4096 });
+export const CAD_SOURCE_BUFFER_VERTEX_BUDGET = 131_072;
+const SURFACE_SAMPLE_VERTEX_BUDGET = 8192;
+const LOAD_WORK_SLICE_MS = 10;
 
 function entityColor(entity: CadImportEntity): Color {
   return entity.color ? Color.fromCssColorString(entity.color) ?? DEFAULT_COLOR : DEFAULT_COLOR;
@@ -258,7 +264,8 @@ export async function loadCadPrimitiveCollection(
   const convert = createConverter(coordinateOptions);
   const collection = new PrimitiveCollection({ destroyPrimitives: true });
   const scheduler = createCadGeometryScheduler({ scene: options.scene, collection, signal: options.signal,
-    enabled: Boolean(options.scene && options.beforePopulate), showWhileLoading: options.showWhileLoading ?? true });
+    enabled: Boolean(options.scene && options.beforePopulate), showWhileLoading: options.showWhileLoading ?? true,
+    isRenderActive: options.isRenderActive });
   try {
     if (options.beforePopulate) {
       await options.beforePopulate(collection);
@@ -269,6 +276,22 @@ export async function loadCadPrimitiveCollection(
     let maximum: Cartesian3 | undefined;
     let featureCount = 0;
     let skippedCount = 0;
+    let workSliceStart = performance.now();
+    const yieldIfNeeded = (): Promise<void> | undefined => {
+      if (performance.now() - workSliceStart < LOAD_WORK_SLICE_MS) return;
+      return nextFrame().then(() => { workSliceStart = performance.now(); abortIfRequested(options.signal); });
+    };
+    const waitForCapacity = async () => {
+      const pending = scheduler.pendingCount;
+      await scheduler.waitForCapacity();
+      // A completed batch already yielded to rendering. Do not add another
+      // frame of latency every time geometry becomes ready.
+      if (scheduler.pendingCount < pending) workSliceStart = performance.now();
+      else {
+        const yielding = yieldIfNeeded();
+        if (yielding) await yielding;
+      }
+    };
 
     let labels: LabelCollection | undefined;
 
@@ -294,7 +317,7 @@ export async function loadCadPrimitiveCollection(
     };
 
     const lineBatches = new CadSpatialBatcher<GeometryInstance>({ maxBatchSize: primitiveBatchSize,
-      maxBatchVertices: vertexBudget, maxBufferedVertices: vertexBudget * 4, emit: lineInstances => {
+      maxBatchVertices: vertexBudget, maxBufferedVertices: CAD_SOURCE_BUFFER_VERTEX_BUDGET, emit: lineInstances => {
       if (displayMode === "absolute") {
         scheduler.add(new Primitive({
           geometryInstances: lineInstances,
@@ -320,7 +343,7 @@ export async function loadCadPrimitiveCollection(
     const faceVertexCounts = new WeakMap<GeometryInstance, number>();
     const faceBatches = new CadSpatialBatcher<GeometryInstance>({
       maxBatchSize: Math.max(50, Math.floor(primitiveBatchSize / 2)),
-      maxBatchVertices: vertexBudget, maxBufferedVertices: vertexBudget * 4,
+      maxBatchVertices: vertexBudget, maxBufferedVertices: CAD_SOURCE_BUFFER_VERTEX_BUDGET,
       allowOversizedItem: true,
       emit: instances => {
         // Preserve indivisible polygon boundaries. An oversized face compiles
@@ -369,7 +392,7 @@ export async function loadCadPrimitiveCollection(
           geometry, id: renderId,
           attributes: { color: ColorGeometryInstanceAttribute.fromColor(color) },
         }), fragment.length);
-        await scheduler.waitForCapacity();
+        await waitForCapacity();
         if (end === positions.length) break;
         // Two shared segments retain an interior join with both neighbours. They
         // are opaque with the same style/feature; no source segment is lost or bent.
@@ -415,14 +438,16 @@ export async function loadCadPrimitiveCollection(
               points = densifyPositions(points, surfaceSpacing);
             }
           }
-          if (batch.length && pointCount + points.length > CAD_PRIMITIVE_VERTEX_BUDGET.absolute) {
+          if (batch.length && pointCount + points.length > SURFACE_SAMPLE_VERTEX_BUDGET) {
             pendingSamplePoints = points;
             break;
           }
           batch.push(points); pointCount += points.length; sampledEnd++;
           // A single long feature keeps its topology and is sampled alone. It is
           // subsequently split only for line rendering; faces retain their boundary.
-          if (pointCount >= CAD_PRIMITIVE_VERTEX_BUDGET.absolute) break;
+          if (pointCount >= SURFACE_SAMPLE_VERTEX_BUDGET) break;
+          const yielding = yieldIfNeeded();
+          if (yielding) await yielding;
         }
         const flattened = batch.flat();
         const transformed = flattened.length ? await options.transformPositions(flattened) : [];
@@ -488,11 +513,10 @@ export async function loadCadPrimitiveCollection(
         skippedCount += 1;
       }
 
-      await scheduler.waitForCapacity();
+      await waitForCapacity();
       const completed = index + 1;
       if (completed % sourceBatchSize === 0) {
         options.onProgress?.(completed, value.entities.length);
-        await nextFrame();
       }
     }
 

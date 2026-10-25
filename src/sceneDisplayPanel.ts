@@ -11,6 +11,8 @@ export type SceneDisplayItem = {
   edit?: () => void | Promise<void>;
   /** Remove this resource from its owning project and persist the change; reject on failure. */
   remove?: () => void | Promise<void>;
+  /** Cancel a pending load while preserving any saved original and display preferences. */
+  cancel?: () => void | Promise<void>;
 };
 export type SceneDisplayPanelOptions = {
   onApply: (overrides: Record<string, boolean>, labelsVisible: boolean) => void;
@@ -104,7 +106,7 @@ export class SceneDisplayPanel {
       this.query = ""; this.selected.clear(); this.editor = undefined; this.message = ""; this.error = false;
       this.find<HTMLInputElement>('[data-role="search"]').value = "";
     } else this.selected = new Set([...this.selected].filter(id => seen.has(id)));
-    const signature = JSON.stringify([this.store.scopeKey, this.items.map(item => [item.id, item.name, item.category, item.visible, item.detail, !!item.locate, !!item.edit, !!item.remove])]);
+    const signature = JSON.stringify([this.store.scopeKey, this.items.map(item => [item.id, item.name, item.category, item.visible, item.detail, !!item.locate, !!item.edit, !!item.remove, !!item.cancel])]);
     if (changed || signature !== this.directorySignature) { this.directorySignature = signature; this.render(); }
     // Hosts may rebuild an underlying renderer while retaining the same logical IDs.
     // Re-publish the current scope on every host update; apply() guards reentrant callbacks.
@@ -204,6 +206,7 @@ export class SceneDisplayPanel {
     if (item.locate) { const button = this.button("item-locate", "定位"); button.dataset.itemId = item.id; button.title = visible ? "定位此对象" : "先显示此对象再定位"; button.disabled = !visible || removing; tools.append(button); }
     if (item.edit) { const button = this.button("item-edit", "配置"); button.dataset.itemId = item.id; button.disabled = removing; tools.append(button); }
     if (item.remove) { const button = this.button("item-remove", removing ? "删除中…" : "删除"); button.dataset.itemId = item.id; button.className = "sdp-item-remove"; button.disabled = removing; button.title = `从当前项目删除${item.name}`; button.setAttribute("aria-label", `删除${item.name}`); tools.append(button); }
+    if (item.cancel) { const button = this.button('item-cancel', '取消加载'); button.dataset.itemId = item.id; button.title = '停止本次加载，保留已保存的原资料'; tools.append(button); }
     if (tools.children.length) row.append(tools); return row;
   }
   private renderGroups(host: HTMLElement): void {
@@ -292,9 +295,9 @@ export class SceneDisplayPanel {
       else if (action === "cancel-group") { this.editor = undefined; this.render(); }
       else if (action === "save-group") this.saveGroupEditor();
       else if (action === "item-remove") await this.removeItem(button.dataset.itemId!);
-      else if (action === "item-locate" || action === "item-edit") {
+      else if (action === "item-locate" || action === "item-edit" || action === "item-cancel") {
         const item = this.item(button.dataset.itemId!); button.disabled = true;
-        try { await (action === "item-locate" ? item?.locate?.() : item?.edit?.()); } finally { if (!this.disposed) this.render(); }
+        try { await (action === "item-locate" ? item?.locate?.() : action === 'item-cancel' ? item?.cancel?.() : item?.edit?.()); } finally { if (!this.disposed) this.render(); }
       }
     } catch (error) { this.setMessage(errorText(error), true); }
   }

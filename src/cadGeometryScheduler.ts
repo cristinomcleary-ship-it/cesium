@@ -160,7 +160,9 @@ export type CadGeometrySchedulerOptions = {
   enabled?: boolean;
   /** Compile a hidden AR copy without drawing its geometry or labels. */
   showWhileLoading?: boolean;
-  /** Maximum time without a completed batch, including a paused scene. */
+  /** A deliberately paused viewer does not consume the compilation timeout. */
+  isRenderActive?: () => boolean;
+  /** Maximum active-render time without a completed batch. */
   timeoutMs?: number;
 };
 export type CadGeometryScheduleOptions = {
@@ -177,6 +179,7 @@ export class CadGeometryScheduler {
   private error?: Error;
   private finished = false;
   private lastProgress = Date.now();
+  private pausedAt?: number;
   private restoreCollection?: () => void;
   private removeAbort?: () => void;
   constructor(private readonly options: CadGeometrySchedulerOptions) {
@@ -240,7 +243,7 @@ export class CadGeometryScheduler {
       } catch (error) { job.captured = chain(runtime); this.fail(asError(error)); }
     });
     this.jobs.add(job);
-    if (this.jobs.size === 1) this.lastProgress = Date.now();
+    if (this.jobs.size === 1) this.recordProgress();
     try { this.queue!.add(job); }
     catch (error) { this.fail(asError(error)); this.throwIfFailed(); }
     return added;
@@ -270,10 +273,26 @@ export class CadGeometryScheduler {
     try {
       const scene = this.options.scene;
       if (this.enabled && (scene?.isDestroyed?.() || !scene!.primitives.contains(this.collection))) { this.fail(new Error('CAD 图层已从场景移除，加载未完成')); return; }
+      const now = Date.now();
+      if (this.options.isRenderActive?.() === false) {
+        // requestRender() cannot advance primitives while the host has stopped
+        // the viewer loop. Keep the batch and its permits until scene re-entry.
+        this.pausedAt ??= now;
+        return;
+      }
+      if (this.pausedAt !== undefined) {
+        this.lastProgress += Math.max(0, now - this.pausedAt);
+        this.pausedAt = undefined;
+      }
+      if (this.jobs.size && now - this.lastProgress > (this.options.timeoutMs ?? 60_000)) this.fail(new Error('CAD 几何生成等待超时，已停止本次加载；现有图层保持不变'));
     } catch (error) { this.fail(asError(error)); return; }
-    if (this.jobs.size && Date.now() - this.lastProgress > (this.options.timeoutMs ?? 60_000)) this.fail(new Error('CAD 几何生成等待超时，已停止本次加载；现有图层保持不变'));
   }
-  completed(job: Job): void { this.jobs.delete(job); this.lastProgress = Date.now(); this.notify(); }
+  private recordProgress(): void {
+    const now = Date.now();
+    this.lastProgress = now;
+    if (this.pausedAt !== undefined) this.pausedAt = now;
+  }
+  completed(job: Job): void { this.jobs.delete(job); this.recordProgress(); this.notify(); }
   capacityChanged(): void { this.notify(); }
   fail(error: Error): void {
     if (this.error || this.finished) return;

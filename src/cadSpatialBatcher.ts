@@ -148,6 +148,20 @@ export class CadSpatialBatcher<T> {
       const size = byVertices ? buffer.vertices : buffer.entries.length;
       if (size > largestSize) { largestKey = key; largestSize = size; fromOverflow = false; }
     }
+    if (fromOverflow) {
+      const overflow = this.overflow.get(largestKey)!;
+      // Moving one small cell into overflow does not free pending capacity.
+      // Consolidate compatible cells before emitting it; otherwise the next
+      // pressure iteration immediately submits that single entity as a primitive.
+      if (overflow.entries.length < this.options.maxBatchSize && overflow.vertices < this.maxBatchVertices) {
+        let compatibleKey: string | undefined, compatibleSize = -1;
+        for (const [key, buffer] of this.buffers) if (buffer.partition === overflow.partition) {
+          const size = byVertices ? buffer.vertices : buffer.entries.length;
+          if (size > compatibleSize) { compatibleKey = key; compatibleSize = size; }
+        }
+        if (compatibleKey !== undefined) { this.releaseCell(compatibleKey); return; }
+      }
+    }
     if (fromOverflow) this.emitBuffer(this.overflow, largestKey);
     else this.releaseCell(largestKey);
   }
