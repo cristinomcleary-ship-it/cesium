@@ -54,6 +54,7 @@ type ReportComposerHost = {
   getLayers: () => ReportComposerLayerOption[];
   loadImage: (file: File) => Promise<string>;
   changed: () => void;
+  removeElement?: (id: string) => boolean;
   executeAction: (action: ReportElementAction) => void;
   toast: (message: string, error?: boolean) => void;
   beginInteractionSession?: () => (() => void);
@@ -630,6 +631,13 @@ export class ReportComposer {
     const slide = this.host.getSlide();
     const selected = this.selectedElement();
     if (!slide || !selected) return;
+    if (this.host.removeElement) {
+      if (!this.host.removeElement(selected.id)) return;
+      this.releaseTransientVideo(selected.id);
+      this.selectedElementId = this.host.getSlide()?.elements.at(-1)?.id ?? null;
+      this.refresh();
+      return;
+    }
     slide.elements.splice(slide.elements.indexOf(selected), 1);
     this.releaseTransientVideo(selected.id);
     this.selectedElementId = slide.elements.at(-1)?.id ?? null;

@@ -14,15 +14,19 @@ import { validateRailSafetyDefinition, validateRailSafetyWorkArea } from "./rail
 import { buildRailSafetyTaskView, exportRailSafetyTaskCsv } from "./railSafetyTaskView";
 import { renderRailSafetyOperations, type RailSafetyIssueFilter } from "./railSafetyOperationsView";
 import { RAIL_SAFETY_RISK_METHOD, RAIL_SAFETY_RISK_CLOSED_STATUSES, type RailSafetyRiskReportPayload, type RailSafetyRiskSnapshot } from "./railSafetyRiskTypes";
+import { MachineryDocumentsPanel } from "./machineryDocumentsPanel";
 import "./railSafetyPanel.css";
 
 type Tab = "machine" | "guard" | "limit";
+type ObjectSection = "configuration" | "analysis" | "documents" | "display" | "risk";
 type Draft = { id: string; name: string; taskId?: string; revision?: number; definition: RailSafetyDefinition };
 type FallDemoState = RailSafetyFallDemoSnapshot;
 export type RailSafetyPanelContext = {
   projectId: string; actorId?: string; records: readonly ManagementRecord[];
   resources: readonly ManagementRecord[]; tasks: readonly ManagementRecord[];
   canEdit: boolean; canView: boolean; active: boolean;
+  canViewDocuments?: boolean;
+  canEditDocuments?: boolean;
   canCreateTask?: boolean;
   canReportRisk?: boolean;
   issues?: readonly ManagementRecord[];
@@ -41,7 +45,7 @@ export type RailSafetyPanelOptions = {
   pickPosition?: (position: Cartesian2) => MachineryPlacementPick | undefined;
   onOpenChange?: (open: boolean) => void;
   onPickingChange?: (picking: boolean) => void;
-  /** The host owns field selection; picking a scene object must not silently open another editor. */
+  /** The host owns object selection, archive navigation and unsaved-draft guards. */
   onSelectObject?: (kind: Tab, id: string) => void;
   onSelectionChange?: (kind: Tab, id: string) => void;
 };
@@ -99,6 +103,8 @@ export class RailSafetyPanel {
   private taskScopeKey = "";
   private issueFilter: RailSafetyIssueFilter = "open";
   private managementHost?: HTMLElement;
+  private readonly documents: MachineryDocumentsPanel;
+  private objectSection: ObjectSection = "configuration";
 
   constructor(private readonly options: RailSafetyPanelOptions) {
     this.root.hidden = true; this.root.setAttribute("aria-label", "邻近营业线施工管控");
@@ -107,6 +113,7 @@ export class RailSafetyPanel {
       <div class="rs-stats" data-role="stats"></div>
       <nav class="rs-workspace-tabs" aria-label="管控工作台"><button type="button" data-action="workspace-objects" data-workspace-view="objects">对象配置</button><button type="button" data-action="workspace-tasks" data-workspace-view="tasks">任务总览</button><button type="button" data-action="workspace-issues" data-workspace-view="issues">风险处置</button></nav>
       <nav class="rs-tabs" aria-label="施工管控分类"><button type="button" data-action="tab-machine" data-tab="machine">机械</button><button type="button" data-action="tab-guard" data-tab="guard">防护人员</button><button type="button" data-action="tab-limit" data-tab="limit">安全限界</button></nav>
+      <nav class="rs-section-tabs" aria-label="对象操作分类"><button type="button" data-action="section-configuration" data-object-section="configuration">参数配置</button><button type="button" data-action="section-analysis" data-object-section="analysis">倾覆演示</button><button type="button" data-action="section-documents" data-object-section="documents">机械资料</button><button type="button" data-action="section-risk" data-object-section="risk">筛查结果</button><button type="button" data-action="section-display" data-object-section="display">显示设置</button></nav>
       <div class="rs-scroll">
         <div data-role="operations" hidden></div>
         <div data-role="object-view">
@@ -139,6 +146,18 @@ export class RailSafetyPanel {
       button.type = 'button'; button.addEventListener('click', options.onDisplayManager);
       layers.append(button, element('p', '', '在右侧“场景显示”中统一控制对象、区域和标签；隐藏不影响统计与报警。'));
     }
+    const objectView = this.find('[data-role="object-view"]');
+    const sections: Array<[ObjectSection, string[]]> = [
+      ["configuration", ['[data-role="priority"]', '[data-role="editor"]', '[data-role="monitor"]', '[data-role="picking"]']],
+      ["analysis", ['[data-role="fall-demo"]']], ["documents", []],
+      ["risk", ['[data-role="results"]', '.rs-method']], ["display", ['.rs-display', '.rs-layer-controls', '.rs-legend']],
+    ];
+    for (const [section, selectors] of sections) {
+      const wrapper = element("div", "rs-object-section"); wrapper.dataset.sectionContent = section;
+      for (const selector of selectors) wrapper.append(this.find(selector));
+      objectView.append(wrapper);
+    }
+    this.documents = new MachineryDocumentsPanel(this.find('[data-section-content="documents"]'), () => { if (this.documents) this.controls(); });
     options.host.append(this.root);
     this.scene = new RailSafetyScene(options.viewer, {
       pickPosition: options.pickPosition,
@@ -160,9 +179,9 @@ export class RailSafetyPanel {
       },
       onSelect: (kind, id) => {
         if (this.destroyed || !this.context.canView || !this.context.active || this.busy || this.picking) return;
-        if (this.root.dataset.presentation === "management" && this.options.onSelectObject) { this.options.onSelectObject(kind, id); return; }
+        if ((kind === "machine" || this.root.dataset.presentation === "management") && this.options.onSelectObject) { this.options.onSelectObject(kind, id); return; }
         if (!this.opened || this.busy || this.picking) return;
-        this.requestDiscard(() => { this.tab = kind; this.displayTab = kind === "limit" ? "limits" : kind === "guard" ? "guards" : "envelopes"; this.select(id); }, "切换对象会放弃尚未保存的修改。");
+        this.requestDiscard(() => { this.tab = kind; this.displayTab = kind === "limit" ? "limits" : kind === "guard" ? "guards" : "envelopes"; this.select(id); if (kind === "machine") this.setObjectSection("documents"); }, "切换对象会放弃尚未保存的修改。");
       },
     });
     this.root.addEventListener("click", event => {
@@ -191,7 +210,7 @@ export class RailSafetyPanel {
   get isOpen() { return this.opened; }
   get hasDraft() { return this.dirty || this.picking; }
   get isPicking() { return this.picking; }
-  get isBusy() { return this.busy; }
+  get isBusy() { return this.busy || this.documents.isBusy; }
   get selectedResourceId() { return this.context.canView && this.tab === "machine" ? this.selectedId : ""; }
   /** Reparent, never recreate: unsaved fields, confirmation state and listeners remain intact. */
   setManagementHost(host?: HTMLElement) {
@@ -233,9 +252,20 @@ export class RailSafetyPanel {
       guardCount: records.filter(record => record.definition.kind === "guard").length,
       limitCount: records.filter(record => record.definition.kind === "limit").length });
   }
+  /** The same machine-bound archive opens from its model and its existing control panel. */
+  openMachineDocuments(resourceId: string): boolean {
+    return this.openFieldObject("machine", resourceId, () => { this.setObjectSection("documents"); });
+  }
+  private setObjectSection(section: ObjectSection): void {
+    if (this.documents.isBusy || this.picking) return;
+    this.objectSection = this.tab !== "machine" && (section === "analysis" || section === "documents") ? "configuration" : section;
+    this.root.dataset.fieldFocus = "object";
+    this.controls(); this.find('.rs-scroll').scrollTop = 0;
+  }
   /** Select the actual machine, then use the established model-based angle demonstration. */
   openMachineAnalysis(resourceId: string): boolean {
     return this.openFieldObject("machine", resourceId, () => {
+      this.setObjectSection("analysis");
       this.root.dataset.fieldFocus = "analysis";
       if (!readMachineryState(this.resources().find(resource => resource.id === resourceId)?.machinery)) {
         this.message("该机械尚未保存有效模型和站位，请先完成机械布置；当前状态为待核实。", true); return;
@@ -260,6 +290,7 @@ export class RailSafetyPanel {
   /** Risk entry is a read operation. Registering a problem still requires an explicit action. */
   openMachineRisk(resourceId: string): boolean {
     return this.openFieldObject("machine", resourceId, () => {
+      this.setObjectSection("risk");
       this.root.dataset.fieldFocus = "risk";
       this.find('[data-role="results"]').scrollIntoView({ block: "nearest" });
     });
@@ -268,14 +299,14 @@ export class RailSafetyPanel {
     if (this.destroyed || !this.context.canView || !this.context.active || this.busy || this.picking) return false;
     this.open();
     return this.requestDiscard(() => {
-      this.workspaceView = "objects"; this.root.dataset.fieldFocus = "display";
+      this.workspaceView = "objects"; this.setObjectSection("display"); this.root.dataset.fieldFocus = "display";
       this.renderDisplay(); this.controls(); this.find('.rs-display').scrollIntoView({ block: "nearest" });
     }, "切换显示效果会关闭当前配置编辑，请先保存或确认放弃尚未保存的修改。");
   }
   /** An explicit add entry uses the normal empty draft; it never writes or infers a task/limit. */
   openDefinition(kind: "guard" | "limit", id?: string): boolean {
     if (id) return this.openFieldObject(kind, id);
-    if (this.destroyed || !this.context.canView || !this.context.active || this.busy) return false;
+    if (this.destroyed || !this.context.canView || !this.context.active || this.isBusy) return false;
     if (!this.context.canEdit) {
       const first = this.records().find(record => record.definition.kind === kind);
       return first ? this.openFieldObject(kind, first.id) : false;
@@ -287,7 +318,7 @@ export class RailSafetyPanel {
     }, "新增对象会放弃尚未保存的修改，请先保存或确认放弃。");
   }
   private openFieldObject(tab: Tab, id: string, after?: () => void): boolean {
-    if (this.destroyed || !this.context.canView || !this.context.active || this.busy) return false;
+    if (this.destroyed || !this.context.canView || !this.context.active || this.isBusy) return false;
     if (tab === "machine" ? !this.resources().some(resource => resource.id === id) : !this.records().some(record => record.id === id && record.definition.kind === tab)) return false;
     this.open();
     return this.requestDiscard(() => {
@@ -376,20 +407,20 @@ export class RailSafetyPanel {
   }
   close(): boolean {
     if (!this.opened || this.destroyed) return true;
-    if (this.busy) { this.message("正在保存，请稍后关闭。", true); return false; }
+    if (this.isBusy) { this.message("正在保存配置或机械资料，请稍后关闭。", true); return false; }
     return this.requestDiscard(() => this.closeNow(), "关闭面板会放弃尚未保存的配置。已保存的范围仍显示在场景中。");
   }
-  private closeNow() { this.scene.stopFallDemo(); this.clearDraft(); this.opened = false; this.root.hidden = true; this.options.onOpenChange?.(false); }
+  private closeNow() { this.scene.stopFallDemo(); this.clearDraft(); this.opened = false; this.root.hidden = true; this.controls(); this.options.onOpenChange?.(false); }
   dispose() {
     if (this.destroyed) return;
-    ++this.generation; this.scene.cancelPicking(); this.destroyed = true; clearInterval(this.positioningTimer); this.positioningClient.dispose(); this.positioning.clear(); this.events.abort(); this.scene.dispose(); this.root.remove(); this.setPicking(false);
+    ++this.generation; this.scene.cancelPicking(); this.destroyed = true; clearInterval(this.positioningTimer); this.positioningClient.dispose(); this.positioning.clear(); this.events.abort(); this.documents.dispose(); this.scene.dispose(); this.root.remove(); this.setPicking(false);
     this.opened = false; this.options.onOpenChange?.(false);
   }
   private setPicking(value: boolean) { if (this.picking !== value) { this.picking = value; this.options.onPickingChange?.(value); } if (!value) this.pickingPurpose = undefined; this.find('[data-role="picking"]').hidden = !value; this.controls(); }
   private message(text: string, error = false) { const node = this.find('[data-role="status"]'); node.textContent = text; node.classList.toggle("is-error", error); }
   private clearDraft() { ++this.generation; this.scene.cancelPicking(); this.scene.setDraft(undefined); this.draft = undefined; this.dirty = false; this.concurrentRevision = false; this.pendingAction = undefined; this.find('[data-role="confirm"]').hidden = true; }
   private requestDiscard(action: () => void, message: string): boolean {
-    if (this.busy) return false;
+    if (this.isBusy) return false;
     if (!this.dirty && !this.picking) { action(); return true; }
     this.confirm(() => { this.clearDraft(); action(); }, message, "放弃草稿并继续", this.picking); return false;
   }
@@ -398,6 +429,7 @@ export class RailSafetyPanel {
   private select(id: string) {
     this.workspaceView = "objects";
     this.root.dataset.fieldFocus = "object";
+    this.objectSection = "configuration";
     this.scene.stopFallDemo();
     this.clearDraft(); this.selectedId = id;
     if (this.tab === "machine") {
@@ -960,11 +992,23 @@ export class RailSafetyPanel {
     this.find('[data-role="object-view"]').hidden = !objects;
     this.find('[data-role="operations"]').hidden = objects;
     this.find('.rs-tabs').hidden = !objects;
-    this.find('.rs-footer').hidden = !objects;
+    this.find('.rs-footer').hidden = !objects || this.objectSection !== "configuration";
+    this.find('.rs-section-tabs').hidden = !objects;
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>('[data-object-section]')) {
+      const section = button.dataset.objectSection as ObjectSection;
+      button.hidden = this.tab !== "machine" && (section === "analysis" || section === "documents");
+      button.disabled = this.isBusy || this.picking;
+      button.classList.toggle("is-active", section === this.objectSection); button.setAttribute("aria-pressed", String(section === this.objectSection));
+    }
+    for (const section of this.root.querySelectorAll<HTMLElement>('[data-section-content]')) section.hidden = section.dataset.sectionContent !== this.objectSection;
+    const resource = this.tab === "machine" ? this.resources().find(record => record.id === this.selectedId) : undefined;
+    this.documents.setContext({ projectId: this.context.projectId, actorId: this.context.actorId, resourceId: resource?.id || "", resourceName: resource?.name || "",
+      canView: !!this.context.canViewDocuments && this.context.canView, canEdit: !!this.context.canEditDocuments,
+      active: this.context.active && this.opened && objects && this.objectSection === "documents" });
     this.root.dataset.workspaceView = this.workspaceView;
     for (const button of this.root.querySelectorAll<HTMLButtonElement>('[data-workspace-view]')) {
       const active = button.dataset.workspaceView === this.workspaceView;
-      button.classList.toggle("is-active", active); button.setAttribute("aria-pressed", String(active)); button.disabled = this.busy;
+      button.classList.toggle("is-active", active); button.setAttribute("aria-pressed", String(active)); button.disabled = this.isBusy;
     }
     this.displayControls();
     this.updateFallDemo();
@@ -976,8 +1020,8 @@ export class RailSafetyPanel {
     if (simulate) simulate.disabled = !this.context.canView || !this.context.active || this.busy || this.picking || saved?.definition.kind !== "guard" || !saved.definition.workArea?.deviceId || saved.definition.workArea.polygon.length < 3 || this.positioning.getSample(this.context.projectId, saved.definition.workArea.deviceId)?.source === "measured";
     const clearSimulation = this.root.querySelector<HTMLButtonElement>('[data-action="clear-simulation"]'); if (clearSimulation) clearSimulation.disabled = this.busy || this.picking || !this.context.canView || !this.context.active;
     this.find('[data-role="readonly"]').hidden = this.context.canEdit;
-    this.find<HTMLSelectElement>('[data-role="selection"]').disabled = this.busy || this.picking;
-    for (const button of this.root.querySelectorAll<HTMLButtonElement>('[data-tab]')) button.disabled = this.busy || this.picking;
+    this.find<HTMLSelectElement>('[data-role="selection"]').disabled = this.isBusy || this.picking;
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>('[data-tab]')) button.disabled = this.isBusy || this.picking;
     const newButton = this.find<HTMLButtonElement>('[data-action="new"]'); newButton.hidden = this.tab === "machine"; newButton.disabled = !write;
     this.find<HTMLButtonElement>('[data-action="locate"]').disabled = !this.draft || this.busy || this.picking;
     this.find<HTMLButtonElement>('[data-action="save"]').disabled = !write || !this.draft || !this.dirty;
@@ -1038,6 +1082,8 @@ export class RailSafetyPanel {
     this.dirty = true; this.scene.setDraft({ id: this.draft.id, name: this.draft.name || "未命名草稿", taskId: this.draft.taskId, definition: clone(this.draft.definition) }); this.updateLimitSummary(); this.renderMonitor(); this.controls();
   }
   private action(action: string, button: HTMLButtonElement) {
+    if (action.startsWith("section-")) { if (!this.isBusy && !this.picking) this.setObjectSection(action.slice(8) as ObjectSection); return; }
+    if (this.documents.isBusy && action !== "close") return;
     if (action.startsWith("workspace-")) {
       const view = action.slice("workspace-".length);
       if (this.context.canView && this.context.active && ["objects", "tasks", "issues"].includes(view)) {
@@ -1082,7 +1128,7 @@ export class RailSafetyPanel {
       return;
     }
     if (action === "open-tasks" && this.options.openTasks) { this.navigateTask(); return; }
-    if (action === "choose-limits") { const group = this.root.querySelector<HTMLElement>('[data-role="limit-selection"]'); group?.scrollIntoView({ block: "start", behavior: "smooth" }); (group?.querySelector<HTMLInputElement>('input:not(:disabled)') ?? group)?.focus(); return; }
+    if (action === "choose-limits") { this.setObjectSection("configuration"); const group = this.root.querySelector<HTMLElement>('[data-role="limit-selection"]'); group?.scrollIntoView({ block: "start", behavior: "smooth" }); (group?.querySelector<HTMLInputElement>('input:not(:disabled)') ?? group)?.focus(); return; }
     if (action === "manage-limits") { this.requestDiscard(() => { this.tab = "limit"; this.select(this.records().find(record => record.definition.kind === "limit")?.id || ""); }, "管理限界会切换当前机械，请先保存配置，或放弃当前草稿后继续。"); return; }
     if (action.startsWith("tab-")) { const tab = action.slice(4) as Tab; this.requestDiscard(() => { this.tab = tab; this.displayTab = tab === "limit" ? "limits" : tab === "guard" ? "guards" : "envelopes"; this.select(tab === "machine" ? this.resources()[0]?.id || "" : this.records().find(record => record.definition.kind === tab)?.id || ""); }, "切换分类会放弃当前未保存修改。"); return; }
     if (action === "locate" && this.draft) { void this.scene.flyTo(this.draft.definition.kind === "machine" ? this.draft.definition.resourceId : this.draft.id); return; }

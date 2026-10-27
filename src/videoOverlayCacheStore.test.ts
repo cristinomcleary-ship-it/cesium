@@ -22,6 +22,7 @@ class MemoryDirectory {
   readonly kind = 'directory';
   readonly name: string;
   readonly children = new Map<string, MemoryFile | MemoryDirectory>();
+  readonly blockedRemovals = new Set<string>();
   constructor(name = '') { this.name = name; }
   async getDirectoryHandle(name: string, options?: { create?: boolean }): Promise<MemoryDirectory> {
     const entry = this.children.get(name);
@@ -36,6 +37,7 @@ class MemoryDirectory {
     const file = new MemoryFile(name); this.children.set(name, file); return file;
   }
   async removeEntry(name: string) {
+    if (this.blockedRemovals.has(name)) throw new DOMException('File is busy', 'NoModificationAllowedError');
     if (!this.children.delete(name)) throw new DOMException('Missing', 'NotFoundError');
   }
   async *entries() { yield* this.children.entries(); }
@@ -139,3 +141,25 @@ test('empty, truncated and invalid cache records are never offered for playback'
   const invalid = await store.begin(key(10)); await write(invalid.handle, 'data');
   await assert.rejects(invalid.commit({ ...metadata, frames: 0 }), /无效/); await invalid.abort();
 });
+
+for (const blocked of ['movie', 'manifest']) {
+  test(`scheme deletion retains retry ownership after ${blocked} removal fails and finishes after reopening`, async () => {
+    const { root, store, directory } = await setup();
+    const target = await store.begin(key(11), { schemeId: 'deleted-scheme' });
+    await write(target.handle, 'target bytes'); await target.commit(metadata);
+    const unrelated = await store.begin(key(12), { schemeId: 'kept-scheme' });
+    await write(unrelated.handle, 'keep bytes'); await unrelated.commit(metadata);
+    const manifestName = `${key(11)}.json`;
+    const manifest = JSON.parse(await (await directory.getFileHandle(manifestName)).getFile().then(file => file.text()));
+    directory.blockedRemovals.add(blocked === 'movie' ? manifest.file : manifestName);
+    await assert.rejects(store.removeScheme('deleted-scheme'));
+    assert.equal(directory.children.has(manifestName), true, 'retry ownership survives any failed deletion');
+    assert.equal(directory.children.has(manifest.file), blocked === 'movie');
+    const reopened = await VideoOverlayCacheStore.open({ root: root as unknown as FileSystemDirectoryHandle });
+    if (blocked === 'manifest') assert.equal(await reopened.get(key(11)), undefined, 'a missing movie is never offered as a playable cache');
+    directory.blockedRemovals.clear();
+    await reopened.removeScheme('deleted-scheme'); await reopened.removeScheme('deleted-scheme');
+    assert.equal(directory.children.has(manifestName), false); assert.equal(directory.children.has(manifest.file), false);
+    assert.equal(await (await reopened.get(key(12)))!.file.text(), 'keep bytes');
+  });
+}

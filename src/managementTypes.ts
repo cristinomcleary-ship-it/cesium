@@ -24,7 +24,7 @@ export type ManagementMetric = { id: string; name: string; numerator: number | n
 export type ManagementFilters = { periodStart?: string; periodEnd?: string; taskIds?: string[]; areaIds?: string[]; ownerId?: string; status?: string; query?: string };
 export type ManagementMetrics = { businessAsOf: string; confirmedAsOf: string; formulaVersion: string; taskProgress: { taskId: string; quantity: number; unit?: string; target?: number; percent: number | null; entryRevisions: { entryId: string; revision: number }[] }[]; metrics: ManagementMetric[]; dashboard: ManagementMetric[] };
 export type ManagementAudit = { id: number; projectId: string; actorId: string; command: string; recordId: string; beforeRevision: number | null; afterRevision: number; at: string; reason: string };
-export type ManagementSnapshot = { schemaVersion: 1; revision: number; projectId: string; session: ManagementSession; projects: ManagementProject[]; members: ManagementMember[]; collections: Record<ManagementCollection, ManagementRecord[]>; updatedAt: string; audit: ManagementAudit[] };
+export type ManagementSnapshot = { schemaVersion: 1; revision: number; projectId: string; session: ManagementSession; projects: ManagementProject[]; members: ManagementMember[]; collections: Record<ManagementCollection, ManagementRecord[]>; updatedAt: string; audit: ManagementAudit[]; pendingFileDeletions?: Array<{ id: string; name: string; projectId: string; revision: number }> };
 export type ManagementCommandType =
  | "project.create" | "project.update" | "member.save"
  | "wbs.create" | "wbs.update" | "task.create" | "task.update" | "task.publish" | "task.start" | "task.pause" | "task.resume" | "task.request-completion" | "task.confirm-completion" | "task.cancel" | "task.forecast"

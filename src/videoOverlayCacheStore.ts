@@ -221,9 +221,11 @@ export class VideoOverlayCacheStore {
 
   async remove(key: string): Promise<void> {
     const manifest = await this.readManifest(key);
-    // Unpublish first, so an interrupted delete never advertises a missing movie.
-    await this.removeFile(`${cacheKey(key)}.json`);
+    // Keep the ownership pointer until the bytes are gone. If a busy file or
+    // permission error interrupts cleanup, a new store can still retry it.
+    // get() already treats a manifest whose movie is missing as unavailable.
     if (manifest) await this.removeFile(manifest.file);
+    await this.removeFile(`${cacheKey(key)}.json`);
   }
 
   private async manifests(): Promise<CacheManifest[]> {
@@ -245,4 +247,5 @@ export class VideoOverlayCacheStore {
   async removeScheme(schemeId: string): Promise<void> {
     for (const manifest of await this.manifests()) if (manifest.schemeId === schemeId) await this.remove(manifest.key);
   }
+  async getSchemeIds(): Promise<string[]> { return [...new Set((await this.manifests()).map(manifest => manifest.schemeId))]; }
 }

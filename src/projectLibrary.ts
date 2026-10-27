@@ -16,15 +16,19 @@ export type LibraryRecord = {
 };
 export type SceneView = { position: number[]; direction: number[]; up: number[]; basemap: string; activeImageryId?: string; activeVideoId?: string };
 export type LibraryListing = {
-  records: LibraryRecord[]; problems: Array<{ id: string; error: string }>; view?: SceneView;
+  records: LibraryRecord[]; problems: Array<{ id: string; error: string; deleted?: boolean; name?: string; kind?: LibraryKind }>; view?: SceneView;
+  deletedVideoIds?: string[];
 };
+export class LibraryRequestError extends Error {
+  constructor(message: string, readonly status: number, readonly deleted = false, readonly code?: string) { super(message); }
+}
 export async function libraryRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch("/__library" + path, {
     ...init, cache: "no-store",
     headers: { "X-Cesium-Library": "1", ...init.headers },
   });
   const body = await response.json().catch(() => ({ error: "资料库服务不可用，请使用本机启动脚本重新启动软件" }));
-  if (!response.ok || body.error) throw new Error(body.error || "资料保存失败");
+  if (!response.ok || body.error) throw new LibraryRequestError(body.error || "资料保存失败", response.status, body.deleted === true, body.code);
   return body as T;
 }
 export function jsonRequest(method: string, value: unknown): RequestInit {

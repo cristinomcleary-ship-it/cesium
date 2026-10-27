@@ -4,12 +4,14 @@ import { createServer } from "node:http";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createProjectLibrary } from "./projectLibrary.ts";
+import { setManagementActor } from "./management/actorContext.ts";
 
-async function fixture() {
+async function fixture(options: { removeOwnedDirectory?: (path: string) => Promise<void>; actor?: Parameters<typeof setManagementActor>[1] } = {}) {
   await mkdir("tmp/library-unit", { recursive: true });
   const root = await mkdtemp(resolve("tmp/library-unit/case-"));
-  const library = createProjectLibrary(root, { resolveTiles: path => ({ root: path, entry: join(path, "tileset.json") }) });
-  const server = createServer((req, res) => void library.middleware(req, res, () => { res.statusCode = 404; res.end(); }));
+  const { actor, ...libraryOptions } = options;
+  const library = createProjectLibrary(root, { ...libraryOptions, resolveTiles: path => ({ root: path, entry: join(path, "tileset.json") }) });
+  const server = createServer((req, res) => { if (actor) setManagementActor(req, actor); void library.middleware(req, res, () => { res.statusCode = 404; res.end(); }); });
   await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
   const port = (server.address() as { port: number }).port;
   const url = "http://127.0.0.1:" + port + "/__library";
@@ -112,5 +114,105 @@ test("concurrent partial updates preserve both visibility and model transform", 
     ]);
     const a = (await createProjectLibrary(f.root).list()).records[0];
     assert.equal(a.visible, false); assert.equal(a.settings.scale, 3);
+  } finally { await f.close(); }
+});
+
+
+test("failed physical deletion is reported, tombstoned, and recovered after restart without resurrection", async () => {
+  let blocked = true;
+  const f = await fixture({ removeOwnedDirectory: async path => { if (blocked) throw new Error("EBUSY"); await rm(path, { recursive: true, force: true }); } });
+  try {
+    const file = await f.call("/records/pending/files/source?name=data.json", "POST", "{}");
+    await f.call("/records/pending", "PUT", record("pending", file.data));
+    const result = await f.call("/records/pending", "DELETE");
+    assert.equal(result.status, 503); assert.equal(result.data.code, "FILE_DELETE_PENDING"); assert.equal(result.data.deleted, true);
+    const listing = await f.library.list();
+    assert.equal(listing.records.length, 0); assert.equal(listing.problems[0].deleted, true); assert.equal(listing.problems[0].kind, "GIS");
+    assert.equal(await readFile(join(f.library.root, "records/pending/source/data.json"), "utf8"), "{}");
+    assert.equal((await f.call("/records/pending", "PATCH", { visible: true })).status, 410);
+    blocked = false;
+    assert.equal((await createProjectLibrary(f.root).list()).records.length, 0);
+    await assert.rejects(readFile(join(f.library.root, "records/pending/source/data.json")), { code: "ENOENT" });
+    assert.equal((await f.call("/records/pending", "DELETE")).status, 200);
+  } finally { await f.close(); }
+});
+
+test("converted model deletion reclaims owned conversion bytes only after its last shared import", async () => {
+  const f = await fixture();
+  try {
+    const job = join(f.root, ".model-cache", "job-123456"); await mkdir(job, { recursive: true });
+    await writeFile(join(job, "model.glb"), "model"); await writeFile(join(job, "original.skp"), "source");
+    const external = join(f.root, "user-original.skp"); await writeFile(external, "external original");
+    for (const key of ["first", "second"]) {
+      const copied = await f.call(`/records/${key}/copy`, "POST", { type: "model", url: "/__models/files/job-123456/model.glb" });
+      assert.equal(copied.status, 200);
+      assert.equal((await f.call(`/records/${key}`, "PUT", { ...record(key, copied.data), kind: "Model", files: { data: copied.data } })).status, 200);
+    }
+    assert.equal((await f.call("/records/first", "DELETE")).status, 200);
+    assert.equal(await readFile(join(job, "original.skp"), "utf8"), "source");
+    assert.equal((await f.call("/records/second", "DELETE")).status, 200);
+    await assert.rejects(readFile(join(job, "original.skp")), { code: "ENOENT" });
+    assert.equal(await readFile(external, "utf8"), "external original");
+  } finally { await f.close(); }
+});
+
+test("delete racing stale writes remains deleted and scene view excludes deleted active IDs", async () => {
+  const f = await fixture();
+  try {
+    const file = await f.call("/records/race/files/source?name=x.json", "POST", "{}");
+    await f.call("/records/race", "PUT", record("race", file.data));
+    await Promise.all([f.call("/records/race", "DELETE"), f.call("/records/race", "PATCH", { visible: true })]);
+    const view = { position: [1,2,3], direction: [1,0,0], up: [0,0,1], basemap: "street", activeVideoId: "race", activeImageryId: "race" };
+    assert.equal((await f.call("/view", "PUT", view)).status, 200);
+    const listing = await createProjectLibrary(f.root).list();
+    assert.equal(listing.records.length, 0); assert.equal(listing.view?.activeVideoId, undefined); assert.equal(listing.view?.activeImageryId, undefined);
+  } finally { await f.close(); }
+});
+
+
+test("deleted video IDs survive successful disk cleanup and restart without inferring kinds for legacy tombstones", async () => {
+  const f = await fixture();
+  try {
+    for (const [id, kind] of [["known-video", "Drone Video"], ["known-gis", "GIS"]]) {
+      const file = await f.call(`/records/${id}/files/source?name=original.bin`, "POST", "original");
+      assert.equal((await f.call(`/records/${id}`, "PUT", { ...record(id, file.data), kind })).status, 200);
+      assert.equal((await f.call(`/records/${id}`, "DELETE")).status, 200);
+    }
+    await writeFile(join(f.library.root, "deleted", "legacy-video-name.json"), JSON.stringify({ deletedAt: "2026-10-01", cleanedAt: "2026-10-01" }));
+    const restarted = createProjectLibrary(f.root);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const listing = await restarted.list();
+      assert.deepEqual(listing.deletedVideoIds, ["known-video"]);
+      assert.deepEqual(listing.problems, []); assert.deepEqual(listing.records, []);
+    }
+    await assert.rejects(readFile(join(f.library.root, "records", "known-video", "record.json")), { code: "ENOENT" });
+  } finally { await f.close(); }
+});
+
+test("deleted video IDs include pending disk cleanup and remain after automatic retry succeeds", async () => {
+  const f = await fixture({ removeOwnedDirectory: async () => { throw new Error("EBUSY"); } });
+  try {
+    const file = await f.call("/records/busy-video/files/source?name=original.mp4", "POST", "video");
+    await f.call("/records/busy-video", "PUT", { ...record("busy-video", file.data), kind: "Drone Video" });
+    assert.equal((await f.call("/records/busy-video", "DELETE")).status, 503);
+    const pending = await f.library.list();
+    assert.deepEqual(pending.deletedVideoIds, ["busy-video"]); assert.equal(pending.problems.length, 1);
+    const recovered = await createProjectLibrary(f.root).list();
+    assert.deepEqual(recovered.deletedVideoIds, ["busy-video"]); assert.equal(recovered.problems.length, 0);
+  } finally { await f.close(); }
+});
+
+test("deleted video IDs require the same media and project scope as live video metadata", async () => {
+  const actor: Parameters<typeof setManagementActor>[1] = { id: "fixture", displayName: "Fixture", roles: ["viewer"], authMode: "local-account", permissions: ["read", "files"] };
+  const f = await fixture({ actor });
+  try {
+    const file = await f.call("/records/authorized-video/files/source?name=original.mp4", "POST", "video");
+    await f.call("/records/authorized-video", "PUT", { ...record("authorized-video", file.data), kind: "Drone Video" });
+    await f.call("/records/authorized-video", "DELETE");
+    assert.deepEqual((await f.call("/records")).data.deletedVideoIds, []);
+    actor.permissions.push("media");
+    assert.deepEqual((await f.call("/records")).data.deletedVideoIds, ["authorized-video"]);
+    actor.taskIds = [];
+    assert.deepEqual((await f.call("/records")).data.deletedVideoIds, []);
   } finally { await f.close(); }
 });

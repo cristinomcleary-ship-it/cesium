@@ -191,6 +191,7 @@ export class VideoModelOverlay {
   private cameraKey = '';
   private cachedPreview?: { video: HTMLVideoElement; url: string; file: Blob; start: number; end: number; revision: number; signature?: string; signatureRange?: { start: number; end: number } };
   private cacheLifecycle?: VideoOverlayLifecycle;
+  private readonly cacheSchemeLifecycles = new Map<string, Set<VideoOverlayLifecycle>>();
   private cacheTask?: Promise<void>;
   private cacheDependencySignature?: string;
   private cacheRange?: { start: number; end: number };
@@ -1027,7 +1028,11 @@ export class VideoModelOverlay {
     this.assertVideoAccess();
     if (this.cacheTask) return this.cacheTask;
     const priorExtraction = this.extractionTask; this.extraction?.abort();
-    const lifecycle = new VideoOverlayLifecycle(), generation = this.inputGeneration;
+    const lifecycle = new VideoOverlayLifecycle(), generation = this.inputGeneration, savedSchemeId = this.savedId;
+    if (savedSchemeId) {
+      const owners = this.cacheSchemeLifecycles.get(savedSchemeId) ?? new Set<VideoOverlayLifecycle>();
+      owners.add(lifecycle); this.cacheSchemeLifecycles.set(savedSchemeId, owners);
+    }
     this.cacheLifecycle = lifecycle;
     const playbackTime = this.active ? this.presentedTime ?? this.lastFrameTime : this.resumeTime;
     const disabled = new Map<HTMLInputElement | HTMLSelectElement | HTMLButtonElement | HTMLTextAreaElement, boolean>();
@@ -1066,7 +1071,7 @@ export class VideoModelOverlay {
         if (this.frameHandle !== undefined) this.video.cancelVideoFrameCallback?.(this.frameHandle); this.frameHandle = undefined;
         if (this.animationHandle !== undefined) cancelAnimationFrame(this.animationHandle); this.animationHandle = undefined;
         clearTimeout(this.seekWaitTimer); this.seeking = false; this.seekTarget = undefined; this.deferredFrame = undefined;
-        const transaction = await store.begin(key, { schemeId: this.savedId ?? await hashVideoOverlayInputs({ video: sourceFile }, 'video', signal), signal });
+        const transaction = await store.begin(key, { schemeId: savedSchemeId ?? await hashVideoOverlayInputs({ video: sourceFile }, 'video', signal), signal });
         try {
           const result = await prepareNativeVideoCache({ sourceFile, range, width: this.metadata!.width, height: this.metadata!.height,
             includeAudio: this.el<HTMLInputElement>('ccExportAudio').checked, target: transaction.handle, signal,
@@ -1112,6 +1117,10 @@ export class VideoModelOverlay {
       this.el<HTMLButtonElement>('ccCacheCancel').disabled = true;
       if (this.cacheTask === task) this.cacheTask = undefined;
       if (this.cacheLifecycle === lifecycle) { this.cacheLifecycle = undefined; this.cleanupReport.pendingPreparation = false; }
+      if (savedSchemeId) {
+        const owners = this.cacheSchemeLifecycles.get(savedSchemeId); owners?.delete(lifecycle);
+        if (!owners?.size) this.cacheSchemeLifecycles.delete(savedSchemeId);
+      }
       this.updatePlayback();
     });
     this.cacheTask = task; return task;
@@ -1471,6 +1480,30 @@ export class VideoModelOverlay {
         for (const task of result.tasks) if (task.status === 'rejected') report.errors.push(`${task.label}: ${task.error}`);
       });
     }
+  }
+  async removeSavedCache(id: string): Promise<void> {
+    // A deleted active scheme must settle its encoder before its files are removed.
+    const owners = [...(this.cacheSchemeLifecycles.get(id) ?? [])];
+    if (this.savedId === id) this.clear();
+    await Promise.all(owners.map(lifecycle => lifecycle.close()));
+    if (typeof navigator.storage?.getDirectory !== 'function') return;
+    const store = await VideoOverlayCacheStore.open();
+    await store.removeScheme(id);
+  }
+  async reconcileDeletedCaches(ids: readonly string[]): Promise<Array<{ id: string; error: string }>> {
+    if (!ids.length || typeof navigator.storage?.getDirectory !== 'function') return [];
+    const failed: Array<{ id: string; error: string }> = [];
+    try {
+      const deleted = new Set(ids), store = await VideoOverlayCacheStore.open();
+      for (const id of await store.getSchemeIds()) if (deleted.has(id)) {
+        try { await this.removeSavedCache(id); }
+        catch (error) { failed.push({ id, error: error instanceof Error ? error.message : String(error) }); }
+      }
+    } catch (error) {
+      // Keep an actionable retry item even if directory access itself failed.
+      for (const id of ids) failed.push({ id, error: error instanceof Error ? error.message : String(error) });
+    }
+    return failed;
   }
   clear() {
     clearTimeout(this.autosaveTimer); this.autoSaveReady = false; this.accessInvalid = false; this.resumeTime = 0; this.metadata = undefined; this.manifest = undefined;

@@ -30,6 +30,7 @@ export class SceneDisplayPanel {
   private readonly events = new AbortController();
   private readonly store = new SceneDisplayStore();
   private items: SceneDisplayItem[] = [];
+  private readonly itemsById = new Map<string, SceneDisplayItem>();
   private selected = new Set<string>();
   private query = "";
   private editor?: GroupEditor;
@@ -69,6 +70,15 @@ export class SceneDisplayPanel {
       else if (input.dataset.role === "group-name" && this.editor) this.editor.name = input.value;
     }, { signal: this.events.signal });
     this.root.addEventListener("change", event => this.change(event.target as HTMLInputElement), { signal: this.events.signal });
+    // Native details toggles do not bubble. Delegate in capture phase so repeated
+    // directory refreshes do not retain one AbortSignal listener per old section.
+    this.root.addEventListener("toggle", event => {
+      const section = event.target as HTMLDetailsElement;
+      if (this.disposed || !section.matches('details[data-category]') || !section.isConnected) return;
+      const category = section.dataset.category!;
+      if (section.open) this.populateCategory(section, category);
+      if (!this.query.trim()) { this.store.setCategoryCollapsed(category, !section.open); this.renderStatus(); }
+    }, { capture: true, signal: this.events.signal });
     this.root.addEventListener("keydown", event => {
       // Candidate confirmation/cancellation belongs to the IME, including legacy 229 events.
       if (event.isComposing || event.keyCode === 229) {
@@ -100,6 +110,8 @@ export class SceneDisplayPanel {
     const changed = this.store.setContext(projectId, actorId);
     const seen = new Set<string>();
     this.items = items.filter(item => typeof item.id === "string" && item.id.length > 0 && item.id.length <= 500 && !seen.has(item.id) && !!seen.add(item.id)).map(item => ({ ...item, name: item.name || "未命名对象", category: item.category || "其他", visible: item.visible !== false }));
+    this.itemsById.clear();
+    for (const item of this.items) this.itemsById.set(item.id, item);
     this.store.setItems(this.items);
     if (changed) {
       this.contextRevision++;
@@ -116,11 +128,11 @@ export class SceneDisplayPanel {
   /** Re-apply after a host renderer is rebuilt without changing its logical directory. */
   reapply(): void { this.apply(true); }
 
-  dispose(): void { if (!this.disposed) { this.disposed = true; this.events.abort(); this.root.remove(); } }
+  dispose(): void { if (!this.disposed) { this.disposed = true; this.events.abort(); this.root.remove(); this.itemsById.clear(); } }
   private find<T extends HTMLElement = HTMLElement>(selector: string): T { return this.root.querySelector<T>(selector)!; }
   private button(action: string, title: string): HTMLButtonElement { const node = element("button", "", title); node.type = "button"; node.dataset.action = action; return node; }
   private matches(item: SceneDisplayItem): boolean { const query = this.query.trim().toLocaleLowerCase(); return !query || `${item.name} ${item.category} ${item.detail || ""}`.toLocaleLowerCase().includes(query); }
-  private item(id: string) { return this.items.find(item => item.id === id); }
+  private item(id: string) { return this.itemsById.get(id); }
   private removalKey(id: string): string { return JSON.stringify([this.store.scopeKey, id]); }
   private setMessage(message: string, error = false): void { this.message = message; this.error = error; this.renderStatus(); if (error) this.options.onError?.(message); }
 
@@ -188,11 +200,21 @@ export class SceneDisplayPanel {
       const actions = element("span", "sdp-category-actions");
       for (const [action, title] of [["category-show", "全显"], ["category-hide", "全隐"]]) { const button = this.button(action, title); button.dataset.category = category; button.setAttribute("aria-label", `${category}${title}`); actions.append(button); }
       summary.append(actions); section.append(summary);
-      const rows = element("div", "sdp-rows"); for (const item of matches) rows.append(this.itemRow(item)); section.append(rows);
-      section.addEventListener("toggle", () => { if (!this.disposed && !this.query.trim() && section.isConnected) { this.store.setCategoryCollapsed(category, !section.open); this.renderStatus(); } }, { signal: this.events.signal });
+      const rows = element("div", "sdp-rows");
+      // Collapsed catalogues may contain thousands of objects. Keep their counts
+      // and batch controls available, but construct rows only when requested.
+      if (section.open) { for (const item of matches) rows.append(this.itemRow(item)); rows.dataset.populated = "true"; }
+      section.append(rows);
       host.append(section);
     }
     if (!count) host.append(element("p", "sdp-empty", "没有匹配对象。试试其他名称或类型。"));
+  }
+  private populateCategory(section: HTMLDetailsElement, category: string): void {
+    const rows = section.querySelector<HTMLElement>('.sdp-rows');
+    if (!rows || rows.dataset.populated === "true") return;
+    const fragment = document.createDocumentFragment();
+    for (const item of this.items) if (item.category === category && this.matches(item)) fragment.append(this.itemRow(item));
+    rows.append(fragment); rows.dataset.populated = "true";
   }
   private itemRow(item: SceneDisplayItem, showCategory = false): HTMLElement {
     const row = element("div", "sdp-item"); row.dataset.displayId = item.id; row.classList.toggle("is-hidden", !this.store.isVisible(item.id));
@@ -253,6 +275,7 @@ export class SceneDisplayPanel {
       this.store.removeItems([id], scope);
       if (!sameContext()) return;
       this.items = this.items.filter(current => current.id !== id);
+      this.itemsById.delete(id);
       this.selected.delete(id);
       this.store.setItems(this.items);
       this.directorySignature = "";

@@ -372,10 +372,17 @@ export class ElectronicSandTable {
     if (this.disposed) return;
     const next = this.viewpoints.filter((item) => item.id !== id);
     if (next.length === this.viewpoints.length) return;
+    try {
+      if (!globalThis.localStorage) throw new Error("本机存储不可用");
+      globalThis.localStorage.setItem(this.storageKey, JSON.stringify(next.slice(0, MAX_VIEWPOINTS)));
+    } catch (error) {
+      this.setStatus("视点删除未保存，原视点已保留");
+      this.logIsolatedError("删除本机视点", error);
+      return;
+    }
     this.viewpoints = next;
     this.tourIndex = Math.min(this.tourIndex, Math.max(0, next.length - 1));
     if (!next.length) this.stopTour();
-    this.persistViewpoints();
     this.renderViewpoints();
     this.renderTourState();
     this.setStatus("已删除收藏视点");

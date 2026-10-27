@@ -9,6 +9,7 @@ import { MANAGEMENT_API,MANAGEMENT_COLLECTIONS, type ManagementCollection,type M
 import { ManagementError,ensure,allow,str,id,ids,num,instant,rolePermissions,applyDomain,type Actor } from "./management/domain.ts";
 import { authorizeRecord,canAccessRecord,authorizeCommand,type RecordSource } from "./management/authorization.ts";
 import { validateEvidenceStorage } from "./management/evidenceStorage.ts";
+import { assertEvidenceUnreferenced, machineryDocumentCategory, validateMachineryDocumentRefs, removeEvidenceBytes } from "./management/fileLifecycle.ts";
 import { checklistVersion } from "./management/checkIntegrity.ts";
 import { createManagementEventBridge,readLegacyEvents } from "./management/eventBridge.ts";
 import { validateIssueDiscovery,discoverySpatialId } from "./management/eventDiscovery.ts";
@@ -20,7 +21,7 @@ import type { ModelRegistryEntry } from "../src/safetySpatialTypes.ts";
 import type { RailSafetyRecord } from "../src/railSafetyTypes.ts";
 import { PositioningGateway, loadPositioningGatewayConfig, validatePositioningGatewayConfig, type PositioningGatewayConfig } from "./management/positioningGateway.ts";
 export { ManagementError } from "./management/domain.ts";
-export type ManagementStoreOptions={dataDir?:string;projectId?:string;projectName?:string;libraryDataDir?:string;spatialDataDir?:string;modelRegistry?:ModelRegistryEntry[]|(()=>Promise<ModelRegistryEntry[]>);localCompatibility?:boolean;now?:()=>string;positioningConfig?:PositioningGatewayConfig;
+export type ManagementStoreOptions={removeOwnedFile?:(path:string)=>void;dataDir?:string;projectId?:string;projectName?:string;libraryDataDir?:string;spatialDataDir?:string;modelRegistry?:ModelRegistryEntry[]|(()=>Promise<ModelRegistryEntry[]>);localCompatibility?:boolean;now?:()=>string;positioningConfig?:PositioningGatewayConfig;
  resolveSpatialReference?:(projectId:string,objectId:string)=>unknown|Promise<unknown>;
  resolveLibraryEvidence?:(projectId:string,recordId:string,fileKey:string)=>LibraryEvidence|undefined|Promise<LibraryEvidence|undefined>};
 type DbRow={data:string};
@@ -44,6 +45,7 @@ function sameOrigin(req:IncomingMessage){const origin=req.headers.origin;if(!ori
 function canonical(value:unknown):string{if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+canonical((value as Record<string,unknown>)[k])).join(',')+'}';return JSON.stringify(value);}
 async function body(req:IncomingMessage,limit=1_048_576){let bytes=0;const chunks:Buffer[]=[];for await(const raw of req){const c=Buffer.from(raw);bytes+=c.length;if(bytes>limit)throw new ManagementError(413,"BODY_TOO_LARGE","请求超过大小限制");chunks.push(c);}return Buffer.concat(chunks);}
 async function jsonBody(req:IncomingMessage){ensure(req.headers["content-type"]?.startsWith("application/json"),"CONTENT_TYPE","请求必须为JSON");try{return JSON.parse((await body(req)).toString("utf8"));}catch(e){if(e instanceof ManagementError)throw e;throw new ManagementError(400,"INVALID_JSON","JSON格式无效");}}
+function routeId(value:string){let decoded:string;try{decoded=decodeURIComponent(value);}catch{throw new ManagementError(400,"INVALID_ID","编号路径编码无效");}return id(decoded);}
 function requestMarker(req:IncomingMessage){if(req.headers["x-cesium-library"]!=="1")throw new ManagementError(403,"MISSING_REQUEST_MARKER","缺少同源业务请求标识");}
 function passwordHash(password:string){const salt=randomBytes(16).toString("hex");return salt+":"+scryptSync(password,salt,64).toString("hex");}
 function passwordMatches(password:string,saved:string){const [salt,value]=saved.split(":");const actual=scryptSync(password,salt,64);const expected=Buffer.from(value,"hex");return actual.length===expected.length&&timingSafeEqual(actual,expected);}
@@ -91,12 +93,13 @@ export function createManagementStore(options:ManagementStoreOptions={}){
  function list(projectId:string,kind:ManagementCollection):ManagementRecord[]{return (db.prepare("SELECT data FROM records WHERE project_id=? AND collection=? ORDER BY rowid").all(projectId,kind) as DbRow[]).map(r=>JSON.parse(r.data));}
  function get(projectId:string,kind:ManagementCollection,key:string){const row=db.prepare("SELECT data FROM records WHERE project_id=? AND collection=? AND id=?").get(projectId,kind,key) as DbRow|undefined;if(!row)throw new ManagementError(404,"RECORD_NOT_FOUND","记录不存在");return JSON.parse(row.data) as ManagementRecord;}
  function collections(projectId:string,actor:Actor,F?:string){const out=emptyCollections();const rows=F?db.prepare(`SELECT v.collection,v.data FROM record_versions v WHERE v.project_id=? AND v.recorded_at<=? AND v.revision=(SELECT max(x.revision) FROM record_versions x WHERE x.project_id=v.project_id AND x.collection=v.collection AND x.id=v.id AND x.recorded_at<=?)`).all(projectId,F,F):db.prepare("SELECT collection,data FROM records WHERE project_id=?").all(projectId);
-  for(const row of rows as {collection:ManagementCollection;data:string}[]){const record=JSON.parse(row.data) as ManagementRecord;if(visible(actor,record,row.collection))out[row.collection].push(publicRecord(row.collection,record,actor));}return out;}
+  for(const row of rows as {collection:ManagementCollection;data:string}[]){const record=JSON.parse(row.data) as ManagementRecord;if(!(row.collection==="evidence"&&["deleted","deleting"].includes(record.status))&&visible(actor,record,row.collection))out[row.collection].push(publicRecord(row.collection,record,actor));}return out;}
  function publicSession(actor:Actor):ManagementSession{return {userId:actor.id,displayName:actor.displayName,roles:actor.roles,authMode:actor.authMode,permissions:actor.permissions,expiresAt:actor.expiresAt};}
  function snapshot(projectId:string,actor:Actor):ManagementSnapshot{getProject(projectId);allow(actor,"read");const projects=(db.prepare("SELECT data FROM projects").all() as DbRow[]).map(v=>JSON.parse(v.data) as ManagementProject).filter(p=>actor.authMode==="local-owner"||getMember(p.id,actor.id)?.active);
   const members=(db.prepare("SELECT data FROM members WHERE project_id=?").all(projectId) as DbRow[]).map(v=>JSON.parse(v.data) as ManagementMember).filter(m=>actor.permissions.includes("admin")||m.id===actor.id||!actor.taskIds);
   const audit=actor.taskIds?[]:(db.prepare("SELECT * FROM audit WHERE project_id=? ORDER BY id DESC LIMIT 200").all(projectId) as Record<string,unknown>[]).map(v=>({id:Number(v.id),projectId:String(v.project_id),actorId:String(v.actor_id),command:String(v.command),recordId:String(v.record_id),beforeRevision:v.before_revision===null?null:Number(v.before_revision),afterRevision:Number(v.after_revision),at:String(v.at),reason:String(v.reason)}));
-  return {schemaVersion:1,revision:revision(),projectId,session:publicSession(actor),projects,members,collections:collections(projectId,actor),updatedAt:now(),audit};}
+  const pendingFileDeletions=actor.permissions.includes("files")&&actor.permissions.some(permission=>["field","document","inspect","resource"].includes(permission))?list(projectId,"evidence").filter(record=>record.status==="deleting"&&!!record.storageName&&canAccessRecord(actor,"evidence",record,recordSource(projectId),true)).map(({id,name,projectId,revision})=>({id,name,projectId,revision})):[];
+  return {schemaVersion:1,revision:revision(),projectId,session:publicSession(actor),projects,members,collections:collections(projectId,actor),updatedAt:now(),audit,pendingFileDeletions};}
  function storeRecord(projectId:string,kind:ManagementCollection,record:ManagementRecord){db.prepare("INSERT INTO records VALUES(?,?,?,?,?) ON CONFLICT(project_id,collection,id) DO UPDATE SET revision=excluded.revision,data=excluded.data").run(projectId,kind,record.id,record.revision,JSON.stringify(record));db.prepare("INSERT INTO record_versions VALUES(?,?,?,?,?,?)").run(projectId,kind,record.id,record.revision,record.updatedAt,JSON.stringify(record));}
  function validateEvidence(projectId:string,key:string){validateEvidenceStorage(get(projectId,"evidence",key),root,libraryRoot,Boolean(options.resolveLibraryEvidence));}
  function authorizeEvidence(projectId:string,actor:Actor,key:string){const e=authorizedGet(projectId,actor,"evidence",key);allow(actor,e.storageName?"files":e.requiredPermission==="media"?"media":e.requiredPermission==="models"?"models":"files");validateEvidence(projectId,key);}
@@ -111,7 +114,7 @@ export function createManagementStore(options:ManagementStoreOptions={}){
    geometrySha256:object.geometry===undefined?null:hash(canonical(object.geometry)),sourceSha256:object.source===undefined?null:hash(canonical(object.source))}};}
 
  function bump(){db.prepare("UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='revision'").run();}
- function audit(projectId:string,actor:Actor,m:ManagementCommand,key:string,before:number|null,after:number,time:string){db.prepare("INSERT INTO audit(project_id,actor_id,command,record_id,before_revision,after_revision,at,reason) VALUES(?,?,?,?,?,?,?,?)").run(projectId,actor.id,m.type,key,before,after,time,String(m.payload.reason||m.payload.basis||"").slice(0,4000));}
+ function audit(projectId:string,actor:Actor,m:Omit<ManagementCommand,"type">&{type:string},key:string,before:number|null,after:number,time:string){db.prepare("INSERT INTO audit(project_id,actor_id,command,record_id,before_revision,after_revision,at,reason) VALUES(?,?,?,?,?,?,?,?)").run(projectId,actor.id,m.type,key,before,after,time,String(m.payload.reason||m.payload.basis||"").slice(0,4000));}
  function fresh(actor:Actor,projectId:string){if(actor.authMode==="local-account")return accountActor(actor.id,projectId,actor.expiresAt);if(usersExist())throw new ManagementError(401,"AUTH_REQUIRED","本机账号已启用，请登录后继续");return actor;}
  async function execute(m:ManagementCommand,providedActor:Actor):Promise<ManagementSnapshot>{
   ensure(m&&typeof m==="object"&&m.payload&&typeof m.payload==="object"&&!Array.isArray(m.payload),"INVALID_COMMAND","业务命令格式无效");id(m.projectId,"项目");id(m.idempotencyKey,"幂等键");str(m.type,"业务命令",80);ensure(canonical(m).length<=1_000_000,"BODY_TOO_LARGE","业务记录过大");getProject(m.projectId);
@@ -192,18 +195,42 @@ export function createManagementStore(options:ManagementStoreOptions={}){
     else if(path==="/__library/view")allow(actor,"read");else allow(actor,"admin");
    }
    next();
-  }catch(e){errorOutput(res,e);}
+  }catch(e){errorOutput(res,e instanceof URIError?new ManagementError(400,"INVALID_ID","编号路径编码无效"):e);}
+ }
+ function completeFileDeletion(projectId:string,record:ManagementRecord){
+  removeEvidenceBytes(root,record,options.removeOwnedFile);
+  db.exec("BEGIN IMMEDIATE");try{const current=get(projectId,"evidence",record.id);if(current.status!=="deleted"){storeRecord(projectId,"evidence",{...current,status:"deleted",revision:current.revision+1,updatedAt:now(),fileDeletedAt:now()});bump();}db.exec("COMMIT");}catch(error){db.exec("ROLLBACK");throw error;}
+ }
+ // A durable deleting record keeps stale clients from referencing a file while cleanup is retried.
+ for(const row of db.prepare("SELECT project_id,data FROM records WHERE collection='evidence'").all() as {project_id:string;data:string}[]){const record=JSON.parse(row.data) as ManagementRecord;if(record.status==="deleting")try{completeFileDeletion(row.project_id,record);}catch{/* Retain the durable intent; explicit DELETE can retry and report the failure. */}}
+ function deleteFile(projectId:string,key:string,expectedRevision:unknown,providedActor:Actor){
+  const run=queue.catch(()=>undefined).then(()=>{
+   const actor=fresh(providedActor,projectId);allow(actor,"files");
+   if(!actor.permissions.some(permission=>["field","document","inspect","resource"].includes(permission)))throw new ManagementError(403,"DELETE_FILE_FORBIDDEN","当前身份不能删除附件");
+   const record=authorizedGet(projectId,actor,"evidence",key);authorizeRecord(actor,"evidence",record,recordSource(projectId),true);
+   ensure(record.storageName,"FILE_EXTERNAL","原资料附件请从场景资料库删除");
+   if(record.status==="deleted")return {ok:true,snapshot:snapshot(projectId,actor)};
+   if(record.status!=="deleting"){
+    if(expectedRevision!==record.revision)throw new ManagementError(409,"REVISION_CONFLICT","附件已变化，请刷新后重试",undefined,record);
+    assertEvidenceUnreferenced(record,kind=>list(projectId,kind));
+    const time=now(),next={...record,status:"deleting",deletedAt:time,deletedBy:actor.id,updatedAt:time,revision:record.revision+1};
+    db.exec("BEGIN IMMEDIATE");try{storeRecord(projectId,"evidence",next);bump();audit(projectId,actor,{type:"evidence.delete",projectId,idempotencyKey:"delete:"+key,payload:{reason:"删除受控附件并同步清理本地文件"}},key,record.revision,next.revision,time);db.exec("COMMIT");}catch(error){db.exec("ROLLBACK");throw error;}
+   }
+   try{completeFileDeletion(projectId,get(projectId,"evidence",key));}catch{throw new ManagementError(503,"FILE_DELETE_PENDING","附件已从项目删除，但本地文件清理未完成，请关闭占用文件后重试删除",{deleted:true});}
+   return {ok:true,snapshot:snapshot(projectId,actor)};
+  });queue=run;return run;
  }
  async function upload(req:IncomingMessage,res:ServerResponse,projectId:string,actor:Actor,url:URL){
-  const category=workflowCategory(url.searchParams.get("workflowCategory")||undefined);
+  const category=workflowCategory(url.searchParams.get("workflowCategory")||undefined), machineCategory=machineryDocumentCategory(url.searchParams.get("machineryDocumentCategory"));
   const authorizeUpload=(current:Actor)=>{allow(current,"files");if(!current.permissions.some(p=>["field","document","inspect","resource"].includes(p))&&!(current.permissions.includes("plan")&&(category==="construction-plan"||category==="supervision-plan")))throw new ManagementError(403,"UPLOAD_FORBIDDEN","当前身份不能上传此类附件");};
   authorizeUpload(actor);
   const name=basename(str(url.searchParams.get("name"),"文件名",250));ensure(!/[\r\n]/.test(name),"FILE_NAME_INVALID","文件名无效");const mime=String(req.headers["content-type"]||"application/octet-stream").split(";")[0];ensure(!['text/html','image/svg+xml','application/javascript'].includes(mime),"ACTIVE_CONTENT_UNSUPPORTED","此入口不接受可执行网页附件");
   validateWorkflowFile(category,{name,mime});
   let objectRefs:unknown;const rawRefs=url.searchParams.get("objectRefs");if(rawRefs!==null){try{objectRefs=JSON.parse(rawRefs);}catch{throw new ManagementError(400,"INVALID_OBJECT_REFS","对象关联JSON无效");}}
+  validateMachineryDocumentRefs(machineCategory,objectRefs);
   fieldObjectReferences({actor,projectId,now:now(),get:(kind,key)=>authorizedGet(projectId,actor,kind,key)},objectRefs);
   const data=await body(req,100*1024*1024);ensure(data.length>0,"EMPTY_FILE","附件为空");const taskId=url.searchParams.get("taskId")||undefined;if(taskId)authorizedGet(projectId,actor,"tasks",id(taskId));allow(actor,"files");const key=randomUUID(),folder=join(root,"management-files"),destination=join(folder,key),tmp=destination+".pending";mkdirSync(folder,{recursive:true});writeFileSync(tmp,data,{flag:"wx"});renameSync(tmp,destination);
-  const task=queue.catch(()=>undefined).then(()=>{db.exec("BEGIN IMMEDIATE");try{const current=fresh(actor,projectId),at=now();authorizeUpload(current);if(taskId)authorizedGet(projectId,current,"tasks",taskId);const record:ManagementRecord={id:key,projectId,revision:1,name,status:"ready",createdAt:at,updatedAt:at,createdBy:current.id,taskId,workflowCategory:category,...fieldObjectReferences({actor:current,projectId,now:at,get:(kind,key)=>authorizedGet(projectId,current,kind,key)},objectRefs),storageName:key,size:data.length,mime,sha256:hash(data),url:`${MANAGEMENT_API}/files/${key}/original?projectId=${encodeURIComponent(projectId)}`};authorizeRecord(current,"evidence",record,recordSource(projectId),true);storeRecord(projectId,"evidence",record);bump();audit(projectId,current,{type:"evidence.register",projectId,idempotencyKey:key,payload:{reason:"受控二进制上传"}},key,null,1,at);db.exec("COMMIT");return record;}catch(e){db.exec("ROLLBACK");try{unlinkSync(destination);}catch{/* original error retained */}throw e;}});queue=task;output(res,201,await task);
+  const task=queue.catch(()=>undefined).then(()=>{db.exec("BEGIN IMMEDIATE");try{const current=fresh(actor,projectId),at=now();authorizeUpload(current);if(taskId)authorizedGet(projectId,current,"tasks",taskId);const record:ManagementRecord={id:key,projectId,revision:1,name,status:"ready",createdAt:at,updatedAt:at,createdBy:current.id,taskId,workflowCategory:category,machineryDocumentCategory:machineCategory,...fieldObjectReferences({actor:current,projectId,now:at,get:(kind,key)=>authorizedGet(projectId,current,kind,key)},objectRefs),storageName:key,size:data.length,mime,sha256:hash(data),url:`${MANAGEMENT_API}/files/${key}/original?projectId=${encodeURIComponent(projectId)}`};authorizeRecord(current,"evidence",record,recordSource(projectId),true);storeRecord(projectId,"evidence",record);bump();audit(projectId,current,{type:"evidence.register",projectId,idempotencyKey:key,payload:{reason:"受控二进制上传"}},key,null,1,at);db.exec("COMMIT");return record;}catch(e){db.exec("ROLLBACK");try{unlinkSync(destination);}catch{/* original error retained */}throw e;}});queue=task;output(res,201,await task);
  }
  async function middleware(req:IncomingMessage,res:ServerResponse,next:()=>void){
   let url:URL;try{url=new URL(req.url||"/","http://localhost");}catch{next();return;}if(url.pathname==="/__safety/events"){try{sameOrigin(req);const actor=authenticate(req,legacyProjectId);await eventBridge.middleware(req,res,actor);}catch(e){errorOutput(res,e);}return;}if(!url.pathname.startsWith(MANAGEMENT_API+"/")&&url.pathname!==MANAGEMENT_API){next();return;}
@@ -240,6 +267,8 @@ export function createManagementStore(options:ManagementStoreOptions={}){
     const filters:ManagementFilters={taskIds:url.searchParams.getAll("taskId"),areaIds:url.searchParams.getAll("areaId"),ownerId:url.searchParams.get("ownerId")||undefined,status:url.searchParams.get("status")||undefined,query:url.searchParams.get("query")||undefined,periodStart:url.searchParams.get("periodStart")||undefined,periodEnd:url.searchParams.get("periodEnd")||undefined};output(res,200,metrics(projectId,actor,url.searchParams.get("D")||now().slice(0,10),url.searchParams.get("F")||now(),filters));return;
    }
    if(req.method==="POST"&&[MANAGEMENT_API+"/upload",MANAGEMENT_API+"/uploads"].includes(url.pathname)){requestMarker(req);await upload(req,res,projectId,actor,url);return;}
+   const deleteMatch=url.pathname.match(/^\/__management\/files\/([^/]+)$/);if(req.method==="DELETE"&&deleteMatch){requestMarker(req);const input=await jsonBody(req);ensure(input&&typeof input==="object"&&!Array.isArray(input),"INVALID_DELETE_REQUEST","附件删除参数无效");output(res,200,await deleteFile(projectId,routeId(deleteMatch[1]),input.expectedRevision,actor));return;}
+   const machineryDocumentsMatch=url.pathname.match(/^\/__management\/machinery\/([^/]+)\/documents$/);if(req.method==="GET"&&machineryDocumentsMatch){allow(actor,"read");allow(actor,"files");allow(actor,"models");const resource=authorizedGet(projectId,actor,"resources",routeId(machineryDocumentsMatch[1]));ensure(resource.kind==="equipment"&&!resource.deletedAt&&!["deleted","removed","inactive","archived"].includes(resource.status),"OBJECT_UNAVAILABLE","机械不存在或已停用");const matched=list(projectId,"evidence").filter(record=>["ready","deleting"].includes(record.status)&&typeof record.machineryDocumentCategory==="string"&&Array.isArray(record.objectRefs)&&record.objectRefs.length===1&&record.objectRefs[0]?.kind==="resources"&&record.objectRefs[0]?.id===resource.id&&visible(actor,record,"evidence"));const records=matched.filter(record=>record.status==="ready"),pendingDeletions=matched.filter(record=>record.status==="deleting").map(({url,storageName,...record})=>record);output(res,200,{records,pendingDeletions});return;}
    const conditionsMatch=url.pathname.match(/^\/__management\/tasks\/([^/]+)\/conditions$/);if(req.method==="GET"&&conditionsMatch){const task=authorizedGet(projectId,actor,"tasks",id(conditionsMatch[1]));output(res,200,evaluateTaskConditions({now:now(),businessDate:businessDate(projectId),list:k=>list(projectId,k),get:(k,key)=>authorizedGet(projectId,actor,k,key),evidence:key=>authorizeEvidence(projectId,actor,key)},task,revision()));return;}
    const recordMatch=url.pathname.match(/^\/__management\/records\/([^/]+)\/([^/]+)$/);if(req.method==="GET"&&recordMatch){const kind=recordMatch[1] as ManagementCollection;ensure(MANAGEMENT_COLLECTIONS.includes(kind),"COLLECTION_INVALID","资料集合不存在");const record=get(projectId,kind,id(recordMatch[2]));if(!visible(actor,record,kind))throw new ManagementError(403,"RECORD_FORBIDDEN","记录不在任务授权范围");output(res,200,publicRecord(kind,record,actor));return;}
    const fileMatch=url.pathname.match(/^\/__management\/files\/([^/]+)\/(original|preview)$/);if((req.method==="GET"||req.method==="HEAD")&&fileMatch){
