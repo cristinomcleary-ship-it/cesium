@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -88,8 +88,13 @@ export function createLocalImageryMiddleware(projectRoot: string) {
         const lyrPath = join(cache, `${id}.lyr`);
         const content = Buffer.concat(chunks);
         writeFileSync(lyrPath, content);
+        const cleanup = () => {
+          try { rmSync(lyrPath, { force: true }); }
+          catch (error) { console.warn("[local-imagery] 临时 LYR 副本清理失败", error); }
+        };
         const choices = embeddedTileChoices(content);
         if (choices.length) {
+          cleanup();
           return json(response, 200, {
             ok: true,
             kind: "tiles",
@@ -110,8 +115,9 @@ export function createLocalImageryMiddleware(projectRoot: string) {
         };
         child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
         child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-        child.on("error", (error) => finish(500, { error: `ArcPy 启动失败：${error.message}` }));
+        child.on("error", (error) => { cleanup(); finish(500, { error: `ArcPy 启动失败：${error.message}` }); });
         child.on("close", () => {
+          cleanup();
           if (finished) return;
           let result: LyrResult;
           try { result = JSON.parse(Buffer.concat(stdout).toString("utf8").trim() || "{}"); }

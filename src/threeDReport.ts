@@ -394,6 +394,7 @@ export class ThreeDReport {
         if (slide) byId<HTMLInputElement>("reportShowCard").checked = slide.showCard;
         if (this.presenting) this.renderStage();
       },
+      removeElement: id => this.removeOverlayElement(id),
       executeAction: (action) => { void this.executeElementAction(action); },
       toast: this.toast,
       beginInteractionSession: () => this.layerAdapter.beginSession?.() ?? (() => undefined),
@@ -597,6 +598,23 @@ export class ThreeDReport {
     }
   }
 
+  private commitDeletion(next: ReportDocument): boolean {
+    const committed = { ...next, updatedAt: new Date().toISOString() };
+    try { localStorage.setItem(this.activeStorageKey, JSON.stringify(committed)); }
+    catch (error) {
+      const state = document.getElementById("reportSaveState");
+      if (state) state.textContent = "删除未保存，原数据已保留";
+      this.toast(error instanceof Error ? `删除未保存，原数据已保留：${error.message}` : "删除未保存，原数据已保留", true);
+      return false;
+    }
+    if (this.persistTimer !== undefined) window.clearTimeout(this.persistTimer);
+    this.persistTimer = undefined;
+    this.document = committed;
+    const state = document.getElementById("reportSaveState");
+    if (state) state.textContent = "已自动保存";
+    return true;
+  }
+
   private addSlide() {
     const slide: ReportSlide = {
       id: crypto.randomUUID(),
@@ -648,11 +666,10 @@ export class ThreeDReport {
     const selected = this.selectedSlide();
     if (!selected || !window.confirm(`确定删除“${selected.title}”吗？`)) return;
     const index = this.document.slides.indexOf(selected);
+    if (!this.commitDeletion({ ...this.document, slides: this.document.slides.filter(slide => slide !== selected) })) return;
     this.releaseLocalVideo(selected.id);
     this.composer.releaseTransientMediaForElements(selected.elements);
-    this.document.slides.splice(index, 1);
     this.selectedSlideId = this.document.slides[Math.min(index, this.document.slides.length - 1)]?.id ?? null;
-    this.persist();
     this.renderAll();
   }
 
@@ -770,9 +787,9 @@ export class ThreeDReport {
   private clearMedia() {
     const slide = this.selectedSlide();
     if (!slide) return;
+    const nextSlide: ReportSlide = { ...slide, media: { type: "none", source: "", name: "" } };
+    if (!this.commitDeletion({ ...this.document, slides: this.document.slides.map(item => item === slide ? nextSlide : item) })) return;
     this.releaseLocalVideo(slide.id);
-    slide.media = { type: "none", source: "", name: "" };
-    this.persist();
     this.renderEditor();
   }
 
@@ -855,9 +872,18 @@ export class ThreeDReport {
   private removeAnnotation(id: string) {
     const slide = this.selectedSlide();
     if (!slide) return;
-    slide.annotations = slide.annotations.filter((annotation) => annotation.id !== id);
-    this.persist();
+    const nextSlide = { ...slide, annotations: slide.annotations.filter((annotation) => annotation.id !== id) };
+    if (!this.commitDeletion({ ...this.document, slides: this.document.slides.map(item => item === slide ? nextSlide : item) })) return;
     this.renderAll();
+  }
+
+  private removeOverlayElement(id: string): boolean {
+    const slide = this.selectedSlide();
+    if (!slide || !slide.elements.some(element => element.id === id)) return false;
+    const nextSlide = { ...slide, elements: slide.elements.filter(element => element.id !== id) };
+    if (!this.commitDeletion({ ...this.document, slides: this.document.slides.map(item => item === slide ? nextSlide : item) })) return false;
+    if (this.presenting) this.renderStage();
+    return true;
   }
 
   private locateAnnotation(id: string) {

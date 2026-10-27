@@ -231,3 +231,108 @@ test('the delayed initial moveStart at the constructor camera pose does not supp
   f.compile.resolve(); await started;
   assert.equal(f.setViews.length, 1); assert.equal(f.imports.length, 1);
 });
+
+test('a failed-save draft remains owned and deleting it removes uploaded bytes and cannot be retried as a save', async () => {
+  const f = fixture(); f.owner.starting = false;
+  f.owner.drafts.set(f.record.id, { id: f.record.id, name: f.record.name, kind: 'CAD', settings: {}, files: {} });
+  assert.equal(f.owner.owns(f.record.id), true);
+  assert.equal(await f.owner.delete(f.record.id, false), true);
+  assert.equal(f.owner.owns(f.record.id), false);
+  assert.equal(f.requests.filter(request => request.method === 'DELETE').length, 1);
+  await assert.rejects(f.owner.save(f.record.id, 'old draft', 'CAD', {}), /已删除/);
+});
+
+test('an older catalogue response cannot resurrect a video scheme deleted while the refresh was in flight', async () => {
+  const f = fixture(), gate = deferred(); f.owner.starting = false;
+  const video = { ...f.record, kind: 'Drone Video', settings: { video: { mode: 'cc-overlay' } } };
+  f.owner.records.set(video.id, video);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    if (url === '/__library/records') { await gate.promise; return Response.json({ records: [video], problems: [] }); }
+    return originalFetch(url, options);
+  };
+  const refresh = f.owner.refreshVideoOverlaySchemes();
+  assert.equal(await f.owner.delete(video.id, false), true);
+  gate.resolve(); await refresh;
+  assert.equal(f.owner.records.has(video.id), false);
+  assert.deepEqual(f.owner.listVideoOverlaySchemes(), []);
+});
+
+test('committed deletion with failed file cleanup removes the scene, blocks restore, and retains only cleanup retry', async () => {
+  const f = fixture(); f.prepareRestore(); f.owner.updates.set(f.record.id, { visible: true });
+  let fail = true;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    if (url === '/__library/records/cad-a' && options?.method === 'DELETE' && fail) {
+      return Response.json({ error: 'file busy', code: 'FILE_DELETE_PENDING', deleted: true }, { status: 503 });
+    }
+    return originalFetch(url, options);
+  };
+  assert.equal(await f.owner.delete(f.record.id, false), false);
+  assert.equal(f.owner.records.has(f.record.id), false);
+  assert.equal(f.owner.updates.has(f.record.id), false);
+  assert.equal(f.owner.cleanupPending.has(f.record.id), true);
+  await f.owner.restore(f.record.id); assert.equal(f.loadCalls(), 0);
+  assert.match(f.notifications.at(-1), /文件清理待完成/);
+  fail = false;
+  assert.equal(await f.owner.delete(f.record.id, false), true);
+  assert.equal(f.owner.owns(f.record.id), false);
+});
+
+test('deleting the selected imagery disposes its loaded layer and switches away from the deleted source', async () => {
+  const f = fixture(); f.prepareRestore();
+  f.owner.records.set(f.record.id, { ...f.record, kind: 'Imagery' });
+  f.owner.activeImageryId = f.record.id;
+  let cleared = 0;
+  f.owner.hooks.clearImagery = () => { cleared++; };
+  assert.equal(await f.owner.delete(f.record.id, false), true);
+  assert.equal(cleared, 1);
+  assert.equal(f.owner.activeImageryRecordId, '');
+  assert.equal(f.owner.hooks.getBasemap(), 'street');
+});
+
+test('pending deletion cleanup is restored as a retry item, never as a scene import', async () => {
+  const f = fixture();
+  globalThis.fetch = async () => Response.json({ records: [], problems: [{ id: 'old-model', name: 'bridge.skp', kind: 'Model', deleted: true, error: 'file busy' }] });
+  await f.owner.start();
+  assert.equal(f.owner.owns('old-model'), true);
+  assert.equal(f.owner.records.has('old-model'), false);
+  assert.deepEqual(f.owner.cleanupPending.get('old-model'), { name: 'bridge.skp', kind: 'Model' });
+  assert.equal(f.imports.length, 0);
+});
+
+test('a late video dependency read cannot put a deleted model back into the catalogue', async () => {
+  const f = fixture(), gate = deferred(); f.prepareRestore();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    if (url === '/__library/records/cad-a' && (!options?.method || options.method === 'GET')) { await gate.promise; return Response.json(f.record); }
+    return originalFetch(url, options);
+  };
+  const read = f.owner.readableRecord(f.record.id);
+  const rejection = assert.rejects(read, /已删除/);
+  assert.equal(await f.owner.delete(f.record.id, false), true);
+  gate.resolve(); await rejection;
+  assert.equal(f.owner.records.has(f.record.id), false);
+  assert.equal(f.owner.owns(f.record.id), false);
+});
+
+test('interrupted CAD rollback with a committed tombstone offers cleanup only, without waiting for its own loader', async () => {
+  const f = fixture(); f.prepareRestore();
+  globalThis.fetch = async () => Response.json({ error: 'busy', code: 'FILE_DELETE_PENDING', deleted: true }, { status: 503 });
+  await assert.rejects(f.owner.discardNewCad(f.record.id), /busy/);
+  assert.equal(f.owner.records.has(f.record.id), false);
+  assert.equal(f.owner.cleanupPending.has(f.record.id), true);
+  await f.owner.restore(f.record.id); assert.equal(f.loadCalls(), 0);
+});
+
+test('startup reconciles already deleted video caches and exposes failed cleanup without restoring a video', async () => {
+  const f = fixture();
+  let seen;
+  f.owner.hooks.reconcileDeletedVideoCaches = async ids => { seen = ids; return [{ id: 'old-video', error: 'cache occupied' }]; };
+  globalThis.fetch = async () => Response.json({ records: [], problems: [], deletedVideoIds: ['old-video'] });
+  await f.owner.start();
+  assert.deepEqual(seen, ['old-video']);
+  assert.equal(f.owner.records.size, 0);
+  assert.equal(f.owner.cleanupPending.get('old-video').kind, 'Drone Video');
+  assert.match(f.owner.error, /cache occupied/);
+});

@@ -890,6 +890,17 @@ export class FoundationPitMonitoring {
     }
   }
 
+  /** Deletion is published to the scene only after the replacement state is durable. */
+  private commitDeletion(next: MonitoringState): boolean {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); }
+    catch (error) {
+      this.toast(error instanceof Error ? `删除未保存，原数据已保留：${error.message}` : "删除未保存，原数据已保留", true);
+      return false;
+    }
+    this.state = next;
+    return true;
+  }
+
   private beginNewPit() {
     this.input<HTMLSelectElement>("#pitActivePit").value = "";
     this.resetPitForm();
@@ -1062,10 +1073,11 @@ export class FoundationPitMonitoring {
     if (!pit) return this.toast("当前没有可删除的基坑", true);
     const pointCount = this.state.points.filter((point) => point.pitId === pit.id).length;
     if (!window.confirm(`确定删除基坑“${pit.name}”及其 ${pointCount} 个监测点和全部日报吗？`)) return;
-    this.state.pits = this.state.pits.filter((candidate) => candidate.id !== pit.id);
-    this.state.points = this.state.points.filter((point) => point.pitId !== pit.id);
-    this.state.supportMonitors = this.state.supportMonitors.filter((monitor) => monitor.pitId !== pit.id);
-    this.saveState();
+    if (!this.commitDeletion({ ...this.state,
+      pits: this.state.pits.filter((candidate) => candidate.id !== pit.id),
+      points: this.state.points.filter((point) => point.pitId !== pit.id),
+      supportMonitors: this.state.supportMonitors.filter((monitor) => monitor.pitId !== pit.id),
+    })) return;
     this.render();
     const next = this.state.pits[0];
     if (next) this.loadPitIntoForm(next);
@@ -1884,11 +1896,13 @@ export class FoundationPitMonitoring {
     const support = pit?.customSupports.find((candidate) => candidate.id === button?.dataset.supportId);
     if (!button || !pit || !support) return;
     if (button.dataset.customSupportAction === "delete" && window.confirm(`确定删除自绘支撑“${support.name}”及其监测记录吗？`)) {
-      pit.customSupports = pit.customSupports.filter((candidate) => candidate.id !== support.id);
-      this.state.supportMonitors = this.state.supportMonitors.filter((monitor) => !(monitor.pitId === pit.id && monitor.targetType === "custom" && monitor.targetId === support.id));
-      this.saveState();
+      const nextPit = { ...pit, customSupports: pit.customSupports.filter((candidate) => candidate.id !== support.id) };
+      if (!this.commitDeletion({ ...this.state,
+        pits: this.state.pits.map((candidate) => candidate.id === pit.id ? nextPit : candidate),
+        supportMonitors: this.state.supportMonitors.filter((monitor) => !(monitor.pitId === pit.id && monitor.targetType === "custom" && monitor.targetId === support.id)),
+      })) return;
       this.render(pit.id);
-      this.loadPitIntoForm(pit);
+      this.loadPitIntoForm(nextPit);
       this.toast(`自绘支撑“${support.name}”已删除`);
     }
   }
@@ -1914,8 +1928,7 @@ export class FoundationPitMonitoring {
     if (!button || !monitor) return;
     if (button.dataset.supportMonitorAction === "locate") { this.locateSupportMonitor(monitor); return; }
     if (button.dataset.supportMonitorAction === "delete" && window.confirm(`确定删除支撑监测项“${monitor.name}”及其全部记录吗？`)) {
-      this.state.supportMonitors = this.state.supportMonitors.filter((candidate) => candidate.id !== monitor.id);
-      this.saveState();
+      if (!this.commitDeletion({ ...this.state, supportMonitors: this.state.supportMonitors.filter((candidate) => candidate.id !== monitor.id) })) return;
       this.render(monitor.pitId);
       this.toast(`支撑监测项“${monitor.name}”已删除`);
     }
@@ -2005,8 +2018,7 @@ export class FoundationPitMonitoring {
     if (!point) return;
     if (button.dataset.pitAction === "locate") { this.locatePoint(point); return; }
     if (button.dataset.pitAction === "delete" && window.confirm(`确定删除监测点“${point.name}”及其全部日报吗？`)) {
-      this.state.points = this.state.points.filter((candidate) => candidate.id !== point.id);
-      this.saveState();
+      if (!this.commitDeletion({ ...this.state, points: this.state.points.filter((candidate) => candidate.id !== point.id) })) return;
       this.render();
       this.toast(`监测点“${point.name}”已删除`);
     }

@@ -160,18 +160,22 @@ async function listArchiveRecords() {
 async function putArchiveRecord(record: HiddenWorkRecord) {
   const database = await openArchiveDatabase();
   return new Promise<void>((resolve, reject) => {
-    const request = database.transaction(DB_STORE, "readwrite").objectStore(DB_STORE).put(record);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    const transaction = database.transaction(DB_STORE, "readwrite");
+    transaction.objectStore(DB_STORE).put(record);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error("本地档案保存失败"));
+    transaction.onabort = () => reject(transaction.error ?? new Error("本地档案保存被中止"));
   }).finally(() => database.close());
 }
 
 async function deleteArchiveRecord(id: string) {
   const database = await openArchiveDatabase();
   return new Promise<void>((resolve, reject) => {
-    const request = database.transaction(DB_STORE, "readwrite").objectStore(DB_STORE).delete(id);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    const transaction = database.transaction(DB_STORE, "readwrite");
+    transaction.objectStore(DB_STORE).delete(id);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error("本地档案删除失败"));
+    transaction.onabort = () => reject(transaction.error ?? new Error("本地档案删除被中止"));
   }).finally(() => database.close());
 }
 
@@ -258,6 +262,7 @@ export class SubsurfaceTools {
   private excavationPointSources: string[] = [];
   private excavationFinished = false;
   private records: HiddenWorkRecord[] = [];
+  private archiveMutationPending = false;
   private readonly archiveOverviewListeners = new Set<HiddenWorkArchiveOverviewListener>();
   private clippingTargets = new Map<object, ClippingPlaneCollection>();
   private excavationClipTargets = new Map<object, ClippingPolygonCollection>();
@@ -925,6 +930,8 @@ export class SubsurfaceTools {
   }
 
   private async saveArchive() {
+    if (this.archiveMutationPending) return this.notify("请等待当前档案保存或删除完成", true);
+    this.archiveMutationPending = true;
     try {
       const name = element<HTMLInputElement>("#hiddenWorkName").value.trim();
       const longitude = numberValue("#hiddenWorkLon", Number.NaN);
@@ -954,7 +961,7 @@ export class SubsurfaceTools {
       this.notify(previous ? "隐蔽工程档案已更新" : "隐蔽工程档案已保存到本机");
     } catch (error) {
       this.notify(error instanceof Error ? error.message : "隐蔽工程档案保存失败", true);
-    }
+    } finally { this.archiveMutationPending = false; }
   }
 
   private resetArchiveForm() {
@@ -1017,10 +1024,17 @@ export class SubsurfaceTools {
     } else if (action === "export") {
       this.downloadJson(`${record.name}-隐蔽工程档案.json`, record);
     } else if (action === "delete") {
+      if (this.archiveMutationPending) return this.notify("请等待当前档案保存或删除完成", true);
       if (!window.confirm(`确认删除“${record.name}”及其本地照片档案吗？`)) return;
-      await deleteArchiveRecord(record.id);
-      await this.reloadArchives();
-      this.notify("隐蔽工程档案已删除");
+      this.archiveMutationPending = true;
+      try {
+        await deleteArchiveRecord(record.id);
+        if (element<HTMLInputElement>("#hiddenWorkId").value === record.id) this.resetArchiveForm();
+        await this.reloadArchives();
+        this.notify("隐蔽工程档案已删除");
+      } catch (error) {
+        this.notify(error instanceof Error ? error.message : "隐蔽工程档案删除失败", true);
+      } finally { this.archiveMutationPending = false; }
     }
   }
 

@@ -4,6 +4,8 @@ import { installRenderErrorRecovery, renderErrorSummaryHtml } from "./renderErro
 import { detectsSoftwareRenderer, installCameraNavigationPerformance } from "./cameraNavigationPerformance";
 import { CursorCoordinates } from "./cursorCoordinates";
 import { SceneDisplayPanel, type SceneDisplayItem } from "./sceneDisplayPanel";
+import { installWorkbenchCategories } from "./panelCategories";
+import "./panelCategories.css";
 import { ModelQualityTracker, type ModelQualityState } from "./modelQualityState";
 import type { SafetyWorkspace } from "./safetyWorkspace";
 import type { ManagementWorkspace } from "./managementWorkspace";
@@ -84,7 +86,7 @@ import type { CadCoordinateOptions, CadDisplayMode, ImportRecord, TilesetOptions
 import "./style.css";
 
 let sceneDisplayPanel: SceneDisplayPanel | undefined;
-let sceneDisplayReady = false, sceneDisplayQueued = false;
+let sceneDisplayReady = false, sceneDisplayFrame = 0;
 let sceneDisplayOverrides: Record<string, boolean> = Object.create(null);
 
 const token = import.meta.env.VITE_CESIUM_ION_TOKEN?.trim();
@@ -568,6 +570,14 @@ function replaceLocalImagery(result: LocalImageryResult) {
   }
 }
 
+function clearLocalImagery(): void {
+  const previous = localImagery, layer = basemapLayers.get("local");
+  localImagery = null; basemapLayers.delete("local");
+  if (layer) retireBasemapLayer(layer, previous?.dispose);
+  else previous?.dispose();
+  if (digitalTwinSyncReady) scheduleDigitalTwinSync();
+}
+
 function setBasemap(kind: string) {
   if (kind === "street") {
     activateBasemap("street", () => monitorBasemap(new UrlTemplateImageryProvider({
@@ -758,7 +768,9 @@ videoModelOverlay = new VideoModelOverlay(viewer, {
 });
 projectLibrary = new SceneLibrary({
   viewer, getImports: () => imports, addImport, removeImport, modelEditor, cadLoads,
-  waitForModelReady, cacheGisBoundingSphere, replaceImagery: replaceLocalImagery,
+  waitForModelReady, cacheGisBoundingSphere, replaceImagery: replaceLocalImagery, clearImagery: clearLocalImagery,
+  removeVideoCache: id => videoModelOverlay!.removeSavedCache(id),
+  reconcileDeletedVideoCaches: ids => videoModelOverlay!.reconcileDeletedCaches(ids),
   setBasemap, getBasemap: () => activeBasemapKey, notify: toast,
   restoreVideo: async (files, settings, recordId) => {
     if (!isLibraryRecordAllowed({ kind: "Drone Video" })) throw new Error("当前账号没有录像权限，融合方案已保留");
@@ -774,7 +786,7 @@ projectLibrary = new SceneLibrary({
   clearVideo: () => { videoModelOverlay!.clear(); videoArFusion.clear(); },
   shouldSaveView: () => !videoModelOverlay?.active,
   canReadRecord: isLibraryRecordAllowed,
-  libraryChanged: renderVideoOverlaySchemes,
+  libraryChanged: () => { renderVideoOverlaySchemes(); scheduleSceneDisplay(); },
   layersChanged: renderLayers,
 });
 // Keep a failed first-save ID associated with these files. Retrying from the AR
@@ -1033,7 +1045,7 @@ function renderLayerDirectory() {
     row.querySelector(".fly")?.addEventListener("click", () => locateImport(item));
     name.addEventListener("click", () => !videoModelOverlay?.active && item.kind === "Model" && item.visible && modelEditor.select(item.id));
     row.querySelector(".remove")?.addEventListener("click", () => {
-      if (projectLibrary?.records.has(item.id)) void projectLibrary.delete(item.id);
+      if (projectLibrary?.owns(item.id)) void projectLibrary.delete(item.id);
       else removeImport(item);
     });
   });
@@ -2805,7 +2817,7 @@ $("#loadCad").addEventListener("click", async () => {
   } catch (error) {
     if (savedNewCad && !committed) {
       try { await projectLibrary!.discardNewCad(cadId); }
-      catch (cleanupError) { toast(`本次 CAD 未完成加载，保存记录清理失败，资料库中的文件已保留：${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`, true); }
+      catch (cleanupError) { toast(`本次 CAD 未完成加载，清理未完成，请在本机资料库重试：${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`, true); }
     }
     load.fail();
     if (!(error instanceof DOMException && error.name === "AbortError") && !controller.signal.aborted) {
@@ -3162,6 +3174,8 @@ async function ensureManagementWorkspace(): Promise<ManagementWorkspace> {
         onDisplayMount: host => { sceneDisplayPanel?.mount(host ?? $("#workbenchDisplayHost")); scheduleSceneDisplay(); },
         onChange: renderWorkbenchMachinery,
         onPanelChange: setWorkbenchMachineryPanelOpen,
+        canSelectSceneObject: () => !modelPlacementPending && !modelLoadBusy && !videoModelOverlay?.active
+          && (document.querySelector<HTMLButtonElement>('#markupCancelDrawing')?.disabled ?? true),
         pickPosition: pixel => {
           // Imported engineering meshes are primitives; transient entity overlays must
           // not become a ground position, including a previously rendered depth frame.
@@ -3226,9 +3240,8 @@ function setWorkbenchDock(mode: 'display' | 'editor'): void {
   if (mode === 'display') scheduleSceneDisplay();
 }
 function scheduleSceneDisplay(): void {
-  if (!sceneDisplayReady || sceneDisplayQueued) return;
-  sceneDisplayQueued = true;
-  queueMicrotask(() => { sceneDisplayQueued = false; if (sceneDisplayReady) syncSceneDisplay(); });
+  if (!sceneDisplayReady || sceneDisplayFrame) return;
+  sceneDisplayFrame = requestAnimationFrame(() => { sceneDisplayFrame = 0; if (sceneDisplayReady) syncSceneDisplay(); });
 }
 function syncSceneDisplay(): void {
   if (!sceneDisplayPanel) return;
@@ -3250,7 +3263,7 @@ function syncSceneDisplay(): void {
     locate: () => { locateImport(layer); },
     remove: async () => {
       if(!isImportAllowed(layer))throw new Error('当前账号无法删除此资源');
-      if(projectLibrary?.records.has(layer.id)){if(!await projectLibrary.delete(layer.id,false))throw new Error('删除未完成，请检查资料库提示后重试');}
+      if(projectLibrary?.owns(layer.id)){if(!await projectLibrary.delete(layer.id,false))throw new Error('删除未完成，请检查资料库提示后重试');}
       else if(imports.includes(layer))removeImport(layer);
       syncSceneDisplay();
     },
@@ -3363,7 +3376,8 @@ document.getElementById('pitMonitoringVisible')?.addEventListener('change', even
 }, true);
 markupTools?.subscribeOverview(scheduleSceneDisplay);
 foundationPitMonitoring.subscribeOverview(scheduleSceneDisplay);
-onPageDispose(() => { sceneDisplayReady = false; sceneDisplayPanel?.dispose(); });
+installWorkbenchCategories();
+onPageDispose(() => { sceneDisplayReady = false; cancelAnimationFrame(sceneDisplayFrame); sceneDisplayFrame = 0; sceneDisplayPanel?.dispose(); });
 scheduleSceneDisplay();
 void projectLibrary.start().then(() => {
   renderLayers(); viewer.scene.requestRender();

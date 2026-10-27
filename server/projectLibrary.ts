@@ -9,13 +9,13 @@ import type { LibraryRecord, LibrarySettings, SceneView } from "../src/projectLi
 import { managementActor, managementResourceReadable } from "./management/actorContext.ts";
 
 type TilesLocation = { root: string; entry: string; aggregate?: unknown } | { error: string };
-type Options = { storageRoot?: string; resolveTiles?: (path: string) => TilesLocation };
+type Options = { storageRoot?: string; resolveTiles?: (path: string) => TilesLocation; removeOwnedDirectory?: (path: string) => Promise<void> };
 const validId = /^[a-zA-Z0-9_-]{1,80}$/;
 const validSlot = /^[a-zA-Z0-9_-]{1,80}$/;
 const maxFileBytes = 16 * 1024 ** 3;
 const maxPosFileBytes = 16 * 1024 ** 2;
 const kinds = ["CAD", "3D Tiles", "GIS", "Model", "Imagery", "Drone Video"];
-class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }
+class HttpError extends Error { constructor(public status: number, message: string, public code?: string, public deleted?: boolean) { super(message); } }
 function inside(root: string, path: string) {
   const rel = relative(root, path);
   return rel !== "" && !rel.startsWith(".." + "/") && !rel.startsWith("..\\") && rel !== ".." && !isAbsolute(rel);
@@ -68,6 +68,63 @@ export function createProjectLibrary(projectRoot: string, options: Options = {})
   const recordsRoot = join(root, "records");
   const tombstones = join(root, "deleted");
   const queues = new Map<string, Promise<unknown>>();
+  const removeOwnedDirectory = options.removeOwnedDirectory ?? (path => rm(path, { recursive: true, force: true, maxRetries: 4, retryDelay: 100 }));
+  const conversionMarker = "conversion-source.json";
+  const cleanedDeletions = new Set<string>();
+  const deletedVideos = new Set<string>();
+  let cacheQueue: Promise<unknown> = Promise.resolve();
+  function serialCache<T>(task: () => Promise<T>): Promise<T> {
+    const run = cacheQueue.catch(() => undefined).then(task); cacheQueue = run; return run;
+  }
+  const sourceJob = async (id: string): Promise<string | undefined> => {
+    try { const value = JSON.parse(await readFile(join(recordRoot(id), conversionMarker), "utf8")); return typeof value.jobId === "string" && validId.test(value.jobId) ? value.jobId : undefined; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  };
+  async function cleanDeleted(id: string) {
+    if (cleanedDeletions.has(id)) return;
+    const path = join(tombstones, id + ".json");
+    const marker = JSON.parse(await readFile(path, "utf8"));
+    // Reuse the authenticated server-owned tombstone metadata even after physical cleanup succeeds.
+    // Older tombstones without a recorded kind never authorize browser video-cache deletion.
+    if (marker.kind === "Drone Video") deletedVideos.add(id);
+    if (marker.cleanedAt) { cleanedDeletions.add(id); return; }
+    await serialCache(async () => {
+      const jobId = marker.jobId ?? await sourceJob(id);
+      if (typeof jobId === "string" && validId.test(jobId)) {
+        // Multiple imported records can refer to one converter result. Only its final owner reclaims it.
+        const entries = await readdir(recordsRoot, { withFileTypes: true }).catch(error => { if (error.code === "ENOENT") return []; throw error; });
+        let shared = false;
+        for (const entry of entries) if (entry.isDirectory() && entry.name !== id && validId.test(entry.name)
+          && !await exists(join(tombstones, entry.name + ".json")) && await sourceJob(entry.name) === jobId) { shared = true; break; }
+        if (!shared) await removeOwnedDirectory(join(resolve(projectRoot, ".model-cache"), jobId));
+      }
+      await removeOwnedDirectory(recordRoot(id));
+      await atomicJson(path, { ...marker, jobId, cleanedAt: new Date().toISOString() });
+      cleanedDeletions.add(id);
+    });
+  }
+  async function recoverDeleted(problems: Array<{ id: string; error: string; deleted?: boolean; kind?: string; name?: string }>) {
+    const entries = await readdir(tombstones).catch(error => { if (error.code === "ENOENT") return []; throw error; });
+    const deletedVideoIds: string[] = [];
+    for (const name of entries) {
+      const id = name.slice(0, -5); if (!name.endsWith(".json") || !validId.test(id)) continue;
+      try { await serial(id, () => cleanDeleted(id)); }
+      catch {
+        let metadata: { kind?: string; name?: string } = {}; try { metadata = JSON.parse(await readFile(join(tombstones, name), "utf8")); } catch { /* Keep the cleanup error visible. */ }
+        problems.push({ id, error: "资料已删除，本地文件尚未清理完成；关闭占用文件后重新打开项目可重试", deleted: true, kind: metadata.kind, name: metadata.name });
+      }
+      if (deletedVideos.has(id)) deletedVideoIds.push(id);
+    }
+    return deletedVideoIds.sort();
+  }
+  async function normalizeView(view: SceneView) {
+    const saved = { ...view };
+    for (const key of ["activeVideoId", "activeImageryId"] as const) {
+      const id = saved[key];
+      if (id && (!validId.test(id) || await exists(join(tombstones, id + ".json")))) delete saved[key];
+    }
+    return saved;
+  }
   function serial<T>(id: string, task: () => Promise<T>): Promise<T> {
     const promise = (queues.get(id) ?? Promise.resolve()).catch(() => undefined).then(task);
     queues.set(id, promise);
@@ -89,7 +146,8 @@ export function createProjectLibrary(projectRoot: string, options: Options = {})
   }
   async function list() {
     await mkdir(recordsRoot, { recursive: true });
-    const records: LibraryRecord[] = []; const problems: Array<{ id: string; error: string }> = [];
+    const records: LibraryRecord[] = []; const problems: Array<{ id: string; error: string; deleted?: boolean; kind?: string; name?: string }> = [];
+    const deletedVideoIds = await recoverDeleted(problems);
     for (const entry of await readdir(recordsRoot, { withFileTypes: true })) {
       if (!entry.isDirectory() || !validId.test(entry.name)) continue;
       if (await exists(join(tombstones, entry.name + ".json"))) continue;
@@ -98,10 +156,10 @@ export function createProjectLibrary(projectRoot: string, options: Options = {})
       catch { problems.push({ id: entry.name, error: "资料索引无法读取，原文件仍保留，请检查 project-data" }); }
     }
     let view: SceneView | undefined;
-    try { view = JSON.parse(await readFile(join(root, "view.json"), "utf8")) as SceneView; }
+    try { view = await normalizeView(JSON.parse(await readFile(join(root, "view.json"), "utf8")) as SceneView); }
     catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") problems.push({ id: "view", error: "上次视角无法读取，已保留原文件" }); }
     records.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
-    return { records, problems, view };
+    return { records, problems, view, deletedVideoIds };
   }
   async function save(id: string, value: unknown) {
     return serial(id, async () => {
@@ -133,11 +191,15 @@ export function createProjectLibrary(projectRoot: string, options: Options = {})
   async function remove(id: string) {
     return serial(id, async () => {
       const dir = recordRoot(id);
-      // Persist deletion before removing owned files; stale saves cannot resurrect a deleted record.
-      await atomicJson(join(tombstones, id + ".json"), { deletedAt: new Date().toISOString() });
       if (!inside(root, dir)) throw new HttpError(400, "删除路径越界");
-      // The durable tombstone is the delete commit. A file in use may be reclaimed on a later delete.
-      await rm(dir, { recursive: true, force: true }).catch(error => console.warn("[project-library] deleted record files still in use:", id, (error as Error).message));
+      // Commit a durable deletion intent first, so concurrent old pages cannot resurrect the record.
+      const marker = join(tombstones, id + ".json");
+      if (!await exists(marker)) {
+        let metadata: { kind?: string; name?: string } = {}; try { metadata = await readRecord(id); } catch { /* Uncommitted or corrupt imports may also be removed. */ }
+        await atomicJson(marker, { deletedAt: new Date().toISOString(), jobId: await sourceJob(id), kind: metadata.kind, name: metadata.name });
+      }
+      try { await cleanDeleted(id); }
+      catch { throw new HttpError(503, "资料已从项目删除，但本地文件清理未完成，请重试删除或重新打开项目", "FILE_DELETE_PENDING", true); }
     });
   }
   async function upload(id: string, slot: string, name: string, request: IncomingMessage) {
@@ -245,7 +307,11 @@ export function createProjectLibrary(projectRoot: string, options: Options = {})
         const source = safeFile(cache, match[2]);
         if (!inside(cache, await realpath(source))) throw new HttpError(400, "模型路径无效");
         const dest = join(dir, "data", "model.glb");
-        await mkdir(dirname(dest), { recursive: true }); await copyFile(source, dest);
+        await serialCache(async () => {
+          await mkdir(dirname(dest), { recursive: true }); await copyFile(source, dest);
+          // This ownership marker is server-generated and cannot be supplied through record settings.
+          await atomicJson(join(dir, conversionMarker), { jobId: match[1] });
+        });
         return { name: "model.glb", url: "/__library/files/" + id + "/data/model.glb" };
       }
       throw new HttpError(400, "不支持的数据来源");
@@ -254,7 +320,7 @@ export function createProjectLibrary(projectRoot: string, options: Options = {})
   async function serve(id: string, encoded: string, req: IncomingMessage, res: ServerResponse) {
     await readRecord(id); // only committed, non-deleted assets are served
     const base = recordRoot(id); const path = safeFile(base, encoded);
-    if (!inside(base, await realpath(path)) || path.endsWith("record.json") || path.endsWith(".pending")) throw new HttpError(404, "资料文件不存在");
+    if (!inside(base, await realpath(path)) || path.endsWith("record.json") || path.endsWith(conversionMarker) || path.endsWith(".pending")) throw new HttpError(404, "资料文件不存在");
     const info = await stat(path);
     if (!info.isFile()) throw new HttpError(404, "资料文件不存在");
     let start = 0; let end = info.size - 1;
@@ -294,11 +360,12 @@ export function createProjectLibrary(projectRoot: string, options: Options = {})
         if (!actor) return send(res, 200, listing);
         const records = listing.records.filter(record => managementResourceReadable(actor, record.kind));
         // Corrupt records have an unknown category, so do not disclose their IDs to a partial-resource session.
-        const problems = managementResourceReadable(actor, "unknown") ? listing.problems : [];
+        const problems = listing.problems.filter(problem => managementResourceReadable(actor, problem.kind ?? "unknown"));
         const view = actor.permissions.includes("models") && listing.view ? { ...listing.view } : undefined;
         if (view?.activeVideoId && !records.some(record => record.id === view.activeVideoId && record.kind === "Drone Video")) delete view.activeVideoId;
         if (view?.activeImageryId && !records.some(record => record.id === view.activeImageryId && record.kind === "Imagery")) delete view.activeImageryId;
-        return send(res, 200, { records, problems, view });
+        const deletedVideoIds = managementResourceReadable(actor, "Drone Video") ? listing.deletedVideoIds : [];
+        return send(res, 200, { records, problems, view, deletedVideoIds });
       }
       if (url.pathname === "/__library/view" && method === "PUT") {
         const value = await bodyJson(req);
@@ -307,7 +374,7 @@ export function createProjectLibrary(projectRoot: string, options: Options = {})
           if (!Array.isArray(numbers) || numbers.length !== 3 || !numbers.every(n => typeof n === "number" && Number.isFinite(n))) throw new HttpError(400, "视角参数无效");
         }
         if (!["street", "satellite", "none", "custom", "local"].includes(String(value.basemap))) throw new HttpError(400, "底图参数无效");
-        await serial("view", () => atomicJson(join(root, "view.json"), value)); return send(res, 200, { ok: true });
+        await serial("view", async () => atomicJson(join(root, "view.json"), await normalizeView(value as SceneView))); return send(res, 200, { ok: true });
       }
       const file = url.pathname.match(/^\/__library\/files\/([^/]+)\/(.+)$/);
       if (file && ["GET", "HEAD"].includes(method)) return await serve(file[1], file[2], req, res);
@@ -327,7 +394,7 @@ export function createProjectLibrary(projectRoot: string, options: Options = {})
       if (!match[2] && method === "DELETE") { await remove(id); return send(res, 200, { ok: true }); }
       throw new HttpError(405, "不支持此操作");
     } catch (error) {
-      send(res, error instanceof HttpError ? error.status : 500, { error: error instanceof Error ? error.message : "资料库读写失败，原资料保留" });
+      send(res, error instanceof HttpError ? error.status : 500, { error: error instanceof Error ? error.message : "资料库读写失败，原资料保留", ...(error instanceof HttpError && error.code ? { code: error.code, deleted: error.deleted } : {}) });
     }
   }
   return { middleware, list, save, patch, remove, root };

@@ -11,7 +11,7 @@ import { clampCadToScene, getCadBoundingSphere, getCadModelSamplingExclusions, l
 import { loadLocalImagery, type LocalImageryResult } from "./localImagery";
 import type { ModelEditor } from "./modelEditor";
 import type { ImportRecord } from "./types";
-import { libraryRequest, jsonRequest, type LibraryRecord, type LibrarySettings, type LibraryKind, type LibraryFile, type LibraryListing, type SceneView } from "./projectLibrary";
+import { LibraryRequestError, libraryRequest, jsonRequest, type LibraryRecord, type LibrarySettings, type LibraryKind, type LibraryFile, type LibraryListing, type SceneView } from "./projectLibrary";
 
 type Hooks = {
   viewer: Viewer; getImports: () => ImportRecord[];
@@ -21,6 +21,9 @@ type Hooks = {
   waitForModelReady: (model: Model, timeout: number) => Promise<void>;
   cacheGisBoundingSphere: (id: string, data: GeoJsonDataSource | KmlDataSource | CzmlDataSource) => Promise<void>;
   replaceImagery: (result: LocalImageryResult) => void;
+  clearImagery?: () => void;
+  removeVideoCache?: (id: string) => Promise<void>;
+  reconcileDeletedVideoCaches?: (ids: readonly string[]) => Promise<Array<{ id: string; error: string }>>;
   setBasemap: (kind: string) => void; getBasemap: () => string;
   notify: (message: string, error?: boolean) => void;
   restoreVideo: (files: Record<string, File>, settings: SavedReplaySettings | SavedVideoOverlaySettings, recordId?: string) => Promise<void>;
@@ -51,6 +54,8 @@ export class SceneLibrary {
   private activeImageryId = "";
   private activeVideoId = "";
   private deleting = new Set<string>();
+  private deleted = new Set<string>();
+  private cleanupPending = new Map<string, { name: string; kind: LibraryKind }>();
   private cameraTimer = 0;
   private viewReady = false;
   private startupViewAllowed = true;
@@ -79,6 +84,8 @@ export class SceneLibrary {
   /** A late background restore must not move a camera the user has already taken over. */
   markSceneInteraction(): void { this.startupViewAllowed = false; }
   get activeVideoRecordId(): string { return this.activeVideoId; }
+  get activeImageryRecordId(): string { return this.activeImageryId; }
+  owns(id: string): boolean { return this.records.has(id) || this.drafts.has(id) || this.cleanupPending.has(id); }
   listVideoOverlaySchemes(): VideoOverlaySchemeSummary[] {
     return [...this.records.values()].filter(record => record.kind === "Drone Video" && record.settings.video?.mode === "cc-overlay" && this.hooks.canReadRecord?.(record) !== false)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id))
@@ -90,10 +97,10 @@ export class SceneLibrary {
     const previous = new Map([...this.records.values()].filter(record => record.kind === "Drone Video" && record.settings.video?.mode === "cc-overlay").map(record => [record.id, record.updatedAt]));
     const listing = await libraryRequest<LibraryListing>("/records");
     if (generation !== this.schemeRefreshGeneration) return this.listVideoOverlaySchemes();
-    const incoming = listing.records.filter(record => record.kind === "Drone Video" && record.settings.video?.mode === "cc-overlay" && this.hooks.canReadRecord?.(record) !== false);
+    const incoming = listing.records.filter(record => !this.deleted.has(record.id) && !this.deleting.has(record.id) && record.kind === "Drone Video" && record.settings.video?.mode === "cc-overlay" && this.hooks.canReadRecord?.(record) !== false);
     const available = new Set(incoming.map(record => record.id));
     for (const [id, updatedAt] of previous) {
-      if (!available.has(id) && this.records.get(id)?.updatedAt === updatedAt && !this.drafts.has(id) && !this.updates.has(id) && !this.saveProgress.has(id)) this.records.delete(id);
+      if (!available.has(id) && !this.deleting.has(id) && this.records.get(id)?.updatedAt === updatedAt && !this.drafts.has(id) && !this.updates.has(id) && !this.saveProgress.has(id)) this.records.delete(id);
     }
     for (const record of incoming) {
       const current = this.records.get(record.id);
@@ -111,7 +118,17 @@ export class SceneLibrary {
     this.render();
     try {
       const listing = await libraryRequest<LibraryListing>("/records");
-      for (const record of listing.records) this.records.set(record.id, record);
+      for (const record of listing.records) if (!this.deleted.has(record.id) && !this.deleting.has(record.id)) this.records.set(record.id, record);
+      for (const problem of listing.problems) if (problem.deleted && problem.kind) {
+        this.deleted.add(problem.id);
+        this.cleanupPending.set(problem.id, { name: problem.name || problem.id, kind: problem.kind });
+      }
+      const cacheFailures = await this.hooks.reconcileDeletedVideoCaches?.(listing.deletedVideoIds ?? []) ?? [];
+      for (const failed of cacheFailures) {
+        this.deleted.add(failed.id);
+        this.cleanupPending.set(failed.id, { name: "已删除融合方案（缓存清理待完成）", kind: "Drone Video" });
+        listing.problems.push({ ...failed, deleted: true, kind: "Drone Video" });
+      }
       this.catalogueLoaded?.(); this.catalogueLoaded = undefined;
       if (listing.problems.length) this.error = listing.problems.map(p => p.error).join("；");
       const priority = (kind: LibraryKind) => ({ "3D Tiles": 0, Model: 1, CAD: 2, GIS: 3, Imagery: 4, "Drone Video": 5 })[kind];
@@ -139,6 +156,7 @@ export class SceneLibrary {
   }
   private message(error: unknown) { return error instanceof Error ? error.message : String(error); }
   async save(id: string, name: string, kind: LibraryKind, settings: LibrarySettings, files: Draft["files"] = {}, copy?: Draft["copy"], reportProgress?: (progress: VideoOverlaySaveProgress) => void) {
+    if (this.deleted.has(id) || this.deleting.has(id)) throw new Error("资料已删除，请重新导入后保存");
     const retrying = this.drafts.has(id);
     const draft: Draft = { id, name, kind, settings, files, copy };
     this.drafts.set(id, draft);
@@ -219,11 +237,11 @@ export class SceneLibrary {
       this.pending++; this.render();
       try {
         const record = await libraryRequest<LibraryRecord>("/records/" + id, { ...jsonRequest("PATCH", patch), keepalive });
-        if (!this.deleting.has(id)) this.records.set(id, record);
+        if (!this.deleting.has(id) && !this.deleted.has(id)) this.records.set(id, record);
         this.failures.delete(id);
       } catch (error) {
         this.failures.set(id, "更改未保存：" + this.message(error));
-        if (!this.deleting.has(id)) {
+        if (!this.deleting.has(id) && !this.deleted.has(id)) {
           const newer = this.updates.get(id);
           this.updates.set(id, { ...patch, ...newer, settings: { ...patch.settings, ...newer?.settings } });
         }
@@ -261,7 +279,9 @@ export class SceneLibrary {
   }
   private async readableRecord(id: string): Promise<LibraryRecord> {
     // A cached catalogue is not an authorization decision after an account switch.
+    if (this.deleted.has(id) || this.deleting.has(id)) throw new Error("资料已删除或正在删除");
     const record = await libraryRequest<LibraryRecord>("/records/" + encodeURIComponent(id));
+    if (this.deleted.has(id) || this.deleting.has(id)) throw new Error("资料已删除或正在删除");
     if (this.hooks.canReadRecord?.(record) === false) throw new Error("当前账号没有此类资料权限，原方案已保留");
     this.records.set(record.id, record);
     return record;
@@ -465,15 +485,28 @@ export class SceneLibrary {
   markImagery(id: string) { this.activeImageryId = id; this.render(); this.saveView(); }
   /** Roll back only the fresh CAD ID created by the current, failed import. */
   async discardNewCad(id: string): Promise<void> {
-    if (this.records.get(id)?.kind !== 'CAD') return;
-    await libraryRequest('/records/' + id, { method: 'DELETE' });
+    const record = this.records.get(id);
+    if (record?.kind !== 'CAD') return;
+    try { await libraryRequest('/records/' + id, { method: 'DELETE' }); }
+    catch (error) {
+      if (error instanceof LibraryRequestError && error.deleted) {
+        this.deleted.add(id); this.cleanupPending.set(id, { name: record.name, kind: 'CAD' });
+        // This rollback runs inside the CAD load owner; do not await that owner's settled promise.
+        this.records.delete(id); this.failures.delete(id); this.drafts.delete(id); this.updates.delete(id); this.render();
+      }
+      throw error;
+    }
+    this.deleted.add(id);
     this.records.delete(id); this.failures.delete(id); this.drafts.delete(id); this.updates.delete(id);
     this.render();
   }
   async delete(id: string, confirm = true): Promise<boolean> {
     if (this.deleting.has(id)) return false;
     if (this.pending) { this.hooks.notify("请等待当前资料保存完成后再删除",true); return false; }
-    const name = this.records.get(id)?.name ?? this.drafts.get(id)?.name ?? id;
+    const target = this.records.get(id) ?? this.drafts.get(id) ?? this.cleanupPending.get(id);
+    if (!target) return true;
+    if (this.hooks.canReadRecord?.(target) === false) { this.hooks.notify("当前账号没有此资料的删除权限", true); return false; }
+    const { name, kind } = target;
     if (confirm && !window.confirm("删除“" + name + "”及其本机保存副本？原始导入文件不会被删除。")) return false;
     const unsaved = this.updates.get(id);
     this.deleting.add(id); this.updates.delete(id); this.pending++; this.render();
@@ -481,30 +514,46 @@ export class SceneLibrary {
       const loading = this.hooks.cadLoads?.get(id);
       if (loading) { loading.cancel(); await loading.settled; }
       if (this.restoring.has(id)) { this.hooks.notify("请等待当前资料恢复完成后再删除",true); return false; }
-      if (!this.records.has(id) && !this.drafts.has(id)) return true;
+      if (!this.owns(id)) return true;
       await libraryRequest("/records/" + id, { method: "DELETE" });
-      this.records.delete(id); this.failures.delete(id); this.drafts.delete(id);
-      const item = this.hooks.getImports().find(i => i.id === id); if (item) this.hooks.removeImport(item);
-      if (this.activeVideoId === id) { this.hooks.clearVideo(); this.activeVideoId = ""; }
-      if (this.activeImageryId === id) {
-        this.hooks.setBasemap("street"); this.activeImageryId = "";
-        const select = document.querySelector<HTMLSelectElement>("#basemap"); if (select) select.value = "street";
-      }
-      this.error = ""; this.saveView();return true;
+      this.deleted.add(id);
+      this.cleanupPending.set(id, { name, kind });
+      this.detachDeleted(id);
+      if (kind === "Drone Video") await this.hooks.removeVideoCache?.(id);
+      this.cleanupPending.delete(id);
+      this.error = ""; this.saveView(); return true;
     } catch (error) {
-      if (unsaved) this.updates.set(id, unsaved);
-      this.error = "删除未完成，资料保留：" + this.message(error); this.hooks.notify(this.error, true);return false;
+      if (error instanceof LibraryRequestError && error.deleted) this.deleted.add(id);
+      if (this.deleted.has(id)) {
+        this.cleanupPending.set(id, { name, kind }); this.detachDeleted(id);
+        this.error = "场景及记录已删除，文件清理待完成，请在本机资料库重试删除：" + this.message(error);
+      } else {
+        if (unsaved) this.updates.set(id, unsaved);
+        this.error = "删除未完成，资料保留：" + this.message(error);
+      }
+      this.hooks.notify(this.error, true); return false;
     }
     finally {
       this.deleting.delete(id); this.pending--;
       if (this.updates.has(id) && !this.updateTimer) this.updateTimer = window.setTimeout(() => { this.updateTimer = 0; void this.flush(); }, 120);
       this.render();
+      this.hooks.layersChanged();
     }
+  }
+  private detachDeleted(id: string): void {
+    this.records.delete(id); this.failures.delete(id); this.drafts.delete(id); this.updates.delete(id);
+    const item = this.hooks.getImports().find(i => i.id === id); if (item) this.hooks.removeImport(item);
+    if (this.activeVideoId === id) { this.hooks.clearVideo(); this.activeVideoId = ""; }
+    if (this.activeImageryId === id) {
+      this.hooks.setBasemap("street"); this.hooks.clearImagery?.(); this.activeImageryId = "";
+      const select = document.querySelector<HTMLSelectElement>("#basemap"); if (select) select.value = "street";
+    }
+    this.saveView();
   }
   async clear() {
     if (this.busy) return this.hooks.notify("请等待资料保存或恢复完成", true);
     if (!window.confirm("删除全部已保存的工程资料？关闭软件不需要执行此操作。")) return;
-    for (const id of new Set([...this.records.keys(), ...this.drafts.keys()])) await this.delete(id, false);
+    for (const id of new Set([...this.records.keys(), ...this.drafts.keys(), ...this.cleanupPending.keys()])) await this.delete(id, false);
     this.render();
   }
   render() {
@@ -517,14 +566,15 @@ export class SceneLibrary {
     status.textContent = this.error || (this.starting ? "正在恢复上次资料…" : this.pending ? saving : this.failures.size ? "已保存到本机 · " + this.failures.size + " 项需展开重试" : this.updates.size ? saving : "已保存到本机 · 关闭后自动恢复");
     status.classList.toggle("error-text", Boolean(this.error || this.failures.size));
     list.replaceChildren();
-    for (const id of new Set([...this.records.keys(), ...this.drafts.keys()])) {
+    for (const id of new Set([...this.records.keys(), ...this.drafts.keys(), ...this.cleanupPending.keys()])) {
       const record = this.records.get(id); const draft = this.drafts.get(id);
-      if (this.hooks.canReadRecord?.(record ?? draft!) === false) continue;
+      const cleanup = this.cleanupPending.get(id);
+      if (this.hooks.canReadRecord?.(record ?? draft ?? cleanup!) === false) continue;
       const row = document.createElement("div"); row.className = "saved-record"; row.dataset.savedId = id;
-      const title = document.createElement("span"); title.textContent = record ? videoSchemeName(record) : draft!.name; title.title = title.textContent;
+      const title = document.createElement("span"); title.textContent = record ? videoSchemeName(record) : (draft ?? cleanup)!.name; title.title = title.textContent;
       const loading = this.hooks.cadLoads?.get(id);
       const detail = document.createElement("small");
-      detail.textContent = loading?.status ?? (this.restoring.has(id) ? "恢复中…" : this.failures.get(id) ?? (record ? record.kind + " · 已保存" : "等待保存"));
+      detail.textContent = cleanup ? "已删除 · 本地文件清理待完成" : loading?.status ?? (this.restoring.has(id) ? "恢复中…" : this.failures.get(id) ?? (record ? record.kind + " · 已保存" : "等待保存"));
       const retry = document.createElement("button"); retry.textContent = loading ? "取消加载" : draft ? "重试保存" : this.failures.has(id) ? "重试" : record?.kind === "Imagery" || record?.kind === "Drone Video" ? "使用" : this.hooks.getImports().some(item => item.id === id) ? "定位" : "恢复";
       retry.disabled = loading ? loading.signal.aborted : this.pending > 0 || this.restoring.has(id) || this.deleting.has(id);
       retry.addEventListener("click", () => {
@@ -533,7 +583,9 @@ export class SceneLibrary {
         else if (this.updates.has(id)) void this.flush();
         else void this.restore(id);
       });
+      if (cleanup) retry.hidden = true;
       const remove = document.createElement("button"); remove.textContent = "删除"; remove.disabled = this.pending > 0 || this.deleting.has(id) || (this.restoring.has(id) && !loading);
+      if (cleanup) remove.textContent = "重试删除";
       remove.addEventListener("click", () => void this.delete(id));
       row.append(title, detail, retry, remove);
       const source = record?.files.source;
