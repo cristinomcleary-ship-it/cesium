@@ -12,8 +12,11 @@ import type { ManagementFieldContext, ManagementSceneContext } from './managemen
 import type { FieldObjectReference } from './railwayWorkflowTypes';
 import type { RailSafetyRiskSnapshot } from './railSafetyRiskTypes';
 import type { RailSafetyGuard } from './railSafetyTypes';
+import type { FallExportSceneReference } from './railSafetyFallExportProject';
+import { sceneMachineryResources } from './sceneDisplayResources';
 import type { SafetyWorkspace } from './safetyWorkspace';
 import { strictModelSurfacePick, type SurfacePickResult } from './safetyModelSurfacePicker';
+import { pickPreferredMachineryPlacement } from './machinerySurfacePicker';
 import './managementWorkspace.css';
 import './managementField.css';
 
@@ -24,7 +27,10 @@ export type WorkbenchMachineryOptions = {
   /** Reparents the existing display panel; it must retain its single preference store. */
   onDisplayMount?: (host?: HTMLElement) => void;
   onPanelChange?: (open: boolean) => void;
+  getSceneResources?: () => readonly FallExportSceneReference[];
   pickPosition?: (pixel: Cartesian2) => MachineryPlacementPick | undefined;
+  /** Mechanical stations prefer photogrammetry independently of other authoring tools. */
+  pickMachineryPosition?: (pixel: Cartesian2) => MachineryPlacementPick | undefined;
 };
 
 type Selection = { kind: string; id: string; areaIds?: string[]; spatialObjectId?: string };
@@ -112,17 +118,22 @@ export class ManagementWorkspace {
       onSelectionChange: id => { this.selectedMachineryId = id || undefined; if(id)this.selectedFieldObject={kind:'resources',id}; this.queueFieldUpdate(); },
       onPreviewChange: (id, state) => this.railSafety?.setMachineryPreview(id, state),
       onLiveStatesChange: states => this.railSafety?.setLiveStates(states),
-      pickPosition: pixel => {
-        if (!this.active) return this.workbench.pickPosition?.(pixel);
-        const hit = strictModelSurfacePick(this.viewer, pixel, this.safety.getManagementModels(), () => this.safety.effects.suspendOverlaysForPicking(), this.data?.projectId);
-        return hit.ok ? { ...hit.position, source: 'model' as const } : undefined;
-      },
+      pickPosition: pixel => pickPreferredMachineryPlacement(pixel, {
+        active: this.active,
+        preferred: point => this.workbench.pickMachineryPosition?.(point),
+        workbench: point => this.workbench.pickPosition?.(point),
+        management: point => {
+          const hit = strictModelSurfacePick(this.viewer, point, this.safety.getManagementModels(), () => this.safety.effects.suspendOverlaysForPicking(), this.data?.projectId);
+          return hit.ok ? { ...hit.position, source: 'model' as const, modelKind: 'photogrammetry' as const } : undefined;
+        },
+      }),
       onPickingChange: picking => {
         if (picking) { if (this.active) { this.safety.managementPause(); this.safety.managementSetProjectionPreview(false); } this.viewer.camera.cancelFlight(); }
         if (this.active) { this.safety.effects.setPickingEnabled(!picking); this.safety.effects.setAuthoring(picking); }
       },
     });
     this.railSafety = new RailSafetyPanel({ viewer: this.viewer, host, workbenchHost: this.workbench.panelHost,
+      getSceneResources: this.workbench.getSceneResources,
       onDisplayChange: () => { this.workbench.onChange?.(); this.queueFieldUpdate(); }, onDisplayManager: () => this.openDisplayManager(),
       onSelectionChange: (kind, id) => { if (kind === 'machine') {this.selectedMachineryId = id || undefined;if(id)this.selectedFieldObject={kind:'resources',id};} else if(id)this.selectedFieldObject={kind:'railSafety',id}; this.queueFieldUpdate(); },
       onSelectObject: (kind, id) => { if (this.active && this.mode === 'scene') { if(kind==='machine'){const direct=this.data?.collections.resources.find(r=>r.id===id);const config=this.data?.collections.railSafety.find(r=>r.id===id);const resourceId=direct?.id||(config?.definition as {resourceId?:string}|undefined)?.resourceId;if(resourceId)this.selectFieldMachine(resourceId);else this.message('机械已移除或不在当前授权范围内。',true);}else this.selectFieldObject({kind:'railSafety',id}); } },
@@ -231,8 +242,9 @@ export class ManagementWorkspace {
 
   getWorkbenchMachineryState() {
     const canView = !!this.session?.permissions.includes('models') && this.data?.projectId === 'safety:project';
+    const resources = sceneMachineryResources(this.data?.projectId, this.data?.collections.resources ?? [], canView);
     return { projectId: this.data?.projectId, actorId: this.session?.userId, canView, canEdit: canView && !!this.session?.permissions.includes('resource'),
-      records: canView ? (this.data?.collections.resources ?? []).filter(record => record.projectId === this.data?.projectId && (record.kind === 'equipment' || record.category === 'equipment') && readMachineryState(record.machinery)) : [],
+      resources, records: resources.filter(item => item.machinery).map(item => item.record),
       status: this.machineryStatus, panelOpen: this.machinery.isOpen, hasDraft: this.machinery.hasDraft, picking: this.machinery.isPicking };
   }
 
@@ -598,10 +610,11 @@ export class ManagementWorkspace {
     if (signature === this.machineryContextSignature) return;
     this.machineryContextSignature = signature;
     const sceneProject = this.data?.projectId === 'safety:project';
+    const machineryResources = sceneMachineryResources(this.data?.projectId, this.data?.collections.resources ?? [], sceneProject && !!this.session?.permissions.includes('models'));
     this.safety.setManagementResourceAccess({ models: sceneProject && !!this.session?.permissions.includes('models'), files: sceneProject && !!this.session?.permissions.includes('files'), media: sceneProject && !!this.session?.permissions.includes('media') });
     this.machinery?.setContext({
       projectId: this.data?.projectId ?? 'safety:project', actorId: this.session?.userId,
-      records: this.data?.collections.resources ?? [],
+      records: machineryResources.map(item => item.record),
       canView: !!this.session?.permissions.includes('models') && this.data?.projectId === 'safety:project',
       canEdit: this.data?.projectId === 'safety:project' && !!this.session?.permissions.includes('models') && !!this.session?.permissions.includes('resource'),
       active: !this.disposed && (!this.active || this.mode === 'scene'),

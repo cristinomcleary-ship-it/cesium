@@ -6,6 +6,7 @@ import { MACHINERY_ASSET_IDS, MACHINERY_ASSET_VERSION, type MachineryAssetId, ty
 import { MACHINERY_PARAMETER_DEFAULTS, validateMachineryMetadata } from './machineryValidation.ts';
 import { MACHINERY_CATALOG, loadMachineryAsset, defaultMachineryParameters, resolveMachineryParameters, computeMachineryGeometry, type LoadedMachineryAsset } from './machinery/index.ts';
 import { MachineryScene, readMachineryState } from './machineryScene.ts';
+import { machineryParameterForEditor, machineryParameterFromEditor } from './machineryEditorParameters';
 
 const { Cartesian3, Cartographic, Matrix4, Matrix3, Transforms, JulianDate, Axis } = Cesium;
 const publicRoot = new URL('../public/', import.meta.url);
@@ -250,6 +251,7 @@ test('all three machines rotate actual entity orientation clockwise without movi
       await scene.preview('equipment-1', metadata, model);
       const entity = fixture.source().entities.getById('machinery:equipment-1')!, initialPosition = entity.position!.getValue(JulianDate.now())!;
       const glb = entity.model!.uri!.getValue(JulianDate.now());
+      const runtimeBound = entity.model!.scale!.getValue(JulianDate.now());
       for (const heading of [0, 90, 180, 270, 359.999]) {
         const rotated = structuredClone(metadata); rotated.placement.heading = heading;
         await scene.preview('equipment-1', rotated, model);
@@ -267,7 +269,8 @@ test('all three machines rotate actual entity orientation clockwise without movi
         const forward = Matrix4.multiplyByPointAsVector(local, Cartesian3.UNIT_X, new Cartesian3());
         near(forward.x, Math.sin(heading * Math.PI / 180)); near(forward.y, Math.cos(heading * Math.PI / 180)); near(forward.z, 0);
         near(Cartographic.fromCartesian(position).height, metadata.placement.height, 1e-6);
-        assert.equal(entity.model!.scale!.getValue(JulianDate.now()), 1, 'geometry already contains the requested scale');
+        assert.equal(entity.model!.scale!.getValue(JulianDate.now()), runtimeBound, 'heading preserves the finite shader culling bound');
+        assert.equal(scene.getRenderState('equipment-1')!.targetState.parameters.overall_scale, rotated.parameters.overall_scale);
         assert.deepEqual(rotated.parameters, original.parameters, 'heading cannot rewrite internal articulation or dimensions');
       }
       assert.deepEqual(metadata, original, 'preview leaves its source record unchanged');
@@ -345,10 +348,100 @@ test('latest preview placement wins a pending load; replace/remove release every
     const changed = state('pile', resolveMachineryParameters(model, latest.parameters, { total_height_m: 10 }, { proportional: false }));
     await scene.preview('equipment-1', changed, model);
     assert.equal(fixture.source().entities.values[0], entity, 'same equipment keeps one entity');
-    assert.equal(created.length, 2); assert.deepEqual(revoked, [created[0]]);
+    assert.equal(created.length, 1, 'parameter changes retain one GLB and update only persistent shader uniforms'); assert.deepEqual(revoked, []);
     scene.clearPreview(); assert.equal(fixture.source().entities.values.length, 0);
     assert.deepEqual(revoked, created);
   } finally { scene.destroy(); URL.createObjectURL = create; URL.revokeObjectURL = revoke; }
+});
+
+test('live geometry and compass angles interpolate on one bounded loop without replacing the GLB or shader', async () => {
+  const originalFetch = globalThis.fetch; globalThis.fetch = fileFetcher;
+  let clock = 0, handle = 0;
+  const frames = new Map<number, FrameRequestCallback>();
+  const f = viewerFixture(), scene = new MachineryScene(f.viewer, { now: () => clock,
+    scheduleFrame: callback => { frames.set(++handle, callback); return handle; }, cancelFrame: id => { frames.delete(id); } });
+  const base = state('crane'); base.placement.heading = 359; base.parameters.boom_rotation_deg = 359;
+  const advance = (milliseconds: number) => { clock += milliseconds; const active = [...frames.values()]; frames.clear(); active.forEach(callback => callback(clock)); };
+  try {
+    scene.setContext({ projectId: 'project', records: [{ id: 'crane', projectId: 'project', machinery: base }], canView: true, active: true });
+    assert.equal(await scene.flyTo('crane'), true);
+    const entity = f.source().entities.getById('machinery:crane')!, graphics = entity.model!, shader = graphics.customShader!.getValue(JulianDate.now());
+    const uri = graphics.uri!.getValue(JulianDate.now()), model = await asset('crane');
+    const target = structuredClone(base);
+    target.parameters = resolveMachineryParameters(model, base.parameters, { boom_length_m: 6, boom_elevation_deg: 30, boom_rotation_deg: 1 }, { proportional: false });
+    target.placement.heading = 1; target.placement.longitude = 121.001;
+    scene.setLiveStates(new Map([['crane', target]]));
+    assert.deepEqual(scene.getRenderState('crane')!.targetState, target, 'latest target is immediately available for assessment');
+    assert.equal(scene.getRenderState('crane')!.displayedState.parameters.boom_length_m, base.parameters.boom_length_m);
+    assert.equal(frames.size, 1);
+    advance(0);
+    advance(175);
+    const halfway = scene.getRenderState('crane')!;
+    near(halfway.displayedState.parameters.boom_length_m, (base.parameters.boom_length_m + 6) / 2);
+    near(halfway.displayedState.parameters.boom_elevation_deg, (base.parameters.boom_elevation_deg + 30) / 2);
+    near(halfway.displayedState.parameters.boom_rotation_deg, 0); near(halfway.displayedState.placement.heading, 0);
+    assert.equal(entity.model, graphics); assert.equal(graphics.customShader!.getValue(JulianDate.now()), shader);
+    assert.equal(graphics.uri!.getValue(JulianDate.now()), uri);
+    assert.equal(frames.size, 1);
+    advance(175); assert.deepEqual(scene.getRenderState('crane')!.displayedState, target); assert.equal(frames.size, 0);
+    const before = f.renders(); scene.setLiveStates(new Map([['crane', structuredClone(target)]]));
+    assert.equal(f.renders(), before); assert.equal(frames.size, 0, 'equal data never creates an idle render loop');
+    const next = structuredClone(target); next.placement.heading = 90;
+    scene.setLiveStates(new Map([['crane', next]])); advance(0); advance(100);
+    const middle = scene.getRenderState('crane')!.displayedState.placement.heading;
+    const latest = structuredClone(next); latest.placement.heading = 180;
+    scene.setLiveStates(new Map([['crane', latest]]));
+    near(scene.getRenderState('crane')!.displayedState.placement.heading, middle);
+    assert.equal(frames.size, 1, 'retargeting reuses one loop and the actual displayed pose');
+    scene.setDisplayVisibility({ crane: false }); assert.equal(frames.size, 0); assert.equal(entity.show, false);
+    scene.setDisplayVisibility({ crane: true }); assert.equal(entity.show, true);
+    assert.deepEqual(scene.getRenderState('crane')!.displayedState, latest, 'showing without another packet cannot leave the old interpolation midpoint');
+    const moving = structuredClone(latest); moving.placement.heading = 230;
+    scene.setLiveStates(new Map([['crane', moving]])); advance(0); advance(100); assert.equal(frames.size, 1);
+    const replacement = state('pile');
+    scene.setContext({ projectId: 'project', records: [{ id: 'crane', projectId: 'project', machinery: replacement }], canView: true, active: true });
+    assert.equal(frames.size, 0, 'changing asset schema cancels the old pose interpolation before loading');
+    assert.equal(await scene.flyTo('crane'), true);
+    assert.deepEqual(scene.getRenderState('crane')!.displayedState, replacement);
+    assert.equal(scene.getRenderState('crane')!.interpolating, false);
+    scene.destroy(); assert.equal(shader.isDestroyed(), true); assert.equal(frames.size, 0);
+  } finally { scene.destroy(); globalThis.fetch = originalFetch; }
+});
+
+test('live display starts its clock on the first frame and preserves intermediate poses after main-thread stalls', async () => {
+  const originalFetch = globalThis.fetch; globalThis.fetch = fileFetcher;
+  let clock = 0, handle = 0;
+  const frames = new Map<number, FrameRequestCallback>();
+  const fixture = viewerFixture(), scene = new MachineryScene(fixture.viewer, { now: () => clock,
+    scheduleFrame: callback => { frames.set(++handle, callback); return handle; }, cancelFrame: id => { frames.delete(id); } });
+  const base = state('pile'), target = structuredClone(base);
+  target.parameters.total_height_m = 16;
+  const advance = (milliseconds: number) => { clock += milliseconds; const active = [...frames.values()]; frames.clear(); active.forEach(callback => callback(clock)); };
+  try {
+    scene.setContext({ projectId: 'project', records: [{ id: 'pile', projectId: 'project', machinery: base }], canView: true, active: true });
+    assert.equal(await scene.flyTo('pile'), true);
+    scene.setLiveStates(new Map([['pile', target]]));
+    assert.deepEqual(scene.getRenderState('pile')!.targetState, target, 'assessment receives the exact target before any animation frame');
+    advance(2000);
+    assert.deepEqual(scene.getRenderState('pile')!.displayedState, base, 'synchronous assessment work cannot consume the visual transition before the first frame');
+    advance(2000);
+    const middle = scene.getRenderState('pile')!.displayedState;
+    near(middle.parameters.total_height_m, (base.parameters.total_height_m + target.parameters.total_height_m) / 2);
+    assert.equal(scene.getRenderState('pile')!.interpolating, true, 'a delayed frame cannot skip all intermediate poses');
+    clock += 2000; // A newer packet arrives after more blocked work, without another displayed frame.
+    const latest = structuredClone(target); latest.parameters.total_height_m = 20;
+    scene.setLiveStates(new Map([['pile', latest]]));
+    assert.deepEqual(scene.getRenderState('pile')!.displayedState, middle, 'retargeting starts from the last displayed frame, not an unrendered wall-clock pose');
+    assert.deepEqual(scene.getRenderState('pile')!.targetState, latest);
+    assert.equal(frames.size, 1, 'retargeting retains a single scheduled frame');
+    advance(2000);
+    assert.deepEqual(scene.getRenderState('pile')!.displayedState, middle);
+    advance(2000);
+    near(scene.getRenderState('pile')!.displayedState.parameters.total_height_m, (middle.parameters.total_height_m + 20) / 2);
+    advance(2000);
+    assert.deepEqual(scene.getRenderState('pile')!.displayedState, latest);
+    assert.equal(frames.size, 0, 'the bounded transition stops scheduling once it reaches the target');
+  } finally { scene.destroy(); globalThis.fetch = originalFetch; }
 });
 
 test('project switch, permission loss and disposal invalidate staged models before they reach the scene', async () => {
@@ -416,4 +509,49 @@ test('newest sensor placement wins a staged geometry load', async () => {
     near(position.longitude * 180 / Math.PI, 123); near(position.height, 321, 1e-6);
     assert.equal(f.source().entities.values.length, 1);
   } finally { scene.destroy(); globalThis.fetch = originalFetch; }
+});
+
+
+test('editor canonical boom input is converted once while legacy stored poses survive service save/reload', async () => {
+  const model = await asset('crane');
+  const legacy = state('crane'); legacy.parameters.boom_rotation_deg = 270;
+  const before = structuredClone(legacy);
+  const displayed = machineryParameterForEditor(model, 'boom_rotation_deg', legacy.parameters.boom_rotation_deg);
+  const unchanged = validateMachineryMetadata({ ...legacy, parameters: { ...legacy.parameters,
+    boom_rotation_deg: machineryParameterFromEditor(model, 'boom_rotation_deg', displayed, legacy.parameters.boom_rotation_deg) } });
+  assert.deepEqual(readMachineryState(unchanged), before, 'displaying and saving an old machine never rebases its source yaw');
+  const edited = validateMachineryMetadata({ ...legacy, parameters: resolveMachineryParameters(model, legacy.parameters,
+    { boom_rotation_deg: machineryParameterFromEditor(model, 'boom_rotation_deg', 0, legacy.parameters.boom_rotation_deg) }, { proportional: false }) });
+  const restored = readMachineryState(edited)!;
+  near(machineryParameterForEditor(model, 'boom_rotation_deg', restored.parameters.boom_rotation_deg), 0);
+  assert.deepEqual(restored.placement, legacy.placement, 'relative boom yaw does not rotate/move the machine chassis');
+  assert.deepEqual(legacy, before, 'adapter never rewrites saved input');
+});
+
+test('cancelled video preset never moves the camera after a staged machinery load completes', async () => {
+  const model = await asset('pile'), fixture = viewerFixture(true), scene = new MachineryScene(fixture.viewer);
+  let flights = 0; fixture.viewer.flyTo = async () => { flights++; return true; };
+  scene.setContext({ projectId: 'safety:project', records: [], canView: true, active: true });
+  const loading = scene.preview('capture-pile', state('pile'), model);
+  const abort = new AbortController(), flight = scene.flyTo('capture-pile', abort.signal);
+  abort.abort(); fixture.release(); await loading;
+  try { assert.equal(await flight, false); assert.equal(flights, 0); }
+  finally { scene.destroy(); }
+});
+
+test('video preset camera flight cancellation settles and removes its signal listener', async () => {
+  const model = await asset('pile'), fixture = viewerFixture(), scene = new MachineryScene(fixture.viewer);
+  let flights = 0, cancellations = 0, callbacks: { complete?: () => void; cancel?: () => void } | undefined;
+  Object.defineProperty(fixture.viewer, 'camera', { value: {
+    flyToBoundingSphere(_sphere: unknown, options: { complete?: () => void; cancel?: () => void }) { flights++; callbacks = options; },
+    cancelFlight() { cancellations++; callbacks?.cancel?.(); },
+  } });
+  scene.setContext({ projectId: 'safety:project', records: [], canView: true, active: true });
+  await scene.preview('capture-pile', state('pile'), model);
+  const abort = new AbortController(), flight = scene.flyTo('capture-pile', abort.signal);
+  await Promise.resolve(); await Promise.resolve();
+  try {
+    assert.equal(flights, 1); abort.abort(); assert.equal(await flight, false); assert.equal(cancellations, 1);
+    callbacks?.complete?.(); assert.equal(cancellations, 1, 'late completion cannot restart a cancelled flight');
+  } finally { scene.destroy(); }
 });

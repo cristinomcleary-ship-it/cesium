@@ -36,6 +36,7 @@ export class SceneDisplayStore {
   private scope?: string;
   private preferences = defaults();
   private items = new Map<string, boolean>();
+  private unavailable = new Set<string>();
   private error?: string;
   private readonly storage?: DisplayStorage;
 
@@ -49,7 +50,7 @@ export class SceneDisplayStore {
   setContext(projectId: string, actorId?: string): boolean {
     const scope = `scene-display:v1:${JSON.stringify([projectId, actorId ?? null])}`;
     if (this.scope === scope) return false;
-    this.scope = scope; this.preferences = defaults(); this.items.clear(); this.error = undefined;
+    this.scope = scope; this.preferences = defaults(); this.items.clear(); this.unavailable.clear(); this.error = undefined;
     try {
       const saved = (this.storage ?? globalThis.localStorage).getItem(scope);
       if (saved) this.preferences = normalizeSceneDisplayPreferences(JSON.parse(saved));
@@ -57,9 +58,10 @@ export class SceneDisplayStore {
     return true;
   }
 
-  setItems(items: readonly { id: string; visible: boolean }[]): void {
+  setItems(items: readonly { id: string; visible: boolean; visibilityAvailable?: boolean }[]): void {
     // Absent objects may simply be loading or temporarily unavailable. Keep their saved preferences.
     this.items = new Map(items.filter(item => identifier(item.id)).slice(0, MAX_ITEMS).map(item => [item.id, item.visible !== false]));
+    this.unavailable = new Set(items.filter(item => item.visibilityAvailable === false).map(item => item.id));
   }
 
   /** Forget only explicitly deleted resources, including their saved group memberships. */
@@ -78,7 +80,7 @@ export class SceneDisplayStore {
       return changed;
     };
     if (scopeKey === this.scopeKey) {
-      for (const id of removed) this.items.delete(id);
+      for (const id of removed) { this.items.delete(id); this.unavailable.delete(id); }
       if (prune(this.preferences)) this.persist();
       return;
     }
@@ -91,6 +93,7 @@ export class SceneDisplayStore {
   }
 
   isVisible(id: string): boolean {
+    if (this.unavailable.has(id)) return false;
     return Object.hasOwn(this.preferences.overrides, id) ? this.preferences.overrides[id] : this.items.get(id) ?? false;
   }
   getOverrides(): Record<string, boolean> { return { ...this.preferences.overrides }; }
@@ -101,7 +104,7 @@ export class SceneDisplayStore {
     const overrides = new Map(Object.entries(this.preferences.overrides));
     let changed = false;
     for (const id of new Set(itemIds)) {
-      if (!this.items.has(id) || overrides.get(id) === visible) continue;
+      if (!this.items.has(id) || this.unavailable.has(id) || overrides.get(id) === visible) continue;
       overrides.set(id, visible); changed = true;
     }
     if (!changed) return;
@@ -143,7 +146,7 @@ export class SceneDisplayStore {
     this.preferences.groups = next; this.persist();
   }
   groupState(id: string): "all" | "some" | "none" | "empty" {
-    const members = this.group(id).members.filter(member => this.items.has(member));
+    const members = this.group(id).members.filter(member => this.items.has(member) && !this.unavailable.has(member));
     if (!members.length) return "empty";
     const visible = members.filter(member => this.isVisible(member)).length;
     return visible === members.length ? "all" : visible ? "some" : "none";

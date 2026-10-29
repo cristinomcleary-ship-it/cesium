@@ -27,9 +27,9 @@ export class MachineryTelemetryUi {
     this.root.className = 'mp-telemetry'; this.root.dataset.role = 'telemetry';
     this.root.innerHTML = `<summary>传感器参数关联 <span data-role="telemetry-badge">未启用</span></summary>
       <p class="mp-help">默认关闭。先保存初始模型，再勾选需要关联的参数。未关联参数继续手动编辑；关联配置仅保存在当前浏览器，按账号、项目和机械隔离。</p>
-      <p class="mp-help">吊臂回传角：背离车头并共线为 0°，俯视顺时针为正。整机方位角：正北 0°、顺时针为正。下方实时值采用此接口定义；上方原模型编辑角保留原有参考方向。</p>
+      <p class="mp-help">吊臂回传角：背离车头并共线为 0°，俯视顺时针为正。整机方位角：正北 0°、顺时针为正。吊臂回转的手工输入、实时值和传感器回传使用同一角度定义。</p>
       <details class="mp-telemetry-initial"><summary>按接口角度设置初始姿态</summary>
-        <p class="mp-help">吊臂 0°：背离车头并与车身共线。应用后转换为上方模型角度，保存到资源再启用关联。</p>
+        <p class="mp-help">吊臂 0°：背离车头并与车身共线。应用后更新上方初始角度，保存到资源再启用关联。</p>
         <label class="mp-label">初始整机方位角（°）<input type="number" step="any" value="0" data-role="telemetry-initial-heading"></label>
         <label class="mp-label" data-role="telemetry-initial-boom-row">初始吊臂相对回转角（°）<input type="number" step="any" value="0" data-role="telemetry-initial-boom"></label>
         <button type="button" data-action="telemetry-initial">应用初始角到草稿</button>
@@ -138,7 +138,7 @@ export class MachineryTelemetryUi {
         const heading = headingInput.value.trim() ? Number(headingInput.value) : NaN;
         const boom = this.asset?.id === 'crane' ? (boomInput.value.trim() ? Number(boomInput.value) : NaN) : undefined;
         if (!Number.isFinite(heading) || (boom !== undefined && !Number.isFinite(boom))) throw new Error('请输入有效初始角度');
-        this.options.onApplyInitialAngles(heading, boom); this.notice('初始角已转换为模型参数。请设置位置并保存到资源，再启用关联。');
+        this.options.onApplyInitialAngles(heading, boom); this.notice('初始角已应用到草稿。请设置位置并保存到资源，再启用关联。');
       } else if (action === 'telemetry-enable') {
         if (!this.options.onBeforeEnable()) return;
         this.busy = true; this.refresh(); await controller.configure(this.id, this.readConfig());

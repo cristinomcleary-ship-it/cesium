@@ -36,6 +36,9 @@ test('a real current-pose GLB copy plays, pauses, scrubs and resets without chan
   const demo = new RailSafetyFallDemo(f.viewer, { loadAsset: async () => asset, schedule: f.schedule, cancel: f.cancel, labelFont: () => font });
   try {
     assert.equal(await demo.start(input), true);
+    assert.deepEqual(demo.getInput(), original, 'export uses the exact pose that constructed the demo copy');
+    const exported = demo.getInput()!; exported.state.placement.heading = 180;
+    assert.deepEqual(demo.getInput(), original, 'export snapshots cannot mutate the demonstration');
     assert.equal(demo.getSnapshot().sourceTriangleCount, asset.indices.length / 3);
     assert.ok(demo.getSnapshot().sourcePartCount > 1 && demo.getSnapshot().modelCreated);
     const entity = [...f.sources][0].entities.getById('rail-safety:fall-demo:crane:model')!;
@@ -59,6 +62,7 @@ test('a real current-pose GLB copy plays, pauses, scrubs and resets without chan
     assert.equal(demo.getSnapshot().angle, 90); assert.equal(demo.getSnapshot().playing, false);
     assert.deepEqual(input, original, 'no placement, dimensions or model pose is written back');
     demo.stop(); assert.equal(f.sources.size, 0); assert.equal(f.frames.size, 0);
+    assert.equal(demo.getInput(), undefined, 'a stopped demo cannot export a stale pose');
     assert.equal(demo.getSnapshot().active, false);
   } finally { demo.dispose(); }
 });

@@ -22,6 +22,8 @@ export type MachineryTelemetryConfig = {
 export type MachineryTelemetryFieldStatus = {
   target: string; sourceId: string; sourceField: string; status: 'waiting' | 'fresh' | 'stale';
   ageMs: number | null; value: number; mode?: MachineryTelemetryFrame['mode']; lastError?: string;
+  /** Actual accepted acquisition time; retained for missing fields and stale values. */
+  sampleTimestamp: string | null;
 };
 export type MachineryTelemetryResult = {
   accepted: boolean; changed: boolean; state: MachineryMetadata;
@@ -144,7 +146,8 @@ export class MachineryTelemetryState {
       const clock = this.clocks.get(b.target), ageMs = clock ? Math.max(0, now - clock.timestamp) : null;
       return { target: b.target, sourceId: b.sourceId, sourceField: b.sourceField,
         status: !clock ? 'waiting' : ageMs! > this.config.staleAfterMs ? 'stale' : 'fresh',
-        ageMs, value: this.value(b.target), mode: clock?.mode, lastError: this.errors.get(b.target) };
+        ageMs, sampleTimestamp: clock ? new Date(clock.timestamp).toISOString() : null,
+        value: this.value(b.target), mode: clock?.mode, lastError: this.errors.get(b.target) };
     });
   }
   /** Coalesce a transport poll by source channel, retaining each channel's acquisition

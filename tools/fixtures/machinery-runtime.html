@@ -1,0 +1,13 @@
+<!doctype html><html><head><style>html,body,#view{margin:0;width:100%;height:100%;overflow:hidden}</style></head><body><div id="view"></div><script type="module">
+import 'cesium/Build/Cesium/Widgets/widgets.css';
+import { Viewer, Cartesian2, Cartesian3, Color, DirectionalLight, Math as CMath } from 'cesium';
+import { MachineryScene } from '/src/machineryScene.ts';
+import { loadMachineryAsset, defaultMachineryParameters, resolveMachineryParameters } from '/src/machinery/index.ts';
+import { MACHINERY_ASSET_VERSION } from '/src/machineryTypes.ts';
+const viewer=new Viewer('view',{baseLayer:false,globe:false,animation:false,timeline:false,baseLayerPicker:false,geocoder:false,homeButton:false,sceneModePicker:false,navigationHelpButton:false,fullscreenButton:false,infoBox:false,selectionIndicator:false,requestRenderMode:true,maximumRenderTimeChange:Infinity});
+viewer.scene.backgroundColor=Color.fromCssColorString('#223344');viewer.scene.light=new DirectionalLight({direction:new Cartesian3(.3,.3,-1)});viewer.scene.skyAtmosphere.show=false;viewer.scene.skyBox.show=false;
+const errors=[];viewer.scene.renderError.addEventListener((_scene,error)=>errors.push(error.message));
+const scene=new MachineryScene(viewer),resources=[],assets={};for(const [i,id]of ['crane','pile','excavator'].entries()){const asset=await loadMachineryAsset(id);assets[id]=asset;resources.push({id,projectId:'test',name:id,machinery:{schemaVersion:1,assetId:id,assetVersion:MACHINERY_ASSET_VERSION,proportional:false,visible:true,parameters:resolveMachineryParameters(asset,defaultMachineryParameters(asset),{overall_scale:id==='excavator'?1:4},{proportional:false}),placement:{longitude:121+i*.0003,latitude:31,height:0,heading:0}}});}scene.setContext({projectId:'test',records:resources,canView:true,active:true});
+viewer.camera.setView({destination:Cartesian3.fromDegrees(121.0003,30.9993,100),orientation:{heading:0,pitch:CMath.toRadians(-53),roll:0}});
+window.smoke={Cartesian2,scene,viewer,resources,assets,errors,resolveMachineryParameters};window.smokeReady=true;
+</script></body></html>
