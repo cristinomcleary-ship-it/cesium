@@ -18,7 +18,7 @@ function fixture() {
   // Skip DOM construction while invoking the actual setContext/remove/apply
   // methods and preference store, including asynchronous host updates.
   const panel = Object.assign(Object.create(SceneDisplayPanel.prototype), {
-    store, items: [], selected: new Set(), query: '', editor: undefined, message: '', error: false,
+    store, items: [], itemsById: new Map(), selected: new Set(), query: '', editor: undefined, message: '', error: false,
     applying: false, disposed: false, directorySignature: '', appliedSignature: '', contextRevision: 0, removing: new Set(),
     options: { onApply: () => { applies++; } },
     find: () => search, render: () => { renders++; }, renderList: () => undefined, renderStatus: () => undefined,
