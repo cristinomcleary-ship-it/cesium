@@ -2,9 +2,10 @@ import {
   Cartesian2, Cartesian3, Cartographic, ConstantPositionProperty, ConstantProperty,
   CustomDataSource, EllipsoidTerrainProvider, Entity, HeadingPitchRange, HeadingPitchRoll,
   HeightReference, Math as CesiumMath, ModelGraphics, ScreenSpaceEventHandler,
-  ScreenSpaceEventType, Transforms, type Viewer,
+  ScreenSpaceEventType, Transforms, type Viewer, type CustomShader, BoundingSphere,
 } from 'cesium';
-import { createMachineryGlb, loadMachineryAsset, type LoadedMachineryAsset } from './machinery/index';
+import { loadMachineryAsset, resolveMachineryParameters, type LoadedMachineryAsset } from './machinery/index';
+import { createMachineryRuntimeGlb, createMachineryRuntimeShader, updateMachineryRuntimeShader } from './machinery/runtimeGeometry';
 import type { MachineryMetadata } from './machineryTypes';
 import { validateMachineryMetadata } from './machineryValidation';
 
@@ -17,6 +18,8 @@ export type MachineryResource = {
 export type MachineryPlacementPick = {
   longitude: number; latitude: number; height: number;
   source: 'model' | 'terrain' | 'ellipsoid';
+  /** Identifies the verified imported surface without changing station coordinates. */
+  modelKind?: 'photogrammetry' | 'model';
 };
 export type MachinerySceneContext = {
   projectId: string;
@@ -29,11 +32,18 @@ export type MachinerySceneOptions = {
   pickPosition?: (position: Cartesian2) => MachineryPlacementPick | undefined;
   /** Current asset/geometry load failure; stale requests never report an error. */
   onError?: (recordId: string, message: string) => void;
+  /** Display smoothing only. Assessment and stored values always use the exact target. */
+  transitionMilliseconds?: number;
+  now?: () => number;
+  scheduleFrame?: (callback: FrameRequestCallback) => number;
+  cancelFrame?: (handle: number) => void;
 };
 type SavedRecord = { id: string; name: string; state: MachineryState };
-type RenderedModel = { entity: Entity; url: string; geometryKey: string };
+type RenderedModel = { entity: Entity; url: string; geometryKey: string; asset: LoadedMachineryAsset; shader: CustomShader;
+  displayedState: MachineryState; targetState: MachineryState };
 type Draft = { recordId: string; state: MachineryState; asset?: LoadedMachineryAsset };
 type LoadTask = { generation: number; key: string; promise: Promise<void> };
+type Transition = { elapsed: number; lastFrame?: number; from: MachineryState; to: MachineryState };
 
 /** A defensive reader for older resources without machinery metadata. */
 export function readMachineryState(value: unknown): MachineryState | undefined {
@@ -45,7 +55,21 @@ function geometryKey(state: MachineryState): string {
     Object.entries(state.parameters).sort(([a], [b]) => a.localeCompare(b))]);
 }
 
-/** Uses the existing viewer; model vertices and entity scale are always in metres. */
+const wrapAngle = (angle: number) => ((angle % 360) + 360) % 360;
+const interpolateAngle = (from: number, to: number, amount: number) => wrapAngle(from + (((to - from + 540) % 360) - 180) * amount);
+/** Interpolates only the visual pose; it never feeds back into telemetry or risk calculations. */
+export function interpolateMachineryDisplayState(from: MachineryState, to: MachineryState, amount: number): MachineryState {
+  if (amount >= 1) return structuredClone(to);
+  const t = Math.max(0, amount), mix = (a: number, b: number) => a + (b - a) * t;
+  return { ...to, parameters: Object.fromEntries(Object.entries(to.parameters).map(([key, value]) => [key,
+    key === 'boom_rotation_deg' ? interpolateAngle(from.parameters[key], value, t) : mix(from.parameters[key], value)])),
+  placement: { longitude: ((interpolateAngle(from.placement.longitude, to.placement.longitude, t) + 180) % 360) - 180,
+    latitude: mix(from.placement.latitude, to.placement.latitude), height: mix(from.placement.height, to.placement.height),
+    heading: interpolateAngle(from.placement.heading, to.placement.heading, t) } };
+}
+
+/** Uses the existing viewer and a persistent GPU mesh. Visual geometry stays in
+ * metres; the shader cancels the public model scale used for finite culling bounds. */
 export class MachineryScene {
   private readonly source = new CustomDataSource('施工机械');
   private readonly ready: Promise<void>;
@@ -58,6 +82,13 @@ export class MachineryScene {
   private readonly tasks = new Map<string, LoadTask>();
   private readonly generations = new Map<string, number>();
   private readonly errors = new Map<string, string>();
+  private readonly transitions = new Map<string, Transition>();
+  private animationFrame?: number;
+  private readonly now: () => number;
+  private readonly scheduleFrame?: (callback: FrameRequestCallback) => number;
+  private readonly cancelFrame: (handle: number) => void;
+  private readonly transitionMilliseconds: number;
+  private readonly visibilityChanged = () => { if (typeof document !== 'undefined' && document.hidden) this.finishTransitions(); };
   /** Presentation-only overrides; never written into resource machinery metadata. */
   private readonly displayVisibility = new Map<string, boolean>();
   private draft?: Draft;
@@ -71,6 +102,11 @@ export class MachineryScene {
   private previousCursor?: string;
 
   constructor(private readonly viewer: Viewer, private readonly options: MachinerySceneOptions = {}) {
+    this.now = options.now ?? (() => performance.now());
+    this.scheduleFrame = options.scheduleFrame ?? (typeof requestAnimationFrame === 'function' ? callback => requestAnimationFrame(callback) : undefined);
+    this.cancelFrame = options.cancelFrame ?? (handle => { if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(handle); });
+    this.transitionMilliseconds = Math.max(0, Math.min(1000, options.transitionMilliseconds ?? 350));
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.visibilityChanged);
     this.ready = Promise.resolve(viewer.dataSources.add(this.source)).then(() => {
       if (this.disposed && !viewer.isDestroyed()) viewer.dataSources.remove(this.source, true);
     });
@@ -80,6 +116,7 @@ export class MachineryScene {
     if (this.disposed) return;
     const changed = context.projectId !== this.projectId || context.canView !== this.canView || context.active !== this.enabled;
     if (changed) {
+      this.finishTransitions();
       this.cancelPick(); this.draft = undefined; this.liveStates.clear();
       // Invalidate all staged models before publishing the new project or permission.
       for (const id of this.tasks.keys()) this.invalidate(id);
@@ -161,6 +198,7 @@ export class MachineryScene {
     if (this.disposed) return;
     this.enabled = enabled; this.source.show = enabled && this.canView;
     if (!enabled) {
+      this.finishTransitions();
       this.liveStates.clear();
       this.cancelPick(); this.clearPreview();
       for (const id of this.tasks.keys()) this.invalidate(id);
@@ -170,11 +208,19 @@ export class MachineryScene {
 
   getError(recordId: string): string | undefined { return this.errors.get(recordId); }
 
-  async flyTo(recordId: string): Promise<boolean> {
-    if (this.disposed || !this.enabled || !this.canView) return false;
+  /** Stable inspection seam: the immutable GLB is not a snapshot of a sensor packet. */
+  getRenderState(recordId: string) {
+    const entry = this.rendered.get(recordId);
+    return entry ? { runtime: 'persistent-parameter-shader' as const, geometryKey: entry.geometryKey,
+      targetState: structuredClone(entry.targetState), displayedState: structuredClone(entry.displayedState),
+      interpolating: this.transitions.has(recordId), modelUrl: entry.url } : undefined;
+  }
+
+  async flyTo(recordId: string, signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted || this.disposed || !this.enabled || !this.canView) return false;
     try { await this.tasks.get(recordId)?.promise; } catch { return false; }
     const entry = this.rendered.get(recordId);
-    if (!entry || !entry.entity.show || this.disposed || !this.enabled || !this.canView) return false;
+    if (signal?.aborted || !entry || !entry.entity.show || this.disposed || !this.enabled || !this.canView) return false;
     const state = this.stateFor(recordId);
     const height = state?.parameters.overall_height_m ?? state?.parameters.total_height_m ?? 1;
     // A lowered boom can be much longer than the model is tall. Include its
@@ -183,8 +229,24 @@ export class MachineryScene {
     const extent = Math.max(height, state?.parameters.boom_length_m ?? 0,
       state?.parameters.outrigger_lateral_m ?? 0, state?.parameters.outrigger_longitudinal_m ?? 0);
     const range = Math.max(4, extent * 4);
-    try { return await this.viewer.flyTo(entry.entity, { duration: 0.8, offset: new HeadingPitchRange(0, -0.45, range) }); }
-    catch { return false; }
+    let cancelFlight: (() => void) | undefined;
+    try {
+      // Runtime model.scale encloses GPU deformation, so its conservative culling
+      // sphere is deliberately larger than the useful camera framing sphere.
+      return await new Promise<boolean>(resolve => {
+        const finish = (success: boolean) => resolve(success && !signal?.aborted);
+        cancelFlight = () => { if (!this.viewer.isDestroyed()) this.viewer.camera?.cancelFlight?.(); finish(false); };
+        signal?.addEventListener('abort', cancelFlight, { once: true });
+        if (signal?.aborted) { finish(false); return; }
+        if (this.viewer.camera?.flyToBoundingSphere && state) {
+          const p = state.placement;
+          this.viewer.camera.flyToBoundingSphere(new BoundingSphere(
+            Cartesian3.fromDegrees(p.longitude, p.latitude, p.height + height / 2), Math.max(1, extent / 2)),
+          { duration: 0.8, offset: new HeadingPitchRange(0, -0.45, range), complete: () => finish(true), cancel: () => finish(false) });
+        } else void this.viewer.flyTo(entry.entity, { duration: 0.8, offset: new HeadingPitchRange(0, -0.45, range) }).then(finish, () => finish(false));
+      });
+    } catch { return false; }
+    finally { if (cancelFlight) signal?.removeEventListener('abort', cancelFlight); }
   }
 
   /** Try a host-verified model surface, then terrain/ellipsoid without overlay depth. */
@@ -224,6 +286,8 @@ export class MachineryScene {
   destroy(): void {
     if (this.disposed) return;
     this.disposed = true; this.cancelPick(); this.assetAbort.abort();
+    this.finishTransitions();
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.visibilityChanged);
     this.draft = undefined; this.saved.clear(); this.liveStates.clear(); this.displayVisibility.clear(); this.removeAll(); this.assets.clear();
     if (!this.viewer.isDestroyed()) this.viewer.dataSources.remove(this.source, true);
   }
@@ -239,7 +303,6 @@ export class MachineryScene {
   }
 
   private restore(recordId: string): void {
-    this.invalidate(recordId);
     const record = this.saved.get(recordId);
     if (record && this.enabled && this.canView) this.renderSaved(record);
     else this.remove(recordId);
@@ -252,24 +315,34 @@ export class MachineryScene {
   private renderSaved(record: SavedRecord): void { void this.render(record.id, this.liveStates.get(record.id) ?? record.state).catch(() => {}); }
 
   private render(recordId: string, state: MachineryState, suppliedAsset?: LoadedMachineryAsset): Promise<void> {
-    const key = geometryKey(state), current = this.rendered.get(recordId);
+    const key = `${state.assetId}:${state.assetVersion}`, current = this.rendered.get(recordId);
     if (!this.isDisplayed(recordId, state)) {
       this.invalidate(recordId);
+      if (current && this.transitions.has(recordId)) this.applyDisplayState(recordId, current, current.targetState);
+      this.transitions.delete(recordId); this.syncAnimation();
       if (current) current.entity.show = false;
       this.errors.delete(recordId);
       this.requestRender(); return Promise.resolve();
     }
-    if (current?.geometryKey === key) {
-      this.invalidate(recordId); this.place(recordId, current.entity, state);
+    if (current?.asset.id === state.assetId && current.asset.version === state.assetVersion) {
+      this.invalidate(recordId);
+      try { this.setTarget(recordId, current, state); }
+      catch (error) {
+        const message = error instanceof Error ? error.message : '机械实时姿态无效';
+        this.errors.set(recordId, message); this.options.onError?.(recordId, message); return Promise.reject(error);
+      }
       this.errors.delete(recordId);
       this.requestRender(); return Promise.resolve();
     }
+    // A new asset has a different parameter schema. An old animation must never
+    // drive its shader after the asynchronous load attaches the replacement.
+    this.transitions.delete(recordId); this.syncAnimation();
     const existing = this.tasks.get(recordId);
     if (existing?.key === key) return existing.promise;
     const generation = this.invalidate(recordId);
     const isCurrent = () => !this.disposed && this.enabled && this.canView && this.generations.get(recordId) === generation;
     const task = (async () => {
-      let stagedUrl: string | undefined;
+      let stagedUrl: string | undefined, stagedShader: CustomShader | undefined;
       try {
         const asset = suppliedAsset ?? await this.loadAsset(state.assetId);
         await this.ready;
@@ -277,22 +350,26 @@ export class MachineryScene {
         if (asset.id !== state.assetId || asset.version !== state.assetVersion) {
           throw new Error('机械模型资产类型或版本不匹配，请重新加载模型');
         }
-        const buffer = createMachineryGlb(asset, state.parameters, { proportional: state.proportional });
+        const buffer = createMachineryRuntimeGlb(asset);
         if (!isCurrent()) return;
         stagedUrl = URL.createObjectURL(new Blob([buffer], { type: 'model/gltf-binary' }));
         // Read the current placement after await: moving a pending preview must not restore stale coordinates.
         const desired = this.stateFor(recordId);
-        if (!isCurrent() || !desired || geometryKey(desired) !== key || !this.isDisplayed(recordId, desired)) return;
+        if (!isCurrent() || !desired || `${desired.assetId}:${desired.assetVersion}` !== key || !this.isDisplayed(recordId, desired)) return;
+        resolveMachineryParameters(asset, desired.parameters, {}, { proportional: desired.proportional });
         const previous = this.rendered.get(recordId);
         const entity = previous?.entity ?? this.source.entities.add(new Entity({
           id: `machinery:${recordId}`, name: this.saved.get(recordId)?.name || recordId,
         }));
-        entity.model = new ModelGraphics({ uri: stagedUrl, scale: 1, minimumPixelSize: 0,
+        stagedShader = createMachineryRuntimeShader(asset);
+        entity.model = new ModelGraphics({ uri: stagedUrl, scale: 1, minimumPixelSize: 0, customShader: stagedShader,
           heightReference: HeightReference.NONE, runAnimations: false });
-        this.place(recordId, entity, desired);
-        this.rendered.set(recordId, { entity, url: stagedUrl, geometryKey: key });
-        stagedUrl = undefined;
-        if (previous) URL.revokeObjectURL(previous.url);
+        const rendered: RenderedModel = { entity, url: stagedUrl, geometryKey: geometryKey(desired), asset, shader: stagedShader,
+          displayedState: structuredClone(desired), targetState: structuredClone(desired) };
+        this.applyDisplayState(recordId, rendered, desired);
+        this.rendered.set(recordId, rendered);
+        stagedUrl = undefined; stagedShader = undefined;
+        if (previous) { previous.shader.destroy(); URL.revokeObjectURL(previous.url); }
         this.errors.delete(recordId); this.requestRender();
       } catch (error) {
         if (isCurrent()) {
@@ -303,6 +380,7 @@ export class MachineryScene {
         }
       } finally {
         if (stagedUrl) URL.revokeObjectURL(stagedUrl);
+        stagedShader?.destroy();
         if (this.tasks.get(recordId)?.generation === generation) this.tasks.delete(recordId);
       }
     })();
@@ -310,15 +388,78 @@ export class MachineryScene {
     return task;
   }
 
+  private setTarget(recordId: string, entry: RenderedModel, state: MachineryState): void {
+    if (geometryKey(state) !== entry.geometryKey) resolveMachineryParameters(entry.asset, state.parameters, {}, { proportional: state.proportional });
+    if (JSON.stringify(state) === JSON.stringify(entry.targetState)) {
+      if (!this.transitions.has(recordId) && JSON.stringify(state) !== JSON.stringify(entry.displayedState)) this.applyDisplayState(recordId, entry, state);
+      entry.entity.show = this.isDisplayed(recordId, state); return;
+    }
+    entry.geometryKey = geometryKey(state); entry.targetState = structuredClone(state);
+    const smooth = entry.entity.show && !!this.scheduleFrame && this.transitionMilliseconds > 0 && this.liveStates.has(recordId)
+      && this.draft?.recordId !== recordId && !(typeof document !== 'undefined' && document.hidden);
+    if (smooth) this.transitions.set(recordId, { elapsed: 0, from: structuredClone(entry.displayedState), to: structuredClone(state) });
+    else { this.transitions.delete(recordId); this.applyDisplayState(recordId, entry, state); }
+    this.syncAnimation();
+  }
+
+  private applyDisplayState(recordId: string, entry: RenderedModel, state: MachineryState): void {
+    entry.displayedState = structuredClone(state);
+    const scale = updateMachineryRuntimeShader(entry.shader, entry.asset, state.parameters);
+    const scaleProperty = entry.entity.model!.scale;
+    if (scaleProperty instanceof ConstantProperty) scaleProperty.setValue(scale);
+    else entry.entity.model!.scale = new ConstantProperty(scale);
+    this.place(recordId, entry.entity, state);
+  }
+
+  private sampleTransition(recordId: string, now: number): void {
+    const transition = this.transitions.get(recordId), entry = this.rendered.get(recordId);
+    if (!transition || !entry) return;
+    // Start when a frame can actually display the pose. Synchronous assessment
+    // work after a sensor packet must not consume the whole visual transition.
+    // Cap a slow frame to half the duration so at least one intermediate pose is
+    // shown; assessment still uses the exact target immediately.
+    if (transition.lastFrame !== undefined) {
+      transition.elapsed += Math.min(this.transitionMilliseconds / 2, Math.max(0, now - transition.lastFrame));
+    }
+    transition.lastFrame = now;
+    const amount = Math.min(1, transition.elapsed / this.transitionMilliseconds);
+    this.applyDisplayState(recordId, entry, interpolateMachineryDisplayState(transition.from, transition.to, amount));
+    if (amount === 1) this.transitions.delete(recordId);
+  }
+
+  private syncAnimation(): void {
+    if (!this.transitions.size || this.disposed || !this.enabled || !this.canView) {
+      if (this.animationFrame !== undefined) this.cancelFrame(this.animationFrame);
+      this.animationFrame = undefined; return;
+    }
+    if (this.animationFrame !== undefined || !this.scheduleFrame) return;
+    this.animationFrame = this.scheduleFrame(() => {
+      this.animationFrame = undefined;
+      if (this.disposed || !this.enabled || !this.canView) return;
+      for (const id of this.transitions.keys()) this.sampleTransition(id, this.now());
+      this.requestRender(); this.syncAnimation();
+    });
+  }
+
+  private finishTransitions(): void {
+    for (const [id] of this.transitions) {
+      const entry = this.rendered.get(id);
+      if (entry) this.applyDisplayState(id, entry, entry.targetState);
+    }
+    this.transitions.clear(); this.syncAnimation();
+  }
+
   private place(recordId: string, entity: Entity, state: MachineryState): void {
     const p = state.placement;
     const position = Cartesian3.fromDegrees(p.longitude, p.latitude, p.height);
-    entity.position = new ConstantPositionProperty(position);
+    if (entity.position instanceof ConstantPositionProperty) entity.position.setValue(position);
+    else entity.position = new ConstantPositionProperty(position);
     // Cesium glTF2 correction is Y_UP_TO_Z_UP * Z_UP_TO_X_UP: source +X -> ENU north,
     // +Y -> up, +Z -> east. Positive HPR heading rotates clockwise around local up.
     // The exporter already subtracts the source ground anchor. Apply no second axis/scale correction.
-    entity.orientation = new ConstantProperty(Transforms.headingPitchRollQuaternion(position,
-      new HeadingPitchRoll(CesiumMath.toRadians(p.heading), 0, 0)));
+    const orientation = Transforms.headingPitchRollQuaternion(position, new HeadingPitchRoll(CesiumMath.toRadians(p.heading), 0, 0));
+    if (entity.orientation instanceof ConstantProperty) entity.orientation.setValue(orientation);
+    else entity.orientation = new ConstantProperty(orientation);
     entity.show = this.isDisplayed(recordId, state);
   }
 
@@ -338,8 +479,9 @@ export class MachineryScene {
 
   private remove(id: string): void {
     this.invalidate(id);
+    this.transitions.delete(id); this.syncAnimation();
     const entry = this.rendered.get(id);
-    if (entry) { this.source.entities.remove(entry.entity); URL.revokeObjectURL(entry.url); this.rendered.delete(id); }
+    if (entry) { this.source.entities.remove(entry.entity); entry.shader.destroy(); URL.revokeObjectURL(entry.url); this.rendered.delete(id); }
     this.errors.delete(id);
   }
 

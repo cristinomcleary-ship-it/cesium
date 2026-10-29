@@ -1,6 +1,6 @@
 import {
   Cartesian2, Cartesian3, Cartographic, ClassificationType, Color, CustomDataSource, EllipsoidTerrainProvider,
-  Entity, HeadingPitchRange, HeadingPitchRoll, HeightReference, LabelStyle, Math as CesiumMath,
+  Entity, HeadingPitchRange, HeadingPitchRoll, HeightReference, LabelStyle, Math as CesiumMath, Matrix4,
   PolygonHierarchy, PolylineOutlineMaterialProperty, ScreenSpaceEventHandler, ScreenSpaceEventType,
   Transforms, VerticalOrigin, type Viewer,
 } from 'cesium';
@@ -21,7 +21,7 @@ import {
   type RailSafetyAreaDisplay, type RailSafetyDisplaySettings, type RailSafetyRangeColors,
 } from './railSafetyDisplay';
 import { createRailSafetyEffectMaterial, isRailSafetyEffectMaterialAnimated, RailSafetyEffectRenderLoop } from './railSafetyEffects';
-import { RailSafetyFallDemo, type RailSafetyFallDemoPatch, type RailSafetyFallDemoSnapshot } from './railSafetyFallDemo';
+import { RailSafetyFallDemo, type RailSafetyFallDemoInput, type RailSafetyFallDemoPatch, type RailSafetyFallDemoSnapshot } from './railSafetyFallDemo';
 
 export type RailSafetyPick = MachineryPlacementPick;
 export type RailSafetyPickProgress = {
@@ -333,6 +333,35 @@ export class RailSafetyScene {
   setFallDemo(patch: RailSafetyFallDemoPatch): void { if (!this.disposed) this.fallDemo.set(patch); }
   resetFallDemo(): void { if (!this.disposed) this.fallDemo.reset(); }
   stopFallDemo(): void { this.fallDemoInputKey = undefined; this.fallDemo.stop(); }
+  getFallDemoInput(): RailSafetyFallDemoInput | undefined { return this.fallDemo.getInput(); }
+  isFallDemoReadyForCapture(): boolean { return !this.disposed && this.fallDemo.isReadyForCapture(); }
+
+  /** Replay only a read-only snapshot of a resource still visible in this project. A new
+   * telemetry pose or resource change still invalidates and stops the replay immediately. */
+  async replayFallDemo(input: RailSafetyFallDemoInput): Promise<boolean> {
+    if (this.disposed || !this.context.canView || !this.context.active) return false;
+    const current = this.fallDemoInput(input.resourceId);
+    if (!current) throw new Error('工程引用的机械或支承配置当前不可用');
+    const state = readMachineryState(input.state);
+    if (!state) throw new Error('工程机械快照无效');
+    this.fallDemoInputKey = JSON.stringify(current);
+    return this.fallDemo.start({ resourceId: input.resourceId, resourceName: input.resourceName, state, support: input.support });
+  }
+
+  frameFallDemo(view: 'current' | 'side' | 'oblique' | 'top'): void {
+    if (view === 'current' || this.disposed) return;
+    const input = this.fallDemo.getInput(); if (!input) return;
+    const p = input.state.placement, parameters = input.state.parameters;
+    // Frame the entire possible 0–90° sweep, including the fallen boom, rather than
+    // just the upright body. This changes only the viewer camera.
+    const size = Math.max(parameters.boom_length_m ?? 0, parameters.total_height_m ?? 0, parameters.overall_height_m ?? 0, parameters.outrigger_lateral_m ?? 0, 5);
+    const target = Cartesian3.fromDegrees(p.longitude, p.latitude, p.height + size * 0.18);
+    const heading = CesiumMath.toRadians(this.fallDemo.getSnapshot().direction + (view === 'side' ? 90 : 145));
+    const pitch = view === 'top' ? -Math.PI / 2 + 0.001 : view === 'side' ? -0.18 : -0.62;
+    this.viewer.camera.cancelFlight();
+    this.viewer.camera.lookAt(target, new HeadingPitchRange(heading, pitch, size * (view === 'top' ? 3 : 3.5)));
+    this.viewer.camera.lookAtTransform(Matrix4.IDENTITY); this.requestRender();
+  }
 
   /** Results come from the saved-boundary positioning evaluator, never from a drawing draft. */
   setGuardPositionStates(states: RailSafetyGuardPositionState[]): void {

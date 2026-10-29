@@ -26,7 +26,8 @@ export type RailSafetyFallDemoSnapshot = {
 };
 export type RailSafetyFallDemoPatch = { direction?: number; angle?: number; playing?: boolean };
 export type RailSafetyFallDemoDisplay = { footprintVisible: boolean; modelVisible?: boolean; area: RailSafetyAreaDisplay; color: string; effect?: RailSafetyRangeEffect };
-type Input = { resourceId: string; resourceName: string; state: MachineryMetadata; support?: FallSupportRectangle };
+export type RailSafetyFallDemoInput = { resourceId: string; resourceName: string; state: MachineryMetadata; support?: FallSupportRectangle };
+type Input = RailSafetyFallDemoInput;
 type Options = {
   loadAsset: (id: MachineryMetadata['assetId']) => Promise<LoadedMachineryAsset>;
   onChange?: (snapshot: RailSafetyFallDemoSnapshot) => void;
@@ -50,6 +51,7 @@ export class RailSafetyFallDemo {
   private snapshot = fresh();
   private source?: CustomDataSource;
   private prepared?: PreparedRailSafetyFallDemo;
+  private input?: RailSafetyFallDemoInput;
   private model?: Entity;
   private pivot?: Entity;
   private footprint?: Entity;
@@ -75,12 +77,19 @@ export class RailSafetyFallDemo {
   }
 
   getSnapshot(): RailSafetyFallDemoSnapshot { return structuredClone(this.snapshot); }
+  /** Export the exact frozen pose that built this demonstration, never a later live pose. */
+  getInput(): RailSafetyFallDemoInput | undefined { return this.input && this.snapshot.active && !this.snapshot.loading ? structuredClone(this.input) : undefined; }
+  isReadyForCapture(): boolean {
+    if (!this.model || !this.snapshot.active || this.snapshot.loading || this.snapshot.projectionBusy || this.snapshot.projectionError || this.viewer.isDestroyed()) return false;
+    return this.viewer.dataSourceDisplay.ready;
+  }
 
   async start(input: Input): Promise<boolean> {
     if (this.disposed) return false;
     this.stop(false);
     const generation = this.generation;
     const saved = structuredClone(input);
+    this.input = saved;
     this.snapshot = { ...fresh(), active: true, loading: true, resourceId: saved.resourceId,
       resourceName: saved.resourceName, direction: direction(saved.state.placement.heading + 90) };
     this.publish();
@@ -176,7 +185,7 @@ export class RailSafetyFallDemo {
     if (this.canvas) { this.canvas.width = 0; this.canvas.height = 0; this.canvas = undefined; }
     if (this.source && !this.viewer.isDestroyed()) this.viewer.dataSources.remove(this.source, true);
     if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
-    this.source = undefined; this.objectUrl = undefined; this.model = undefined; this.pivot = undefined; this.footprint = undefined; this.prepared = undefined;
+    this.source = undefined; this.objectUrl = undefined; this.model = undefined; this.pivot = undefined; this.footprint = undefined; this.prepared = undefined; this.input = undefined;
     this.snapshot = fresh(); this.requestRender();
     if (notify) this.publish();
   }

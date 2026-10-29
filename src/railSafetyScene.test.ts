@@ -434,6 +434,24 @@ test('pending fall demonstration cannot revive after permission or project chang
   } finally { release(); globalThis.fetch = fileFetcher; f.scene.dispose(); }
 });
 
+test('imported fall projects replay only a frozen copy and remain invalidated by current live pose changes', async () => {
+  const f = fixture(), saved = context([]), snapshotState = machinery();
+  snapshotState.placement.heading = 210;
+  try {
+    f.scene.setContext(saved);
+    assert.equal(await f.scene.replayFallDemo({ resourceId: 'crane', resourceName: '工程快照', state: snapshotState }), true);
+    assert.equal(f.scene.getFallDemoInput()!.state.placement.heading, 210);
+    assert.equal(saved.resources[0].machinery && (saved.resources[0].machinery as MachineryMetadata).placement.heading, 0);
+    f.scene.setContext(structuredClone(saved));
+    assert.equal(f.scene.getSnapshot().fallDemo.active, true, 'an unchanged context does not replace the imported snapshot');
+    const live = machinery(); live.placement.heading = 20;
+    f.scene.setLiveStates(new Map([['crane', live]]));
+    assert.equal(f.scene.getSnapshot().fallDemo.active, false, 'new live geometry stops old snapshot playback');
+    assert.equal(f.scene.getFallDemoInput(), undefined);
+    await assert.rejects(() => f.scene.replayFallDemo({ resourceId: 'unavailable', resourceName: 'Missing', state: snapshotState }), /不可用/);
+  } finally { f.scene.dispose(); }
+});
+
 test('live poses update only affected machine envelopes and invalidate fall animation while keeping initialization intact', async () => {
   const f = fixture();
   const saved = context([
