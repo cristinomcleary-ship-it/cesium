@@ -19,8 +19,9 @@ import { loadProjectModelRegistry } from "./safetySpatialStore.ts";
 import type { ModelRegistryEntry } from "../src/safetySpatialTypes.ts";
 import type { RailSafetyRecord } from "../src/railSafetyTypes.ts";
 import { PositioningGateway, loadPositioningGatewayConfig, validatePositioningGatewayConfig, type PositioningGatewayConfig } from "./management/positioningGateway.ts";
+import { createMachineryTelemetryGateway, validateMachineryTelemetryFrame, type MachineryTelemetryConfig } from "./management/machineryTelemetryGateway.ts";
 export { ManagementError } from "./management/domain.ts";
-export type ManagementStoreOptions={dataDir?:string;projectId?:string;projectName?:string;libraryDataDir?:string;spatialDataDir?:string;modelRegistry?:ModelRegistryEntry[]|(()=>Promise<ModelRegistryEntry[]>);localCompatibility?:boolean;now?:()=>string;positioningConfig?:PositioningGatewayConfig;
+export type ManagementStoreOptions={dataDir?:string;projectId?:string;projectName?:string;libraryDataDir?:string;spatialDataDir?:string;modelRegistry?:ModelRegistryEntry[]|(()=>Promise<ModelRegistryEntry[]>);localCompatibility?:boolean;now?:()=>string;positioningConfig?:PositioningGatewayConfig;machineryTelemetryConfig?:MachineryTelemetryConfig;
  resolveSpatialReference?:(projectId:string,objectId:string)=>unknown|Promise<unknown>;
  resolveLibraryEvidence?:(projectId:string,recordId:string,fileKey:string)=>LibraryEvidence|undefined|Promise<LibraryEvidence|undefined>};
 type DbRow={data:string};
@@ -55,6 +56,7 @@ export function createManagementStore(options:ManagementStoreOptions={}){
  const libraryRoot=resolve(options.libraryDataDir||process.env.CESIUM_DATA_DIR||join(process.cwd(),"project-data"));
  const legacyProjectId=options.projectId||"safety:project",now=options.now||(()=>new Date().toISOString());
  const positioning=new PositioningGateway(options.positioningConfig?validatePositioningGatewayConfig(options.positioningConfig):loadPositioningGatewayConfig(),()=>Date.parse(now()));
+ const machineryTelemetry=createMachineryTelemetryGateway(options.machineryTelemetryConfig,()=>Date.parse(now()));
  const resolveLibraryEvidence=options.resolveLibraryEvidence||createLibraryEvidenceResolver(libraryRoot,legacyProjectId);
  const db=new DatabaseSync(join(root,"management.sqlite"));db.exec("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
  const version=Number((db.prepare("PRAGMA user_version").get() as {user_version:number}).user_version);if(version>1){db.close();throw new ManagementError(500,"SCHEMA_UNSUPPORTED","管理数据库版本比应用更新，原库保留");}
@@ -217,6 +219,19 @@ export function createManagementStore(options:ManagementStoreOptions={}){
     let input:unknown;try{input=JSON.parse((await body(req,16_384)).toString("utf8"));}catch(e){if(e instanceof ManagementError)throw e;throw new ManagementError(400,"INVALID_JSON","JSON格式无效");}
     output(res,202,positioning.ingest(device,input,list(device.projectId,"railSafety") as RailSafetyRecord[]));return;
    }
+   if(url.pathname===MANAGEMENT_API+"/machinery-telemetry"&&req.method==="POST"){
+    ensure(req.headers["content-type"]?.startsWith("application/json"),"CONTENT_TYPE","请求必须为JSON");
+    let raw:unknown;try{raw=JSON.parse((await body(req,16_384)).toString("utf8"));}catch(e){if(e instanceof ManagementError)throw e;throw new ManagementError(400,"INVALID_JSON","JSON格式无效");}
+    const input=validateMachineryTelemetryFrame(raw);
+    if(req.headers.authorization){
+     const device=machineryTelemetry.authenticate(req.headers.authorization);getProject(device.projectId);
+     if(input.projectId!==device.projectId||input.resourceId!==device.resourceId||input.sourceId!==device.sourceId)throw new ManagementError(403,"DEVICE_SCOPE_MISMATCH","回传不属于凭据绑定的项目、机械和来源");
+     output(res,202,{accepted:true,frame:machineryTelemetry.ingest(input,get(device.projectId,"resources",device.resourceId),device)});return;
+    }
+    requestMarker(req);const actor=authenticate(req,input.projectId);responseActor=actor;allow(actor,"resource");allow(actor,"models");
+    const record=authorizedGet(input.projectId,actor,"resources",input.resourceId);
+    output(res,202,{accepted:true,frame:machineryTelemetry.ingest(input,record)});return;
+   }
    if(url.pathname===MANAGEMENT_API+"/session"){
     if(req.method==="POST"){
      requestMarker(req);const input=await jsonBody(req);const loginKey=(req.socket.remoteAddress||"")+":"+String(input.username).toLowerCase(),attempt=failedLogins.get(loginKey);if(attempt&&attempt.count>=10&&Date.now()-attempt.since<300000)throw new ManagementError(429,"LOGIN_RATE_LIMIT","登录尝试过多，请稍后重试");
@@ -230,6 +245,13 @@ export function createManagementStore(options:ManagementStoreOptions={}){
     const result=await command(input,actor);if(bootstrap){const logged=login(String(input.payload.username),String(input.payload.password),input.projectId);cookie(res,logged.token);result.session=publicSession(logged.actor);}output(res,200,result);return;
    }
    const actor=authenticate(req,projectId);responseActor=actor;
+   if(url.pathname===MANAGEMENT_API+"/machinery-telemetry"){
+    if(req.method!=="GET")throw new ManagementError(405,"METHOD_NOT_ALLOWED","机械回传接口仅支持GET和POST");
+    allow(actor,"read");allow(actor,"models");
+    const after=url.searchParams.get("after")??"0";
+    if(!/^(0|[1-9][0-9]*)$/.test(after))throw new ManagementError(400,"MACHINERY_TELEMETRY_CURSOR","after须为非负整数游标");
+    output(res,200,machineryTelemetry.snapshot(projectId,list(projectId,"resources").filter(r=>visible(actor,r,"resources")),Number(after),url.searchParams.get("streamId")||undefined));return;
+   }
    if(url.pathname===MANAGEMENT_API+"/positioning"){
     if(req.method!=="GET")throw new ManagementError(405,"METHOD_NOT_ALLOWED","定位状态仅支持GET");
     allow(actor,"read");allow(actor,"models");const all=list(projectId,"railSafety") as RailSafetyRecord[];

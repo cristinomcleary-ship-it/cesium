@@ -52,6 +52,8 @@ export class MachineryScene {
   private readonly assets = new Map<MachineryState['assetId'], Promise<LoadedMachineryAsset>>();
   private readonly assetAbort = new AbortController();
   private readonly saved = new Map<string, SavedRecord>();
+  /** Volatile sensor poses; never persisted into the equipment resource. */
+  private readonly liveStates = new Map<string, MachineryState>();
   private readonly rendered = new Map<string, RenderedModel>();
   private readonly tasks = new Map<string, LoadTask>();
   private readonly generations = new Map<string, number>();
@@ -78,7 +80,7 @@ export class MachineryScene {
     if (this.disposed) return;
     const changed = context.projectId !== this.projectId || context.canView !== this.canView || context.active !== this.enabled;
     if (changed) {
-      this.cancelPick(); this.draft = undefined;
+      this.cancelPick(); this.draft = undefined; this.liveStates.clear();
       // Invalidate all staged models before publishing the new project or permission.
       for (const id of this.tasks.keys()) this.invalidate(id);
     }
@@ -96,7 +98,28 @@ export class MachineryScene {
       const state = readMachineryState(record.machinery);
       if (state) this.saved.set(record.id, { id: record.id, name: record.name || record.id, state });
     }
+    for (const [id, live] of this.liveStates) {
+      const saved = this.saved.get(id)?.state;
+      if (!saved || live.assetId !== saved.assetId || live.assetVersion !== saved.assetVersion) this.liveStates.delete(id);
+    }
     this.reconcile();
+  }
+
+  /** Replace the current project's authorized sensor poses. Draft > live > saved.
+   * Detached, validated states prevent later packet mutation from changing a staged render. */
+  setLiveStates(states: ReadonlyMap<string, MachineryState>): void {
+    if (this.disposed) return;
+    const next = new Map<string, MachineryState>();
+    if (this.enabled && this.canView) for (const [id, value] of states) {
+      const saved = this.saved.get(id)?.state, state = readMachineryState(value);
+      if (saved && state && state.assetId === saved.assetId && state.assetVersion === saved.assetVersion) next.set(id, state);
+    }
+    if (next.size === this.liveStates.size && [...next].every(([id, state]) => JSON.stringify(state) === JSON.stringify(this.liveStates.get(id)))) return;
+    const changed = [...new Set([...next.keys(), ...this.liveStates.keys()])].filter(id => id !== this.draft?.recordId
+      && JSON.stringify(next.get(id) ?? this.saved.get(id)?.state) !== JSON.stringify(this.stateFor(id)));
+    this.liveStates.clear();
+    for (const [id, state] of next) this.liveStates.set(id, state);
+    for (const id of changed) this.restore(id);
   }
 
   /** Replace temporary display choices. Explicit true also reveals saved visible=false models. */
@@ -110,7 +133,7 @@ export class MachineryScene {
   }
 
   getDisplayVisibility(recordId: string): boolean {
-    const state = this.draft?.recordId === recordId ? this.draft.state : this.saved.get(recordId)?.state;
+    const state = this.stateFor(recordId);
     return state ? this.isDisplayed(recordId, state) : false;
   }
 
@@ -138,6 +161,7 @@ export class MachineryScene {
     if (this.disposed) return;
     this.enabled = enabled; this.source.show = enabled && this.canView;
     if (!enabled) {
+      this.liveStates.clear();
       this.cancelPick(); this.clearPreview();
       for (const id of this.tasks.keys()) this.invalidate(id);
     } else this.reconcile();
@@ -151,7 +175,7 @@ export class MachineryScene {
     try { await this.tasks.get(recordId)?.promise; } catch { return false; }
     const entry = this.rendered.get(recordId);
     if (!entry || !entry.entity.show || this.disposed || !this.enabled || !this.canView) return false;
-    const state = this.draft?.recordId === recordId ? this.draft.state : this.saved.get(recordId)?.state;
+    const state = this.stateFor(recordId);
     const height = state?.parameters.overall_height_m ?? state?.parameters.total_height_m ?? 1;
     // A lowered boom can be much longer than the model is tall. Include its
     // length and outrigger spans so locating it does not crop a horizontal pose.
@@ -200,7 +224,7 @@ export class MachineryScene {
   destroy(): void {
     if (this.disposed) return;
     this.disposed = true; this.cancelPick(); this.assetAbort.abort();
-    this.draft = undefined; this.saved.clear(); this.displayVisibility.clear(); this.removeAll(); this.assets.clear();
+    this.draft = undefined; this.saved.clear(); this.liveStates.clear(); this.displayVisibility.clear(); this.removeAll(); this.assets.clear();
     if (!this.viewer.isDestroyed()) this.viewer.dataSources.remove(this.source, true);
   }
 
@@ -221,7 +245,11 @@ export class MachineryScene {
     else this.remove(recordId);
   }
 
-  private renderSaved(record: SavedRecord): void { void this.render(record.id, record.state).catch(() => {}); }
+  private stateFor(recordId: string): MachineryState | undefined {
+    return this.draft?.recordId === recordId ? this.draft.state : this.liveStates.get(recordId) ?? this.saved.get(recordId)?.state;
+  }
+
+  private renderSaved(record: SavedRecord): void { void this.render(record.id, this.liveStates.get(record.id) ?? record.state).catch(() => {}); }
 
   private render(recordId: string, state: MachineryState, suppliedAsset?: LoadedMachineryAsset): Promise<void> {
     const key = geometryKey(state), current = this.rendered.get(recordId);
@@ -253,7 +281,7 @@ export class MachineryScene {
         if (!isCurrent()) return;
         stagedUrl = URL.createObjectURL(new Blob([buffer], { type: 'model/gltf-binary' }));
         // Read the current placement after await: moving a pending preview must not restore stale coordinates.
-        const desired = this.draft?.recordId === recordId ? this.draft.state : this.saved.get(recordId)?.state;
+        const desired = this.stateFor(recordId);
         if (!isCurrent() || !desired || geometryKey(desired) !== key || !this.isDisplayed(recordId, desired)) return;
         const previous = this.rendered.get(recordId);
         const entity = previous?.entity ?? this.source.entities.add(new Entity({
