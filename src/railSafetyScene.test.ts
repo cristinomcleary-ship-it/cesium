@@ -434,6 +434,69 @@ test('pending fall demonstration cannot revive after permission or project chang
   } finally { release(); globalThis.fetch = fileFetcher; f.scene.dispose(); }
 });
 
+test('live poses update only affected machine envelopes and invalidate fall animation while keeping initialization intact', async () => {
+  const f = fixture();
+  const saved = context([
+    record('config', { schemaVersion: 1, kind: 'machine', resourceId: 'crane', selectedLimitIds: ['near'] }),
+    record('config-2', { schemaVersion: 1, kind: 'machine', resourceId: 'crane-2', selectedLimitIds: ['near'] }),
+    record('near', { schemaVersion: 1, kind: 'limit', polygon: square() }),
+  ]);
+  saved.resources = [...saved.resources, { id: 'crane-2', name: '吊机 2', projectId: 'project', machinery: machinery() }];
+  const original = structuredClone(saved);
+  try {
+    f.scene.setContext(saved); await settled(f.scene);
+    const internals = f.scene as unknown as { envelopes: Map<string, unknown> };
+    const secondEnvelope = internals.envelopes.get('crane-2');
+    assert.equal(await f.scene.startFallDemo('crane'), true);
+    const live = machinery(); live.placement.longitude = origin.longitude + 0.001;
+    const other = machinery(); other.placement.heading = 90;
+    f.scene.setLiveStates(new Map([['crane', live], ['foreign-resource', other]]));
+    assert.equal(f.scene.getSnapshot().fallDemo.active, false, 'old animation stops before displaying a new pose');
+    await settled(f.scene);
+    assert.equal(internals.envelopes.get('crane-2'), secondEnvelope, 'unaffected envelope work is not reevaluated');
+    assert.equal(f.scene.getResults().find(result => result.resourceId === 'crane')!.status, 'clear');
+    assert.equal(f.scene.getResults().find(result => result.resourceId === 'crane')!.draft, true, 'live results cannot be reported against an older saved resource revision');
+    assert.equal(f.scene.getResults().find(result => result.resourceId === 'crane-2')!.status, 'overlap');
+    const generation = f.scene.getSnapshot().generation;
+    f.scene.setLiveStates(new Map([['crane', structuredClone(live)]]));
+    assert.equal(f.scene.getSnapshot().generation, generation, 'equal frames do not recalculate');
+    assert.deepEqual(saved, original);
+    assert.equal(await f.scene.startFallDemo('crane'), true);
+    f.scene.setMachineryPreview('crane', machinery()); await settled(f.scene);
+    assert.equal(f.scene.getSnapshot().fallDemo.active, false);
+    assert.equal(f.scene.getResults().find(result => result.resourceId === 'crane')!.status, 'overlap', 'manual preview takes precedence');
+    f.scene.setMachineryPreview('crane'); await settled(f.scene);
+    assert.equal(f.scene.getResults().find(result => result.resourceId === 'crane')!.status, 'clear', 'closing preview returns to latest telemetry');
+    f.scene.setContext({ ...saved, canView: false });
+    f.scene.setLiveStates(new Map([['crane', live]]));
+    f.scene.setContext(saved); await settled(f.scene);
+    assert.equal(f.scene.getResults().find(result => result.resourceId === 'crane')!.status, 'overlap', 'permission reset cannot retain stale live poses');
+  } finally { f.scene.dispose(); }
+});
+
+test('enabling an identical live pose marks preserved results transient without recomputing geometry', async () => {
+  const f = fixture();
+  const saved = context([
+    record('config', { schemaVersion: 1, kind: 'machine', resourceId: 'crane', selectedLimitIds: ['near'] }),
+    record('near', { schemaVersion: 1, kind: 'limit', polygon: square() }),
+  ]);
+  try {
+    f.scene.setContext(saved); await settled(f.scene);
+    const internals = f.scene as unknown as { envelopes: Map<string, unknown> };
+    const envelope = internals.envelopes.get('crane');
+    assert.equal(f.scene.getResults()[0].draft, false);
+    f.scene.setLiveStates(new Map([['crane', machinery()]]));
+    assert.equal(f.scene.hasLiveState('crane'), true);
+    assert.equal(f.scene.getResults()[0].draft, true, 'even the first same-valued live frame is not a persisted risk snapshot');
+    assert.equal(f.scene.getSnapshot().pending, 0);
+    assert.equal(internals.envelopes.get('crane'), envelope);
+    f.scene.setLiveStates(new Map());
+    assert.equal(f.scene.hasLiveState('crane'), false);
+    assert.equal(f.scene.getResults()[0].draft, false, 'removing the identical override restores the saved-result classification');
+    assert.equal(internals.envelopes.get('crane'), envelope);
+  } finally { f.scene.dispose(); }
+});
+
 test('saved work-area monitoring stays independent of station, responsibility area and incomplete drafts', async () => {
   const f = fixture(), time = JulianDate.now();
   const guard = record('guard', { schemaVersion: 1, kind: 'guard', station: origin, polygon: square(), resourceIds: [],

@@ -335,6 +335,7 @@ export class RailSafetyPanel {
     return this.openFieldObject(kind === "machine" ? "machine" : tab, id);
   }
   setMachineryPreview(id: string, state?: MachineryState) { if (!this.destroyed) this.scene.setMachineryPreview(id, state); }
+  setLiveStates(states: ReadonlyMap<string, MachineryState>) { if (!this.destroyed) this.scene.setLiveStates(states); }
   /** Adapter entry point; device identity alone does not establish a live connection. */
   ingestPositionSample(input: unknown): RailSafetyPositionSample {
     if (this.destroyed || !this.context.canView || !this.context.active) throw new Error("当前项目不可查看，拒绝定位样本");
@@ -508,6 +509,7 @@ export class RailSafetyPanel {
     this.message("已导出当前账号可见的任务管控清单，各任务涉及机械数量不可直接相加。");
   }
   private async reportRisk(resourceId: string, limitId: string) {
+    if (this.scene.hasLiveState(resourceId)) { this.message("实时姿态尚未保存，停用关联并保存姿态后可登记。", true); return; }
     if (!this.canReportRisk || !this.options.reportRisk) { this.message("请先保存或取消草稿，并等待当前配置计算完成；登记处置需要现场填报权限。", true); return; }
     const duplicate = this.openRiskIssue(resourceId, limitId);
     if (duplicate) { this.workspaceView = "issues"; this.issueFilter = "open"; this.taskScopeKey = duplicate.taskId || "__unassigned__"; this.renderOperations(); this.controls(); this.message("已有未闭环处置单，请继续办理，避免重复登记。"); return; }
@@ -958,8 +960,10 @@ export class RailSafetyPanel {
       const card = element("article", "rs-result rs-result-" + result.status); card.dataset.resourceId = result.resourceId; card.dataset.status = result.status;
       const heading = element("div", "rs-result-heading");
       const locate = this.actionButton("locate-result", "定位机械"); locate.dataset.resourceId = result.resourceId;
-      heading.append(element("strong", "", result.resourceName), element("span", "rs-badge", result.draft ? "草稿预览" : "当前配置"), locate); card.append(heading);
+      const livePose = this.scene.hasLiveState(result.resourceId);
+      heading.append(element("strong", "", result.resourceName), element("span", "rs-badge", livePose ? "实时姿态（未保存）" : result.draft ? "草稿预览" : "当前配置"), locate); card.append(heading);
       card.append(element("p", "rs-result-label", result.label), element("p", "rs-help", result.message));
+      if (livePose) card.append(element("p", "rs-warning", "实时姿态尚未保存，停用关联并保存姿态后可登记。"));
       if (this.tab === "machine" && this.draft?.definition.kind === "machine" && !this.draft.definition.selectedLimitIds.length) card.append(this.actionButton("choose-limits", "选择安全限界"));
       if (Number.isFinite(result.maxDistanceMeters)) card.append(element("p", "rs-measure", `采样扫掠最远投影距站位 ${result.maxDistanceMeters!.toFixed(2)} m`));
       if (Number.isFinite(result.nearestDistanceMeters)) card.append(element("p", "rs-measure", `限界最近距离 ${result.nearestDistanceMeters!.toFixed(2)} m`));

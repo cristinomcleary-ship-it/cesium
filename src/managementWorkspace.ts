@@ -113,6 +113,7 @@ export class ManagementWorkspace {
       onOpenChange: open => { if (!this.active) this.workbench.onPanelChange?.(open); else this.queueFieldUpdate(); },
       onSelectionChange: id => { this.selectedMachineryId = id || undefined; if(id)this.selectedFieldObject={kind:'resources',id}; this.queueFieldUpdate(); },
       onPreviewChange: (id, state) => this.railSafety?.setMachineryPreview(id, state),
+      onLiveStatesChange: states => this.railSafety?.setLiveStates(states),
       pickPosition: pixel => {
         if (!this.active) return this.workbench.pickPosition?.(pixel);
         const hit = strictModelSurfacePick(this.viewer, pixel, this.safety.getManagementModels(), () => this.safety.effects.suspendOverlaysForPicking(), this.data?.projectId);

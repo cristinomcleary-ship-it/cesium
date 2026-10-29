@@ -364,3 +364,56 @@ test('project switch, permission loss and disposal invalidate staged models befo
     scene.destroy();
   }
 });
+
+test('multiple sensor poses remain transient, deduplicate renders and restore through preview and permission changes', async () => {
+  const originalFetch = globalThis.fetch; globalThis.fetch = fileFetcher;
+  const f = viewerFixture(), scene = new MachineryScene(f.viewer);
+  const savedA = state('crane'), savedB = state('pile');
+  const records = [{ id: 'a', name: '吊机', machinery: savedA, projectId: 'project' },
+    { id: 'b', name: '桩机', machinery: savedB, projectId: 'project' }];
+  const context = { projectId: 'project', records, canView: true, active: true };
+  const longitude = (id: string) => Cartographic.fromCartesian(f.source().entities.getById(`machinery:${id}`)!.position!.getValue(JulianDate.now())!).longitude * 180 / Math.PI;
+  try {
+    scene.setContext(context); await Promise.all([scene.flyTo('a'), scene.flyTo('b')]);
+    const liveA = structuredClone(savedA), liveB = structuredClone(savedB);
+    liveA.placement.longitude = 122; liveB.placement.longitude = 123;
+    scene.setLiveStates(new Map([['a', liveA], ['b', liveB], ['foreign-resource', liveA]]));
+    near(longitude('a'), 122); near(longitude('b'), 123);
+    assert.equal(f.source().entities.values.length, 2, 'an unknown resource cannot create a sensor-only model');
+    const renders = f.renders();
+    scene.setLiveStates(new Map([['b', structuredClone(liveB)], ['a', structuredClone(liveA)]]));
+    assert.equal(f.renders(), renders, 'equal states in a different map order do not request rendering');
+    liveA.placement.longitude = 124;
+    near(longitude('a'), 122, 1e-8);
+    const draft = structuredClone(savedA); draft.placement.longitude = 125;
+    await scene.preview('a', draft, await asset('crane'));
+    scene.setLiveStates(new Map([['a', liveA], ['b', liveB]]));
+    near(longitude('a'), 125, 1e-8);
+    scene.clearPreview(); near(longitude('a'), 124, 1e-8);
+    assert.equal(savedA.placement.longitude, 121, 'sensor poses never mutate saved initialization');
+    scene.setContext({ ...context, canView: false });
+    scene.setLiveStates(new Map([['a', liveA]]));
+    scene.setContext(context); await scene.flyTo('a');
+    near(longitude('a'), 121, 1e-8);
+    scene.setLiveStates(new Map([['a', liveA], ['b', liveB]]));
+    scene.setContext({ ...context, records: [records[1]] });
+    assert.equal(f.source().entities.getById('machinery:a'), undefined);
+    scene.setContext(context); await scene.flyTo('a'); near(longitude('a'), 121, 1e-8);
+  } finally { scene.destroy(); globalThis.fetch = originalFetch; }
+});
+
+test('newest sensor placement wins a staged geometry load', async () => {
+  const originalFetch = globalThis.fetch; globalThis.fetch = fileFetcher;
+  const f = viewerFixture(true), scene = new MachineryScene(f.viewer), saved = state('pile');
+  try {
+    scene.setContext({ projectId: 'project', records: [{ id: 'pile', machinery: saved, projectId: 'project' }], canView: true, active: true });
+    const first = structuredClone(saved); first.placement.longitude = 122;
+    scene.setLiveStates(new Map([['pile', first]]));
+    const latest = structuredClone(first); latest.placement.longitude = 123; latest.placement.height = 321;
+    scene.setLiveStates(new Map([['pile', latest]]));
+    f.release(); assert.equal(await scene.flyTo('pile'), true);
+    const position = Cartographic.fromCartesian(f.source().entities.getById('machinery:pile')!.position!.getValue(JulianDate.now())!);
+    near(position.longitude * 180 / Math.PI, 123); near(position.height, 321, 1e-6);
+    assert.equal(f.source().entities.values.length, 1);
+  } finally { scene.destroy(); globalThis.fetch = originalFetch; }
+});
