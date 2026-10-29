@@ -6,6 +6,8 @@ import type { RailSafetyDefinition, RailSafetyPosition, RailSafetyPositionSample
 import { RAIL_SAFETY_MAX_REFERENCES, RAIL_SAFETY_MAX_VERTICES } from "./railSafetyTypes";
 import { RailSafetyScene, type RailSafetyMachineResult } from "./railSafetyScene";
 import type { RailSafetyFallDemoSnapshot } from "./railSafetyFallDemo";
+import { captureFallExportCamera, createFallExportProject, parseFallExportProject, restoreFallExportCamera, validateFallExportReplayScope, type FallExportSceneReference, type RailSafetyFallExportProject } from "./railSafetyFallExportProject";
+import { SceneVideoRecorder, downloadSceneVideo, type SceneVideoRecorderSnapshot, type SceneVideoResult } from "./sceneVideoRecorder";
 import { normalizeRailSafetyDisplay, readRailSafetyDisplay, writeRailSafetyDisplay, type RailSafetyDisplaySettings } from "./railSafetyDisplay";
 import { RailSafetyPositioningStore, validateRailSafetyPositionSample } from "./railSafetyPositioning";
 import { RailSafetyPositioningClient, type RailSafetyPositioningClientStatus } from "./railSafetyPositioningClient";
@@ -48,6 +50,8 @@ export type RailSafetyPanelOptions = {
   /** The host owns object selection, archive navigation and unsaved-draft guards. */
   onSelectObject?: (kind: Tab, id: string) => void;
   onSelectionChange?: (kind: Tab, id: string) => void;
+  /** Current authorised scene resource IDs/names only; never provider objects or signed URLs. */
+  getSceneResources?: () => readonly FallExportSceneReference[];
 };
 export type RailSafetyFieldMachine = RailSafetyMachineResult & { modelReady: boolean; configurationReady: boolean; preparationReason: string };
 export type RailSafetyFieldSummary = {
@@ -98,6 +102,18 @@ export class RailSafetyPanel {
   private readonly positioningTimer: ReturnType<typeof setInterval>;
   private pickingPurpose?: "simulation" | "workArea";
   private fallDemo?: FallDemoState;
+  private readonly fallRecorder: SceneVideoRecorder;
+  private fallRecording?: SceneVideoRecorderSnapshot;
+  private fallExportPhase: "idle" | "preparing" | "recording" | "finishing" = "idle";
+  private fallExportGeneration = 0;
+  private fallExportAbort?: AbortController;
+  private fallExportResourceId = "";
+  private fallExportMessage = "";
+  private fallExportView: "current" | "side" | "oblique" | "top" = "current";
+  private fallExportFormat: "webm" | "mp4" = "webm";
+  private cameraInputsBeforeExport?: boolean;
+  private fallVideoProject?: RailSafetyFallExportProject;
+  private fallCompleted?: { video: SceneVideoResult; project: RailSafetyFallExportProject };
   private pendingAction?: () => void;
   private workspaceView: "objects" | "tasks" | "issues" = "objects";
   private taskScopeKey = "";
@@ -159,13 +175,20 @@ export class RailSafetyPanel {
     }
     this.documents = new MachineryDocumentsPanel(this.find('[data-section-content="documents"]'), () => { if (this.documents) this.controls(); });
     options.host.append(this.root);
+    this.fallRecorder = new SceneVideoRecorder(options.viewer, { onStateChange: state => {
+      this.fallRecording = state;
+      if (state.state === "error" && this.fallExportPhase !== "idle") this.cancelFallExport(state.message || "视频录制失败");
+      else if (state.state === "cancelled" && this.fallExportPhase !== "idle") this.cancelFallExport(state.message || "视频录制已取消");
+      else if (state.state === "complete" && this.fallExportPhase === "recording") this.cancelFallExport("录像已达到时长或大小限制，请缩短演示后重试");
+      if (!this.destroyed) this.updateFallDemo();
+    } });
     this.scene = new RailSafetyScene(options.viewer, {
       pickPosition: options.pickPosition,
       onResults: results => {
         if (this.destroyed || !this.context.canView) return;
         this.results = results; this.renderStats(); this.renderResults(); this.renderOperations(); this.options.onDisplayChange?.();
       },
-      onFallDemoChange: state => { if (!this.destroyed) { this.fallDemo = state; this.updateFallDemo(); } },
+      onFallDemoChange: state => { if (!this.destroyed) { this.fallDemo = state; this.checkFallExport(state); this.updateFallDemo(); } },
       onPickingChange: picking => {
         if (this.destroyed) return;
         this.setPicking(picking);
@@ -366,6 +389,8 @@ export class RailSafetyPanel {
       this.renderDisplay();
     }
     if (reset) {
+      this.cancelFallExport("项目或权限已变化，已取消动画导出");
+      this.clearCompletedFallExport();
       this.positioning.clear(); this.positionStates = []; this.scene.setGuardPositionStates([]); this.scene.stopFallDemo();
       this.positionBindings.clear(); this.networkPositionDevices.clear(); this.positioningSnapshot = undefined; this.positioningSampleError = "";
       ++this.generation; this.scene.cancelPicking(); this.scene.setDraft(undefined);
@@ -411,9 +436,10 @@ export class RailSafetyPanel {
     if (this.isBusy) { this.message("正在保存配置或机械资料，请稍后关闭。", true); return false; }
     return this.requestDiscard(() => this.closeNow(), "关闭面板会放弃尚未保存的配置。已保存的范围仍显示在场景中。");
   }
-  private closeNow() { this.scene.stopFallDemo(); this.clearDraft(); this.opened = false; this.root.hidden = true; this.controls(); this.options.onOpenChange?.(false); }
+  private closeNow() { this.cancelFallExport("已关闭演示，动画导出已取消"); this.scene.stopFallDemo(); this.clearDraft(); this.opened = false; this.root.hidden = true; this.controls(); this.options.onOpenChange?.(false); }
   dispose() {
     if (this.destroyed) return;
+    this.cancelFallExport("动画导出已取消"); this.clearCompletedFallExport(); this.fallRecorder.destroy();
     ++this.generation; this.scene.cancelPicking(); this.destroyed = true; clearInterval(this.positioningTimer); this.positioningClient.dispose(); this.positioning.clear(); this.events.abort(); this.documents.dispose(); this.scene.dispose(); this.root.remove(); this.setPicking(false);
     this.opened = false; this.options.onOpenChange?.(false);
   }
@@ -826,6 +852,150 @@ export class RailSafetyPanel {
     status.dataset.state = this.positioningSampleError ? "error" : this.positioningConnection.state;
     status.textContent = this.positioningSampleError || message;
   }
+  private fallProjectSnapshot(): RailSafetyFallExportProject {
+    const input = this.scene.getFallDemoInput();
+    if (!input || !this.fallDemo?.active) throw new Error("请先开启机械倾覆演示，再导出工程");
+    if (!this.options.getSceneResources) throw new Error("当前场景尚未提供资源清单，不能导出带场景引用的工程");
+    return createFallExportProject({ ...input, projectId: this.context.projectId, direction: this.fallDemo.direction,
+      camera: captureFallExportCamera(this.options.viewer), display: this.display, resources: this.options.getSceneResources() });
+  }
+
+  private downloadFallProject(project: RailSafetyFallExportProject): void {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(project, null, 2)], { type: "application/json;charset=utf-8" }));
+    const anchor = document.createElement("a"); anchor.href = url;
+    anchor.download = `fall-project-${project.resourceId.replace(/[^a-zA-Z0-9_-]/g, "_")}-${project.createdAt.replace(/[:.]/g, "-")}.json`;
+    document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  private nextFallExportFrame(signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let remove = () => {};
+      const done = (error?: Error) => { remove(); clearTimeout(timer); signal.removeEventListener("abort", abort); error ? reject(error) : resolve(); };
+      const abort = () => done(new Error("动画导出已取消"));
+      const timer = setTimeout(() => done(new Error("场景长时间未完成绘制，请检查模型加载后重试")), 5000);
+      remove = this.options.viewer.scene.postRender.addEventListener(() => done());
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted || this.destroyed || this.options.viewer.isDestroyed()) abort();
+      else this.options.viewer.scene.requestRender();
+    });
+  }
+
+  private async waitFallCaptureReady(signal: AbortSignal): Promise<void> {
+    const start = performance.now();
+    while (!signal.aborted) {
+      if (!this.fallDemo?.active || this.fallDemo.error || this.fallDemo.projectionError) throw new Error(this.fallDemo?.error || this.fallDemo?.projectionError || "演示已失效，请重新开启");
+      await this.nextFallExportFrame(signal);
+      if (this.scene.isFallDemoReadyForCapture()) { await this.nextFallExportFrame(signal); return; }
+      if (performance.now() - start > 20_000) throw new Error("机械模型或投影尚未就绪，请等待场景加载后重试");
+    }
+    throw new Error("动画导出已取消");
+  }
+
+  private restoreFallCameraInputs(): void {
+    if (this.cameraInputsBeforeExport !== undefined && !this.options.viewer.isDestroyed()) this.options.viewer.scene.screenSpaceCameraController.enableInputs = this.cameraInputsBeforeExport;
+    this.cameraInputsBeforeExport = undefined;
+  }
+
+  private clearCompletedFallExport(): void {
+    this.fallCompleted = undefined;
+    if (!this.fallRecorder.active) this.fallRecorder.cancel();
+  }
+
+  private cancelFallExport(message: string): void {
+    if (this.fallExportPhase === "idle") return;
+    this.fallExportPhase = "idle"; ++this.fallExportGeneration; this.fallExportAbort?.abort(); this.fallExportAbort = undefined;
+    this.fallVideoProject = undefined; this.fallExportResourceId = ""; this.fallExportMessage = message;
+    this.fallRecorder.cancel(message); this.restoreFallCameraInputs();
+    if (!this.destroyed) { this.scene?.setFallDemo({ playing: false }); this.updateFallDemo(); }
+  }
+
+  private checkFallExport(state: FallDemoState): void {
+    if (this.fallCompleted && (!state.active || state.resourceId !== this.fallCompleted.project.resourceId
+      || JSON.stringify(this.options.getSceneResources?.() ?? []) !== JSON.stringify(this.fallCompleted.project.scene.resources))) this.clearCompletedFallExport();
+    if (this.fallExportPhase === "idle") return;
+    if (!state.active || state.resourceId !== this.fallExportResourceId || state.error || state.projectionError) {
+      this.cancelFallExport(state.error || state.projectionError || "机械姿态、对象或项目已变化，已取消导出；请按最新姿态重新录制"); return;
+    }
+    if (this.fallVideoProject && (JSON.stringify(this.options.getSceneResources?.() ?? []) !== JSON.stringify(this.fallVideoProject.scene.resources)
+      || JSON.stringify(this.display) !== JSON.stringify(this.fallVideoProject.display))) {
+      this.cancelFallExport("场景资源或显示设置已变化，已取消导出；请重新录制以保持工程与视频一致"); return;
+    }
+    if (this.fallExportPhase === "recording" && !state.playing && state.angle >= 90 && !state.projectionBusy) void this.finishFallVideo();
+  }
+
+  private async exportFallVideo(): Promise<void> {
+    if (this.fallExportPhase !== "idle" || !this.fallDemo?.active || this.fallDemo.loading) return;
+    const generation = ++this.fallExportGeneration, abort = new AbortController();
+    this.clearCompletedFallExport();
+    this.fallExportAbort = abort; this.fallExportPhase = "preparing"; this.fallExportResourceId = this.fallDemo.resourceId!;
+    this.fallExportMessage = "正在准备初始姿态与场景画面…"; this.updateFallDemo();
+    try {
+      this.scene.setFallDemo({ angle: 0, playing: false }); this.scene.frameFallDemo(this.fallExportView);
+      await this.waitFallCaptureReady(abort.signal);
+      if (generation !== this.fallExportGeneration) return;
+      this.fallVideoProject = this.fallProjectSnapshot();
+      const controller = this.options.viewer.scene.screenSpaceCameraController;
+      this.cameraInputsBeforeExport = controller.enableInputs; controller.enableInputs = false;
+      this.fallExportMessage = "正在准备视频首帧，机械保持初始姿态…"; this.updateFallDemo();
+      // Keep the demo at 0° until the recorder has submitted its first scene
+      // frame. Initial GPU readback/encoder warmup may take several seconds.
+      await this.fallRecorder.start({ format: this.fallExportFormat, fileName: `fall-${this.fallExportResourceId.replace(/[^a-zA-Z0-9_-]/g, "_")}`, frameRate: 30, maxDurationSeconds: 60 });
+      if (generation !== this.fallExportGeneration || abort.signal.aborted || this.destroyed) return;
+      this.checkFallExport(this.fallDemo!);
+      if (generation !== this.fallExportGeneration) return;
+      if (this.fallRecorder.snapshot.state !== "recording") throw new Error("视频录制尚未就绪，请重新尝试");
+      this.fallExportPhase = "recording"; this.fallExportMessage = "正在录制完整场景与0–90°倾覆演示…";
+      this.scene.setFallDemo({ playing: true }); this.updateFallDemo();
+    } catch (error) {
+      if (generation === this.fallExportGeneration) this.cancelFallExport("导出未完成：" + errorText(error));
+    }
+  }
+
+  private async finishFallVideo(): Promise<void> {
+    if (this.fallExportPhase !== "recording" || !this.fallExportAbort) return;
+    this.fallExportPhase = "finishing"; const generation = this.fallExportGeneration, signal = this.fallExportAbort.signal;
+    this.fallExportMessage = "正在封装视频与工程文件…"; this.updateFallDemo();
+    try {
+      // Wait for final model/projection readiness, then let the recorder submit
+      // an unthrottled terminal frame before it stops the encoder.
+      await this.waitFallCaptureReady(signal);
+      if (generation !== this.fallExportGeneration || signal.aborted || this.destroyed) return;
+      const result = await this.fallRecorder.stop();
+      if (generation !== this.fallExportGeneration || this.destroyed) return;
+      if (!result || !this.fallVideoProject) throw new Error("录像未产生有效文件");
+      this.fallCompleted = { video: result, project: this.fallVideoProject };
+      this.fallExportPhase = "idle"; this.fallExportAbort = undefined; this.restoreFallCameraInputs();
+      this.fallExportMessage = "场景视频与动画工程已生成，请分别点击下载；可重复下载。"; this.fallVideoProject = undefined; this.updateFallDemo();
+    } catch (error) { if (generation === this.fallExportGeneration) this.cancelFallExport("导出未完成：" + errorText(error)); }
+  }
+
+  private async importFallProject(file: File): Promise<void> {
+    try {
+      if (file.size > 1_048_576) throw new Error("动画工程JSON不能超过1MB");
+      const projectId = this.context.projectId, actorId = this.context.actorId;
+      const project = parseFallExportProject(JSON.parse(await file.text()));
+      if (this.destroyed || this.context.projectId !== projectId || this.context.actorId !== actorId || !this.context.canView || !this.context.active) return;
+      if (!this.options.getSceneResources) throw new Error("当前场景尚未提供资源清单，不能核验工程引用");
+      validateFallExportReplayScope(project, projectId, this.resources().map(r => r.id), this.options.getSceneResources());
+      this.requestDiscard(() => {
+        // A discard confirmation may remain open while authorisation or loaded resources change.
+        try {
+          if (this.destroyed || this.context.projectId !== projectId || this.context.actorId !== actorId || !this.context.canView || !this.context.active) throw new Error("项目或权限已变化，请重新导入工程");
+          validateFallExportReplayScope(project, this.context.projectId, this.resources().map(r => r.id), this.options.getSceneResources!());
+        } catch (error) { if (!this.destroyed) this.message("工程未导入：" + errorText(error), true); return; }
+        this.cancelFallExport("导入工程，已取消当前录制"); this.tab = "machine"; this.select(project.resourceId); this.setObjectSection("analysis");
+        const generation = this.generation;
+        this.display = normalizeRailSafetyDisplay(project.display); this.applyDisplay(); this.renderDisplay();
+        restoreFallExportCamera(this.options.viewer, project.camera);
+        void this.scene.replayFallDemo({ resourceId: project.resourceId, resourceName: project.resourceName, state: project.modelState, support: project.support }).then(started => {
+          if (!started || this.destroyed || generation !== this.generation) return;
+          this.scene.setFallDemo({ direction: project.animation.directionDegrees, angle: 0, playing: true });
+          this.fallExportMessage = "正在按工程中的冻结姿态重播；原机械台账和当前现场姿态未修改。"; this.updateFallDemo();
+        }).catch(error => { if (!this.destroyed && generation === this.generation) this.message("工程重播失败：" + errorText(error), true); });
+      }, "导入动画工程会切换机械并放弃尚未保存的管控草稿。");
+    } catch (error) { this.fallExportMessage = "工程未导入：" + errorText(error); this.updateFallDemo(); this.message(this.fallExportMessage, true); }
+  }
+
   private renderFallDemo() {
     const host = this.find('[data-role="fall-demo"]'); host.replaceChildren(); host.hidden = this.draft?.definition.kind !== "machine";
     if (host.hidden) return;
@@ -838,6 +1008,16 @@ export class RailSafetyPanel {
       const input = element("input"); input.type = "range"; input.min = "0"; input.max = String(max); input.step = String(step); input.dataset.fall = property; input.setAttribute("aria-label", title); wrapper.append(caption, input); controls.append(wrapper);
     }
     host.append(controls);
+    const exports = element("div", "rs-demo-export");
+    const viewLabel = element("label", "rs-label"), view = element("select"); view.dataset.role = "fall-export-view"; view.setAttribute("aria-label", "动画导出视角");
+    for (const [value, label] of [["current", "当前视角（可先手动调整）"], ["side", "倾覆侧视"], ["oblique", "斜俯视"], ["top", "顶视"]]) view.add(new Option(label, value));
+    view.value = this.fallExportView; viewLabel.append(document.createTextNode("动画导出视角"), view);
+    const formatLabel = element("label", "rs-label"), format = element("select"); format.dataset.role = "fall-export-format"; format.setAttribute("aria-label", "动画视频格式");
+    format.add(new Option("WebM", "webm")); format.add(new Option("MP4（需浏览器支持）", "mp4")); format.value = this.fallExportFormat; formatLabel.append(document.createTextNode("视频格式"), format);
+    const exportActions = element("div", "rs-actions"); exportActions.append(this.actionButton("fall-export-view", "应用视角"), this.actionButton("fall-export-video", "生成视频 + 工程"), this.actionButton("fall-download-video", "下载视频"), this.actionButton("fall-download-project", "下载配套工程"), this.actionButton("fall-export-project", "导出动画工程JSON"), this.actionButton("fall-import-project", "导入工程重播"), this.actionButton("fall-export-cancel", "取消导出"));
+    const file = element("input"); file.type = "file"; file.accept = ".json,application/json"; file.hidden = true; file.dataset.role = "fall-import-file";
+    const exportStatus = element("p", "rs-help"); exportStatus.dataset.role = "fall-export-status"; exportStatus.setAttribute("role", "status");
+    exports.append(viewLabel, formatLabel, exportActions, file, exportStatus, element("p", "rs-help", "视频包含三维场景和倾覆演示。工程JSON保存相机、冻结姿态、动画参数与场景资源引用，不包含完整倾斜摄影/影像文件；须在原项目加载对应资源后重播。录制期间姿态变化会取消导出。")); host.append(exports);
     const status = element("p", "rs-help"); status.dataset.role = "fall-status"; status.setAttribute("role", "status"); host.append(status);
     host.append(element("p", "rs-help", "轮廓来自当前机械三角面的水平投影，随连续方向和倾角更新；孔隙按显示分辨率保留。固定支承线几何演示不含滑移、解体和触地后的运动，原机械姿态不变。"));
     this.updateFallDemo();
@@ -847,14 +1027,15 @@ export class RailSafetyPanel {
     if (host.hidden || !host.children.length) return;
     const state = this.fallDemo, machine = this.draft?.definition.kind === "machine" ? this.draft.definition : undefined;
     const same = !!machine && state?.resourceId === machine.resourceId, loading = !!same && !!state?.loading, active = !!same && !!state?.active && !loading;
+    const exporting = this.fallExportPhase !== "idle";
     const available = this.context.canView && this.context.active && !this.busy && !this.picking;
     const start = this.find<HTMLButtonElement>('[data-action="fall-start"]'); start.hidden = active; start.disabled = !available || loading; start.textContent = loading ? "正在准备演示…" : "按角度查看范围";
-    for (const action of ["fall-play", "fall-reset", "fall-stop"]) { const button = this.find<HTMLButtonElement>(`[data-action="${action}"]`); button.hidden = !active && !loading; button.disabled = !available || action !== "fall-stop" && !active; }
+    for (const action of ["fall-play", "fall-reset", "fall-stop"]) { const button = this.find<HTMLButtonElement>(`[data-action="${action}"]`); button.hidden = !active && !loading; button.disabled = !available || action !== "fall-stop" && (!active || exporting); }
     this.find('[data-action="fall-play"]').textContent = state?.playing ? "暂停" : "播放";
     this.find('[data-role="fall-controls"]').hidden = !active;
     for (const property of ["direction", "angle"] as const) {
       const input = this.find<HTMLInputElement>(`[data-fall="${property}"]`), value = state?.[property] ?? 0;
-      input.value = String(value); input.disabled = !available || !active;
+      input.value = String(value); input.disabled = !available || !active || exporting;
       this.find<HTMLOutputElement>(`[data-fall-output="${property}"]`).value = `${Math.round(value)}°`;
     }
     const status = this.find('[data-role="fall-status"]');
@@ -870,6 +1051,15 @@ export class RailSafetyPanel {
     if (projectionMode && state?.belowGround) parts.push(`已超过首次触地角 ${state.firstContactAngle?.toFixed(1) ?? "—"}°，当前为几何续转`);
     if (projectionMode && state?.projectionError) parts.push(state.projectionError);
     status.textContent = loading ? "正在读取机械模型并准备演示，完成后可播放、暂停和拖动倾角。" : state?.error ? state.error : active ? parts.join(" · ") : "选择机械后开启，拖动方向和倾角，或播放查看连续变化。汇总仍按全方向外包筛查。";
+    for (const action of ["fall-export-view", "fall-export-video", "fall-export-project"]) this.find<HTMLButtonElement>(`[data-action="${action}"]`).disabled = !available || !active || exporting;
+    this.find<HTMLButtonElement>('[data-action="fall-import-project"]').disabled = !available || exporting;
+    this.find<HTMLButtonElement>('[data-action="fall-export-cancel"]').hidden = !exporting;
+    for (const action of ["fall-download-video", "fall-download-project"]) {
+      const button = this.find<HTMLButtonElement>(`[data-action="${action}"]`); button.hidden = !this.fallCompleted; button.disabled = !available || exporting;
+    }
+    this.find<HTMLSelectElement>('[data-role="fall-export-view"]').disabled = !available || exporting;
+    this.find<HTMLSelectElement>('[data-role="fall-export-format"]').disabled = !available || exporting;
+    this.find('[data-role="fall-export-status"]').textContent = this.fallExportMessage + (this.fallExportPhase === "recording" ? ` · ${this.fallRecording?.elapsedSeconds.toFixed(1) ?? "0.0"} s` : "");
   }
   private renderMonitor() {
     const host = this.find('[data-role="monitor"]'), guideOpen = host.querySelector<HTMLDetailsElement>('[data-role="locator-guide"]')?.open ?? false;
@@ -1037,7 +1227,7 @@ export class RailSafetyPanel {
     const edit = this.root.querySelector<HTMLButtonElement>('[data-action="edit-machinery"]'); if (edit) edit.disabled = !write;
   }
   private input(input: HTMLInputElement) {
-    if (input.dataset.fall) { if (this.context.canView && this.context.active && !this.busy && !this.picking) this.scene.setFallDemo({ [input.dataset.fall]: Number(input.value), playing: false }); return; }
+    if (input.dataset.fall) { if (this.context.canView && this.context.active && !this.busy && !this.picking && this.fallExportPhase === "idle") this.scene.setFallDemo({ [input.dataset.fall]: Number(input.value), playing: false }); return; }
     if (input.dataset.display) { if (input.type === "range" || input.type === "color") this.updateDisplay(input); return; }
     if (!this.editable || this.busy || this.picking || !this.draft) return;
     const field = input.dataset.field, definition = this.draft.definition;
@@ -1054,6 +1244,13 @@ export class RailSafetyPanel {
     this.changed();
   }
   private change(input: HTMLInputElement | HTMLSelectElement) {
+    if (input.dataset.role === "fall-export-view") { this.fallExportView = input.value as typeof this.fallExportView; return; }
+    if (input.dataset.role === "fall-export-format") { this.fallExportFormat = input.value as typeof this.fallExportFormat; return; }
+    if (input.dataset.role === "fall-import-file") {
+      const file = (input as HTMLInputElement).files?.[0]; input.value = "";
+      if (file && this.context.canView && this.context.active && this.fallExportPhase === "idle") void this.importFallProject(file);
+      return;
+    }
     if (input.dataset.display) { if (input.type !== "range") this.updateDisplay(input); return; }
     if (input.dataset.layer && this.context.canView) {
       this.scene.setLayers({ [input.dataset.layer]: (input as HTMLInputElement).checked }); return;
@@ -1119,10 +1316,22 @@ export class RailSafetyPanel {
     if (action === "finish-polygon") { this.scene.finishPolygon(); return; }
     if (this.busy || this.picking) return;
     if (action.startsWith("fall-") && this.context.canView && this.context.active) {
+      if (action === "fall-export-cancel") { this.cancelFallExport("已取消动画导出"); return; }
+      if (action === "fall-stop") { this.cancelFallExport("已退出演示，动画导出已取消"); this.scene.stopFallDemo(); return; }
+      if (this.fallExportPhase !== "idle") return;
+      if (action === "fall-download-video" && this.fallCompleted) { downloadSceneVideo(this.fallCompleted.video); return; }
+      if (action === "fall-download-project" && this.fallCompleted) { this.downloadFallProject(this.fallCompleted.project); return; }
+      if (action === "fall-export-view") { this.scene.frameFallDemo(this.fallExportView); return; }
+      if (action === "fall-export-video") { void this.exportFallVideo(); return; }
+      if (action === "fall-export-project") {
+        try { this.downloadFallProject(this.fallProjectSnapshot()); this.fallExportMessage = "动画工程JSON已导出，包含场景引用与当前相机。"; }
+        catch (error) { this.fallExportMessage = "工程未导出：" + errorText(error); }
+        this.updateFallDemo(); return;
+      }
+      if (action === "fall-import-project") { this.find<HTMLInputElement>('[data-role="fall-import-file"]').click(); return; }
       if (action === "fall-start" && this.draft?.definition.kind === "machine") void this.scene.startFallDemo(this.draft.definition.resourceId);
       else if (action === "fall-play") this.scene.setFallDemo({ playing: !this.fallDemo?.playing });
       else if (action === "fall-reset") this.scene.resetFallDemo();
-      else if (action === "fall-stop") this.scene.stopFallDemo();
       return;
     }
     if (action === "simulate-position") { this.simulatePosition(); return; }

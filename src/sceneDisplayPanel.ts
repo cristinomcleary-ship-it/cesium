@@ -6,11 +6,15 @@ export type SceneDisplayItem = {
   name: string;
   category: string;
   visible: boolean;
+  /** A resource can exist before it has a saved scene instance. */
+  visibilityAvailable?: boolean;
   detail?: string;
   locate?: () => void | Promise<void>;
   edit?: () => void | Promise<void>;
   /** Remove this resource from its owning project and persist the change; reject on failure. */
   remove?: () => void | Promise<void>;
+  /** Removing an attached model keeps its resource row and personal preferences. */
+  removalPreservesResource?: boolean;
   /** Cancel a pending load while preserving any saved original and display preferences. */
   cancel?: () => void | Promise<void>;
 };
@@ -118,11 +122,11 @@ export class SceneDisplayPanel {
       this.query = ""; this.selected.clear(); this.editor = undefined; this.message = ""; this.error = false;
       this.find<HTMLInputElement>('[data-role="search"]').value = "";
     } else this.selected = new Set([...this.selected].filter(id => seen.has(id)));
-    const signature = JSON.stringify([this.store.scopeKey, this.items.map(item => [item.id, item.name, item.category, item.visible, item.detail, !!item.locate, !!item.edit, !!item.remove, !!item.cancel])]);
+    const signature = JSON.stringify([this.store.scopeKey, this.items.map(item => [item.id, item.name, item.category, item.visible, item.visibilityAvailable, item.detail, !!item.locate, !!item.edit, !!item.remove, !!item.cancel, item.removalPreservesResource])]);
     if (changed || signature !== this.directorySignature) { this.directorySignature = signature; this.render(); }
-    // Hosts may rebuild an underlying renderer while retaining the same logical IDs.
-    // Re-publish the current scope on every host update; apply() guards reentrant callbacks.
-    this.apply(true);
+    // Pose/status refreshes do not change visibility. Rebuilt hosts may explicitly
+    // call reapply(); directory refreshes must not redraw an unchanged scene.
+    this.apply();
   }
 
   /** Re-apply after a host renderer is rebuilt without changing its logical directory. */
@@ -139,7 +143,7 @@ export class SceneDisplayPanel {
   private apply(force = false): void {
     if (this.disposed || this.applying || !this.store.scopeKey) return;
     const overrides = this.store.getOverrides();
-    const signature = JSON.stringify([this.store.scopeKey, this.items.map(item => [item.id, item.visible]).sort(([a], [b]) => String(a).localeCompare(String(b))), Object.entries(overrides).sort(([a], [b]) => a.localeCompare(b)), this.store.labelsVisible]);
+    const signature = JSON.stringify([this.store.scopeKey, this.items.map(item => [item.id, item.visible, item.visibilityAvailable]).sort(([a], [b]) => String(a).localeCompare(String(b))), Object.entries(overrides).sort(([a], [b]) => a.localeCompare(b)), this.store.labelsVisible]);
     if (!force && signature === this.appliedSignature) return;
     this.appliedSignature = signature; this.applying = true;
     try { this.options.onApply(overrides, this.store.labelsVisible); }
@@ -222,7 +226,7 @@ export class SceneDisplayPanel {
     const select = element("input", "sdp-item-select"); select.type = "checkbox"; select.dataset.selectItem = item.id; select.checked = this.selected.has(item.id); select.disabled = removing; select.setAttribute("aria-label", `选择${item.name}加入分组`);
     const name = element("div", "sdp-item-name"); name.append(element("strong", "", item.name)); name.title = item.name;
     const detail = [showCategory ? item.category : "", item.detail || ""].filter(Boolean).join(" · "); if (detail) name.append(element("small", "", detail));
-    const visible = this.store.isVisible(item.id), toggle = this.button("item-visibility", visible ? "显示" : "隐藏"); toggle.dataset.itemId = item.id; toggle.className = "sdp-item-visibility"; toggle.disabled = removing; toggle.setAttribute("aria-pressed", String(visible)); toggle.setAttribute("aria-label", `${visible ? "隐藏" : "显示"}${item.name}`);
+    const visible = this.store.isVisible(item.id), toggle = this.button("item-visibility", item.visibilityAvailable === false ? "待布置" : visible ? "显示" : "隐藏"); toggle.dataset.itemId = item.id; toggle.className = "sdp-item-visibility"; toggle.disabled = removing || item.visibilityAvailable === false; toggle.setAttribute("aria-pressed", String(visible)); toggle.setAttribute("aria-label", item.visibilityAvailable === false ? `${item.name}尚未布置，配置并保存后可切换显示` : `${visible ? "隐藏" : "显示"}${item.name}`);
     row.append(select, name, toggle);
     const tools = element("div", "sdp-item-tools");
     if (item.locate) { const button = this.button("item-locate", "定位"); button.dataset.itemId = item.id; button.title = visible ? "定位此对象" : "先显示此对象再定位"; button.disabled = !visible || removing; tools.append(button); }
@@ -272,6 +276,12 @@ export class SceneDisplayPanel {
     try {
       // The host owns data and renderer teardown. Only update this directory after it succeeds.
       await item.remove();
+      if (item.removalPreservesResource) {
+        // The host has refreshed the same resource ID with its attachment removed.
+        // Do not race that refresh by deleting the now-unplaced resource row.
+        if (sameContext()) { this.render(); this.apply(); this.setMessage(`已移除“${item.name}”的三维模型，资源仍可重新配置。`); }
+        return;
+      }
       this.store.removeItems([id], scope);
       if (!sameContext()) return;
       this.items = this.items.filter(current => current.id !== id);

@@ -7,8 +7,11 @@ import {
 } from "./machinery/index";
 import { MachineryScene, readMachineryState, type MachineryState, type MachineryPlacementPick } from "./machineryScene";
 import { MachineryTelemetryController } from "./machineryTelemetryController";
-import { canonicalBoomToSource, canonicalHeadingToSource } from "./machineryTelemetry";
+import { canonicalHeadingToSource } from "./machineryTelemetry";
+import { machineryParameterForEditor, machineryParameterFromEditor } from "./machineryEditorParameters";
 import { MachineryTelemetryUi } from "./machineryTelemetryUi";
+import { MachineryCaptureController } from "./machineryCaptureController";
+import { poseProvenanceFromTelemetry, type MachineryPoseSnapshot } from "./machineryPoseRecorder";
 import "./machineryPanel.css";
 
 type Asset = Awaited<ReturnType<typeof loadMachineryAsset>>;
@@ -77,6 +80,8 @@ export class MachineryPanel {
   private readonly telemetry: MachineryTelemetryController;
   private readonly telemetryUi: MachineryTelemetryUi;
   private telemetryPendingManual?: MachineryState;
+  private readonly capture: MachineryCaptureController;
+  private displayedPreview?: { id: string; state: MachineryState };
 
   constructor(private readonly options: MachineryPanelOptions) {
     this.scene = new MachineryScene(options.viewer, {
@@ -117,7 +122,7 @@ export class MachineryPanel {
             <label class="mp-label">纬度（°）<input type="number" step="any" data-placement="latitude" min="-90" max="90" placeholder="-90 至 90"></label>
             <label class="mp-label">椭球高（m）<input type="number" step="any" data-placement="height" placeholder="输入模型底部高程"></label>
           </div>
-          <p class="mp-help">高程是模型站位基准的 WGS84 椭球高；请核对项目高程基准。整机旋转不会改变站位。</p>
+          <p class="mp-help">点选优先采用可见倾斜摄影表面，其次工程模型，未命中时采用地形或参考椭球。高程为 WGS84 椭球高；请核对下方拾取来源及项目高程基准。</p>
           <p class="mp-position-source" data-role="position-source">尚未设置位置</p>
           <label class="mp-visible"><input type="checkbox" data-role="visible" checked>在三维场景显示</label>
         </fieldset>
@@ -132,6 +137,7 @@ export class MachineryPanel {
         this.scene.setLiveStates(states);
         this.options.onLiveStatesChange?.(states);
         this.syncLiveEditor(states.get(this.selectedId));
+        this.capture?.observeLive(states);
         this.telemetryUi?.refresh();
       },
       onStatusChange: () => this.telemetryUi?.refresh(),
@@ -145,6 +151,7 @@ export class MachineryPanel {
         this.telemetryPendingManual = copy(this.draft as MachineryState); return true;
       },
       onConfigured: () => {
+        ++this.previewGeneration; this.displayedPreview = undefined;
         this.scene.clearPreview(); this.options.onPreviewChange?.(this.selectedId);
         const manual = this.telemetryPendingManual ?? (this.draft?.placement ? this.draft as MachineryState : undefined);
         this.telemetryPendingManual = undefined;
@@ -155,7 +162,7 @@ export class MachineryPanel {
         if (!this.asset || !this.draft || this.telemetry.isEnabled(this.selectedId)) return;
         const config = this.telemetry.getConfig(this.selectedId);
         this.setMachineHeadingInput(canonicalHeadingToSource(heading, config.modelFrontAxisDeg));
-        if (boom !== undefined) this.setBoomAngleInput('boom_rotation_deg', canonicalBoomToSource(this.asset, boom, config.modelFrontAxisDeg));
+        if (boom !== undefined) this.setBoomAngleInput('boom_rotation_deg', boom);
       },
       onDisabled: state => {
         if (state && this.draft) {
@@ -163,6 +170,12 @@ export class MachineryPanel {
         }
         this.updateControls();
       },
+    });
+    this.capture = new MachineryCaptureController({
+      viewer: options.viewer, host: this.find<HTMLElement>('.mp-content'),
+      getSnapshot: () => this.poseSnapshot(),
+      getTelemetry: id => ({ fields: this.telemetry.getFieldStatus(id), modelFrontAxisDeg: this.telemetry.getConfig(id).modelFrontAxisDeg }),
+      presetView: signal => this.scene.flyTo(this.selectedId, signal),
     });
     const assetSelect = this.find<HTMLSelectElement>('[data-role="asset"]');
     for (const entry of MACHINERY_CATALOG) assetSelect.add(new Option(entry.name, entry.id));
@@ -253,9 +266,14 @@ export class MachineryPanel {
     this.cancelPicking(); this.loading = false;
   }
   private clearDraft() {
+    this.displayedPreview = undefined;
     if (this.selectedId) this.telemetry?.resetManualState(this.selectedId);
     this.clearAsync(); this.scene.clearPreview(); this.dirty = false;
-    if (this.selectedId) this.options.onPreviewChange?.(this.selectedId);
+    if (this.selectedId) {
+      this.options.onPreviewChange?.(this.selectedId);
+      const state = this.telemetry?.getState(this.selectedId) ?? savedState(this.record());
+      if (state) this.capture?.observeState(this.selectedId, state, this.asset);
+    }
     this.asset = undefined; this.draft = undefined; this.editOrder = [];
     this.pendingAction = undefined; this.find<HTMLElement>('[data-role="confirm"]').hidden = true;
   }
@@ -266,6 +284,7 @@ export class MachineryPanel {
     const reset = previous.projectId !== context.projectId || previous.actorId !== context.actorId || (previous.canView && !context.canView)
       || (previous.canEdit && !context.canEdit) || (previous.active && !context.active);
     this.context = context;
+    if (reset) this.capture?.contextWillChange();
     if (reset) { this.clearDraft(); this.selectedId = ""; this.opened = false; this.busy = false; this.options.onOpenChange?.(false); }
     const records = context.canView ? this.records() : [];
     this.scene.setContext({ projectId: context.projectId, records: records.map(record => ({ id: record.id, machinery: savedState(record) })), canView: context.canView, active: context.active });
@@ -397,7 +416,7 @@ export class MachineryPanel {
       const label = document.createElement("label"); label.className = "mp-label";
       const title = document.createElement("span"); title.textContent = definition.label + "（" + definition.unit + "）";
       const input = document.createElement("input"); input.type = "number"; input.step = "any"; input.dataset.parameter = definition.key;
-      input.value = String(this.draft.parameters[definition.key]);
+      input.value = String(this.editorValue(definition.key, this.draft.parameters[definition.key]));
       if (definition.min !== undefined) input.min = String(definition.min);
       const note = document.createElement("small"); note.textContent = "原始值 " + definition.original + " " + definition.unit + (definition.description ? " · " + definition.description : "");
       label.append(title, input, note);
@@ -406,7 +425,7 @@ export class MachineryPanel {
         const maximum = isRotation ? "360" : "90";
         container.hidden = false; input.min = "0"; input.max = maximum;
         title.textContent = isRotation ? "吊臂回转角（°）" : "吊臂仰角（°）";
-        note.textContent = isRotation ? "0° 为原模型方向，俯视顺时针为正；底盘与支腿不转。"
+        note.textContent = isRotation ? "0° 为吊臂背离车头且与车身共线的方向，俯视顺时针为正；与传感器回传角定义一致，底盘与支腿不转。"
           : "0° 水平，90° 竖直；底盘与支腿不动。原仰角 " + Number(definition.original.toFixed(2)) + "°。";
         const slider = document.createElement("input"); slider.type = "range"; slider.min = "0"; slider.max = maximum; slider.step = isRotation ? "1" : "0.1";
         slider.dataset.role = isRotation ? "boom-rotation-slider" : "boom-elevation-slider";
@@ -470,6 +489,20 @@ export class MachineryPanel {
       for (const button of this.root.querySelectorAll<HTMLButtonElement>('.mp-angle-actions button')) button.disabled = !write;
     }
     this.telemetryUi?.setContext(this.selectedId, this.context.projectId, this.context.actorId ?? '', this.asset, !!savedState(this.record()), write);
+    this.capture?.setContext({
+      actorId: this.context.actorId, projectId: this.context.projectId, canView: this.context.canView,
+      canEdit: this.context.canEdit, active: this.context.active,
+      records: this.records().map(record => ({ id: record.id, name: record.name, assetId: savedState(record)?.assetId })),
+    }, this.selectedId, this.opened && !this.loading, !!this.poseSnapshot());
+  }
+  private poseSnapshot(): MachineryPoseSnapshot | undefined {
+    const record = this.record();
+    const state = this.telemetry.getState(this.selectedId)
+      ?? (this.displayedPreview?.id === this.selectedId ? this.displayedPreview.state : savedState(record));
+    if (!this.context.canView || !this.context.active || !record || !state || !this.asset || this.asset.id !== state.assetId) return;
+    return { projectId: this.context.projectId, resourceId: record.id, resourceName: record.name,
+      asset: this.asset, state: copy(state), modelFrontAxisDeg: this.telemetry.getConfig(record.id).modelFrontAxisDeg,
+      provenance: poseProvenanceFromTelemetry(this.telemetry.getFieldStatus(record.id)) };
   }
   private syncLiveEditor(state?: MachineryState) {
     if (!state || !this.opened || !this.draft || this.draft.assetId !== state.assetId) return;
@@ -480,10 +513,10 @@ export class MachineryPanel {
       // Update derived dimensions too, but preserve the user's unfinished unbound input.
       const oldValue = input.dataset.parameter ? previous.parameters[key] : previous.placement?.[key as keyof Placement];
       if (!this.telemetry.isBound(this.selectedId, key) && (input.dataset.parameter ? this.editOrder.includes(key) : (document.activeElement === input || numberValue(input) !== oldValue))) continue;
-      input.value = String(input.dataset.parameter ? state.parameters[key] : state.placement[key as keyof Placement]);
+      input.value = String(input.dataset.parameter ? this.editorValue(key, state.parameters[key]) : state.placement[key as keyof Placement]);
     }
     if (this.telemetry.isBound(this.selectedId, 'heading')) this.syncMachineHeadingSlider(state.placement.heading);
-    if (this.telemetry.isBound(this.selectedId, 'boom_rotation_deg')) this.syncBoomAngleSlider('boom_rotation_deg', state.parameters.boom_rotation_deg);
+    if (this.telemetry.isBound(this.selectedId, 'boom_rotation_deg')) this.syncBoomAngleSlider('boom_rotation_deg', this.editorValue('boom_rotation_deg', state.parameters.boom_rotation_deg));
     if (this.telemetry.isBound(this.selectedId, 'boom_elevation_deg')) this.syncBoomAngleSlider('boom_elevation_deg', state.parameters.boom_elevation_deg);
   }
   private collectInputs(requirePosition: boolean): boolean {
@@ -499,15 +532,15 @@ export class MachineryPanel {
       input.setAttribute("aria-invalid", String(!valid));
       if (!valid && isAngle) { this.message(definition.label + "请输入 0 至 " + angleMaximum + "° 的有效角度。", true); return false; }
       if (!valid) { this.message(definition.label + "请输入有效正数" + (definition.min === undefined ? "。" : "，必须" + (definition.min_exclusive ? "大于 " : "不小于 ") + definition.min + " " + definition.unit + "。"), true); return false; }
-      values[definition.key] = value;
+      values[definition.key] = this.storedValue(definition.key, value);
     }
     const keys = this.telemetry.isEnabled(this.selectedId) ? [...this.editOrder] : [...Object.keys(values).filter(key => !this.editOrder.includes(key)), ...this.editOrder];
     for (const key of keys) if (values[key] !== this.draft.parameters[key]) changes[key] = values[key];
     try {
       if (Object.keys(changes).length) {
         this.draft.parameters = resolveMachineryParameters(this.asset, this.draft.parameters, changes, { proportional: this.telemetry.isEnabled(this.selectedId) ? false : this.draft.proportional });
-        for (const input of this.root.querySelectorAll<HTMLInputElement>("[data-parameter]")) input.value = String(this.draft.parameters[input.dataset.parameter!]);
-        this.syncBoomAngleSlider("boom_rotation_deg", this.draft.parameters.boom_rotation_deg);
+        for (const input of this.root.querySelectorAll<HTMLInputElement>("[data-parameter]")) input.value = String(this.editorValue(input.dataset.parameter!, this.draft.parameters[input.dataset.parameter!]));
+        this.syncBoomAngleSlider("boom_rotation_deg", this.editorValue("boom_rotation_deg", this.draft.parameters.boom_rotation_deg));
         this.syncBoomAngleSlider("boom_elevation_deg", this.draft.parameters.boom_elevation_deg);
         this.updateBoomClearance();
       }
@@ -549,6 +582,13 @@ export class MachineryPanel {
       note.textContent = "模型部件低于站位基准 " + (-lowest).toFixed(2) + " m，请核对吊臂姿态。此提示仅对比站位基准，不代表已检测实际地形。";
     }
   }
+  private editorValue(key: string, value: number): number {
+    return this.asset && key === "boom_rotation_deg" ? machineryParameterForEditor(this.asset, key, value, this.telemetry.getConfig(this.selectedId).modelFrontAxisDeg) : value;
+  }
+  private storedValue(key: string, value: number): number {
+    return this.asset && key === "boom_rotation_deg" ? machineryParameterFromEditor(this.asset, key, value, this.draft?.parameters[key], this.telemetry.getConfig(this.selectedId).modelFrontAxisDeg) : value;
+  }
+  /** Accepts the displayed user angle; storage conversion happens once in collectInputs. */
   private syncBoomAngleSlider(key: BoomAngle, value: number) {
     const isRotation = key === "boom_rotation_deg";
     const slider = this.root.querySelector<HTMLInputElement>(isRotation ? '[data-role="boom-rotation-slider"]' : '[data-role="boom-elevation-slider"]');
@@ -580,6 +620,7 @@ export class MachineryPanel {
     if (!this.editable || !this.asset || !this.draft || !this.collectInputs(false)) return;
     if (!this.draft.placement) { this.message("参数已调整。请点选位置或填写坐标后预览。", false); this.updateControls(); return; }
     if (this.telemetry.isEnabled(this.selectedId)) {
+      this.displayedPreview = undefined;
       this.scene.clearPreview(); this.options.onPreviewChange?.(this.selectedId);
       if (!this.telemetry.setManualState(this.selectedId, this.draft as MachineryState)) return;
       this.message("未关联参数已预览；关联参数继续随回传更新。点击“保存到资源”保留手工修改。");
@@ -589,6 +630,8 @@ export class MachineryPanel {
     try {
       await this.scene.preview(this.selectedId, this.draft as MachineryState, this.asset);
       if (token === this.previewGeneration && generation === this.generation && !this.destroyed) {
+        this.displayedPreview = { id: this.selectedId, state: copy(this.draft as MachineryState) };
+        this.capture.observeState(this.selectedId, this.displayedPreview.state, this.asset);
         this.options.onPreviewChange?.(this.selectedId, copy(this.draft as MachineryState));
         this.message("正在显示未保存预览。点击“保存到资源”保留修改。");
       }
@@ -604,7 +647,7 @@ export class MachineryPanel {
       if (generation !== this.generation || !this.editable || !this.draft) return;
       const headingInput = this.find<HTMLInputElement>('[data-placement="heading"]');
       this.draft.placement = { longitude: point.longitude, latitude: point.latitude, height: point.height, heading: Number.isFinite(numberValue(headingInput)) ? numberValue(headingInput) : 0 };
-      this.positionSource = point.source === "model" ? "场景表面拾取 · WGS84 椭球高" : point.source === "terrain" ? "地形拾取 · WGS84 椭球高" : "参考椭球拾取 · 不代表实测地表高程";
+      this.positionSource = point.source === "model" ? (point.modelKind === "photogrammetry" ? "倾斜摄影表面拾取 · WGS84 椭球高" : "工程模型表面拾取 · WGS84 椭球高") : point.source === "terrain" ? "地形拾取 · WGS84 椭球高" : "参考椭球拾取 · 不代表实测地表高程";
       for (const input of this.root.querySelectorAll<HTMLInputElement>("[data-placement]")) input.value = String(this.draft.placement[input.dataset.placement as keyof Placement]);
       this.dirty = true; void this.preview();
     }, () => { this.setPicking(false); if (!this.destroyed) { this.updateControls(); this.message("已取消位置点选。"); } });
@@ -620,7 +663,7 @@ export class MachineryPanel {
     try {
       await this.options.save(id, state, revision);
       if (this.destroyed || generation !== this.generation) return;
-      this.dirty = false; this.scene.clearPreview();
+      this.dirty = false; this.displayedPreview = undefined; this.scene.clearPreview();
       this.options.onPreviewChange?.(id);
       this.message("机械实例已保存到资源台账。");
       const latest = this.record();
@@ -697,7 +740,7 @@ export class MachineryPanel {
         if (!input) continue;
         const value = numberValue(input);
         if (!Number.isFinite(value) || value < 0 || value > maximum) { this.message("请先输入有效的吊臂角度；恢复原尺寸会保留当前回转角与仰角。", true); input.focus(); return; }
-        preservedAngles[key] = value;
+        preservedAngles[key] = this.storedValue(key, value);
       }
       try {
         const defaults = defaultMachineryParameters(this.asset);
@@ -727,7 +770,7 @@ export class MachineryPanel {
   }
   destroy() {
     if (this.destroyed) return;
-    this.clearDraft(); this.telemetry.destroy(); this.telemetryUi.destroy(); this.destroyed = true; this.events.abort(); this.scene.destroy(); this.root.remove(); this.options.onOpenChange?.(false);
+    this.capture.contextWillChange(); this.clearDraft(); this.capture.destroy(); this.telemetry.destroy(); this.telemetryUi.destroy(); this.destroyed = true; this.events.abort(); this.scene.destroy(); this.root.remove(); this.options.onOpenChange?.(false);
   }
   dispose() { this.destroy(); }
 }

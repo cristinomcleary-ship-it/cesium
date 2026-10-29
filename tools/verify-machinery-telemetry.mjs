@@ -79,7 +79,8 @@ async function renderedState(id) {
     const t = w.viewer.clock.currentTime, p = rendered.entity.position.getValue(t), q = rendered.entity.orientation.getValue(t);
     const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(x => x.toString(16).padStart(2, '0')).join('');
     const rail = w.railSafety.scene;
-    return { parameters: json.extras.parameters, hash, position: [p.x, p.y, p.z], orientation: [q.x, q.y, q.z, q.w],
+    const runtime = w.machinery.scene.getRenderState?.(id);
+    return { parameters: runtime?.targetState.parameters ?? json.extras.parameters, runtime, hash, position: [p.x, p.y, p.z], orientation: [q.x, q.y, q.z, q.w],
       live: w.machinery.scene.liveStates.get(id), railLive: rail.liveStates.get(id),
       result: rail.getSnapshot().results.find(r => r.resourceId === id), envelopeKey: rail.envelopes.get(id)?.key,
       fallDemo: rail.getSnapshot().fallDemo };
@@ -205,7 +206,8 @@ try {
     assert.deepEqual(updated.live.placement, initial.placement, 'Unbound coordinates and heading stay manual');
     assert.deepEqual(updated.live, updated.railLive, 'Model and envelope share one resolved live pose');
     assert.notEqual(updated.envelopeKey, baseline.envelopeKey, 'Envelope is recomputed for live geometry');
-    assert.notEqual(updated.hash, baseline.hash);
+    if (updated.runtime?.runtime) assert.equal(updated.hash, baseline.hash, 'Sensor updates reuse one GPU model');
+    else assert.notEqual(updated.hash, baseline.hash);
     assert.deepEqual(await saved(craneId), initial, 'Telemetry never writes the equipment ledger');
     assert.match(await telemetryValue('boom_rotation_deg').innerText(), /模拟/);
     await coord('heading').focus();

@@ -3,6 +3,7 @@ import { CadLoadRegistry } from "./cadLoadRegistry";
 import { installRenderErrorRecovery, renderErrorSummaryHtml } from "./renderErrorRecovery";
 import { detectsSoftwareRenderer, installCameraNavigationPerformance } from "./cameraNavigationPerformance";
 import { CursorCoordinates } from "./cursorCoordinates";
+import { pickMachinerySurface } from "./machinerySurfacePicker";
 import { SceneDisplayPanel, type SceneDisplayItem } from "./sceneDisplayPanel";
 import { installWorkbenchCategories } from "./panelCategories";
 import "./panelCategories.css";
@@ -3176,6 +3177,12 @@ async function ensureManagementWorkspace(): Promise<ManagementWorkspace> {
         onPanelChange: setWorkbenchMachineryPanelOpen,
         canSelectSceneObject: () => !modelPlacementPending && !modelLoadBusy && !videoModelOverlay?.active
           && (document.querySelector<HTMLButtonElement>('#markupCancelDrawing')?.disabled ?? true),
+        getSceneResources: () => imports.filter(isImportAllowed).map(layer => ({ id: layer.id, name: layer.name, kind: layer.kind, visible: isImportDisplayed(layer) })),
+        pickMachineryPosition: pixel => pickMachinerySurface(viewer, pixel, imports.flatMap(item => {
+          if (item.kind !== '3D Tiles' && item.kind !== 'Model') return [];
+          return [{ kind: item.kind === '3D Tiles' ? 'photogrammetry' as const : 'model' as const,
+            resource: item.resource as Cesium3DTileset | Model, visible: isImportDisplayed(item) }];
+        })),
         pickPosition: pixel => {
           // Imported engineering meshes are primitives; transient entity overlays must
           // not become a ground position, including a previously rendered depth frame.
@@ -3272,8 +3279,10 @@ function syncSceneDisplay(): void {
     id: `layer:${load.id}`, name: load.name, category: 'CAD 图纸', visible: load.visible,
     detail: load.status, cancel: load.signal.aborted ? undefined : async () => { cadLoads.get(load.id)?.cancel(); await load.settled; },
   });
-  for (const record of state?.records ?? []) items.push({ ...managementWorkspace?.getDisplayObjectRemoval('machine', record.id), id: `machine:${record.id}`, name: record.name, category: '施工机械', visible: (record.machinery as {visible?:boolean})?.visible !== false,
-    locate: async () => { await managementWorkspace?.locateWorkbenchMachinery(record.id); },
+  for (const { record, machinery } of state?.resources ?? []) items.push({ ...managementWorkspace?.getDisplayObjectRemoval('machine', record.id), id: `machine:${record.id}`, name: record.name, category: '施工机械', visible: machinery?.visible !== false, visibilityAvailable: !!machinery,
+    detail: `${machinery ? `已布置 · ${{ crane: '吊机', pile: '桩机', excavator: '挖机' }[machinery.assetId]}` : record.machinery ? '配置待检查，请重新保存机械参数' : '尚未布置，请配置并保存位置与尺寸'} · ${record.id}`,
+    removalPreservesResource: true,
+    locate: machinery ? async () => { await managementWorkspace?.locateWorkbenchMachinery(record.id); } : undefined,
     edit: async () => { if (managementWorkspace?.isOpen) { await managementWorkspace.editFieldObject('machine', record.id); return; } requestedMachineryRecord = record.id; document.querySelector<HTMLButtonElement>('.tab[data-tab="machinery"]')?.click(); } });
   const categories: Record<string,string> = { personnel: '防护人员', responsibility: '防护责任区', workArea: '人员工作区', limit: '铁路安全限界', envelope: '机械倾覆范围' };
   for (const object of managementWorkspace?.getWorkbenchDisplayObjects() ?? []) items.push({ ...managementWorkspace?.getDisplayObjectRemoval(object.kind, object.id), id: object.key, name: object.name, category: categories[object.kind] ?? object.kind, visible: true,
