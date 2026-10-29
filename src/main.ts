@@ -3267,8 +3267,7 @@ function syncSceneDisplay(): void {
     detail: load.status, cancel: load.signal.aborted ? undefined : async () => { cadLoads.get(load.id)?.cancel(); await load.settled; },
   });
   for (const { record, machinery } of state?.resources ?? []) items.push({ ...managementWorkspace?.getDisplayObjectRemoval('machine', record.id), id: `machine:${record.id}`, name: record.name, category: '施工机械', visible: machinery?.visible !== false, visibilityAvailable: !!machinery,
-    detail: `${machinery ? `已布置 · ${{ crane: '吊机', pile: '桩机', excavator: '挖机' }[machinery.assetId]}` : record.machinery ? '配置待检查，请重新保存机械参数' : '尚未布置，请配置并保存位置与尺寸'} · ${record.id}`,
-    removalPreservesResource: true,
+    detail: `${machinery ? `已布置 · ${{ crane: '吊机', pile: '桩机', excavator: '挖机' }[machinery.assetId]}` : record.machinery ? '配置待检查，请重新保存机械参数' : '尚未布置，请配置并保存位置与尺寸'} · 识别号：${record.equipmentCode || '待补充'}`,
     locate: machinery ? async () => { await managementWorkspace?.locateWorkbenchMachinery(record.id); } : undefined,
     edit: async () => { if (managementWorkspace?.isOpen) { await managementWorkspace.editFieldObject('machine', record.id); return; } requestedMachineryRecord = record.id; document.querySelector<HTMLButtonElement>('.tab[data-tab="machinery"]')?.click(); } });
   const categories: Record<string,string> = { personnel: '防护人员', responsibility: '防护责任区', workArea: '人员工作区', limit: '铁路安全限界', envelope: '机械倾覆范围' };

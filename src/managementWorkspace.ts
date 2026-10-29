@@ -57,7 +57,6 @@ export class ManagementWorkspace {
   private disposed = false;
   private machineryStatus = '正在读取施工机械…';
   private machineryContextGeneration = 0;
-  private machineryCreation?: { signature: string; id: string };
   private active = false;
   private openedScene = false;
   private defaultScenePending = true;
@@ -104,18 +103,22 @@ export class ManagementWorkspace {
       getCameraSnapshot: () => this.cameraSnapshot(),
     });
     this.machinery = new MachineryPanel({ viewer: this.viewer, host, workbenchHost: this.workbench.panelHost,
-      save: (id, machinery, revision) => this.mutateMachinery('machinery.save', id, revision, { machinery }).then(() => undefined),
-      remove: (id, revision) => this.mutateMachinery('machinery.remove', id, revision, { reason: '在三维机械面板解除模型绑定' }).then(() => undefined),
-      createResource: async name => {
-        const signature = JSON.stringify([this.data?.projectId, this.session?.userId, name]);
-        if (this.machineryCreation?.signature !== signature) this.machineryCreation = { signature, id: `equipment:${crypto.randomUUID()}` };
-        const id = this.machineryCreation.id;
-        await this.mutateMachinery('resource.create', id, undefined, { name, kind: 'equipment', unit: '台', availability: 'available' });
-        this.machineryCreation = undefined;
+      save: (id, machinery, revision, identity) => this.mutateMachinery('machinery.save', id, revision, { machinery, ...identity }).then(() => undefined),
+      remove: (id, revision) => this.mutateMachinery('machinery.delete', id, revision, { reason: '删除机械及其场景配置，保留历史业务记录' }).then(() => undefined),
+      createResource: async (id, machinery, identity) => {
+        await this.mutateMachinery('machinery.create', id, undefined, { machinery, ...identity });
         return { id };
       },
       onOpenChange: open => { if (!this.active) this.workbench.onPanelChange?.(open); else this.queueFieldUpdate(); },
-      onSelectionChange: id => { this.selectedMachineryId = id || undefined; if(id)this.selectedFieldObject={kind:'resources',id}; this.queueFieldUpdate(); },
+      onSelectionChange: id => {
+        this.selectedMachineryId = id || undefined;
+        if (id) this.selectedFieldObject = { kind: 'resources', id };
+        else {
+          if (this.selectedFieldObject?.kind === 'resources') this.selectedFieldObject = undefined;
+          if (this.selection?.kind === 'resources') { this.selection = null; this.ui.setExternalSelection(null); }
+        }
+        this.queueFieldUpdate();
+      },
       onPreviewChange: (id, state) => this.railSafety?.setMachineryPreview(id, state),
       onLiveStatesChange: states => this.railSafety?.setLiveStates(states),
       pickPosition: pixel => pickPreferredMachineryPlacement(pixel, {
@@ -266,11 +269,11 @@ export class ManagementWorkspace {
     if (!record) return;
     const definition = record.definition as RailSafetyGuard | { kind: string } | undefined;
     // Responsibility polygons and fall envelopes are derived parts, not independently deletable resources.
-    if (!(kind === 'machine' && !!readMachineryState(record.machinery)
+    if (!(kind === 'machine' && (record.kind === 'equipment' || record.category === 'equipment')
       || kind === 'limit' && definition?.kind === 'limit'
       || kind === 'workArea' && definition?.kind === 'guard' && !!(definition as RailSafetyGuard).workArea)) return;
     const revision = record.revision;
-    const detail = kind === 'machine' ? '删除三维机械模型，保留设备台账和关联任务'
+    const detail = kind === 'machine' ? '删除机械台账、三维模型及其当前管控配置，历史业务记录保留'
       : kind === 'workArea' ? '删除人员工作区，保留防护人员与责任区' : '删除该限界，保留历史记录';
     return { detail, remove: async () => {
       if (this.disposed || generation !== this.machineryContextGeneration || projectId !== this.data?.projectId || actorId !== this.session?.userId || !this.getWorkbenchMachineryState().canEdit) throw new Error('项目或账号权限已变化，请刷新后重新选择要删除的对象。');
@@ -282,7 +285,7 @@ export class ManagementWorkspace {
         delete next.workArea;
         await this.mutateMachinery('railSafety.save', id, revision, { name: current.name, definition: next, taskId: current.taskId, reason: '从显示设置删除人员工作区' });
       } else {
-        await this.mutateMachinery(kind === 'machine' ? 'machinery.remove' : 'railSafety.remove', id, revision, { reason: detail });
+        await this.mutateMachinery(kind === 'machine' ? 'machinery.delete' : 'railSafety.remove', id, revision, { reason: detail });
       }
       this.workbench.onChange?.();
       this.queueFieldUpdate();
@@ -611,6 +614,8 @@ export class ManagementWorkspace {
     this.machineryContextSignature = signature;
     const sceneProject = this.data?.projectId === 'safety:project';
     const machineryResources = sceneMachineryResources(this.data?.projectId, this.data?.collections.resources ?? [], sceneProject && !!this.session?.permissions.includes('models'));
+    if (this.selectedMachineryId && !machineryResources.some(item => item.record.id === this.selectedMachineryId)) this.selectedMachineryId = undefined;
+    if (this.selectedFieldObject?.kind === 'resources' && !machineryResources.some(item => item.record.id === this.selectedFieldObject!.id)) this.selectedFieldObject = undefined;
     this.safety.setManagementResourceAccess({ models: sceneProject && !!this.session?.permissions.includes('models'), files: sceneProject && !!this.session?.permissions.includes('files'), media: sceneProject && !!this.session?.permissions.includes('media') });
     this.machinery?.setContext({
       projectId: this.data?.projectId ?? 'safety:project', actorId: this.session?.userId,
@@ -741,11 +746,12 @@ export class ManagementWorkspace {
       });
       return;
     }
-    if (action === 'machinery') {
+    if (action === 'machinery' || action === 'machinery-new') {
       if (!this.changeMode('scene') || !this.guardNavigation() || !this.railSafety.close()) return false;
       this.safety.spatial.requestClose(() => {
         this.endMeasurement(); this.endAnchorPick(); this.safety.optimization.close(); this.videoDiagnostics.close();
-        this.safety.managementPause(); this.safety.managementSetProjectionPreview(false); this.syncMachinery(); this.ui.setScenePanel('object'); this.machinery.open();
+        this.safety.managementPause(); this.safety.managementSetProjectionPreview(false); this.syncMachinery(); this.ui.setScenePanel('object');
+        if (action === 'machinery-new') this.machinery.openNew(); else this.machinery.open();
       });
       return;
     }

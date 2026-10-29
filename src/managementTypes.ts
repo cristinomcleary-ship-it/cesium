@@ -35,7 +35,7 @@ export type ManagementCommandType =
  | "issue.create" | "issue.assign" | "issue.start" | "issue.submit" | "issue.review" | "issue.dismiss" | "issue.reschedule"
  | "inspection.create" | "inspection.record" | "inspection.confirm"
  | "resource.create" | "resource.update" | "need.create" | "need.update" | "need.confirm" | "allocation.create" | "allocation.cancel" | "usage.create" | "usage.confirm"
- | "machinery.save" | "machinery.remove"
+ | "machinery.create" | "machinery.save" | "machinery.remove" | "machinery.delete"
  | "railSafety.save" | "railSafety.remove" | "railSafety.reportRisk" | "railSafety.personnel"
  | "batch.create" | "batch.receive" | "batch.accept" | "test.create" | "test.confirm" | "material.issue" | "material.return" | "material.correct"
  | "document.create" | "document.version" | "document.submit" | "document.return" | "document.publish" | "document.void" | "document.requirement" | "document.fulfill" | "link.create" | "link.remove"

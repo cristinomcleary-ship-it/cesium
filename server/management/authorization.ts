@@ -59,7 +59,7 @@ export function authorizeRecord(actor:Actor,kind:ManagementCollection,record:Man
 export function commandCollection(type:string):ManagementCollection|undefined{
  if(type==="railSafety.reportRisk")return "issues";
  if(type==="railSafety.save"||type==="railSafety.remove"||type==="railSafety.personnel")return "railSafety";
- if(type==="machinery.save"||type==="machinery.remove")return "resources";
+ if(type==="machinery.create"||type==="machinery.save"||type==="machinery.remove"||type==="machinery.delete")return "resources";
  const map:Record<string,ManagementCollection>={wbs:"wbs",task:"tasks",baseline:"baselines",commitment:"commitments",progress:"progress",dailyLog:"dailyLogs",check:"checks",issue:"issues",inspection:"inspections",resource:"resources",need:"resourceNeeds",allocation:"allocations",usage:"resourceUsage",batch:"batches",test:"tests",material:"materialTransactions",document:"documentVersions",link:"links",technical:"technicalQueries",change:"changes",meeting:"meetings",action:"actions",anchor:"anchors",bookmark:"bookmarks",monitoring:"monitoring",report:"reports",evidence:"evidence"};
  if(type==="document.create")return "documents";if(type==="document.requirement"||type==="document.fulfill")return "documentRequirements";return map[type.split(".")[0]];
 }
@@ -72,7 +72,7 @@ export function authorizeCommand(actor:Actor,m:ManagementCommand,source:RecordSo
   for(const [key,kind] of [["resourceId","resources"],["machineConfigId","railSafety"],["limitId","railSafety"]] as const)if(typeof m.payload[key]==="string")authorizeRecord(actor,kind,source.get(kind,m.payload[key] as string),source);
  }
  // Check live capabilities before receipt replay or revision responses as well as in the domain.
- if(m.type==="machinery.save"||m.type==="machinery.remove"){allow(actor,"resource");allow(actor,"models");}
+ if(m.type==="machinery.create"||m.type==="machinery.save"||m.type==="machinery.remove"||m.type==="machinery.delete"){allow(actor,"resource");allow(actor,"models");}
  if(m.type==="railSafety.save"||m.type==="railSafety.remove"||m.type==="railSafety.personnel"){allow(actor,"resource");allow(actor,"models");if(m.type==="railSafety.personnel")allow(actor,"files");}
  if(actor.taskIds===undefined)return;
  const kind=commandCollection(m.type);

@@ -64,3 +64,13 @@ test('removing a 3D instance or changing its asset stops capture even when its r
     assert.equal(session.recorder.isRecording, false); assert.equal(session.recorder.count, 1);
   }
 });
+
+test('background observations retain the equipment identifier from the current project record', async () => {
+  const session = new MachineryCaptureSession(storage()), initial = await snapshot();
+  session.setContext({ ...context(), records: [{ id: 'machine-a', name: '吊机 A', equipmentCode: 'CR-01', assetId: 'crane' }] });
+  session.recorder.start(session.remember({ ...initial, equipmentCode: 'CR-01' })!);
+  const changed = structuredClone(initial.state); changed.placement.heading = 90;
+  assert.equal(session.observe('machine-a', changed), true);
+  assert.equal(session.recorder.recent(1)[0].equipmentCode, 'CR-01');
+  assert.ok(session.recorder.exportProcessCsv().includes('"CR-01","吊机 A","吊机"'));
+});

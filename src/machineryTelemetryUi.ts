@@ -24,9 +24,9 @@ export class MachineryTelemetryUi {
   private busy = false;
   private generation = 0;
   constructor(private readonly options: UiOptions) {
-    this.root.className = 'mp-telemetry'; this.root.dataset.role = 'telemetry';
+    this.root.className = 'mp-telemetry'; this.root.open = true; this.root.dataset.role = 'telemetry';
     this.root.innerHTML = `<summary>传感器参数关联 <span data-role="telemetry-badge">未启用</span></summary>
-      <p class="mp-help">默认关闭。先保存初始模型，再勾选需要关联的参数。未关联参数继续手动编辑；关联配置仅保存在当前浏览器，按账号、项目和机械隔离。</p>
+      <p class="mp-help">先保存机械配置，再勾选需要关联的参数并启用。未关联参数继续手动编辑；关联配置仅保存在当前浏览器，按账号、项目和机械隔离。</p>
       <p class="mp-help">吊臂回传角：背离车头并共线为 0°，俯视顺时针为正。整机方位角：正北 0°、顺时针为正。吊臂回转的手工输入、实时值和传感器回传使用同一角度定义。</p>
       <details class="mp-telemetry-initial"><summary>按接口角度设置初始姿态</summary>
         <p class="mp-help">吊臂 0°：背离车头并与车身共线。应用后更新上方初始角度，保存到资源再启用关联。</p>
