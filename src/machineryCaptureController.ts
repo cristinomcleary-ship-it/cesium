@@ -26,10 +26,11 @@ export class MachineryCaptureController {
   private available = false;
   constructor(private readonly options: CaptureOptions) {
     this.root.className = 'mp-capture'; this.root.dataset.role = 'machinery-capture';
-    this.root.innerHTML = '<summary>姿态记录与视频</summary><p class="mp-help">姿态记录固定跟踪开始时的机械；关闭面板后继续记录。视频录制当前三维场景；关闭编辑器、切换机械或项目时取消录像。</p>';
+    this.root.open = true;
+    this.root.innerHTML = '<summary>姿态变化过程表与视频</summary><p class="mp-help">姿态记录固定跟踪开始时的机械；关闭面板后继续记录。视频录制当前三维场景；关闭编辑器、切换机械或项目时取消录像。</p>';
     options.host.append(this.root);
     this.history = new MachineryPoseHistoryUi({ host: this.root, recorder: this.session.recorder,
-      getSnapshot: () => this.currentSnapshot(), canRecord: () => this.session.canRecord });
+      getSnapshot: () => this.currentSnapshot(), getSelectedResourceId: () => this.selectedId, canRecord: () => this.session.canRecord });
     this.video = new SceneVideoExportUi({ viewer: options.viewer, host: this.root,
       title: '机械姿态视频（含场景）', presetLabel: '机械预设视角',
       fileName: () => (this.currentSnapshot()?.resourceName ?? '机械') + '-姿态与场景',

@@ -35,7 +35,7 @@ export function fieldIssues(issues: ManagementRecord[], machineId?: string): Man
 }
 export function fieldDirectory(resources: ManagementRecord[], query = ''): ManagementRecord[] {
   const term = query.trim().toLocaleLowerCase();
-  return uniqueMachinery(resources).filter(resource => resource.status !== 'deleted').filter(resource => !term || [resource.name, resource.id, resource.specification].some(value => String(value || '').toLocaleLowerCase().includes(term)));
+  return uniqueMachinery(resources).filter(resource => resource.status !== 'deleted').filter(resource => !term || [resource.name, resource.equipmentCode, resource.id, resource.specification].some(value => String(value || '').toLocaleLowerCase().includes(term)));
 }
 
 /** Scene task choices are independent of the previously visited business list. */

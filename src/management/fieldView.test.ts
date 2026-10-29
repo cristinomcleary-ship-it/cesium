@@ -23,6 +23,12 @@ test('all equipment are counted once, including unplaced and hidden records, exc
   assert.equal(JSON.stringify(records),before);
 });
 
+test('machine lookup finds a user identifier without exposing deleted matches',()=>{
+  const records=[row('uuid-1',{kind:'equipment',name:'吊机',equipmentCode:'QZ-001'}),row('uuid-2',{kind:'equipment',name:'旧吊机',equipmentCode:'QZ-001',status:'deleted'}),row('uuid-3',{kind:'equipment',equipmentCode:'QZ-002'})];
+  assert.deepEqual(fieldDirectory(records,' qz-001 ').map(record=>record.id),['uuid-1']);
+  assert.deepEqual(fieldDirectory(records,'QZ-003'),[]);
+});
+
 test('new work cards and historical allocations resolve only explicit IDs among visible tasks',()=>{
   const machine=row('machine',{taskIds:['legacy','not-visible']}),tasks=[row('card',{resourceIds:['machine']}),row('legacy'),row('allocation'),row('name-only',{name:'machine'}),row('deleted',{resourceIds:['machine'],deletedAt:'2026-10-14'})];
   const related=[row('allocation-row',{taskId:'allocation',resourceId:'machine'}),row('cancelled',{taskId:'name-only',resourceId:'machine',status:'cancelled'})];

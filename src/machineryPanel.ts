@@ -28,14 +28,15 @@ export type MachineryPanelContext = {
   /** Whether the existing Cesium scene is active, independently of panel visibility. */
   active: boolean;
 };
+export type MachineryResourceIdentity = { equipmentCode: string; name: string; manageSensors: boolean };
 export type MachineryPanelOptions = {
   viewer: Viewer;
   host: HTMLElement;
   /** Optional shared right-side workbench; moving the editor retains draft/interaction state. */
   workbenchHost?: HTMLElement;
-  save: (recordId: string, machinery: MachineryState, expectedRevision: number) => Promise<void>;
+  save: (recordId: string, machinery: MachineryState, expectedRevision: number, identity: MachineryResourceIdentity) => Promise<void>;
   remove: (recordId: string, expectedRevision: number) => Promise<void>;
-  createResource?: (name: string) => Promise<{ id: string } | void>;
+  createResource?: (recordId: string, machinery: MachineryState, identity: MachineryResourceIdentity) => Promise<{ id: string } | void>;
   onPickingChange?: (picking: boolean) => void;
   onOpenChange?: (open: boolean) => void;
   onSelectionChange?: (recordId: string) => void;
@@ -71,6 +72,8 @@ export class MachineryPanel {
   private previewTimer?: ReturnType<typeof setTimeout>;
   private selectedId = "";
   private selectedRevision = 0;
+  private creating = false;
+  private identity: MachineryResourceIdentity = { equipmentCode: "", name: "", manageSensors: false };
   private asset?: Asset;
   private draft?: Draft;
   private editOrder: string[] = [];
@@ -94,13 +97,20 @@ export class MachineryPanel {
     this.root.hidden = true;
     this.root.setAttribute("aria-label", "施工机械编辑");
     this.root.innerHTML = `
-      <header class="mp-heading"><div><span class="mp-eyebrow">资源台账 · 三维实例</span><h2>施工机械</h2></div><button type="button" data-action="close" aria-label="关闭机械编辑">关闭</button></header>
+      <header class="mp-heading"><div><span class="mp-eyebrow">机械识别 · 参数配置 · 现场数据</span><h2>施工机械</h2></div><button type="button" data-action="close" aria-label="关闭机械编辑">关闭</button></header>
       <div class="mp-content">
-        <label class="mp-label">机械资源<select data-role="resource" aria-label="选择机械资源"></select></label>
-        <div class="mp-create"><label class="mp-label">新增台账名称<input data-role="create-name" maxlength="120" placeholder="填写机械资源名称"></label><button type="button" data-action="create">创建台账</button></div>
-        <p class="mp-help" data-role="empty">先从机械资源台账中选择一条记录。</p>
-        <fieldset data-role="editor"><legend>模型与参数</legend>
-          <label class="mp-label">模型类型<select data-role="asset"></select></label>
+        <div class="mp-resource-picker"><label class="mp-label">已登记机械<select data-role="resource" aria-label="选择机械资源"></select></label><button type="button" data-action="create">新增机械</button></div>
+        <p class="mp-help" data-role="empty">选择已有机械，或新增机械。</p>
+        <div class="mp-actions"><button type="button" data-action="pose-history">姿态记录 / 导出过程表</button></div>
+        <fieldset data-role="identity"><legend>1 · 指定机械识别号</legend>
+          <label class="mp-label">机械识别号<input data-role="equipment-code" maxlength="120" required placeholder="如 QZ-001，每台机械一个识别号"></label>
+          <label class="mp-label mp-identity-name">机械名称（选填）<input data-role="equipment-name" maxlength="120" placeholder="留空时使用识别号和机械种类"></label>
+          <p class="mp-help">识别号在当前项目内唯一；保存后，机械台账、三维模型和传感器配置均关联同一台机械。</p>
+        </fieldset>
+        <fieldset data-role="machine-type"><legend>2 · 选择机械种类</legend>
+          <label class="mp-label">机械种类<select data-role="asset"></select></label>
+        </fieldset>
+        <fieldset data-role="editor"><legend>3 · 输入机械参数</legend>
           <div class="mp-machine-rotation mp-angle-card" data-role="machine-rotation">
             <label class="mp-label"><span>整机旋转（°）</span><input type="number" step="any" data-placement="heading" min="0" max="360" value="0" placeholder="0 至 360"><small>0° 为模型初始朝向，俯视顺时针为正。底盘与支腿一起转，站位和吊臂相对角度不变。</small></label>
             <input type="range" data-role="machine-rotation-slider" min="0" max="360" step="1" value="0" aria-label="整机旋转滑块">
@@ -126,10 +136,15 @@ export class MachineryPanel {
           <p class="mp-position-source" data-role="position-source">尚未设置位置</p>
           <label class="mp-visible"><input type="checkbox" data-role="visible" checked>在三维场景显示</label>
         </fieldset>
+        <fieldset data-role="sensor-choice"><legend>4 · 是否管理现场传感器数据</legend>
+          <label class="mp-label">现场传感器数据<select data-role="manage-sensors"><option value="no">否 · 手动管理机械参数</option><option value="yes">是 · 配置现场数据关联</option></select></label>
+          <p class="mp-help" data-role="sensor-choice-help">不接收现场传感器数据，机械姿态由手动参数确定。</p>
+          <div data-role="sensor-settings" hidden></div>
+        </fieldset>
         <p class="mp-status" data-role="status" role="status" aria-live="polite">选择机械资源后编辑。</p>
         <div class="mp-confirm" data-role="confirm" hidden><p data-role="confirm-text"></p><div class="mp-actions"><button type="button" data-action="confirm-discard">放弃草稿并继续</button><button type="button" data-action="keep-editing">继续编辑</button></div></div>
       </div>
-      <footer class="mp-footer"><button type="button" data-action="save" class="mp-primary">保存到资源</button><button type="button" data-action="cancel">取消编辑</button><button type="button" data-action="remove" class="mp-danger">移除三维实例</button></footer>`;
+      <footer class="mp-footer"><button type="button" data-action="save" class="mp-primary">保存机械配置</button><button type="button" data-action="cancel">取消编辑</button><button type="button" data-action="remove" class="mp-danger">删除机械</button></footer>`;
     options.host.append(this.root);
     this.telemetry = new MachineryTelemetryController({
       onLiveStatesChange: states => {
@@ -143,7 +158,7 @@ export class MachineryPanel {
       onStatusChange: () => this.telemetryUi?.refresh(),
     });
     this.telemetryUi = new MachineryTelemetryUi({
-      host: this.find<HTMLElement>('.mp-content'), controller: this.telemetry,
+      host: this.find<HTMLElement>('[data-role="sensor-settings"]'), controller: this.telemetry,
       onBeforeEnable: () => {
         if (!savedState(this.record()) || !this.collectInputs(true) || !this.draft?.placement) return false;
         if (!this.telemetry.isEnabled(this.selectedId) && this.dirty) { this.message('请先保存当前初始参数，再启用传感器关联。', true); return false; }
@@ -192,7 +207,11 @@ export class MachineryPanel {
     this.root.addEventListener("input", event => {
       const input = event.target as HTMLInputElement;
       if (!this.editable || this.busy || this.loading) return;
-      if (input.dataset.role === "machine-rotation-slider") {
+      if (input.dataset.role === "equipment-code" || input.dataset.role === "equipment-name") {
+        if (input.dataset.role === "equipment-code") this.identity.equipmentCode = input.value;
+        else this.identity.name = input.value;
+        this.dirty = true; this.updateControls();
+      } else if (input.dataset.role === "machine-rotation-slider") {
         this.setMachineHeadingInput(numberValue(input));
       } else if (input.dataset.role === "boom-rotation-slider" || input.dataset.role === "boom-elevation-slider") {
         this.setBoomAngleInput(input.dataset.role === "boom-rotation-slider" ? "boom_rotation_deg" : "boom_elevation_deg", numberValue(input));
@@ -206,6 +225,15 @@ export class MachineryPanel {
         else this.positionSource = "手动输入 · WGS84 椭球高";
         this.dirty = true; this.queuePreview();
       }
+    }, { signal });
+    this.find<HTMLSelectElement>('[data-role="manage-sensors"]').addEventListener("change", event => {
+      if (!this.editable || !this.draft || this.busy || this.loading) return;
+      this.identity.manageSensors = (event.target as HTMLSelectElement).value === "yes";
+      if (!this.identity.manageSensors && this.telemetry.isEnabled(this.selectedId)) {
+        const state = this.telemetry.disable(this.selectedId);
+        if (state) { this.draft = copy(state); this.renderEditor(); void this.preview(); }
+      }
+      this.dirty = true; this.updateControls();
     }, { signal });
     this.find<HTMLInputElement>('[data-role="proportional"]').addEventListener("change", event => {
       if (!this.editable || !this.draft) return;
@@ -224,7 +252,7 @@ export class MachineryPanel {
   get hasDraft() { return this.dirty; }
   get isPicking() { return this.picking; }
   get isBusy() { return this.busy; }
-  get selectedResourceId() { return this.context.canView ? this.selectedId : ""; }
+  get selectedResourceId() { return this.context.canView && !this.creating ? this.selectedId : ""; }
   /** Move the existing editor into a stable field-workbench slot without recreating its draft. */
   setManagementHost(host?: HTMLElement) {
     if (this.destroyed) return;
@@ -247,6 +275,7 @@ export class MachineryPanel {
   }
   private records() {
     return this.context.records.filter(record => record.projectId === this.context.projectId
+      && record.status !== "deleted" && !record.deletedAt
       && (record.kind === "equipment" || record.category === "equipment"));
   }
   private record() { return this.records().find(record => record.id === this.selectedId); }
@@ -275,6 +304,8 @@ export class MachineryPanel {
       if (state) this.capture?.observeState(this.selectedId, state, this.asset);
     }
     this.asset = undefined; this.draft = undefined; this.editOrder = [];
+    this.creating = false; this.identity = { equipmentCode: "", name: "", manageSensors: false };
+    if (!this.record()) this.selectedId = "";
     this.pendingAction = undefined; this.find<HTMLElement>('[data-role="confirm"]').hidden = true;
   }
 
@@ -291,7 +322,7 @@ export class MachineryPanel {
     this.telemetry.setContext({
       projectId: context.projectId, actorId: context.actorId, canView: context.canView,
       canEdit: context.canEdit, active: context.active,
-      records: records.flatMap(record => { const state = savedState(record); return state ? [{ id: record.id, state }] : []; }),
+      records: records.flatMap(record => { const state = savedState(record); return state && record.manageSensors !== false ? [{ id: record.id, state }] : []; }),
     });
     if (previous.actorId !== context.actorId) this.scene.setDisplayVisibility({});
     this.renderResources();
@@ -299,7 +330,7 @@ export class MachineryPanel {
     // Keep that operation's generation/revision until its own completion path runs.
     if (this.opened && context.canView && context.active && !this.busy) {
       const record = this.record();
-      if (!record && this.selectedId) { this.clearDraft(); this.selectedId = ""; this.renderEditor(); }
+      if (!record && this.selectedId && !this.creating) { this.clearDraft(); this.selectedId = ""; this.renderEditor(); }
       else if (record && !this.dirty && record.revision !== this.selectedRevision) void this.selectResource(record.id);
       else if (record && this.dirty && record.revision !== this.selectedRevision) this.message("资源已被更新。保存会校验原修订号；可取消编辑后读取最新记录。", true);
     }
@@ -321,8 +352,27 @@ export class MachineryPanel {
     if (!this.opened) this.options.onOpenChange?.(true);
     this.opened = true; this.root.hidden = false; this.renderResources();
     const id = this.record()?.id || this.records()[0]?.id;
-    if (id && !this.asset) void this.selectResource(id);
+    if (id && !this.asset && !this.creating) void this.selectResource(id);
     this.updateControls();
+  }
+  /** Starts one local draft; no resource exists until Save succeeds. */
+  openNew(): void {
+    if (this.destroyed || !this.context.canView || !this.context.canEdit || !this.context.active || this.busy || !this.options.createResource) return;
+    if (!this.opened) this.options.onOpenChange?.(true);
+    this.opened = true; this.root.hidden = false;
+    this.requestDiscard(() => { void this.beginNew(); }, "新增机械会放弃当前未保存修改。");
+  }
+  private async beginNew(): Promise<void> {
+    this.clearDraft();
+    this.creating = true; this.selectedId = `equipment:${crypto.randomUUID()}`; this.selectedRevision = 0;
+    this.draft = { schemaVersion: 1, assetId: MACHINERY_CATALOG[0].id, assetVersion: MACHINERY_ASSET_VERSION, proportional: true, parameters: {}, visible: true };
+    this.positionSource = "尚未设置位置";
+    this.options.onSelectionChange?.(""); this.renderResources(); this.renderEditor();
+    const id = this.selectedId;
+    await this.loadAsset(this.draft.assetId, false);
+    if (!this.creating || this.selectedId !== id) return;
+    this.message("请先填写机械识别号，再选择种类、输入参数与位置，最后选择是否管理现场传感器数据。保存前不会生成台账。");
+    this.find<HTMLInputElement>('[data-role="equipment-code"]').focus();
   }
   close(): boolean {
     if (this.destroyed || !this.opened) return true;
@@ -348,6 +398,11 @@ export class MachineryPanel {
     this.options.onSelectionChange?.(this.selectedId);
     this.renderResources();
     if (!record) { this.renderEditor(); this.message("请先选择机械资源。"); return false; }
+    this.identity = {
+      equipmentCode: typeof record.equipmentCode === "string" ? record.equipmentCode : "",
+      name: record.name,
+      manageSensors: record.manageSensors === true || this.telemetry.isEnabled(record.id),
+    };
     const saved = savedState(record);
     const draft: Draft = this.telemetry.getState(record.id) || saved || { schemaVersion: 1, assetId: MACHINERY_CATALOG[0].id, assetVersion: MACHINERY_ASSET_VERSION, proportional: true, parameters: {}, visible: true };
     this.draft = draft;
@@ -396,9 +451,10 @@ export class MachineryPanel {
   private renderResources() {
     const select = this.find<HTMLSelectElement>('[data-role="resource"]');
     select.replaceChildren(new Option("选择机械资源", ""));
-    for (const record of this.records()) select.add(new Option(record.name + (savedState(record) ? " · 已放置" : ""), record.id));
+    for (const record of this.records()) select.add(new Option((record.equipmentCode ? `${record.equipmentCode} · ` : "") + record.name + (savedState(record) ? " · 已放置" : " · 待配置"), record.id));
+    if (this.creating) select.add(new Option("正在新增机械（未保存）", this.selectedId));
     select.value = this.selectedId;
-    this.find<HTMLElement>('[data-role="empty"]').textContent = this.records().length ? "每个三维实例绑定一条机械资源记录。" : "当前项目没有机械资源；可先创建台账记录。";
+    this.find<HTMLElement>('[data-role="empty"]').textContent = this.creating ? "新增草稿：填写下方四项后一次保存。取消不会留下空台账。" : this.records().length ? "选择机械后可编辑配置，删除机械会同步移除场景目录中的对应项。" : "当前项目没有机械，点击“新增机械”开始配置。";
   }
   private renderMode() {
     this.find<HTMLInputElement>('[data-role="proportional"]').checked = this.draft?.proportional ?? true;
@@ -407,6 +463,9 @@ export class MachineryPanel {
       : "独立调整：按各项定义修改部件或整机。";
   }
   private renderEditor() {
+    this.find<HTMLInputElement>('[data-role="equipment-code"]').value = this.identity.equipmentCode;
+    this.find<HTMLInputElement>('[data-role="equipment-name"]').value = this.identity.name;
+    this.find<HTMLSelectElement>('[data-role="manage-sensors"]').value = this.identity.manageSensors ? "yes" : "no";
     const list = this.find<HTMLElement>('[data-role="parameters"]'); list.replaceChildren();
     const rotation = this.find<HTMLElement>('[data-role="boom-rotation"]'); rotation.replaceChildren(); rotation.hidden = true;
     const elevation = this.find<HTMLElement>('[data-role="boom-elevation"]'); elevation.replaceChildren(); elevation.hidden = true;
@@ -454,15 +513,24 @@ export class MachineryPanel {
   private updateControls() {
     const available = !!this.asset && !!this.draft;
     const write = this.editable && !this.busy && !this.loading;
-    this.find<HTMLFieldSetElement>('[data-role="editor"]').disabled = !write || !available;
-    this.find<HTMLFieldSetElement>('[data-role="placement"]').disabled = !available;
+    const identified = !!this.identity.equipmentCode.trim();
+    this.find<HTMLFieldSetElement>('[data-role="identity"]').disabled = !write || !this.draft;
+    this.find<HTMLFieldSetElement>('[data-role="machine-type"]').disabled = !write || !available || !identified;
+    this.find<HTMLFieldSetElement>('[data-role="editor"]').disabled = !write || !available || !identified;
+    this.find<HTMLFieldSetElement>('[data-role="placement"]').disabled = !available || !identified;
+    this.find<HTMLFieldSetElement>('[data-role="sensor-choice"]').disabled = !write || !available || !identified;
+    this.find<HTMLElement>('[data-role="sensor-settings"]').hidden = !this.identity.manageSensors;
+    this.find<HTMLElement>('[data-role="sensor-choice-help"]').textContent = this.identity.manageSensors
+      ? (this.creating ? "保存机械配置后，可在下方关联需要接收的传感器字段；未关联参数继续手动管理。" : "按需要关联传感器字段并启用。未关联参数继续手动管理。")
+      : "不接收现场传感器数据，机械姿态由手动参数确定。";
     for (const input of this.root.querySelectorAll<HTMLInputElement>("[data-placement], [data-role=visible]")) input.disabled = !write;
     this.find<HTMLSelectElement>('[data-role="resource"]').disabled = this.busy || this.loading;
-    this.find<HTMLElement>(".mp-create").hidden = !this.options.createResource || !this.context.canEdit;
+    this.find<HTMLButtonElement>('[data-action="create"]').hidden = !this.options.createResource || !this.context.canEdit;
     this.find<HTMLButtonElement>('[data-action="create"]').disabled = !write;
     this.find<HTMLButtonElement>('[data-action="save"]').disabled = !write || !available || !this.dirty;
-    this.find<HTMLButtonElement>('[data-action="save"]').textContent = this.busy ? "正在保存…" : "保存到资源";
-    this.find<HTMLButtonElement>('[data-action="remove"]').disabled = !write || !savedState(this.record());
+    this.find<HTMLButtonElement>('[data-action="save"]').textContent = this.busy ? "正在保存…" : this.creating ? "保存并创建机械" : "保存机械配置";
+    this.find<HTMLButtonElement>('[data-action="remove"]').disabled = !write || !this.record();
+    this.find<HTMLButtonElement>('[data-action="remove"]').hidden = this.creating;
     this.find<HTMLButtonElement>('[data-action="reset"]').disabled = !write || !available;
     this.find<HTMLButtonElement>('[data-action="cancel"]').disabled = this.busy || !this.selectedId;
     this.find<HTMLButtonElement>('[data-action="pick"]').disabled = !write || !available || this.picking;
@@ -488,11 +556,11 @@ export class MachineryPanel {
       for (const input of this.root.querySelectorAll<HTMLInputElement>('[data-parameter], [data-role="machine-rotation-slider"], [data-role="boom-rotation-slider"], [data-role="boom-elevation-slider"]')) input.disabled = !write;
       for (const button of this.root.querySelectorAll<HTMLButtonElement>('.mp-angle-actions button')) button.disabled = !write;
     }
-    this.telemetryUi?.setContext(this.selectedId, this.context.projectId, this.context.actorId ?? '', this.asset, !!savedState(this.record()), write);
+    this.telemetryUi?.setContext(this.selectedId, this.context.projectId, this.context.actorId ?? '', this.asset, !!savedState(this.record()), write && this.identity.manageSensors);
     this.capture?.setContext({
       actorId: this.context.actorId, projectId: this.context.projectId, canView: this.context.canView,
       canEdit: this.context.canEdit, active: this.context.active,
-      records: this.records().map(record => ({ id: record.id, name: record.name, assetId: savedState(record)?.assetId })),
+      records: this.records().map(record => ({ id: record.id, name: record.name, equipmentCode: typeof record.equipmentCode === "string" ? record.equipmentCode : undefined, assetId: savedState(record)?.assetId })),
     }, this.selectedId, this.opened && !this.loading, !!this.poseSnapshot());
   }
   private poseSnapshot(): MachineryPoseSnapshot | undefined {
@@ -500,12 +568,18 @@ export class MachineryPanel {
     const state = this.telemetry.getState(this.selectedId)
       ?? (this.displayedPreview?.id === this.selectedId ? this.displayedPreview.state : savedState(record));
     if (!this.context.canView || !this.context.active || !record || !state || !this.asset || this.asset.id !== state.assetId) return;
-    return { projectId: this.context.projectId, resourceId: record.id, resourceName: record.name,
+    return { projectId: this.context.projectId, resourceId: record.id, resourceName: record.name, equipmentCode: typeof record.equipmentCode === "string" ? record.equipmentCode : undefined,
       asset: this.asset, state: copy(state), modelFrontAxisDeg: this.telemetry.getConfig(record.id).modelFrontAxisDeg,
       provenance: poseProvenanceFromTelemetry(this.telemetry.getFieldStatus(record.id)) };
   }
   private syncLiveEditor(state?: MachineryState) {
     if (!state || !this.opened || !this.draft || this.draft.assetId !== state.assetId) return;
+    // Existing browser bindings remain visible when a legacy resource predates the choice.
+    if (this.record()?.manageSensors === undefined && !this.dirty && !this.identity.manageSensors) {
+      this.identity.manageSensors = true;
+      this.find<HTMLSelectElement>('[data-role="manage-sensors"]').value = "yes";
+      this.updateControls();
+    }
     const previous = this.draft;
     this.draft = copy(state);
     for (const input of this.root.querySelectorAll<HTMLInputElement>('[data-parameter], [data-placement]')) {
@@ -623,7 +697,7 @@ export class MachineryPanel {
       this.displayedPreview = undefined;
       this.scene.clearPreview(); this.options.onPreviewChange?.(this.selectedId);
       if (!this.telemetry.setManualState(this.selectedId, this.draft as MachineryState)) return;
-      this.message("未关联参数已预览；关联参数继续随回传更新。点击“保存到资源”保留手工修改。");
+      this.message("未关联参数已预览；关联参数继续随回传更新。点击“保存机械配置”保留手工修改。");
       this.updateControls(); return;
     }
     const token = ++this.previewGeneration, generation = this.generation;
@@ -633,7 +707,7 @@ export class MachineryPanel {
         this.displayedPreview = { id: this.selectedId, state: copy(this.draft as MachineryState) };
         this.capture.observeState(this.selectedId, this.displayedPreview.state, this.asset);
         this.options.onPreviewChange?.(this.selectedId, copy(this.draft as MachineryState));
-        this.message("正在显示未保存预览。点击“保存到资源”保留修改。");
+        this.message("正在显示未保存预览。点击“保存机械配置”保留修改。");
       }
     } catch (error) { if (token === this.previewGeneration && generation === this.generation) this.message("预览未更新：" + errorText(error), true); }
     this.updateControls();
@@ -654,59 +728,63 @@ export class MachineryPanel {
   }
   cancelPicking() { this.scene.cancelPick(); this.setPicking(false); if (!this.destroyed) this.updateControls(); }
 
+  private readIdentity(): MachineryResourceIdentity | undefined {
+    const code = this.find<HTMLInputElement>('[data-role="equipment-code"]');
+    const equipmentCode = code.value.trim().normalize("NFKC");
+    if (!equipmentCode || equipmentCode.length > 120 || /[\u0000-\u001f\u007f]/.test(equipmentCode)) {
+      code.setAttribute("aria-invalid", "true"); this.message("请填写有效机械识别号（1 至 120 个字符）。", true); code.focus(); return;
+    }
+    const duplicate = this.records().some(record => record.id !== this.selectedId && typeof record.equipmentCode === "string" && record.equipmentCode.trim().normalize("NFKC").toUpperCase() === equipmentCode.toUpperCase());
+    if (duplicate) { code.setAttribute("aria-invalid", "true"); this.message("当前项目已存在该机械识别号，请使用不同识别号。", true); code.focus(); return; }
+    code.setAttribute("aria-invalid", "false");
+    const name = this.find<HTMLInputElement>('[data-role="equipment-name"]').value.trim() || `${equipmentCode} ${MACHINERY_CATALOG.find(item => item.id === this.draft?.assetId)?.name ?? "机械"}`;
+    return { equipmentCode, name, manageSensors: this.identity.manageSensors };
+  }
   private async save() {
+    const identity = this.readIdentity();
+    if (!identity) return;
     if (!this.editable || this.busy || !this.draft || !this.asset || !this.collectInputs(true) || !this.draft.placement) return;
     if (this.previewTimer !== undefined) clearTimeout(this.previewTimer);
     this.previewTimer = undefined; this.cancelPicking();
     const generation = this.generation, id = this.selectedId, revision = this.selectedRevision, state = copy(this.draft as MachineryState);
     this.busy = true; this.updateControls();
     try {
-      await this.options.save(id, state, revision);
+      const created = this.creating ? await this.options.createResource?.(id, state, identity) : await this.options.save(id, state, revision, identity);
       if (this.destroyed || generation !== this.generation) return;
+      this.creating = false; this.identity = identity; this.selectedId = created?.id || id;
       this.dirty = false; this.displayedPreview = undefined; this.scene.clearPreview();
       this.options.onPreviewChange?.(id);
-      this.message("机械实例已保存到资源台账。");
+      this.renderResources(); this.renderEditor(); this.options.onSelectionChange?.(this.selectedId);
+      this.message(identity.manageSensors ? "机械配置已保存。请在第 4 项关联需要接收的现场传感器字段并启用。" : "机械配置已保存，台账与场景目录已同步。");
       const latest = this.record();
       if (latest) this.selectedRevision = latest.revision;
     } catch (error) { if (generation === this.generation) this.message("保存未完成：" + errorText(error) + "。当前草稿已保留。", true); }
     finally { if (generation === this.generation) { this.busy = false; this.updateControls(); } }
   }
   private async remove() {
-    if (!this.editable || this.busy || !savedState(this.record())) return;
+    if (!this.editable || this.busy || !this.record()) return;
     const generation = this.generation, id = this.selectedId, revision = this.selectedRevision;
     this.cancelPicking(); this.busy = true; this.updateControls();
     try {
       await this.options.remove(id, revision);
       if (this.destroyed || generation !== this.generation) return;
-      this.dirty = false; this.busy = false; await this.selectResource(id); this.message("三维实例已移除，机械资源台账仍保留。");
+      this.telemetry.disable(id);
+      this.dirty = false; this.busy = false;
+      await this.selectResource(this.records().find(record => record.id !== id)?.id ?? "");
+      this.message("机械已删除，场景模型与场景目录已同步移除。");
     } catch (error) { if (generation === this.generation) this.message("移除未完成：" + errorText(error), true); }
-    finally { if (generation === this.generation) { this.busy = false; this.updateControls(); } }
-  }
-  private async create() {
-    if (!this.editable || this.busy || !this.options.createResource) return;
-    const input = this.find<HTMLInputElement>('[data-role="create-name"]'), name = input.value.trim();
-    if (!name) { this.message("请填写机械资源名称。", true); input.focus(); return; }
-    const generation = this.generation; this.busy = true; this.updateControls();
-    try {
-      const created = await this.options.createResource(name);
-      if (this.destroyed || generation !== this.generation) return;
-      input.value = ""; this.busy = false;
-      if (created?.id) await this.selectResource(created.id);
-      else { this.dirty = false; await this.selectResource(this.selectedId); this.message("机械资源已创建，请从台账列表选择。", false); }
-    } catch (error) {
-      if (generation === this.generation) {
-        this.busy = false;
-        if (!this.asset && this.selectedId) await this.selectResource(this.selectedId);
-        this.message("创建未完成：" + errorText(error), true);
-      }
-    }
     finally { if (generation === this.generation) { this.busy = false; this.updateControls(); } }
   }
   private action(action: string) {
     if (action === "close") this.close();
     else if (action === "save") void this.save();
-    else if (action === "create") this.requestDiscard(() => { void this.create(); }, "创建并选择新资源会放弃当前未保存修改。");
-    else if (action === "cancel") { const id = this.selectedId; this.dirty = false; void this.selectResource(id); }
+    else if (action === "create") this.openNew();
+    else if (action === "pose-history") {
+      this.find<HTMLDetailsElement>('[data-role="machinery-capture"]').open = true;
+      const history = this.find<HTMLDetailsElement>('[data-role="pose-history"]');
+      history.open = true; history.scrollIntoView({ block: "start" });
+    }
+    else if (action === "cancel") { const id = this.creating ? "" : this.selectedId; this.dirty = false; void this.selectResource(id); }
     else if (["rotate-machine-left", "rotate-machine-right", "reset-machine-rotation"].includes(action) && this.asset && this.draft && this.editable && !this.busy && !this.loading) {
       const input = this.find<HTMLInputElement>('[data-placement="heading"]');
       const current = numberValue(input);
@@ -758,8 +836,8 @@ export class MachineryPanel {
     else if (action === "locate") void this.scene.flyTo(this.selectedId);
     else if (action === "remove") {
       this.pendingAction = () => { void this.remove(); };
-      this.find<HTMLElement>('[data-role="confirm-text"]').textContent = "移除该资源的三维实例？机械台账与使用记录会保留。";
-      this.find<HTMLButtonElement>('[data-action="confirm-discard"]').textContent = "确认移除";
+      this.find<HTMLElement>('[data-role="confirm-text"]').textContent = "删除该机械？机械会从资源台账、三维场景和场景显示目录中同步移除，现场传感器接入也会停止。已有使用及姿态历史记录保留。";
+      this.find<HTMLButtonElement>('[data-action="confirm-discard"]').textContent = "确认删除机械";
       this.find<HTMLElement>('[data-role="confirm"]').hidden = false;
     } else if (action === "confirm-discard") {
       const proceed = this.pendingAction; this.pendingAction = undefined;
