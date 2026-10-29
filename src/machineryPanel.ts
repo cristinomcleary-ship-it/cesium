@@ -6,6 +6,9 @@ import {
   resolveMachineryParameters, computeMachineryGeometry,
 } from "./machinery/index";
 import { MachineryScene, readMachineryState, type MachineryState, type MachineryPlacementPick } from "./machineryScene";
+import { MachineryTelemetryController } from "./machineryTelemetryController";
+import { canonicalBoomToSource, canonicalHeadingToSource } from "./machineryTelemetry";
+import { MachineryTelemetryUi } from "./machineryTelemetryUi";
 import "./machineryPanel.css";
 
 type Asset = Awaited<ReturnType<typeof loadMachineryAsset>>;
@@ -35,6 +38,8 @@ export type MachineryPanelOptions = {
   onSelectionChange?: (recordId: string) => void;
   /** Shares the current displayed draft with dependent spatial assessments. */
   onPreviewChange?: (recordId: string, state?: MachineryState) => void;
+  /** Live resolved poses shared by rendering and railway assessments. */
+  onLiveStatesChange?: (states: ReadonlyMap<string, MachineryState>) => void;
   pickPosition?: (position: Cartesian2) => MachineryPlacementPick | undefined;
 };
 
@@ -69,6 +74,9 @@ export class MachineryPanel {
   private pendingAction?: () => void;
   private positionSource = "尚未设置位置";
   private managementHost?: HTMLElement;
+  private readonly telemetry: MachineryTelemetryController;
+  private readonly telemetryUi: MachineryTelemetryUi;
+  private telemetryPendingManual?: MachineryState;
 
   constructor(private readonly options: MachineryPanelOptions) {
     this.scene = new MachineryScene(options.viewer, {
@@ -118,6 +126,44 @@ export class MachineryPanel {
       </div>
       <footer class="mp-footer"><button type="button" data-action="save" class="mp-primary">保存到资源</button><button type="button" data-action="cancel">取消编辑</button><button type="button" data-action="remove" class="mp-danger">移除三维实例</button></footer>`;
     options.host.append(this.root);
+    this.telemetry = new MachineryTelemetryController({
+      onLiveStatesChange: states => {
+        if (this.destroyed) return;
+        this.scene.setLiveStates(states);
+        this.options.onLiveStatesChange?.(states);
+        this.syncLiveEditor(states.get(this.selectedId));
+        this.telemetryUi?.refresh();
+      },
+      onStatusChange: () => this.telemetryUi?.refresh(),
+    });
+    this.telemetryUi = new MachineryTelemetryUi({
+      host: this.find<HTMLElement>('.mp-content'), controller: this.telemetry,
+      onBeforeEnable: () => {
+        if (!savedState(this.record()) || !this.collectInputs(true) || !this.draft?.placement) return false;
+        if (!this.telemetry.isEnabled(this.selectedId) && this.dirty) { this.message('请先保存当前初始参数，再启用传感器关联。', true); return false; }
+        if (this.telemetry.isEnabled(this.selectedId) && !this.telemetry.setManualState(this.selectedId, this.draft as MachineryState)) return false;
+        this.telemetryPendingManual = copy(this.draft as MachineryState); return true;
+      },
+      onConfigured: () => {
+        this.scene.clearPreview(); this.options.onPreviewChange?.(this.selectedId);
+        const manual = this.telemetryPendingManual ?? (this.draft?.placement ? this.draft as MachineryState : undefined);
+        this.telemetryPendingManual = undefined;
+        if (manual) this.telemetry.setManualState(this.selectedId, manual);
+        this.renderMode(); this.updateControls();
+      },
+      onApplyInitialAngles: (heading, boom) => {
+        if (!this.asset || !this.draft || this.telemetry.isEnabled(this.selectedId)) return;
+        const config = this.telemetry.getConfig(this.selectedId);
+        this.setMachineHeadingInput(canonicalHeadingToSource(heading, config.modelFrontAxisDeg));
+        if (boom !== undefined) this.setBoomAngleInput('boom_rotation_deg', canonicalBoomToSource(this.asset, boom, config.modelFrontAxisDeg));
+      },
+      onDisabled: state => {
+        if (state && this.draft) {
+          this.draft = copy(state); this.dirty = true; this.renderEditor(); void this.preview();
+        }
+        this.updateControls();
+      },
+    });
     const assetSelect = this.find<HTMLSelectElement>('[data-role="asset"]');
     for (const entry of MACHINERY_CATALOG) assetSelect.add(new Option(entry.name, entry.id));
     const signal = this.events.signal;
@@ -207,6 +253,7 @@ export class MachineryPanel {
     this.cancelPicking(); this.loading = false;
   }
   private clearDraft() {
+    if (this.selectedId) this.telemetry?.resetManualState(this.selectedId);
     this.clearAsync(); this.scene.clearPreview(); this.dirty = false;
     if (this.selectedId) this.options.onPreviewChange?.(this.selectedId);
     this.asset = undefined; this.draft = undefined; this.editOrder = [];
@@ -222,6 +269,11 @@ export class MachineryPanel {
     if (reset) { this.clearDraft(); this.selectedId = ""; this.opened = false; this.busy = false; this.options.onOpenChange?.(false); }
     const records = context.canView ? this.records() : [];
     this.scene.setContext({ projectId: context.projectId, records: records.map(record => ({ id: record.id, machinery: savedState(record) })), canView: context.canView, active: context.active });
+    this.telemetry.setContext({
+      projectId: context.projectId, actorId: context.actorId, canView: context.canView,
+      canEdit: context.canEdit, active: context.active,
+      records: records.flatMap(record => { const state = savedState(record); return state ? [{ id: record.id, state }] : []; }),
+    });
     if (previous.actorId !== context.actorId) this.scene.setDisplayVisibility({});
     this.renderResources();
     // A command callback may refresh the dataset before its promise resolves.
@@ -278,7 +330,7 @@ export class MachineryPanel {
     this.renderResources();
     if (!record) { this.renderEditor(); this.message("请先选择机械资源。"); return false; }
     const saved = savedState(record);
-    const draft: Draft = saved || { schemaVersion: 1, assetId: MACHINERY_CATALOG[0].id, assetVersion: MACHINERY_ASSET_VERSION, proportional: true, parameters: {}, visible: true };
+    const draft: Draft = this.telemetry.getState(record.id) || saved || { schemaVersion: 1, assetId: MACHINERY_CATALOG[0].id, assetVersion: MACHINERY_ASSET_VERSION, proportional: true, parameters: {}, visible: true };
     this.draft = draft;
     this.positionSource = saved ? "已保存位置 · WGS84 椭球高" : "尚未设置位置";
     return this.loadAsset(draft.assetId, !!saved);
@@ -331,7 +383,7 @@ export class MachineryPanel {
   }
   private renderMode() {
     this.find<HTMLInputElement>('[data-role="proportional"]').checked = this.draft?.proportional ?? true;
-    this.find<HTMLElement>('[data-role="mode-note"]').textContent = this.draft?.proportional
+    this.find<HTMLElement>('[data-role="mode-note"]').textContent = this.telemetry?.isEnabled(this.selectedId) ? '传感器关联期间，未关联尺寸独立调整，避免覆盖绑定值；停用后恢复所选编辑模式。' : this.draft?.proportional
       ? "联动：最后修改的尺寸决定整机原比例，其他尺寸同步更新。" + (this.draft.assetId === "crane" ? "吊臂回转角与仰角独立调整。" : "")
       : "独立调整：按各项定义修改部件或整机。";
   }
@@ -398,6 +450,41 @@ export class MachineryPanel {
     this.find<HTMLButtonElement>('[data-action="cancel-pick"]').hidden = !this.picking;
     this.find<HTMLButtonElement>('[data-action="locate"]').disabled = !this.draft?.placement;
     this.root.dataset.dirty = String(this.dirty);
+    const live = this.telemetry?.isEnabled(this.selectedId) ?? false;
+    if (live) {
+      this.find<HTMLSelectElement>('[data-role="asset"]').disabled = true;
+      this.find<HTMLInputElement>('[data-role="proportional"]').disabled = true;
+      this.find<HTMLButtonElement>('[data-action="reset"]').disabled = true;
+      const bound = (target: string) => this.telemetry.isBound(this.selectedId, target);
+      for (const input of this.root.querySelectorAll<HTMLInputElement>('[data-parameter], [data-placement]')) input.disabled = !write || bound(input.dataset.parameter ?? input.dataset.placement!);
+      for (const [target, selector] of [
+        ['heading', '[data-role="machine-rotation-slider"], [data-action="rotate-machine-left"], [data-action="rotate-machine-right"], [data-action="reset-machine-rotation"]'],
+        ['boom_rotation_deg', '[data-role="boom-rotation-slider"], [data-action="rotate-boom-left"], [data-action="rotate-boom-right"], [data-action="reset-boom-rotation"]'],
+        ['boom_elevation_deg', '[data-role="boom-elevation-slider"], [data-action="lower-boom"], [data-action="raise-boom"], [data-action="reset-boom-elevation"]'],
+      ]) for (const element of this.root.querySelectorAll<HTMLInputElement | HTMLButtonElement>(selector)) element.disabled = !write || bound(target);
+      this.find<HTMLButtonElement>('[data-action="pick"]').disabled ||= ['longitude', 'latitude', 'height'].some(bound);
+    } else {
+      this.find<HTMLSelectElement>('[data-role="asset"]').disabled = !write;
+      this.find<HTMLInputElement>('[data-role="proportional"]').disabled = !write;
+      for (const input of this.root.querySelectorAll<HTMLInputElement>('[data-parameter], [data-role="machine-rotation-slider"], [data-role="boom-rotation-slider"], [data-role="boom-elevation-slider"]')) input.disabled = !write;
+      for (const button of this.root.querySelectorAll<HTMLButtonElement>('.mp-angle-actions button')) button.disabled = !write;
+    }
+    this.telemetryUi?.setContext(this.selectedId, this.context.projectId, this.context.actorId ?? '', this.asset, !!savedState(this.record()), write);
+  }
+  private syncLiveEditor(state?: MachineryState) {
+    if (!state || !this.opened || !this.draft || this.draft.assetId !== state.assetId) return;
+    const previous = this.draft;
+    this.draft = copy(state);
+    for (const input of this.root.querySelectorAll<HTMLInputElement>('[data-parameter], [data-placement]')) {
+      const key = input.dataset.parameter ?? input.dataset.placement!;
+      // Update derived dimensions too, but preserve the user's unfinished unbound input.
+      const oldValue = input.dataset.parameter ? previous.parameters[key] : previous.placement?.[key as keyof Placement];
+      if (!this.telemetry.isBound(this.selectedId, key) && (input.dataset.parameter ? this.editOrder.includes(key) : (document.activeElement === input || numberValue(input) !== oldValue))) continue;
+      input.value = String(input.dataset.parameter ? state.parameters[key] : state.placement[key as keyof Placement]);
+    }
+    if (this.telemetry.isBound(this.selectedId, 'heading')) this.syncMachineHeadingSlider(state.placement.heading);
+    if (this.telemetry.isBound(this.selectedId, 'boom_rotation_deg')) this.syncBoomAngleSlider('boom_rotation_deg', state.parameters.boom_rotation_deg);
+    if (this.telemetry.isBound(this.selectedId, 'boom_elevation_deg')) this.syncBoomAngleSlider('boom_elevation_deg', state.parameters.boom_elevation_deg);
   }
   private collectInputs(requirePosition: boolean): boolean {
     if (!this.asset || !this.draft) return false;
@@ -414,11 +501,11 @@ export class MachineryPanel {
       if (!valid) { this.message(definition.label + "请输入有效正数" + (definition.min === undefined ? "。" : "，必须" + (definition.min_exclusive ? "大于 " : "不小于 ") + definition.min + " " + definition.unit + "。"), true); return false; }
       values[definition.key] = value;
     }
-    const keys = [...Object.keys(values).filter(key => !this.editOrder.includes(key)), ...this.editOrder];
+    const keys = this.telemetry.isEnabled(this.selectedId) ? [...this.editOrder] : [...Object.keys(values).filter(key => !this.editOrder.includes(key)), ...this.editOrder];
     for (const key of keys) if (values[key] !== this.draft.parameters[key]) changes[key] = values[key];
     try {
       if (Object.keys(changes).length) {
-        this.draft.parameters = resolveMachineryParameters(this.asset, this.draft.parameters, changes, { proportional: this.draft.proportional });
+        this.draft.parameters = resolveMachineryParameters(this.asset, this.draft.parameters, changes, { proportional: this.telemetry.isEnabled(this.selectedId) ? false : this.draft.proportional });
         for (const input of this.root.querySelectorAll<HTMLInputElement>("[data-parameter]")) input.value = String(this.draft.parameters[input.dataset.parameter!]);
         this.syncBoomAngleSlider("boom_rotation_deg", this.draft.parameters.boom_rotation_deg);
         this.syncBoomAngleSlider("boom_elevation_deg", this.draft.parameters.boom_elevation_deg);
@@ -492,6 +579,12 @@ export class MachineryPanel {
   private async preview() {
     if (!this.editable || !this.asset || !this.draft || !this.collectInputs(false)) return;
     if (!this.draft.placement) { this.message("参数已调整。请点选位置或填写坐标后预览。", false); this.updateControls(); return; }
+    if (this.telemetry.isEnabled(this.selectedId)) {
+      this.scene.clearPreview(); this.options.onPreviewChange?.(this.selectedId);
+      if (!this.telemetry.setManualState(this.selectedId, this.draft as MachineryState)) return;
+      this.message("未关联参数已预览；关联参数继续随回传更新。点击“保存到资源”保留手工修改。");
+      this.updateControls(); return;
+    }
     const token = ++this.previewGeneration, generation = this.generation;
     try {
       await this.scene.preview(this.selectedId, this.draft as MachineryState, this.asset);
@@ -634,7 +727,7 @@ export class MachineryPanel {
   }
   destroy() {
     if (this.destroyed) return;
-    this.clearDraft(); this.destroyed = true; this.events.abort(); this.scene.destroy(); this.root.remove(); this.options.onOpenChange?.(false);
+    this.clearDraft(); this.telemetry.destroy(); this.telemetryUi.destroy(); this.destroyed = true; this.events.abort(); this.scene.destroy(); this.root.remove(); this.options.onOpenChange?.(false);
   }
   dispose() { this.destroy(); }
 }

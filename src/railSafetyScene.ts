@@ -135,6 +135,8 @@ export class RailSafetyScene {
   private context: RailSafetySceneContext = { projectId: '', records: [], resources: [], active: false, canView: false };
   private draft?: Draft;
   private preview?: { id: string; state: MachineryState };
+  /** Project-scoped, transient sensor poses shared with the mechanical display. */
+  private readonly liveStates = new Map<string, MachineryState>();
   private selected?: { kind: 'machine' | 'guard' | 'limit'; id: string };
   private entries: Entry[] = [];
   private visuals: MachineVisual[] = [];
@@ -143,6 +145,7 @@ export class RailSafetyScene {
   private signature = '';
   private generation = 0;
   private pending = 0;
+  private readonly pendingResourceIds = new Set<string>();
   private computeTimer?: ReturnType<typeof setTimeout>;
   private disposed = false;
   private layers = { guards: true, limits: true, envelopes: true };
@@ -193,7 +196,7 @@ export class RailSafetyScene {
       || context.actorId !== this.context.actorId || context.canView !== this.context.canView;
     if (identityChanged || context.active !== this.context.active) {
       this.stopFallDemo(); this.guardPositions = []; this.guardPositionsVisualKey = '';
-      this.cancelPicking(); this.draft = undefined; this.preview = undefined;
+      this.cancelPicking(); this.draft = undefined; this.preview = undefined; this.liveStates.clear();
       this.computation.dispose(); this.computation = new RailSafetyComputation(); this.envelopeTasks.clear();
       if (identityChanged) { this.selected = undefined; this.envelopes.clear(); this.objectVisibility = {}; this.labelsVisible = true; }
     }
@@ -202,6 +205,11 @@ export class RailSafetyScene {
       records: clone(context.records.filter(r => r.projectId === context.projectId)),
       resources: clone(context.resources.filter(r => !r.projectId || r.projectId === context.projectId)),
     };
+    for (const [id, live] of this.liveStates) {
+      const resource = this.context.resources.find(r => r.id === id && r.status !== 'deleted');
+      const saved = readMachineryState(resource?.machinery);
+      if (!saved || live.assetId !== saved.assetId || live.assetVersion !== saved.assetVersion) this.liveStates.delete(id);
+    }
     const positionCount = this.guardPositions.length;
     this.guardPositions = this.guardPositions.filter(({ guardId }) => {
       const before = previousRecords.find(r => r.id === guardId), after = this.context.records.find(r => r.id === guardId);
@@ -230,6 +238,29 @@ export class RailSafetyScene {
     this.invalidateFallDemo();
     this.reconcile(state ? 150 : 0);
   }
+
+  /** Replace live sensor poses without modifying records. Preview > live > saved.
+   * A changed pose invalidates the old fall demonstration immediately; restarting
+   * it obtains the same new pose used for the influence envelope. */
+  setLiveStates(states: ReadonlyMap<string, MachineryState>): void {
+    if (this.disposed) return;
+    const next = new Map<string, MachineryState>();
+    if (this.context.active && this.context.canView) for (const [id, value] of states) {
+      const resource = this.context.resources.find(r => r.id === id && r.status !== 'deleted');
+      const saved = readMachineryState(resource?.machinery), state = readMachineryState(value);
+      if (saved && state && state.assetId === saved.assetId && state.assetVersion === saved.assetVersion) next.set(id, state);
+    }
+    if (next.size === this.liveStates.size && [...next].every(([id, state]) => JSON.stringify(state) === JSON.stringify(this.liveStates.get(id)))) return;
+    const changed = new Set([...new Set([...next.keys(), ...this.liveStates.keys()])].filter(id => id !== this.preview?.id
+      && JSON.stringify(next.get(id) ?? readMachineryState(this.context.resources.find(r => r.id === id)?.machinery)) !== JSON.stringify(this.stateFor(id))));
+    this.liveStates.clear();
+    for (const [id, state] of next) this.liveStates.set(id, state);
+    this.invalidateFallDemo();
+    this.reconcile(0, changed);
+  }
+
+  /** Live poses have no persisted resource revision and cannot back a saved risk snapshot. */
+  hasLiveState(resourceId: string): boolean { return this.liveStates.has(resourceId); }
 
   setSelected(kind: 'machine' | 'guard' | 'limit', id: string): void {
     if (this.disposed) return;
@@ -380,28 +411,28 @@ export class RailSafetyScene {
 
   dispose(): void {
     if (this.disposed) return;
-    this.disposed = true; this.generation++; this.pending = 0; this.cancelPicking(); this.abort.abort();
+    this.disposed = true; this.generation++; this.pending = 0; this.pendingResourceIds.clear(); this.cancelPicking(); this.abort.abort();
     if (this.computeTimer !== undefined) clearTimeout(this.computeTimer);
     this.computation.dispose();
     this.effectRenderLoop.dispose(); this.fallDemo.dispose(); this.guardPositions = [];
-    this.assets.clear(); this.envelopes.clear(); this.envelopeTasks.clear(); this.results = []; this.visuals = []; this.entries = [];
+    this.assets.clear(); this.envelopes.clear(); this.envelopeTasks.clear(); this.liveStates.clear(); this.results = []; this.visuals = []; this.entries = [];
     this.entitySelection.clear();
     if (!this.selectionHandler.isDestroyed()) this.selectionHandler.destroy();
     if (!this.viewer.isDestroyed()) this.viewer.dataSources.remove(this.source, true);
   }
 
-  private reconcile(delay = 0): void {
+  private reconcile(delay = 0, changedResources?: ReadonlySet<string>): void {
     if (this.disposed) return;
     const input = JSON.stringify([this.context.projectId, this.context.sessionKey, this.context.actorId,
       this.context.active, this.context.canView, this.context.records, this.context.resources, this.draft, this.preview,
+      [...this.liveStates].sort(([a], [b]) => a.localeCompare(b)),
       this.selected?.kind === 'machine' ? this.selected.id : undefined]);
     if (input === this.inputSignature) return;
     if (this.computeTimer !== undefined) { clearTimeout(this.computeTimer); this.computeTimer = undefined; }
     this.inputSignature = input; this.signature = signatureOf(input);
     const generation = ++this.generation;
-    this.visuals = []; this.pending = 0;
     if (!this.context.active || !this.context.canView) {
-      this.entries = []; this.results = []; this.render(); this.publish(); return;
+      this.entries = []; this.results = []; this.visuals = []; this.pending = 0; this.pendingResourceIds.clear(); this.render(); this.publish(); return;
     }
     this.entries = this.context.records.filter(r => r.id !== this.draft?.id).map(r => ({
       id: r.id, name: r.name, taskId: r.taskId, definition: r.definition, revision: r.revision, deleted: r.status === 'deleted',
@@ -417,13 +448,25 @@ export class RailSafetyScene {
     const resources = this.context.resources.filter(r => r.status !== 'deleted' &&
       ((this.selected?.kind === 'machine' && this.selected.id === r.id)
         || this.entries.some(e => !e.deleted && e.definition.kind === 'machine' && e.definition.resourceId === r.id)));
-    this.results = resources.map(resource => this.baseResult(resource));
-    this.pending = resources.length;
+    // A sensor update changes only its own geometry and comparisons. Preserve
+    // other machines' results/visuals; unfinished work joins the new generation
+    // and reuses its already queued envelope task instead of duplicating it.
+    const dirty = changedResources ? new Set([...changedResources, ...this.pendingResourceIds]) : undefined;
+    const evaluateResources = resources.filter(resource => !dirty || dirty.has(resource.id)
+      || !this.results.some(result => result.resourceId === resource.id));
+    const evaluatingIds = new Set(evaluateResources.map(resource => resource.id));
+    this.visuals = dirty ? this.visuals.filter(visual => !evaluatingIds.has(visual.resourceId)
+      && resources.some(resource => resource.id === visual.resourceId)) : [];
+    this.results = resources.map(resource => evaluatingIds.has(resource.id) ? this.baseResult(resource)
+      : { ...this.results.find(result => result.resourceId === resource.id)!, draft: this.isDraft(resource.id), signature: this.signature });
+    this.pendingResourceIds.clear();
+    for (const id of evaluatingIds) this.pendingResourceIds.add(id);
+    this.pending = evaluatingIds.size;
     this.render(); this.publish();
     const evaluate = () => {
       this.computeTimer = undefined;
       if (this.disposed || generation !== this.generation) return;
-      for (const resource of resources) void this.evaluate(resource, generation);
+      for (const resource of evaluateResources) void this.evaluate(resource, generation);
     };
     if (delay) this.computeTimer = setTimeout(evaluate, delay);
     else evaluate();
@@ -438,6 +481,9 @@ export class RailSafetyScene {
   }
 
   private isDraft(resourceId: string): boolean {
+    // Even a sample numerically equal to initialization is transient: reporting
+    // through the persisted-resource protocol requires ending the live binding.
+    if (this.liveStates.has(resourceId)) return true;
     if (this.preview?.id === resourceId) return true;
     if (!this.draft) return false;
     if (this.draft.definition.kind === 'machine') return this.draft.definition.resourceId === resourceId;
@@ -448,7 +494,7 @@ export class RailSafetyScene {
   }
 
   private stateFor(resourceId: string): MachineryState | undefined {
-    return readMachineryState(this.preview?.id === resourceId ? this.preview.state : this.context.resources.find(r => r.id === resourceId)?.machinery);
+    return readMachineryState(this.preview?.id === resourceId ? this.preview.state : this.liveStates.get(resourceId) ?? this.context.resources.find(r => r.id === resourceId)?.machinery);
   }
 
   private fallDemoInput(resourceId: string) {
@@ -570,7 +616,8 @@ export class RailSafetyScene {
         const index = this.results.findIndex(r => r.resourceId === resource.id);
         if (index >= 0) this.results[index] = result;
         if (visual) this.visuals.push(visual);
-        this.pending = Math.max(0, this.pending - 1); this.render(); this.publish();
+        this.pendingResourceIds.delete(resource.id);
+        this.pending = this.pendingResourceIds.size; this.render(); this.publish();
       }
     }
   }
