@@ -6,7 +6,7 @@ import { defaultMachineryParameters, loadMachineryAsset, resolveMachineryParamet
 import type { LoadedMachineryAsset } from './machinery/types';
 import { MACHINERY_ASSET_VERSION } from './machineryTypes';
 import { canonicalBoomToSource, MachineryTelemetryState, defaultMachineryTelemetryConfig } from './machineryTelemetry';
-import { MachineryPoseRecorder, machineryPoseCsvCell, poseProvenanceFromTelemetry, type MachineryPoseSnapshot } from './machineryPoseRecorder';
+import { MachineryPoseRecorder, machineryPoseBeijingTime, machineryPoseCsvCell, poseProvenanceFromTelemetry, type MachineryPoseSnapshot } from './machineryPoseRecorder';
 
 let assetPromise: Promise<LoadedMachineryAsset> | undefined;
 const time = Date.parse('2026-10-29T02:30:00.123Z');
@@ -201,4 +201,69 @@ test('legacy full-history archives migrate only after all new blocks have been w
   assert.equal(restored.count, 1); assert.equal(JSON.parse(storage.getItem('legacy')!).schemaVersion, 1);
   restored.start(source); assert.equal(JSON.parse(storage.getItem('legacy')!).schemaVersion, 2);
   assert.equal(new MachineryPoseRecorder({ storage, storageKey: 'legacy', now: () => time }).count, 2);
+});
+
+test('process table exports identifiers, readable model types, precise before/after values and actual acquisition times in Beijing time', async () => {
+  const source = { ...await input(), equipmentCode: 'CR-001' }; let now = time;
+  const recorder = new MachineryPoseRecorder({ now: () => now, timeZone: 'America/New_York' });
+  recorder.start(source); now += 2_000;
+  const next = edited(source, { boom_length_m: 38.123456789 });
+  recorder.observe({ ...next, provenance: { boom_length_m: { source: 'simulated', sourceId: 'browser-sim', sourceField: 'length', sampleTimestamp: '2026-10-29T02:30:01.456Z' } } });
+  const csv = recorder.exportProcessCsv({ resourceId: source.resourceId });
+  assert.equal(csv.charCodeAt(0), 0xFEFF);
+  assert.ok(csv.includes('"CR-001","01号吊机","吊机"'));
+  assert.ok(csv.includes('"2026-10-29 10:30:02.123"'));
+  assert.ok(csv.includes('"模拟","2026-10-29 10:30:01.456","browser-sim","length"'));
+  assert.ok(csv.includes(`"${source.state.parameters.boom_length_m}","38.123456789","m"`));
+  assert.match(csv, /开始记录，初始姿态/);
+  assert.match(csv, /吊臂伸长至38\.123457 m/);
+  assert.equal(recorder.count, 2); assert.equal(recorder.isRecording, true, 'export does not stop or clear ongoing recording');
+});
+
+test('process filters use recorded time with inclusive second bounds and never include another resource or invent a range-start pose', async () => {
+  const source = await input(); let now = time;
+  const recorder = new MachineryPoseRecorder({ now: () => now }); recorder.start(source);
+  now += 1_000; recorder.observe(edited(source, { boom_length_m: 38 }));
+  now += 1_000; recorder.start({ ...source, resourceId: 'other', resourceName: '另一台机械' });
+  const filter = { resourceId: source.resourceId, from: machineryPoseBeijingTime('2026-10-29T10:30:01'), to: machineryPoseBeijingTime('2026-10-29T10:30:01', true) };
+  assert.equal(recorder.countMatching(filter), 1);
+  const csv = recorder.exportProcessCsv(filter);
+  assert.ok(csv.includes('"2","姿态变化"')); assert.ok(!csv.includes('"初始姿态"')); assert.ok(!csv.includes('另一台机械'));
+  assert.equal(recorder.countMatching(), 3);
+  assert.throws(() => recorder.exportProcessCsv({ resourceId: 'missing' }), /没有已记录/);
+  assert.throws(() => recorder.exportProcessCsv({ from: '2026-10-29T03:00:00Z', to: '2026-10-29T02:00:00Z' }), /开始时间不能晚于/);
+  assert.throws(() => recorder.exportProcessCsv({ from: '2026-10-29T10:30:00' }), /必须包含时区/);
+});
+
+test('cached filter counts include appended observations and reset after explicit history clear', async () => {
+  const source = await input(), recorder = new MachineryPoseRecorder({ now: () => time });
+  const filter = { resourceId: source.resourceId };
+  assert.equal(recorder.countMatching(filter), 0);
+  recorder.start(source); assert.equal(recorder.countMatching(filter), 1);
+  recorder.observe(edited(source, { boom_length_m: 38 })); assert.equal(recorder.countMatching(filter), 2);
+  recorder.start({ ...source, resourceId: 'other' }); assert.equal(recorder.countMatching(filter), 2);
+  assert.equal(recorder.countMatching(), 3);
+  recorder.clear(); assert.equal(recorder.countMatching(filter), 0);
+  recorder.start(source); assert.equal(recorder.countMatching(filter), 1);
+});
+
+test('Beijing range input validates calendar dates without depending on the browser time zone', () => {
+  assert.equal(machineryPoseBeijingTime(''), undefined);
+  assert.equal(machineryPoseBeijingTime('2026-10-29T10:30'), '2026-10-29T02:30:00.000Z');
+  assert.equal(machineryPoseBeijingTime('2026-10-29T10:30:00', true), '2026-10-29T02:30:00.999Z');
+  assert.throws(() => machineryPoseBeijingTime('2026-02-30T10:30:00'), /有效的北京时间/);
+  assert.throws(() => machineryPoseBeijingTime('2026-10-29T24:00:00'), /有效的北京时间/);
+});
+
+test('process history preserves recorded identifiers, safely exports malicious text and leaves legacy missing identifiers explicit', async () => {
+  const source = await input(), storage = memoryStorage(), recorder = new MachineryPoseRecorder({ storage, storageKey: 'identifiers', now: () => time });
+  recorder.start(source);
+  recorder.observe({ ...edited(source, { boom_length_m: 38 }), equipmentCode: '=SUM(1,2)', resourceName: '@machine' });
+  const restored = new MachineryPoseRecorder({ storage, storageKey: 'identifiers', now: () => time });
+  assert.equal(restored.snapshot().entries[0].equipmentCode, undefined);
+  assert.equal(restored.snapshot().entries[1].equipmentCode, '=SUM(1,2)');
+  const csv = restored.exportProcessCsv();
+  assert.ok(csv.includes('"未记录","01号吊机","吊机"'));
+  assert.ok(csv.includes('"\'=SUM(1,2)","\'@machine","吊机"'));
+  assert.equal(restored.isRecording, false);
 });

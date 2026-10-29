@@ -12,6 +12,106 @@ import { MACHINERY_PARAMETER_DEFAULTS, MachineryValidationError, validateMachine
 import type { ManagementCommandType } from "../../src/managementTypes.ts";
 
 const projectId = "safety:project", password = `Machinery-${randomUUID()}!`;
+
+test("atomic machinery creation, identity edits and ordinary resource paths share project code uniqueness", async () => {
+  const f = await fixture(); try {
+    const payload = { name: "100 吨吊机", equipmentCode: "  CR-001  ", machinery: model(), manageSensors: true };
+    await f.ok("machinery.create", payload, "machine", 0, { key: "atomic-create" });
+    await f.ok("machinery.create", payload, "machine", 0, { key: "atomic-create" });
+    const original = (await f.record("machine")).data;
+    assert.equal(original.revision, 1); assert.equal(original.equipmentCode, "CR-001"); assert.equal(original.manageSensors, true);
+    assert.deepEqual(original.machinery, model());
+    assert.equal((await f.state()).audit.filter((a: any) => a.command === "machinery.create").length, 1);
+    for (const type of ["machinery.create", "resource.create"] as const) {
+      const duplicate = await f.command(type, { name: "重复设备", equipmentCode: "ｃｒ-001", ...(type === "machinery.create" ? { machinery: model() } : { kind: "equipment" }) }, "duplicate", 0);
+      assert.equal(duplicate.data.code, "EQUIPMENT_CODE_EXISTS");
+      assert.equal((await f.record("duplicate")).status, 404);
+    }
+    const invalid = { ...model(), placement: { ...model().placement, longitude: 999 } };
+    assert.equal((await f.command("machinery.create", { ...payload, equipmentCode: "BAD", machinery: invalid }, "invalid", 0)).status, 400);
+    assert.equal((await f.record("invalid")).status, 404, "invalid model does not leave an empty ledger resource");
+    await f.ok("resource.create", { name: "已有台账", kind: "equipment", equipmentCode: "CR-002", availability: "disabled", specification: "已核验规格", validUntil: "2099-01-01" }, "legacy");
+    assert.equal((await f.command("machinery.save", { machinery: model(), equipmentCode: "cr-001" }, "legacy", 1)).data.code, "EQUIPMENT_CODE_EXISTS");
+    assert.equal((await f.record("legacy")).data.machinery, undefined);
+    await f.ok("machinery.save", { machinery: model("pile"), equipmentCode: "P-001", name: "桩机", manageSensors: true }, "legacy", 1);
+    const updated = (await f.record("legacy")).data;
+    assert.equal(updated.revision, 2); assert.equal(updated.name, "桩机"); assert.equal(updated.equipmentCode, "P-001"); assert.equal(updated.manageSensors, true);
+    assert.equal(updated.specification, "已核验规格"); assert.equal(updated.availability, "disabled"); assert.equal(updated.validUntil, "2099-01-01");
+    await f.ok("machinery.save", { machinery: model("pile", 2) }, "legacy", 2);
+    assert.equal((await f.record("legacy")).data.equipmentCode, "P-001", "old clients preserve new identity fields");
+    assert.equal((await f.command("resource.update", { name: "重号", kind: "equipment", equipmentCode: "CR-001", reason: "测试" }, "legacy", 3)).data.code, "EQUIPMENT_CODE_EXISTS");
+    await f.ok("resource.create", { name: "旧无编号资源", kind: "equipment", equipmentCode: "" }, "no-code");
+    await f.ok("resource.update", { name: "旧客户端更新", kind: "equipment", reason: "兼容" }, "no-code", 1);
+    assert.equal((await f.record("no-code")).data.equipmentCode, undefined);
+    const competing = await Promise.all(["race-a", "race-b"].map(id => f.command("machinery.create", { name: id, equipmentCode: "RACE-01", machinery: model() }, id, 0)));
+    assert.deepEqual(competing.map(result => result.status).sort(), [200, 400]);
+    assert.equal((await f.state()).collections.resources.filter((r: any) => r.equipmentCode === "RACE-01").length, 1, "concurrent requests cannot create duplicate equipment codes");
+    await f.ok("project.create", { id: "project-b", name: "其他项目" });
+    await f.ok("machinery.create", payload, "other-project-machine", 0, { projectId: "project-b" });
+    await f.restart(); assert.deepEqual((await f.record("machine")).data, original);
+  } finally { await f.close(); }
+});
+
+test("machinery deletion retires the resource and its live definition while retaining task and guard history", async () => {
+  const f = await fixture(); try {
+    await f.ok("machinery.create", { name: "待删除吊机", equipmentCode: "CR-DELETE", machinery: model(), manageSensors: true }, "machine", 0);
+    await f.ok("task.create", { name: "关联作业", resourceIds: ["machine"], ownerId: f.ownerId }, "task");
+    const definition = { schemaVersion: 1, kind: "machine", resourceId: "machine", selectedLimitIds: [], inspectionStatus: "unknown", support: { length: 8, width: 5, centerX: 0, centerZ: 0 } };
+    await f.ok("railSafety.save", { name: "机械管控", definition, taskId: "task" }, "config", 0);
+    const point = (longitude = 116.397, latitude = 39.908) => ({ longitude, latitude, height: 47.25 });
+    const polygon = [point(), point(116.398), point(116.398, 39.909), point(116.397, 39.909)];
+    await f.ok("railSafety.save", { name: "仍在使用的防护人员", definition: { schemaVersion: 1, kind: "guard", station: point(), polygon, resourceIds: ["machine"] }, taskId: "task" }, "guard", 0);
+    await f.ok("railSafety.save", { name: "共用限界", definition: { schemaVersion: 1, kind: "limit", polygon } }, "limit", 0);
+    await f.ok("need.create", { name: "机械到位", kind: "equipment", taskId: "task", resourceId: "machine", dueDate: "2026-10-29", quantity: 1, unit: "台" }, "need");
+    await f.ok("need.confirm", { basis: "已核对", resourceId: "machine" }, "need", 1);
+    const before = await f.state();
+    assert.equal((await f.command("machinery.delete", {}, "machine", 999)).status, 409);
+    assert.deepEqual((await f.state()).collections, before.collections, "stale deletion changes no linked record");
+    const deleted = await f.ok("machinery.delete", { reason: "机械退场" }, "machine", 1, { key: "delete-once" });
+    const resource = deleted.collections.resources.find((r: any) => r.id === "machine");
+    const config = deleted.collections.railSafety.find((r: any) => r.id === "config");
+    assert.equal(resource.status, "deleted"); assert.equal(resource.revision, 2); assert.ok(resource.deletedAt); assert.equal(resource.deletedBy, f.ownerId);
+    assert.equal(resource.machinery, undefined); assert.equal(resource.manageSensors, false); assert.equal(resource.equipmentCode, "CR-DELETE");
+    assert.equal(config.status, "deleted"); assert.equal(config.revision, 2); assert.equal(config.deletedWithResourceId, "machine"); assert.deepEqual(config.definition, definition);
+    assert.deepEqual(deleted.collections.tasks, before.collections.tasks, "historical task association is retained");
+    for (const id of ["guard", "limit"]) assert.deepEqual(deleted.collections.railSafety.find((r: any) => r.id === id), before.collections.railSafety.find((r: any) => r.id === id));
+    assert.equal(deleted.collections.resourceNeeds.find((r: any) => r.id === "need").status, "unconfirmed");
+    assert.equal(deleted.audit.filter((a: any) => a.command === "machinery.delete").length, 1);
+    assert.equal(deleted.audit.filter((a: any) => a.command === "railSafety.remove" && a.recordId === "config" && a.reason.includes("machine")).length, 1, "cascaded retirement has its own audit entry");
+    const replay = await f.ok("machinery.delete", { reason: "机械退场" }, "machine", 1, { key: "delete-once" });
+    assert.deepEqual(replay.collections, deleted.collections, "replayed delete cannot increment cascaded revisions");
+    for (const type of ["machinery.save", "machinery.remove", "machinery.delete"] as const) {
+      assert.equal((await f.command(type, type === "machinery.save" ? { machinery: model() } : {}, "machine", 2)).data.code, "MACHINERY_RESOURCE_DELETED");
+    }
+    assert.equal((await f.command("resource.update", { name: "不能恢复", kind: "equipment", reason: "测试" }, "machine", 2)).data.code, "RESOURCE_DELETED");
+    assert.equal((await f.command("railSafety.save", { name: "旧机械复活", definition }, "new-config", 0)).data.code, "RAIL_SAFETY_RESOURCE_KIND");
+    await f.restart(); assert.equal((await f.record("machine")).data.status, "deleted");
+    await f.ok("resource.create", { name: "无模型旧台账", kind: "equipment" }, "unplaced");
+    await f.ok("machinery.delete", {}, "unplaced", 1);
+    assert.equal((await f.record("unplaced")).data.status, "deleted", "unplaced leftovers can be removed directly");
+  } finally { await f.close(); }
+});
+
+test("atomic machinery commands require live models/resource grants and reject sensor choice or identity corruption", async () => {
+  const f = await fixture(); try {
+    const payload = { name: "SECRET", equipmentCode: "CR-01", machinery: model() };
+    await f.ok("machinery.create", payload, "machine", 0);
+    for (const [key, value] of [["equipmentCode", ""], ["equipmentCode", "ID\nOTHER"], ["manageSensors", "true"], ["name", ""]]) {
+      const bad = await f.command("machinery.save", { machinery: model("pile"), [key]: value }, "machine", 1);
+      assert.equal(bad.status, 400); assert.equal((await f.record("machine")).data.revision, 1);
+    }
+    await f.ok("member.save", { username: "no-models", displayName: "No models", password, roles: ["resource"], resourceAccess: { models: false } });
+    await f.ok("member.save", { username: "viewer", displayName: "Viewer", password, roles: ["viewer"] });
+    for (const username of ["no-models", "viewer"]) {
+      await f.login(username);
+      for (const type of ["machinery.create", "machinery.delete"] as const) {
+        const result = await f.command(type, type === "machinery.create" ? payload : {}, "machine", 999);
+        assert.equal(result.status, 403); assert.equal(result.data.current, undefined); assert.ok(!result.text.includes("SECRET"));
+      }
+    }
+    await f.login("owner"); assert.equal((await f.record("machine")).data.revision, 1);
+  } finally { await f.close(); }
+});
 function model(assetId: MachineryAssetId = "crane", scale = 1): MachineryMetadata {
   return { schemaVersion: 1, assetId, assetVersion: MACHINERY_ASSET_VERSION, proportional: true,
     parameters: Object.fromEntries(Object.entries(MACHINERY_PARAMETER_DEFAULTS[assetId]).map(([k, v]) => [k, k === "boom_rotation_deg" || k === "boom_elevation_deg" ? v : v * scale])),

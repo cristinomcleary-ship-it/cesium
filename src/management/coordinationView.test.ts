@@ -99,6 +99,7 @@ test('project equipment counts distinct IDs including unconfigured and disabled 
     row('disabled', { kind: 'equipment', availability: 'disabled' }),
     row('crane', { kind: 'equipment', taskId: 'b' }),
     row('crew', { kind: 'crew' }), row('material', { kind: 'material' }),
+    row('deleted-status', { kind: 'equipment', status: 'deleted' }),
     row('deleted', { kind: 'equipment', deletedAt: '2026-10-14T01:00:00Z' }),
   ];
   const before = JSON.stringify(resources);

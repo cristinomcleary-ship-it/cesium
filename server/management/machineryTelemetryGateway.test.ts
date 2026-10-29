@@ -21,6 +21,15 @@ const sample = (patch: Partial<MachineryTelemetryFrame> = {}): MachineryTelemetr
   timestamp: new Date(epoch).toISOString(), mode: "simulated", values: { boom_length_m: 4, boom_elevation_deg: 0 }, ...patch });
 const record = () => ({ id: resourceId, projectId, kind: "equipment", status: "active", machinery: metadata() }) as unknown as ManagementRecord;
 
+test("both deletion representations stop telemetry intake and hide buffered poses", () => {
+  const gateway = new MachineryTelemetryGateway({ version: 1, devices: [] }, () => epoch);
+  gateway.ingest(sample(), record());
+  for (const deleted of [{ ...record(), status: "deleted" }, { ...record(), deletedAt: "2026-10-28T08:00:00Z" }]) {
+    assert.throws(() => gateway.ingest(sample({ timestamp: new Date(epoch + 1).toISOString() }), deleted), { code: "MACHINERY_TELEMETRY_RESOURCE_INVALID" });
+    assert.deepEqual(gateway.snapshot(projectId, [deleted]).frames, []);
+  }
+});
+
 async function fixture(initialClock: number | (() => number) = epoch, useEnvironmentConfig = false) {
   const root = mkdtempSync(join(tmpdir(), "cesium-machinery-telemetry-")), token = randomBytes(32).toString("base64url"), password = `Test-${randomUUID()}`;
   let clock = typeof initialClock === "function" ? initialClock() : initialClock, cookie = "";

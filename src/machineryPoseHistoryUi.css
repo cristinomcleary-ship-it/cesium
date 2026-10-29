@@ -5,3 +5,7 @@
 .mp-pose-history-recent { padding-left: 20px; margin: 10px 0; max-height: 220px; overflow: auto; font-size: 12px; line-height: 1.65; color: #465a6b; }
 .mp-pose-history-recent li { margin-bottom: 8px; overflow-wrap: anywhere; }
 .mp-pose-history [data-role="pose-history-target"], .mp-pose-history [data-role="pose-history-status"] { overflow-wrap: anywhere; }
+.mp-pose-export { min-width: 0; margin: 12px 0; padding: 12px; border: 1px solid #b7d1d8; border-radius: 8px; }
+.mp-pose-export legend { font-weight: 600; color: #183449; }
+.mp-pose-range { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 8px; }
+.mp-pose-range input { min-width: 0; width: 100%; box-sizing: border-box; }

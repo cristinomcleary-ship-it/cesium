@@ -9,6 +9,8 @@ export type MachineryPoseProvenance = {
 };
 export type MachineryPoseSnapshot = {
   projectId: string; resourceId: string; resourceName: string; asset: LoadedMachineryAsset;
+  /** User-facing identifier captured with this observation; legacy records may lack it. */
+  equipmentCode?: string;
   /** The existing source-coordinate model state; conversion happens exactly once here. */
   state: MachineryMetadata; modelFrontAxisDeg?: number;
   provenance?: Readonly<Record<string, MachineryPoseProvenance>>;
@@ -21,6 +23,7 @@ export type MachineryPoseChange = {
 export type MachineryPoseEntry = {
   sequence: number; kind: 'initial' | 'change'; projectId: string; resourceId: string;
   resourceName: string; assetId: MachineryMetadata['assetId']; recordedAt: string; localTime: string;
+  equipmentCode?: string;
   timeZone: string; modelFrontAxisDeg: number; changes: MachineryPoseChange[]; description: string;
 };
 export type MachineryPoseArchive = {
@@ -36,12 +39,19 @@ export type MachineryPoseRecorderOptions = {
   now?: () => number;
   timeZone?: string;
 };
+export type MachineryPoseHistoryFilter = {
+  resourceId?: string;
+  /** Inclusive UTC/offset-qualified instants. Blank bounds include all available history. */
+  from?: string; to?: string;
+};
 type Field = { value: number | boolean; label: string; unit: string };
 type HistoryIndex = { schemaVersion: 2; type: 'machinery-pose-history-index'; generation: string; blockSize: 50; count: number; lastSequence: number };
 const BLOCK_SIZE = 50, MAX_HISTORY_ENTRIES = 10000, MAX_BLOCK_BYTES = 1024 * 1024;
 const newGeneration = (): string => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 const clone = <T>(value: T): T => structuredClone(value);
 const sourceLabels = { manual: '人工', measured: '实测', simulated: '模拟', mixed: '混合' };
+const assetLabels = { crane: '吊机', pile: '桩机', excavator: '挖机' };
+const timeFormatters = new Map<string, Intl.DateTimeFormat>();
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 const archive = (entries: MachineryPoseEntry[]): MachineryPoseArchive => ({ schemaVersion: 1, type: 'machinery-pose-history',
   angleConvention: 'heading-north-clockwise;boom-away-from-front-zero-clockwise', entries });
@@ -49,6 +59,7 @@ function validEntry(value: unknown, expectedSequence: number): value is Machiner
   const entry = value as MachineryPoseEntry;
   return !!entry && entry.sequence === expectedSequence && ['initial', 'change'].includes(entry.kind)
     && typeof entry.projectId === 'string' && typeof entry.resourceId === 'string' && typeof entry.resourceName === 'string'
+    && (entry.equipmentCode === undefined || typeof entry.equipmentCode === 'string')
     && typeof entry.localTime === 'string' && typeof entry.timeZone === 'string' && typeof entry.description === 'string'
     && ['crane', 'pile', 'excavator'].includes(entry.assetId) && finite(entry.modelFrontAxisDeg) && finite(Date.parse(entry.recordedAt))
     && Array.isArray(entry.changes) && entry.changes.length > 0 && entry.changes.length <= 64
@@ -64,10 +75,45 @@ function utc(value: number): string {
   return new Date(value).toISOString();
 }
 function localTime(value: number, timeZone: string): string {
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(value);
+  let formatter = timeFormatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+    if (timeFormatters.size >= 16) timeFormatters.clear();
+    timeFormatters.set(timeZone, formatter);
+  }
+  const parts = formatter.formatToParts(value);
   const p = Object.fromEntries(parts.map(part => [part.type, part.value]));
   return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
+}
+/** datetime-local inputs here always mean Beijing time, independently of browser settings. */
+export function machineryPoseBeijingTime(value: string, endOfSecond = false): string | undefined {
+  if (!value.trim()) return;
+  const normalized = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value) ? value + ':00' : value;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(normalized)) throw new Error('请输入有效的北京时间');
+  const timestamp = Date.parse(normalized + '+08:00');
+  if (!finite(timestamp) || localTime(timestamp, 'Asia/Shanghai').replace(' ', 'T') !== normalized) throw new Error('请输入有效的北京时间');
+  return utc(timestamp + (endOfSecond ? 999 : 0));
+}
+function historyPredicate(filter: MachineryPoseHistoryFilter): (entry: MachineryPoseEntry) => boolean {
+  const boundary = (value: string | undefined): number | undefined => {
+    if (!value) return;
+    const time = Date.parse(value);
+    if (!finite(time) || !/(?:Z|[+-]\d{2}:\d{2})$/.test(value)) throw new Error('筛选时间必须包含时区');
+    return time;
+  };
+  const from = boundary(filter.from), to = boundary(filter.to), resourceId = filter.resourceId;
+  if (from !== undefined && to !== undefined && from > to) throw new Error('开始时间不能晚于结束时间');
+  return entry => (!resourceId || entry.resourceId === resourceId)
+    && (from === undefined || Date.parse(entry.recordedAt) >= from)
+    && (to === undefined || Date.parse(entry.recordedAt) <= to);
+}
+function beijingTime(value: string): string {
+  const time = Date.parse(value);
+  return `${localTime(time, 'Asia/Shanghai')}.${String(new Date(time).getUTCMilliseconds()).padStart(3, '0')}`;
+}
+export function machineryPoseProcessDescription(entry: MachineryPoseEntry): string {
+  return `${beijingTime(entry.recordedAt)} ${entry.equipmentCode ? entry.equipmentCode + ' ' : ''}${entry.resourceName}：${entry.kind === 'initial' ? '开始记录，初始姿态；' : ''}${entry.changes.map(change => change.description).join('；')}`;
 }
 function shown(value: number | boolean, unit: string): string {
   if (typeof value === 'boolean') return value ? '显示' : '隐藏';
@@ -135,13 +181,15 @@ export function machineryPoseCsvCell(value: unknown): string {
 export class MachineryPoseRecorder {
   private entries: MachineryPoseEntry[] = [];
   private previous?: Record<string, Field>;
-  private activeScope?: { projectId: string; resourceId: string; resourceName: string };
+  private activeScope?: { projectId: string; resourceId: string; resourceName: string; equipmentCode?: string };
   private readonly maximum: number;
   private readonly now: () => number;
   readonly timeZone: string;
   private readonly storage?: MachineryPoseRecorderOptions['storage'];
   private readonly storageKey?: string;
   private listeners = new Set<() => void>();
+  /** Counts consume only appended entries; live UI refreshes never rescan accumulated history. */
+  private filterCounts = new Map<string, { matches: (entry: MachineryPoseEntry) => boolean; scanned: number; count: number }>();
   private warning = '';
   private storageBlocked = false;
   private storageGeneration = newGeneration();
@@ -150,7 +198,7 @@ export class MachineryPoseRecorder {
     this.maximum = options.maxEntries ?? 10000;
     if (!Number.isSafeInteger(this.maximum) || this.maximum < 1 || this.maximum > MAX_HISTORY_ENTRIES) throw new Error('记录条数上限须为 1 至 10000');
     this.now = options.now ?? Date.now;
-    this.timeZone = options.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    this.timeZone = options.timeZone ?? 'Asia/Shanghai';
     localTime(this.now(), this.timeZone);
     this.storageKey = options.storageKey;
     if (this.storageKey) {
@@ -216,13 +264,25 @@ export class MachineryPoseRecorder {
   onChange(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   private notify() { this.listeners.forEach(listener => listener()); }
   snapshot(): MachineryPoseArchive { return archive(clone(this.entries)); }
+  countMatching(filter: MachineryPoseHistoryFilter = {}): number {
+    if (!filter.resourceId && !filter.from && !filter.to) return this.entries.length;
+    const key = JSON.stringify([filter.resourceId ?? '', filter.from ?? '', filter.to ?? '']);
+    let cached = this.filterCounts.get(key);
+    if (!cached) {
+      cached = { matches: historyPredicate(filter), scanned: 0, count: 0 };
+      if (this.filterCounts.size >= 16) this.filterCounts.clear();
+      this.filterCounts.set(key, cached);
+    }
+    while (cached.scanned < this.entries.length) cached.count += Number(cached.matches(this.entries[cached.scanned++]));
+    return cached.count;
+  }
   recent(limit = 5): MachineryPoseEntry[] { return clone(this.entries.slice(-Math.max(0, limit))); }
   start(input: MachineryPoseSnapshot): boolean {
     if (this.storageBlocked) { this.notify(); return false; }
     if (this.entries.length >= this.maximum) { this.warning = `已达到 ${this.maximum} 条上限，记录已停止；请先导出，再显式清空后重新开始。`; this.notify(); return false; }
     const fields = poseFields(input);
     const previousScope = this.activeScope, previousFields = this.previous;
-    this.activeScope = { projectId: input.projectId, resourceId: input.resourceId, resourceName: input.resourceName };
+    this.activeScope = { projectId: input.projectId, resourceId: input.resourceId, resourceName: input.resourceName, equipmentCode: input.equipmentCode };
     this.previous = undefined; this.warning = '';
     try { return this.append(input, fields, 'initial'); }
     catch (error) { this.activeScope = previousScope; this.previous = previousFields; throw error; }
@@ -257,6 +317,7 @@ export class MachineryPoseRecorder {
     });
     const entry: MachineryPoseEntry = { sequence: (this.entries.at(-1)?.sequence ?? 0) + 1, kind,
       projectId: input.projectId, resourceId: input.resourceId, resourceName: input.resourceName,
+      ...(input.equipmentCode?.trim() ? { equipmentCode: input.equipmentCode.trim() } : {}),
       assetId: input.state.assetId, recordedAt, localTime: displayTime, timeZone: this.timeZone,
       modelFrontAxisDeg: input.modelFrontAxisDeg ?? 0, changes,
       description: `${displayTime} ${input.resourceName}：${changes.map(change => change.description).join('；')}` };
@@ -293,6 +354,7 @@ export class MachineryPoseRecorder {
   clear(): void {
     const previousGeneration = this.storageGeneration, blocks = Math.ceil(this.entries.length / BLOCK_SIZE);
     this.activeScope = undefined; this.previous = undefined; this.entries = []; this.warning = ''; this.storageBlocked = false;
+    this.filterCounts.clear();
     this.storageGeneration = newGeneration(); this.legacyNeedsMigration = false;
     this.persist();
     if (!this.storageBlocked) {
@@ -305,6 +367,29 @@ export class MachineryPoseRecorder {
     this.notify();
   }
   exportJson(): string { return JSON.stringify(this.snapshot(), null, 2); }
+  /** Human-readable process table; existing archives are never relabelled with today's identifier. */
+  exportProcessCsv(filter: MachineryPoseHistoryFilter = {}): string {
+    const entries = this.entries.filter(historyPredicate(filter));
+    if (!entries.length) throw new Error('所选机械和时间范围内没有已记录的姿态数据');
+    const rows: unknown[][] = [['记录序号', '记录类型', '记录时间（北京时间）', '机械识别号', '机械名称', '机械种类',
+      '变化参数', '变化前', '变化后', '单位', '数据来源', '采样时间（北京时间）', '来源ID', '来源字段', '推算输入字段',
+      '变化过程说明', '项目ID', '系统资源ID', '记录时间UTC', '采样时间UTC', '参数字段']];
+    const timestamps = new Map<string, string>();
+    const displayTime = (timestamp: string): string => {
+      if (!timestamps.has(timestamp)) timestamps.set(timestamp, beijingTime(timestamp));
+      return timestamps.get(timestamp)!;
+    };
+    for (const entry of entries) for (const change of entry.changes) {
+      const time = displayTime(entry.recordedAt), initial = entry.kind === 'initial';
+      rows.push([entry.sequence, initial ? '初始姿态' : '姿态变化', time, entry.equipmentCode || '未记录', entry.resourceName, assetLabels[entry.assetId],
+        change.label, change.previous === null ? '未记录' : change.previous, change.value, change.unit, sourceLabels[change.source] + (change.derivedFrom?.length ? '（推算）' : ''),
+        change.samples.map(sample => sample.sampleTimestamp ? displayTime(sample.sampleTimestamp) : '').join(' | '),
+        change.samples.map(sample => sample.sourceId ?? '').join(' | '), change.samples.map(sample => sample.sourceField ?? '').join(' | '),
+        change.derivedFrom?.join(' | ') ?? '', `${time} ${entry.equipmentCode ? entry.equipmentCode + ' ' : ''}${entry.resourceName}：${initial ? '开始记录，初始姿态；' : ''}${change.description}`,
+        entry.projectId, entry.resourceId, entry.recordedAt, change.samples.map(sample => sample.sampleTimestamp ?? '').join(' | '), change.field]);
+    }
+    return '\uFEFF' + rows.map(row => row.map(machineryPoseCsvCell).join(',')).join('\r\n') + '\r\n';
+  }
   exportCsv(): string {
     const rows: unknown[][] = [['序号', '记录类型', '记录时间UTC', '本地时间', '时区', '项目ID', '机械ID', '机械名称', '模型类型',
       '字段', '参数名称', '单位', '原值', '新值', '来源', '采样时间UTC', '来源ID', '来源字段', '推算输入字段', '描述']];

@@ -98,7 +98,7 @@ export class MachineryTelemetryGateway {
     const frame = validateMachineryTelemetryFrame(input);
     if (device && (frame.projectId !== device.projectId || frame.resourceId !== device.resourceId || frame.sourceId !== device.sourceId)) return fail(403, "DEVICE_SCOPE_MISMATCH", "回传不属于凭据绑定的项目、机械和来源");
     if (!device && frame.mode !== "simulated") return fail(403, "SIMULATION_REQUIRED", "浏览器会话只允许明确标记的模拟回传");
-    if (record.id !== frame.resourceId || record.projectId !== frame.projectId || record.kind !== "equipment" || record.status === "deleted" || !record.machinery) return fail(422, "MACHINERY_TELEMETRY_RESOURCE_INVALID", "机械资源不存在、已删除或尚未保存三维机械初始信息");
+    if (record.id !== frame.resourceId || record.projectId !== frame.projectId || record.kind !== "equipment" || record.status === "deleted" || record.deletedAt || !record.machinery) return fail(422, "MACHINERY_TELEMETRY_RESOURCE_INVALID", "机械资源不存在、已删除或尚未保存三维机械初始信息");
     try { validateMachineryMetadata(record.machinery); }
     catch { return fail(422, "MACHINERY_TELEMETRY_RESOURCE_INVALID", "已保存机械初始信息无效，请先重新保存机械参数"); }
     const timestamp = Date.parse(frame.timestamp), now = this.now();
@@ -116,7 +116,7 @@ export class MachineryTelemetryGateway {
   snapshot(projectId: string, visibleResources: readonly ManagementRecord[], after = 0, streamId?: string) {
     if (!Number.isSafeInteger(after) || after < 0) return fail(400, "MACHINERY_TELEMETRY_CURSOR", "after须为非负整数游标");
     this.prune();
-    const ids = new Set(visibleResources.filter(r => r.projectId === projectId && r.kind === "equipment" && r.status !== "deleted" && r.machinery).map(r => r.id));
+    const ids = new Set(visibleResources.filter(r => r.projectId === projectId && r.kind === "equipment" && r.status !== "deleted" && !r.deletedAt && r.machinery).map(r => r.id));
     const oldest = this.frames[0]?.sequence ?? this.sequence + 1;
     const reset = (!!streamId && streamId !== this.streamId) || after > this.sequence || (after > 0 && after < oldest - 1);
     const frames = this.frames.filter(f => f.projectId === projectId && ids.has(f.resourceId) && (reset || f.sequence > after));

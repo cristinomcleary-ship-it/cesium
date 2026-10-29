@@ -39,7 +39,7 @@ export function isOpenIssue(issue: ManagementRecord): boolean {
   return !['closed', 'false-positive', 'duplicate', 'invalid', 'archived'].includes(issue.status);
 }
 export function uniqueMachinery(resources: ManagementRecord[]): ManagementRecord[] {
-  return [...new Map(resources.filter(resource => !resource.deletedAt && (resource.kind === 'equipment' || resource.category === 'equipment' || resource.machinery)).map(resource => [resource.id, resource])).values()];
+  return [...new Map(resources.filter(resource => !resource.deletedAt && resource.status !== 'deleted' && (resource.kind === 'equipment' || resource.category === 'equipment' || resource.machinery)).map(resource => [resource.id, resource])).values()];
 }
 export function coordinationSummary(tasks: ManagementRecord[], issues: ManagementRecord[], resources: ManagementRecord[], day: string, conditions: Map<string, TaskConditionsResponse>) {
   const active = tasks.filter(task => !['completed', 'cancelled'].includes(task.status));

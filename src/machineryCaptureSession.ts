@@ -4,7 +4,7 @@ import { MachineryPoseRecorder, type MachineryPoseSnapshot, type MachineryPosePr
 
 export type MachineryCaptureContext = {
   actorId?: string; projectId: string; canView: boolean; canEdit: boolean; active: boolean;
-  records: ReadonlyArray<{ id: string; name: string; assetId?: MachineryMetadata['assetId'] }>;
+  records: ReadonlyArray<{ id: string; name: string; equipmentCode?: string; assetId?: MachineryMetadata['assetId'] }>;
 };
 /** Retains history by account/project while a recorder remains fixed to its started resource. */
 export class MachineryCaptureSession {
@@ -48,6 +48,7 @@ export class MachineryCaptureSession {
     this.assets.set(asset.id, asset);
     try {
       return this.recorder.observe({ projectId: this.context.projectId, resourceId, resourceName: record.name,
+        equipmentCode: record.equipmentCode,
         asset, state, modelFrontAxisDeg: options.modelFrontAxisDeg, provenance: options.provenance });
     } catch { this.recorder.stop(); return false; }
   }

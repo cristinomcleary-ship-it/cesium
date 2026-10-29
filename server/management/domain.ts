@@ -62,11 +62,26 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
  const reason=()=>str(p.reason,"原因或意见");
  const recheckNeeds=(predicate:(n:ManagementRecord)=>boolean,why:string)=>{for(const n of c.list("resourceNeeds").filter(n=>n.status==="confirmed"&&predicate(n))){n.revision++;n.updatedAt=now;n.status="unconfirmed";n.recheckReason=why;c.save("resourceNeeds",n);}};
  const recheckDocumentRequirements=(versionId:string)=>{for(const requirement of c.list("documentRequirements").filter(v=>v.status==="confirmed"&&v.versionId===versionId)){requirement.revision++;requirement.updatedAt=now;requirement.status="pending-recheck";requirement.recheckReason="适用资料版本已替代或作废，请重新核对";c.save("documentRequirements",requirement);}};
+ const equipmentCode=(value:unknown,ownId?:string)=>{
+  const code=str(str(value,"机械识别号",120).normalize("NFKC"),"机械识别号",120);
+  ensure(!/[\u0000-\u001f\u007f]/.test(code),"INVALID_EQUIPMENT_CODE","机械识别号不能包含控制字符");
+  ensure(!c.list("resources").some(resource=>resource.id!==ownId&&resource.status!=="deleted"&&!resource.deletedAt
+   &&typeof resource.equipmentCode==="string"&&resource.equipmentCode.trim().normalize("NFKC").toUpperCase()===code.toUpperCase()),
+   "EQUIPMENT_CODE_EXISTS","当前项目已存在此机械识别号，请选择已有机械或使用其他识别号");
+  return code;
+ };
+ const machineryMetadata=(value:unknown)=>{
+  try{return validateMachineryMetadata(value);}catch(error){if(error instanceof MachineryValidationError)throw new ManagementError(400,error.code,error.message,{field:error.field});throw error;}
+ };
+ const activeEquipment=(resource:ManagementRecord)=>{
+  ensure(resource.kind==="equipment","MACHINERY_RESOURCE_KIND","三维机械模型只能关联已有设备资源");
+  ensure(resource.status!=="deleted"&&!resource.deletedAt,"MACHINERY_RESOURCE_DELETED","机械已删除，请刷新机械列表");
+ };
  const taskFields=(v:Record<string,unknown>)=>{
   str(v.name,"任务名称",200);if(v.wbsId)c.get("wbs",id(v.wbsId));
   if(v.resourceIds!==undefined){
    v.resourceIds=ids(v.resourceIds);
-   for(const key of v.resourceIds as string[]){const resource=c.get("resources",key);ensure(resource.kind==="equipment"&&resource.status!=="deleted","TASK_RESOURCE_KIND","作业关联只能选择当前项目的有效机械设备资源");}
+   for(const key of v.resourceIds as string[]){const resource=c.get("resources",key);ensure(resource.kind==="equipment"&&resource.status!=="deleted"&&!resource.deletedAt,"TASK_RESOURCE_KIND","作业关联只能选择当前项目的有效机械设备资源");}
   }
   validateLinks(c,v);if(v.planStart||v.planEnd){date(v.planStart,"计划开始");date(v.planEnd,"计划完成");ensure(String(v.planStart)<=String(v.planEnd),"DATE_CONFLICT","开始日期不能晚于完成日期");}
   if(v.planStart&&v.planEnd){for(const endpoint of [v.planStart,v.planEnd])ensure(c.workingDays.includes(new Date(String(endpoint)+"T00:00:00Z").getUTCDay()),"WORK_CALENDAR_CONFLICT","计划起止日期不在项目工作日历内",{date:endpoint,workingDays:c.workingDays});}
@@ -111,7 +126,7 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
   let definition:RailSafetyDefinition;
   try{definition=validateRailSafetyDefinition(p.definition);}catch(error){if(error instanceof RailSafetyValidationError)throw new ManagementError(400,error.code,error.message,{field:error.field});throw error;}
   const resourceIds=definition.kind==="machine"?[definition.resourceId]:definition.kind==="guard"?definition.resourceIds:[];
-  for(const key of resourceIds){const resource=c.get("resources",key);ensure(resource.kind==="equipment","RAIL_SAFETY_RESOURCE_KIND","只能关联机械设备资源");}
+  for(const key of resourceIds){const resource=c.get("resources",key);ensure(resource.kind==="equipment"&&resource.status!=="deleted"&&!resource.deletedAt,"RAIL_SAFETY_RESOURCE_KIND","只能关联有效机械设备资源");}
   if(definition.kind==="machine"){
    for(const key of definition.selectedLimitIds){const limit=c.get("railSafety",key);ensure(limit.status==="active"&&(limit.definition as RailSafetyDefinition)?.kind==="limit","RAIL_SAFETY_LIMIT_INVALID","所选限界不存在或已停用");ensure(!limit.taskId||limit.taskId===taskId,"RAIL_SAFETY_TASK_MISMATCH","所选限界属于不同任务");}
    ensure(!c.list("railSafety").some(v=>v.id!==m.id&&v.status==="active"&&(v.definition as RailSafetyDefinition)?.kind==="machine"&&(v.definition as {resourceId?:string}).resourceId===definition.resourceId),"RAIL_SAFETY_MACHINE_EXISTS","该机械已有管控配置，请编辑现有配置");
@@ -202,18 +217,43 @@ export function applyDomain(c:DomainContext):{collection:ManagementCollection;re
  case "resource.create":case "resource.update":{
   const fields=pick(p,["name","kind","specification","unit","quantity","ownerId","locationDescription","qualificationEvidenceIds","validUntil","availability"]);
   str(fields.name,"资源名称",200);ensure(["crew","equipment","material","auxiliary","test"].includes(String(fields.kind)),"INVALID_KIND","资源类别无效");if(fields.quantity!==undefined)num(fields.quantity,"资源数量");if(fields.validUntil)date(fields.validUntil);fields.qualificationEvidenceIds=evidence(fields.qualificationEvidenceIds);
-  if(m.type==="resource.create")create("resources",fields,"active");else{reason();load("resources");ensure(!r!.machinery||fields.kind==="equipment","MACHINERY_RESOURCE_KIND","请先解除三维机械模型，再变更设备资源类别");ensure(fields.kind==="equipment"||!c.list("railSafety").some(v=>{const d=v.definition as RailSafetyDefinition;return v.status==="active"&&(d?.kind==="machine"&&d.resourceId===r!.id||d?.kind==="guard"&&d.resourceIds.includes(r!.id));}),"RAIL_SAFETY_RESOURCE_KIND","请先解除机械管控和防护关联，再变更设备类别");ensure(fields.kind==="equipment"||!c.list("tasks").some(task=>task.status!=="deleted"&&Array.isArray(task.resourceIds)&&task.resourceIds.includes(r!.id)),"TASK_RESOURCE_KIND","请先解除作业卡中的机械关联，再变更设备类别");Object.assign(r!,fields);recheckNeeds(n=>n.resourceId===r!.id,"资源状态或资格发生变化，请重新核对");}break;}
- case "machinery.save":case "machinery.remove":{
-  allow(actor,"models");load("resources");
-  ensure(r!.kind==="equipment","MACHINERY_RESOURCE_KIND","三维机械模型只能关联已有设备资源");
-  ensure(Object.keys(p).every(key=>["reason",...(m.type==="machinery.save"?["machinery"]:[])].includes(key)),"INVALID_MACHINERY_PAYLOAD","机械命令只能修改模型数据，不能修改资源业务状态");
+  if(p.equipmentCode!==undefined&&!(typeof p.equipmentCode==="string"&&!p.equipmentCode.trim()))fields.equipmentCode=equipmentCode(p.equipmentCode,m.type==="resource.update"?m.id:undefined);
+  if(m.type==="resource.create")create("resources",fields,"active");else{reason();load("resources");ensure(r!.status!=="deleted"&&!r!.deletedAt,"RESOURCE_DELETED","资源已删除，不能继续修改");ensure(!r!.machinery||fields.kind==="equipment","MACHINERY_RESOURCE_KIND","请先解除三维机械模型，再变更设备资源类别");ensure(fields.kind==="equipment"||!c.list("railSafety").some(v=>{const d=v.definition as RailSafetyDefinition;return v.status==="active"&&(d?.kind==="machine"&&d.resourceId===r!.id||d?.kind==="guard"&&d.resourceIds.includes(r!.id));}),"RAIL_SAFETY_RESOURCE_KIND","请先解除机械管控和防护关联，再变更设备类别");ensure(fields.kind==="equipment"||!c.list("tasks").some(task=>task.status!=="deleted"&&Array.isArray(task.resourceIds)&&task.resourceIds.includes(r!.id)),"TASK_RESOURCE_KIND","请先解除作业卡中的机械关联，再变更设备类别");Object.assign(r!,fields);recheckNeeds(n=>n.resourceId===r!.id,"资源状态或资格发生变化，请重新核对");}break;}
+ case "machinery.create":{
+  allow(actor,"models");
+  ensure(Object.keys(p).every(key=>["equipmentCode","name","machinery","manageSensors","reason"].includes(key)),"INVALID_MACHINERY_PAYLOAD","机械配置只允许修改识别号、名称、参数和传感器管理选择");
+  if(p.reason!==undefined)reason();
+  ensure(p.manageSensors===undefined||typeof p.manageSensors==="boolean","INVALID_SENSOR_MANAGEMENT","传感器管理选择须为布尔值");
+  create("resources",{name:str(p.name,"机械名称",200),equipmentCode:equipmentCode(p.equipmentCode),kind:"equipment",unit:"台",availability:"available",manageSensors:p.manageSensors??false,machinery:machineryMetadata(p.machinery)},"active");
+  break;
+ }
+ case "machinery.save":case "machinery.remove":case "machinery.delete":{
+  allow(actor,"models");load("resources");activeEquipment(r!);
+  ensure(Object.keys(p).every(key=>["reason",...(m.type==="machinery.save"?["machinery","equipmentCode","name","manageSensors"]:[])].includes(key)),"INVALID_MACHINERY_PAYLOAD","机械命令只能修改机械配置，不能修改资源业务状态");
   if(p.reason!==undefined)reason();
   if(m.type==="machinery.save"){
-   try{r!.machinery=validateMachineryMetadata(p.machinery);}catch(error){if(error instanceof MachineryValidationError)throw new ManagementError(400,error.code,error.message,{field:error.field});throw error;}
-  }else{ensure(r!.machinery,"MACHINERY_NOT_ATTACHED","该设备尚未关联三维机械模型");delete r!.machinery;}
-  // Preserve qualification, availability, allocations and admission decisions: display geometry
-  // neither confirms equipment readiness nor invalidates an existing business confirmation.
-  break;}
+   r!.machinery=machineryMetadata(p.machinery);
+   if(p.equipmentCode!==undefined)r!.equipmentCode=equipmentCode(p.equipmentCode,r!.id);
+   if(p.name!==undefined)r!.name=str(p.name,"机械名称",200);
+   if(p.manageSensors!==undefined){ensure(typeof p.manageSensors==="boolean","INVALID_SENSOR_MANAGEMENT","传感器管理选择须为布尔值");r!.manageSensors=p.manageSensors;}
+  }else if(m.type==="machinery.remove"){
+   ensure(r!.machinery,"MACHINERY_NOT_ATTACHED","该设备尚未关联三维机械模型");delete r!.machinery;
+  }else{
+   r!.status="deleted";r!.deletedAt=now;r!.deletedBy=actor.id;r!.deletionReason=p.reason??"用户删除机械";r!.manageSensors=false;delete r!.machinery;
+   // Keep references and record versions for historical tasks/reports, while retiring
+   // only the live machine definition. Shared guard and limit definitions remain intact.
+   for(const config of c.list("railSafety")){
+    const definition=config.definition as RailSafetyDefinition;
+    if(config.status!=="active"||definition?.kind!=="machine"||definition.resourceId!==r!.id)continue;
+    c.save("railSafety",{...config,revision:config.revision+1,updatedAt:now,status:"deleted",deletedAt:now,deletedBy:actor.id,
+     deletedWithResourceId:r!.id,deletionReason:r!.deletionReason});
+   }
+   recheckNeeds(n=>n.resourceId===r!.id,"机械已删除，请重新核对资源到位与作业条件");
+  }
+  // Saving display geometry never changes qualification, availability or prior
+  // admission decisions. Explicit deletion invalidates only current readiness.
+  break;
+ }
  case "need.create":case "need.update":{
   const fields=pick(p,["name","taskId","kind","resourceId","quantity","unit","required","ownerId","coordinationNote"]);str(fields.name,"需求名称",200);ensure(["crew","equipment","material","auxiliary","test"].includes(String(fields.kind)),"INVALID_KIND","资源需求类别无效");taskAccess(c,fields.taskId);fields.dueDate=date(p.dueDate);if(fields.quantity!==undefined){num(fields.quantity,"需用量",0.0000001);str(fields.unit,"单位",30);}if(fields.resourceId)c.get("resources",id(fields.resourceId));
   if(m.type==="need.create")create("resourceNeeds",{...fields,required:p.required!==false},"unconfirmed");else{Object.assign(load("resourceNeeds"),fields);r!.status="unconfirmed";r!.changeReason=reason();}break;}
