@@ -206,3 +206,17 @@ test('ellipse WCS sampling composes once with nested INSERT scale, rotation, OCS
   close(output.vertices[0], { x: 97, y: 224, z: 295 });
   close(output.vertices[(output.vertices.length - 1) / 4], { x: 97, y: 204, z: 275 });
 });
+
+test('open circular arc stations survive planar reflections; elliptic and tilted projections retain chord lengths', () => {
+  const arc = entity('ARC', { center: { x: 0, y: 0 }, radius: 100, startAngle: Math.PI * 1.5, endAngle: 0 });
+  const block = { name: 'AXIS', basePoint: {x: 0, y: 0}, entities: [arc] };
+  const insertion = (sx: number, sy: number) => entity('INSERT', { name: 'AXIS', insertionPoint: {x: 300, y: 120},
+    rotation: Math.PI / 6, xScale: sx, yScale: sy });
+  const output = expand([insertion(-2,2)], [block])[0];
+  assert.equal(output.stationFactors?.length, output.vertices.length - 1);
+  const length = output.stationFactors!.reduce((sum, factor, i) => sum + factor * Math.hypot(
+    output.vertices[i+1].x - output.vertices[i].x, output.vertices[i+1].y - output.vertices[i].y), 0);
+  assert.ok(Math.abs(length - 100 * Math.PI) < 1e-8);
+  assert.equal(expand([insertion(1,2)], [block])[0].stationFactors, undefined);
+  assert.equal(expand([{ ...arc, extrusionDirection: {x: 0, y: 1, z: 1} }])[0].stationFactors, undefined);
+});

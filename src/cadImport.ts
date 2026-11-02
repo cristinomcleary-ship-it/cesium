@@ -8,6 +8,8 @@ export type CadImportEntity = {
   layer: string;
   vertices: CadPoint[];
   closed?: boolean;
+  /** Arc length / chord length for each edge of an open planar circular path. */
+  stationFactors?: number[];
   text?: string;
   textHeight?: number;
   color?: string;
@@ -159,7 +161,23 @@ function bulgeArcPoints(from: PolylineVertex, to: PolylineVertex): CadPoint[] {
   return output;
 }
 
-function interpolatePolyline(vertices: PolylineVertex[], closed: boolean): CadPoint[] {
+// A circular segment remains circular in drawing XY under a planar similarity
+// (including a reflection). A tilted or nonuniformly scaled arc projects to an
+// ellipse; its display chords must not receive a circular arc correction.
+function preservesPlanCircles(transform: PointTransform): boolean {
+  const origin = transform({ x: 0, y: 0 }), east = transform({ x: 1, y: 0 }), north = transform({ x: 0, y: 1 });
+  const ex = east.x - origin.x, ey = east.y - origin.y, nx = north.x - origin.x, ny = north.y - origin.y;
+  const sx = Math.hypot(ex, ey), sy = Math.hypot(nx, ny);
+  return sx > 0 && sy > 0 && Math.abs(sx - sy) <= 1e-8 * Math.max(sx, sy)
+    && Math.abs(ex * nx + ey * ny) <= 1e-8 * sx * sy;
+}
+
+function arcToChordRatio(sweep: number, count: number): number {
+  const halfAngle = Math.abs(sweep) / (2 * count);
+  return halfAngle > 0 ? halfAngle / Math.sin(halfAngle) : 1;
+}
+
+function interpolatePolyline(vertices: PolylineVertex[], closed: boolean, stationFactors?: number[]): CadPoint[] {
   if (vertices.length < 2) return [];
   const output: CadPoint[] = [];
   const segmentCount = closed ? vertices.length : vertices.length - 1;
@@ -167,7 +185,13 @@ function interpolatePolyline(vertices: PolylineVertex[], closed: boolean): CadPo
     const from = vertices[index];
     const to = vertices[(index + 1) % vertices.length];
     output.push({ x: from.x, y: from.y, z: from.z ?? 0 });
-    output.push(...bulgeArcPoints(from, to));
+    const interior = bulgeArcPoints(from, to);
+    output.push(...interior);
+    if (stationFactors) {
+      const count = interior.length + 1;
+      const factor = arcToChordRatio(4 * Math.atan(from.bulge ?? 0), count);
+      for (let j = 0; j < count; j++) stationFactors.push(factor);
+    }
   }
   if (!closed) {
     const last = vertices[vertices.length - 1];
@@ -222,10 +246,7 @@ function objectCoordinateTransform(extrusion: unknown): PointTransform {
 
 const OBJECT_COORDINATE_ENTITIES = new Set(['LWPOLYLINE', 'POLYLINE2D', 'CIRCLE', 'ARC', 'SOLID', 'TRACE', 'TEXT', 'ATTRIB', 'ATTDEF']);
 
-function sampleArc(center: CadPoint, radius: number, start = 0, end = Math.PI * 2): CadPoint[] {
-  let normalizedEnd = end;
-  while (normalizedEnd <= start) normalizedEnd += Math.PI * 2;
-  const sweep = normalizedEnd - start;
+function sampleArc(center: CadPoint, radius: number, start: number, sweep: number): CadPoint[] {
   const segments = Math.max(32, Math.ceil(sweep / (Math.PI / 36)));
   return Array.from({ length: segments + 1 }, (_, index) => {
     const angle = start + (sweep * index) / segments;
@@ -280,6 +301,12 @@ function normaliseEntity(entity: AnyEntity, transform: PointTransform, style: Ca
   if (OBJECT_COORDINATE_ENTITIES.has(entity.type)) transform = compose(transform, objectCoordinateTransform(entity.extrusionDirection));
   let points: CadPoint[] = [];
   let closed = false;
+  let stationFactors: number[] | undefined;
+  function samplePolyline(vertices: PolylineVertex[]) {
+    if (!closed && vertices.some(v => v.bulge) && vertices.every(v => v.z === vertices[0].z)
+      && preservesPlanCircles(transform)) stationFactors = [];
+    return interpolatePolyline(vertices, closed, stationFactors);
+  }
 
   if (entity.type === "LINE") {
     const start = point(entity.startPoint);
@@ -288,12 +315,12 @@ function normaliseEntity(entity: AnyEntity, transform: PointTransform, style: Ca
   } else if (entity.type === "LWPOLYLINE") {
     const elevation = Number.isFinite(entity.elevation) ? Number(entity.elevation) : 0;
     closed = (Number(entity.flag) & 512) === 512;
-    points = interpolatePolyline(validPolylineVertices(entity.vertices, elevation), closed);
+    points = samplePolyline(validPolylineVertices(entity.vertices, elevation));
   } else if (entity.type === "POLYLINE2D") {
     const parentFlag = Number(entity.flag);
     if ((parentFlag & (16 | 64)) !== 0) return null;
     closed = (parentFlag & 1) === 1;
-    points = interpolatePolyline(polyline2dDisplayVertices(entity), closed);
+    points = samplePolyline(polyline2dDisplayVertices(entity));
   } else if (entity.type === "POLYLINE3D") {
     const parentFlag = Number(entity.flag);
     // Mesh/polyface containers are not a single continuous path. Connecting
@@ -306,8 +333,17 @@ function normaliseEntity(entity: AnyEntity, transform: PointTransform, style: Ca
     const center = point(entity.center);
     const radius = Number(entity.radius);
     if (center && Number.isFinite(radius) && radius > 0) {
-      points = sampleArc(center, radius, entity.type === "CIRCLE" ? 0 : Number(entity.startAngle) || 0, entity.type === "CIRCLE" ? Math.PI * 2 : Number(entity.endAngle) || Math.PI * 2);
       closed = entity.type === "CIRCLE";
+      const start = closed ? 0 : Number(entity.startAngle ?? 0);
+      const end = closed ? 2 * Math.PI : Number(entity.endAngle ?? 2 * Math.PI);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+      let sweep = (end - start) % (2 * Math.PI);
+      if (sweep <= 0) sweep += 2 * Math.PI;
+      points = sampleArc(center, radius, start, sweep);
+      if (!closed && preservesPlanCircles(transform)) {
+        const count = points.length - 1;
+        stationFactors = Array(count).fill(arcToChordRatio(sweep, count));
+      }
     }
   } else if (entity.type === "ELLIPSE") {
     points = sampleEllipse(entity);
@@ -341,7 +377,7 @@ function normaliseEntity(entity: AnyEntity, transform: PointTransform, style: Ca
     }
   }
 
-  if (points.length >= 2) return { ...common, type: "POLYLINE", vertices: transformed(points, transform), closed };
+  if (points.length >= 2) return { ...common, type: "POLYLINE", vertices: transformed(points, transform), closed, ...(stationFactors ? { stationFactors } : {}) };
   return null;
 }
 

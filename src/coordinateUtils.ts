@@ -37,7 +37,17 @@ export function inferredZoneNumber(centralMeridian: number, width: 3 | 6): numbe
   return width === 3 ? Math.round(centralMeridian / 3) : Math.round((centralMeridian + 3) / 6);
 }
 
-export function createGaussKrugerToWgs84Converter(definition: GaussKrugerDefinition) {
+/** National CGCS2000 standard zones (EPSG:4491–4501 and 4513–4533).
+ * Engineering central meridians are specified directly, independently of a zone number. */
+export function cgcs2000ZoneMeridian(zone: number, width: 3 | 6): number {
+  if (width !== 3 && width !== 6) throw new Error("CGCS2000 分带宽度须为 3° 或 6°");
+  const [first, last] = width === 3 ? [25, 45] : [13, 23];
+  if (!Number.isInteger(zone) || zone < first || zone > last)
+    throw new Error(`CGCS2000 国内标准 ${width}° 分带的带号须为 ${first}～${last} 的整数`);
+  return width === 3 ? zone * 3 : zone * 6 - 3;
+}
+
+export function createGaussKrugerProjection(definition: Pick<GaussKrugerDefinition, "ellipsoid" | "centralMeridian">) {
   const ellipsoids: Record<GaussEllipsoid, string> = {
     GRS80: "+ellps=GRS80",
     WGS84: "+ellps=WGS84",
@@ -45,7 +55,11 @@ export function createGaussKrugerToWgs84Converter(definition: GaussKrugerDefinit
     krass: "+ellps=krass",
   };
   const projection = `+proj=tmerc +lat_0=0 +lon_0=${definition.centralMeridian} +k=1 +x_0=500000 +y_0=0 ${ellipsoids[definition.ellipsoid]} +units=m +no_defs +type=crs`;
-  const converter = proj4(projection, "EPSG:4326");
+  return proj4(projection, "EPSG:4326");
+}
+
+export function createGaussKrugerToWgs84Converter(definition: GaussKrugerDefinition) {
+  const converter = createGaussKrugerProjection(definition);
   return (x: number, y: number): [number, number] => {
     let easting = definition.axisOrder === "eastNorth" ? x : y;
     const northing = definition.axisOrder === "eastNorth" ? y : x;

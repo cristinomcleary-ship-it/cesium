@@ -1,0 +1,25 @@
+#tw-reference-dialog {padding:0; margin:auto; width:min(1100px,94vw); max-width:96vw; max-height:94vh; border:1px solid #9aafa9; border-radius:12px; box-shadow:0 24px 110px #091b2166; background:#f9f9f3; color:#213837; font:14px/1.55 "Noto Sans SC","Microsoft Yahei",sans-serif; overflow:auto;}
+#tw-reference-dialog::backdrop {background:#0d202bd6;}
+#tw-reference-dialog header,#tw-reference-dialog footer{display:flex;align-items:center;justify-content:space-between;padding:14px 22px;}
+#tw-reference-dialog header{border-bottom:1px solid #ccd4cc;}
+#tw-reference-dialog header small,.tw-ref-view,.tw-ref-series,#tw-reference-dialog footer{letter-spacing:.12em;font-weight:650;color:#4c6865;}
+#tw-reference-dialog h2,#tw-reference-dialog h3,#tw-reference-dialog p{margin:0;}
+#tw-reference-dialog h2{font-size:22px;color:#1f3536;}
+#tw-reference-dialog button{font:inherit;cursor:pointer;background:#f3f5ef;border:1px solid #bac7bc;color:#2d4947;border-radius:5px;padding:5px 10px;}
+#tw-reference-dialog [data-tw-reference-close]{font-size:22px;line-height:1.2;}
+#tw-reference-dialog .tw-ref-layout{display:grid;grid-template-columns:minmax(0,1fr) 242px;}
+#tw-reference-dialog main{height:clamp(320px,55vh,540px);display:block;position:relative;min-width:0;background:#c9d0c5;overflow:hidden;}
+#tw-reference-dialog canvas{display:block;width:100%;height:100%;touch-action:none;}
+#tw-reference-dialog .tw-ref-view{position:absolute;top:15px;left:17px;background:#f8f9efda;border:1px solid #e0e5d9;border-radius:3px;font-size:11px;padding:4px 8px;pointer-events:none;}
+#tw-reference-dialog aside{padding:17px 16px;background:#f6f6ee;display:flex;flex-direction:column;align-items:flex-start;border-left:1px solid #c9d0c5;}
+#tw-reference-dialog .tw-ref-selector{display:flex;gap:5px;font-size:13px;}
+#tw-reference-dialog button[aria-pressed=true]{background:#234e50;color:white;border-color:#234e50;}
+#tw-reference-dialog .tw-ref-series{margin-top:26px;font-size:12px;color:#65796c;}
+#tw-reference-dialog h3{font-size:27px;line-height:1.34;margin:2px 0;}
+#tw-reference-dialog .tw-ref-sub{color:#60736b;}
+#tw-reference-dialog ul{list-style:none;padding:0;width:100%;margin:15px 0;line-height:1.65;}
+#tw-reference-dialog li{border-top:1px solid #d2d9cd;padding:7px 0;}
+#tw-reference-dialog .tw-ref-note{color:#607068;font-size:12px;line-height:1.7;}
+#tw-reference-dialog .tw-ref-reset{margin-top:auto;font-size:12px;}
+#tw-reference-dialog footer{background:#eef1e9;color:#3e5b54;border-top:1px solid #ccd4cc;font-size:11px;padding-top:9px;padding-bottom:9px;}
+@media (max-width:650px){#tw-reference-dialog .tw-ref-layout{display:block;}#tw-reference-dialog main{height:48vh;}#tw-reference-dialog aside{padding:12px;}#tw-reference-dialog ul,#tw-reference-dialog .tw-ref-series{margin:5px 0;}#tw-reference-dialog li{display:inline;margin-right:6px;}#tw-reference-dialog h3{font-size:21px;}#tw-reference-dialog .tw-ref-reset{display:none;}}

@@ -62,3 +62,27 @@ test('a completed removal from an earlier project cannot mutate the current dire
   finish(); await removing;
   assert.equal(f.panel.items[0].name, '其他工程吊机'); assert.equal(f.store.isVisible('machine:one'), true);
 });
+
+test('cancelling a facility removal from the planner retains its model row, hidden preference and groups; retry removes the same id', async () => {
+  const f = fixture();
+  const id = 'temporary-works:camp', steel = 'temporary-works:steel';
+  let approved = false, removes = 0;
+  f.panel.setContext('p','me',[
+    item({id,name:'项目驻地',category:'临建规划',remove:async()=>{removes++;return approved;}}),
+    item({id:steel,name:'钢筋场',category:'临建规划'}),
+  ]);
+  f.store.setVisibility([id], false);
+  const group = f.store.createGroup('施工设施',[id,steel]);
+  await f.panel.removeItem(id);
+  assert.equal(removes,1);
+  assert.deepEqual(f.panel.items.map((i:SceneDisplayItem)=>i.id),[id,steel]);
+  assert.equal(f.store.getOverrides()[id],false);
+  assert.deepEqual(f.store.getGroups()[0].members,[id,steel]);
+  assert.match(f.panel.message,/已取消/);
+  approved = true;
+  await f.panel.removeItem(id);
+  assert.equal(removes,2);
+  assert.deepEqual(f.panel.items.map((i:SceneDisplayItem)=>i.id),[steel]);
+  assert.equal(Object.hasOwn(f.store.getOverrides(),id),false);
+  assert.deepEqual(f.store.getGroups()[0],{...group,members:[steel]});
+});

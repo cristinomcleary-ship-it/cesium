@@ -11,8 +11,8 @@ export type SceneDisplayItem = {
   detail?: string;
   locate?: () => void | Promise<void>;
   edit?: () => void | Promise<void>;
-  /** Remove this resource from its owning project and persist the change; reject on failure. */
-  remove?: () => void | Promise<void>;
+  /** Persist removal; return false if the user cancels, or reject on failure. */
+  remove?: () => void | boolean | Promise<void | boolean>;
   /** Removing an attached model keeps its resource row and personal preferences. */
   removalPreservesResource?: boolean;
   /** Cancel a pending load while preserving any saved original and display preferences. */
@@ -267,7 +267,7 @@ export class SceneDisplayPanel {
     else if (input.dataset.toggleGroup) { this.store.setGroupVisibility(input.dataset.toggleGroup, input.checked); this.render(); this.apply(); }
   }
   private group(id: string): SceneDisplayGroup | undefined { return this.store.getGroups().find(group => group.id === id); }
-  private async removeItem(id: string): Promise<void> {
+  async removeItem(id: string): Promise<void> {
     const item = this.item(id), key = this.removalKey(id);
     if (!item?.remove || this.removing.has(key)) return;
     const scope = this.store.scopeKey, revision = this.contextRevision;
@@ -275,7 +275,10 @@ export class SceneDisplayPanel {
     this.removing.add(key); this.renderList(); this.setMessage(`正在删除“${item.name}”…`);
     try {
       // The host owns data and renderer teardown. Only update this directory after it succeeds.
-      await item.remove();
+      if (await item.remove() === false) {
+        if (sameContext()) this.setMessage("已取消删除。");
+        return;
+      }
       if (item.removalPreservesResource) {
         // The host has refreshed the same resource ID with its attachment removed.
         // Do not race that refresh by deleting the now-unplaced resource row.

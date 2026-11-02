@@ -1,3 +1,5 @@
+import { TemporaryWorksPanel } from "./temporaryWorksPanel";
+import { temporaryWorksStore } from "./temporaryWorksStore";
 import { SceneLibrary } from "./sceneLibrary";
 import { CadLoadRegistry } from "./cadLoadRegistry";
 import { installRenderErrorRecovery, renderErrorSummaryHtml } from "./renderErrorRecovery";
@@ -86,6 +88,7 @@ import type { LibraryRecord } from "./projectLibrary";
 import type { CadCoordinateOptions, CadDisplayMode, ImportRecord, TilesetOptions } from "./types";
 import "./style.css";
 
+let temporaryWorks: TemporaryWorksPanel | undefined;
 let sceneDisplayPanel: SceneDisplayPanel | undefined;
 let sceneDisplayReady = false, sceneDisplayFrame = 0;
 let sceneDisplayOverrides: Record<string, boolean> = Object.create(null);
@@ -105,6 +108,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <button class="tab" data-tab="sandtable" data-label="电子沙盘" data-menu-icon="◈">电子沙盘</button>
         <button class="tab active" data-tab="cad" data-label="CAD 图纸" data-menu-icon="⌁" aria-current="page">CAD 图纸</button>
         <button class="tab" data-tab="models" data-label="工程模型" data-menu-icon="◆">工程模型</button>
+        <button class="tab" data-tab="temporary-works" data-label="临建规划" data-menu-icon="▧">临建规划</button>
         <button class="tab" data-tab="machinery" data-label="施工机械" data-menu-icon="⚙">施工机械</button>
         <button class="tab" data-tab="rail-safety" data-label="邻近营业线管控" data-menu-icon="◇">邻近营业线管控</button>
         <button class="tab" data-tab="tiles" data-label="倾斜摄影" data-menu-icon="▦">倾斜摄影</button>
@@ -176,6 +180,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <button class="secondary" id="exportDigitalTwinCatalog">导出数据目录</button>
           <p class="hint" id="digitalTwinStorageStatus">数据目录元数据保存在本机浏览器；模型、视频和照片不会重复写入目录。</p>
         </section>
+        <section class="panel" data-panel="temporary-works" aria-label="临建规划"></section>
         <section class="panel" data-panel="machinery"><h2>施工机械</h2><p>在当前 Cesium 场景放置吊机、桩机与挖机。右侧面板编辑尺寸与位置，保存到同一工程资源台账。</p><p>关闭编辑面板或切换功能后，已保存的机械仍显示在场景中。可在右侧“场景显示 → 施工机械”中定位和管理全部机械。</p></section>
         <section class="panel" data-panel="rail-safety"><h2>邻近营业线管控</h2><p>定义防护人员站位与责任区、铁路设备安全限界，并选择机械检查假设倾覆的地面影响范围。</p><p>尺寸单位 m。范围与人员位置由用户定义；相交结果为当前参数下的平面几何筛查。</p><button type="button" id="reopenRailSafety" class="text-button">打开管控面板</button></section>
         <section class="panel active" data-panel="cad">
@@ -193,7 +198,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <label>锚点高程（米）<input id="anchorAlt" type="number" step="any" value="0" /></label>
             <label>CAD 基准 X<input id="referenceX" type="number" step="any" value="0" /></label>
             <label>CAD 基准 Y<input id="referenceY" type="number" step="any" value="0" /></label>
-            <label>顺时针旋转（度）<input id="cadRotation" type="number" step="any" value="0" /></label>
+            <label>坐标旋转角（°，逆时针为正）<input id="cadRotation" type="number" step="any" value="0" /></label>
             <label>缩放比例<input id="cadScale" type="number" step="any" value="1" /></label>
           </div>
           <div id="crsFields" class="hidden">
@@ -742,6 +747,8 @@ videoModelOverlay = new VideoModelOverlay(viewer, {
   },
   notify: toast,
   onEnter: () => {
+    temporaryWorks?.close();
+    for (const plan of temporaryWorks?.getDisplayItems() ?? []) temporaryWorks?.setPlanVisible(plan.id, false);
     videoArFusion.setPanelActive(false);
     videoArFusion.clear();
     viewer.camera.cancelFlight();
@@ -1016,6 +1023,7 @@ function locateImport(item: ImportRecord) {
 }
 
 function renderLayers() {
+  temporaryWorks?.refresh();
   videoModelOverlay?.refreshResources();
   scheduleSceneDisplay();
   projectLibrary?.render();
@@ -1444,6 +1452,42 @@ try {
   const status = document.getElementById("sandTableStatus");
   if (status) status.textContent = "电子沙盘初始化失败；其他现有功能不受影响。";
 }
+
+temporaryWorks = new TemporaryWorksPanel({
+  root: $('[data-panel="temporary-works"]'),
+  viewer,
+  store: temporaryWorksStore,
+  getTilesets: () => imports.flatMap(item => {
+    if (item.kind !== "3D Tiles" || !isImportDisplayed(item)) return [];
+    const tileset = item.resource as Cesium3DTileset;
+    return !tileset.isDestroyed() && tileset.show ? [{ id: item.id, name: item.name, tileset }] : [];
+  }),
+  canEdit: () => Boolean(managementWorkspace?.getWorkbenchMachineryState().canEdit
+    && managementWorkspace.getWorkbenchLayerAccess().files),
+  beginInteractionSession: () => {
+    const drawing = document.querySelector<HTMLButtonElement>("#markupCancelDrawing");
+    if (drawing && !drawing.disabled) throw new Error("请先完成或取消当前标绘，再拾取临建规划基准点");
+    viewer.camera.cancelFlight();
+    const restores: Array<() => void> = [];
+    const restore = () => { for (const resume of restores.splice(0).reverse()) resume(); };
+    try {
+      restores.push(modelEditor.suspendInteractions());
+      restores.push(subsurfaceTools.suspendInteractions());
+      restores.push(foundationPitMonitoring.suspendInteractions());
+    } catch (error) { restore(); throw error; }
+    return restore;
+  },
+  onPlansChanged: scheduleSceneDisplay,
+  onVisibilityChange: (id, visible) => sceneDisplayPanel?.setVisibility([`temporary-works:${id}`], visible),
+  onRequestRemove: async id => {
+    if (!sceneDisplayPanel) { await temporaryWorks?.removePlan(id); return; }
+    syncSceneDisplay();
+    await sceneDisplayPanel.removeItem(`temporary-works:${id}`);
+  },
+  onRequestClose: () => { document.querySelector<HTMLButtonElement>('.tab[data-tab="tiles"]')?.click(); },
+  toast,
+});
+onPageDispose(() => temporaryWorks?.destroy());
 
 try {
   sandTableFacilities = new SandTableFacilities(viewer, {
@@ -2620,6 +2664,7 @@ document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => tab.addEve
   } else if (managementWorkspace && !managementWorkspace.prepareWorkbenchNavigation()) return;
   setWorkbenchDock("editor");
   const previousTab = document.querySelector<HTMLButtonElement>(".tab.active")?.dataset.tab;
+  if (tab.dataset.tab !== "temporary-works" && previousTab === "temporary-works") temporaryWorks?.close();
   const leavingSandTable = previousTab === "sandtable"
     && tab.dataset.tab !== "sandtable";
   if (tab.dataset.tab !== "sandtable") {
@@ -2646,6 +2691,7 @@ document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => tab.addEve
   $(`[data-panel="${tab.dataset.tab}"]`).classList.add("active");
   const activeToolTitle = document.querySelector<HTMLElement>("#activeToolTitle");
   if (activeToolTitle) activeToolTitle.textContent = tab.dataset.label ?? tab.textContent?.trim() ?? "当前功能";
+  if (tab.dataset.tab === "temporary-works") temporaryWorks?.open();
   if (tab.dataset.tab === "overview") {
     syncDigitalTwinDataCenter();
     digitalTwinOverview.open();
@@ -3143,6 +3189,7 @@ async function ensureManagementWorkspace(): Promise<ManagementWorkspace> {
           if (projectLibrary!.activeVideoRecordId !== recordId) throw new Error("视频来源未能加载，请重试");
         },
         prepareOpen: () => {
+          temporaryWorks?.close();
           videoModelOverlay?.setPanelActive(false);
           digitalTwinOverview.close();
           electronicSandTable?.stopTour();
@@ -3263,6 +3310,26 @@ function syncSceneDisplay(): void {
       await action.remove(); syncSceneDisplay();
     } };
   };
+  const access = managementWorkspace?.getWorkbenchLayerAccess();
+  temporaryWorks?.setProject(state?.canView && access?.files && state.projectId ? state.projectId : null);
+  for (const plan of temporaryWorks?.getDisplayItems() ?? []) {
+    items.push({ id: `temporary-works:${plan.id}`, name: plan.name, category: "临建规划", detail: plan.typeName, visible: plan.visible,
+      locate: () => temporaryWorks?.locatePlan(plan.id),
+      remove: state?.canEdit && access?.files ? async () => {
+        const current = managementWorkspace?.getWorkbenchMachineryState();
+        if (context !== JSON.stringify([current?.projectId, current?.actorId]) || !current?.canEdit || !managementWorkspace?.getWorkbenchLayerAccess().files)
+          throw new Error("项目或账号权限已变化，请重新选择临建设施。");
+        return temporaryWorks?.removePlan(plan.id) ?? false;
+      } : undefined,
+      edit: () => {
+        if (managementWorkspace?.isOpen) {
+          if (!managementWorkspace.openEngineeringTool("temporary-works")) return;
+        }
+        else document.querySelector<HTMLButtonElement>('.tab[data-tab="temporary-works"]')?.click();
+        temporaryWorks?.inspectPlan(plan.id);
+      },
+    });
+  }
   foundationPitMonitoring.setDisplayContext(JSON.stringify([state?.projectId ?? 'workbench-local', state?.actorId ?? null]));
   const layerTypes = { 'CAD': 'CAD 图纸', '3D Tiles': '实景模型', 'GIS': 'GIS 数据', 'Model': '工程模型', 'Drone Video': '无人机视频' };
   for (const layer of imports.filter(isImportAllowed)) items.push({ id: `layer:${layer.id}`, name: layer.name, category: layerTypes[layer.kind], visible: layer.visible,
@@ -3297,6 +3364,9 @@ function syncSceneDisplay(): void {
 function applySceneDisplay(overrides: Record<string,boolean>, labelsVisible: boolean): void {
   sceneDisplayOverrides = overrides;
   applyPendingCadDisplay();
+  for (const plan of temporaryWorks?.getDisplayItems() ?? []) {
+    temporaryWorks?.setPlanVisible(plan.id, !videoModelOverlay?.active && (overrides[`temporary-works:${plan.id}`] ?? plan.visible));
+  }
   if (videoModelOverlay?.active) {
     videoModelOverlay.refreshResources();
     for (const layer of imports) applyImportDisplay(layer);
@@ -3313,6 +3383,7 @@ function applySceneDisplay(overrides: Record<string,boolean>, labelsVisible: boo
     const pitItems = foundationPitMonitoring.getDisplayItems(), shown = pitItems.filter(item => item.visible).length;
     pitSwitch.checked = !!pitItems.length && shown === pitItems.length; pitSwitch.indeterminate = shown > 0 && shown < pitItems.length;
   }
+  temporaryWorks?.refresh();
   managementWorkspace?.setWorkbenchDisplayVisibility(overrides, labelsVisible);
   viewer.scene.requestRender();
 }

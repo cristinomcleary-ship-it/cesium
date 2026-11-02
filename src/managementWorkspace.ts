@@ -813,7 +813,7 @@ export class ManagementWorkspace {
       });
       return;
     }
-    if (['home','return','restore-view','draw','edit-spatial','define-anchor','quality','measure','play-media','play','follow','import-media','source-settings','calibration','model-settings','import-model','video-diagnostics'].includes(action) && (this.machinery?.isOpen || this.railSafety?.isOpen)) {
+    if (['home','return','restore-view','draw','edit-spatial','define-anchor','quality','measure','play-media','play','follow','import-media','source-settings','calibration','model-settings','import-model','temporary-works','video-diagnostics'].includes(action) && (this.machinery?.isOpen || this.railSafety?.isOpen)) {
       if (!this.guardNavigation() || !this.machinery.close() || !this.railSafety.close()) return false;
     }
     if(action==='topic'||action==='theme'){this.topic=String(args.topic||args.theme||'overview');this.topicTaskIds=Array.isArray(args.taskIds)?args.taskIds.filter((v):v is string=>typeof v==='string'):undefined;this.topicProgress=Array.isArray(args.taskProgress)?args.taskProgress as typeof this.topicProgress:[];this.applyTopic(this.safety.getManagementContext());return;}
@@ -852,6 +852,7 @@ export class ManagementWorkspace {
     if (action === 'video-diagnostics') { if (!this.session?.permissions.includes('media') || !this.session.permissions.includes('models') || this.data?.projectId !== 'safety:project') throw new Error('当前项目或账户无视频与模型诊断权限'); this.videoDiagnostics.open(); return; }
     if (action === 'capture') { this.safety.managementPause();this.message('正在固定当前原片帧…');await this.captureEvidence();return; }
     if (action === 'import-media' || action === 'source-settings' || action === 'calibration') { this.exitToWorkbench('videoar');return; }
+    if (action === 'temporary-works') { this.exitToWorkbench('temporary-works'); return; }
     if (action === 'model-settings' || action === 'import-model') { this.exitToWorkbench('tiles');return; }
     if (action === 'refresh-scene') { await this.safety.reload(true);return; }
     throw new Error('当前操作尚未接入：'+action);
