@@ -23,7 +23,7 @@ export type TemporaryWorksGlbResource = {
   [key: string]: unknown;
 };
 export type TemporaryWorksGlbManifest = { schemaVersion: 1; assets: TemporaryWorksGlbResource[] };
-export type GlbWorldPoint = { longitude: number; latitude: number };
+export type GlbWorldPoint = { longitude: number; latitude: number; height: number };
 
 function positiveDimensions(d: TemporaryWorksGlbDimensions) {
   return d && [d.length, d.width, d.height].every(v => Number.isFinite(v) && v > 0 && v < 100000);
@@ -94,7 +94,7 @@ export function getTemporaryWorksGlbFootprints(asset: TemporaryWorksGlbResource,
   const convert = (point: [number,number]): GlbWorldPoint => {
     const local = asset.upAxis === 'Y' ? new Cartesian3(point[0],asset.anchor[1],point[1]) : new Cartesian3(point[0],point[1],asset.anchor[2]);
     const geo = Cartographic.fromCartesian(Matrix4.multiplyByPoint(matrix, local, new Cartesian3()));
-    return {longitude: CesiumMath.toDegrees(geo.longitude), latitude: CesiumMath.toDegrees(geo.latitude)};
+    return {longitude: CesiumMath.toDegrees(geo.longitude), latitude: CesiumMath.toDegrees(geo.latitude), height:geo.height};
   };
   return asset.footprints.map(p => ({outer:p.outer.map(convert), holes:(p.holes ?? []).map(r => r.map(convert))}));
 }

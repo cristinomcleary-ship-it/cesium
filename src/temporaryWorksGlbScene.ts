@@ -1,5 +1,6 @@
 import { Axis, BoundingSphere, Cartesian2, Cartesian3, Cesium3DTileset, Color, HeadingPitchRange,
-  LabelStyle, Matrix4, Model, VerticalOrigin, type Entity, type Viewer } from 'cesium';
+  ImageMaterialProperty, LabelStyle, Math as CesiumMath, Matrix3, Matrix4, Model, Plane, Quaternion,
+  Transforms, VerticalOrigin, type Entity, type Viewer } from 'cesium';
 import { TemporaryWorksClippingManager } from './temporaryWorksClipping';
 import { getTemporaryWorksGlbFootprints, getTemporaryWorksGlbModelMatrix, loadTemporaryWorksGlbManifest,
   type TemporaryWorksGlbConfig, type TemporaryWorksGlbResource } from './temporaryWorksGlb';
@@ -21,11 +22,22 @@ export function renderTemporaryWorksGlb(viewer: Viewer, options: TemporaryWorksG
   const clippingId = `tw-glb:${options.id}:${crypto.randomUUID()}`;
   const entities: Entity[] = [];
   let model: Model | undefined, asset: TemporaryWorksGlbResource | undefined;
+  let stopStatusWatch: (() => void) | undefined;
   let visible = true, destroyed = false, tileset = options.tileset;
   let status: TemporaryWorksGlbStatus = {state:'loading',message:'正在加载真实 GLB 资源…'};
   const bounds = new BoundingSphere(Cartesian3.fromDegrees(options.placement.longitude, options.placement.latitude, options.placement.height), 20);
-  const setStatus = (value: TemporaryWorksGlbStatus) => { status = value; if (!destroyed) options.onStatus?.(value); };
+  const setStatus = (value: TemporaryWorksGlbStatus) => {
+    if (status.state === value.state && status.message === value.message) return;
+    status = value; if (!destroyed) options.onStatus?.(value);
+  };
   const requestRender = () => { if (!viewer.isDestroyed()) viewer.scene.requestRender(); };
+  function reflectClippingStatus() {
+    if (destroyed || !visible || !options.clippingEnabled || options.resourceId === 'wall') return;
+    const current=manager.getStatus(clippingId);
+    if (!current) return;
+    if (current.state === 'active') setStatus({state:'ready',message:'真实 GLB 已加载，建筑底面摄影遮挡已启用。'});
+    else setStatus({state:'blocked',message:current.message});
+  }
   function syncClipping() {
     if (destroyed || !asset || !model?.ready || viewer.isDestroyed()) return;
     if (!visible) { manager.remove(clippingId); setStatus({state:'hidden',message:'模型已隐藏，对应摄影遮挡已撤销。'}); return; }
@@ -35,15 +47,15 @@ export function renderTemporaryWorksGlb(viewer: Viewer, options: TemporaryWorksG
     if (!tileset || tileset.isDestroyed()) {
       manager.remove(clippingId); setStatus({state:'waiting',message:'模型已加载，等待关联原倾斜摄影后恢复遮挡。'}); return;
     }
-    const result = manager.upsert({id:clippingId,tileset,footprints:getTemporaryWorksGlbFootprints(asset,options.placement),visible:true,enabled:true});
-    const current = result ?? manager.getStatus(clippingId);
-    if (current?.state === 'active') setStatus({state:'ready',message:'真实 GLB 已加载，建筑底面摄影遮挡已启用。'});
-    else setStatus({state:'blocked',message:current?.message ?? '摄影遮挡未生效，请检查目标模型裁剪状态。'});
+    manager.upsert({id:clippingId,tileset,footprints:getTemporaryWorksGlbFootprints(asset,options.placement),visible:true,enabled:true});
+    reflectClippingStatus();
+    stopStatusWatch ??= viewer.scene.postUpdate?.addEventListener(reflectClippingStatus);
     requestRender();
   }
   function destroy() {
     if (destroyed) return;
     destroyed = true;
+    stopStatusWatch?.(); stopStatusWatch = undefined;
     manager.remove(clippingId);
     if (!viewer.isDestroyed()) {
       entities.forEach(e => viewer.entities.remove(e));
@@ -52,19 +64,57 @@ export function renderTemporaryWorksGlb(viewer: Viewer, options: TemporaryWorksG
       requestRender();
     }
   }
-  function addBranding() {
+  async function addBranding() {
     const branding = options.branding;
     if (!branding || branding.visible === false || (!branding.text?.trim() && !branding.logoUrl)) return;
-    const {longitude,latitude,height,dimensions} = options.placement;
-    const position = Cartesian3.fromDegrees(longitude,latitude,height + dimensions.height + 1);
-    const text = branding.text?.trim().slice(0, 250);
-    if (text) entities.push(viewer.entities.add({name:`临建宣传文字 · ${options.id}`,position,
-      label:{text,font:'22px sans-serif',fillColor:Color.WHITE,outlineColor:Color.fromCssColorString('#12345c'),
-        outlineWidth:3,style:LabelStyle.FILL_AND_OUTLINE,verticalOrigin:VerticalOrigin.BOTTOM,pixelOffset:new Cartesian2(0,-12)}, show:visible}));
     if (branding.logoUrl) {
       const parsed = new URL(branding.logoUrl,window.location.href);
       if (!['http:','https:','data:'].includes(parsed.protocol) || (parsed.protocol === 'data:' && !/^data:image\/(png|jpeg|webp);base64,/i.test(branding.logoUrl)))
         throw new Error('企业 LOGO 请使用 PNG/JPEG/WebP 图片或有效图片网址。');
+    }
+    const {longitude,latitude,height,dimensions} = options.placement;
+    const position = Cartesian3.fromDegrees(longitude,latitude,height + dimensions.height + 1);
+    const text = branding.text?.trim().slice(0, 250);
+    if (options.resourceId === 'wall' && asset) {
+      const canvas = document.createElement('canvas');
+      canvas.width=2048; canvas.height=512;
+      const ctx=canvas.getContext('2d');
+      if (!ctx) throw new Error('无法创建宣传墙文字画布。');
+      ctx.fillStyle='#f7f9fc';ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.fillStyle='#153c72';ctx.fillRect(0,460,2048,52);
+      let textX=1024,textWidth=1800;
+      if (branding.logoUrl) {
+        const logo=await new Promise<HTMLImageElement>((resolve,reject)=>{
+          const img=new Image();img.crossOrigin='anonymous';
+          img.onload=()=>resolve(img);img.onerror=()=>reject(new Error('企业 LOGO 图片加载失败，请重新选择图片。'));
+          img.src=branding.logoUrl!;
+        });
+        if (destroyed || viewer.isDestroyed()) return;
+        const ratio=Math.min(360/logo.naturalWidth,330/logo.naturalHeight);
+        const w=logo.naturalWidth*ratio,h=logo.naturalHeight*ratio;
+        ctx.drawImage(logo,50+(360-w)/2,65+(330-h)/2,w,h);
+        textX=1220;textWidth=1480;
+      }
+      ctx.fillStyle='#173b70';ctx.textAlign='center';ctx.textBaseline='middle';
+      const lines=(text || '').split(/\n/).filter(Boolean).slice(0,4);
+      const font=Math.min(110,Math.floor(330/Math.max(lines.length,1)));
+      ctx.font=`600 ${font}px sans-serif`;
+      lines.forEach((line,i)=>ctx.fillText(line,textX,230+(i-(lines.length-1)/2)*(font+28),textWidth));
+      const matrix=getTemporaryWorksGlbModelMatrix(asset,options.placement);
+      const widthScale=dimensions.width/asset.dimensions.width;
+      const face=Matrix4.multiplyByPoint(matrix,new Cartesian3((asset.bounds.min[0]+asset.bounds.max[0])/2,
+        (asset.bounds.min[1]+asset.bounds.max[1])/2,asset.bounds.max[2]+0.01/widthScale),new Cartesian3());
+      const frame=Transforms.eastNorthUpToFixedFrame(Cartesian3.fromDegrees(longitude,latitude,height));
+      const rotation=Matrix3.multiply(Matrix3.fromRotationZ(CesiumMath.toRadians(options.placement.headingDeg)),Matrix3.fromRotationX(Math.PI/2),new Matrix3());
+      const worldRotation=Matrix3.multiply(Matrix4.getMatrix3(frame,new Matrix3()),rotation,new Matrix3());
+      entities.push(viewer.entities.add({name:`临建宣传面板 · ${options.id}`,position:face,orientation:Quaternion.fromRotationMatrix(worldRotation),
+        plane:{plane:new Plane(Cartesian3.UNIT_Z,0),dimensions:new Cartesian2(dimensions.length*0.98,dimensions.height*0.94),material:new ImageMaterialProperty({image:canvas})},show:visible}));
+      return;
+    }
+    if (text) entities.push(viewer.entities.add({name:`临建宣传文字 · ${options.id}`,position,
+      label:{text,font:'22px sans-serif',fillColor:Color.WHITE,outlineColor:Color.fromCssColorString('#12345c'),
+        outlineWidth:3,style:LabelStyle.FILL_AND_OUTLINE,verticalOrigin:VerticalOrigin.BOTTOM,pixelOffset:new Cartesian2(0,-12)}, show:visible}));
+    if (branding.logoUrl) {
       entities.push(viewer.entities.add({name:`临建企业标识 · ${options.id}`,position,
         billboard:{image:branding.logoUrl,width:80,height:80,verticalOrigin:VerticalOrigin.BOTTOM,pixelOffset:new Cartesian2(0,-65)},show:visible}));
     }
@@ -84,6 +134,7 @@ export function renderTemporaryWorksGlb(viewer: Viewer, options: TemporaryWorksG
       modelMatrix:matrix,upAxis:Axis.Z,forwardAxis:Axis.X,minimumPixelSize:0,show:visible,
       incrementallyLoadTextures:false,enableVerticalExaggeration:false,id:`temporary-works:${options.id}`});
     if (destroyed || viewer.isDestroyed()) { if (!loaded.isDestroyed()) loaded.destroy(); return; }
+    loaded.show = visible;
     model = collection.add(loaded);
     // fromGltfAsync resolves before the first GPU update. Clipping is installed only after the model is ready.
     await new Promise<void>((resolve,reject) => {
@@ -100,7 +151,9 @@ export function renderTemporaryWorksGlb(viewer: Viewer, options: TemporaryWorksG
       tick();
     });
     if (destroyed || viewer.isDestroyed()) return;
-    addBranding(); syncClipping(); requestRender();
+    await addBranding();
+    if (destroyed || viewer.isDestroyed()) return;
+    syncClipping(); requestRender();
   })().catch(error => {
     setStatus({state:'error',message:error instanceof Error ? error.message : String(error)});
     destroy(); throw error;
