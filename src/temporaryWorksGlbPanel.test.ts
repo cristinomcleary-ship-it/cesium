@@ -166,3 +166,114 @@ test('a delayed logo read invalidates a preview created with the previous image'
   assert.equal(discarded,1);assert.equal(p.preview,undefined);
   assert.equal(p.glbLogo,'data:image/png;base64,NEW');assert.equal(brand.checked,true);
 });
+
+function autoFitPanel(withPhotography=false) {
+  const p=standalonePanel();
+  const values:Record<string,{value:string;checked:boolean;disabled:boolean;textContent:string}>={};
+  const field=(key:string)=>values[key]??=( {value:'',checked:false,disabled:false,textContent:''} );
+  for (const [key,value] of Object.entries({'glb-placement-mode':'cad-auto','glb-lon':'121','glb-lat':'31','glb-elevation':'8','glb-heading':'0',
+    'glb-scale-mode':'uniform','glb-length':'20','glb-width':'10','glb-height':'5',model:withPhotography?'photo':'',name:'CAD camp'})) field(key).value=value;
+  const feature={id:'camp-outline',layer:'驻地轮廓',sourceType:'LWPOLYLINE',closed:true,points:[{x:0,y:0},{x:40,y:0},{x:40,y:20},{x:0,y:20}]};
+  const model={id:'photo',name:'现场摄影',tileset:{modelMatrix:Matrix4.clone(Matrix4.IDENTITY),root:{transform:Matrix4.clone(Matrix4.IDENTITY)}}};
+  Object.assign(p,{input:field,select:field,el:field,value:(key:string)=>field(key).value,
+    feature:()=>feature,coordinates:()=>({mode:'local',referenceX:0,referenceY:0,longitude:121,latitude:31,rotation:23,unit:'m',axisOrder:'eastNorth'}),
+    options:{getTilesets:()=>withPhotography?[model]:[],canEdit:()=>true},
+    readGlbSurface:async(_model:unknown,points:unknown[])=>points.map((_,i)=>10+i/100),
+  });
+  return {p,field,feature};
+}
+
+test('CAD mode fits the selected rotated outline by default, preserves original height and records absent photography honestly',async()=>{
+  const {p,field}=autoFitPanel();
+  await p.runGlb();
+  const plan=p.preview.record;
+  assert.equal(plan.glb.placementMode,'cad-auto');
+  assert.ok(Math.abs(plan.glb.placement.dimensions.length-39.9)<0.001);
+  assert.ok(Math.abs(plan.glb.placement.dimensions.width-19.9)<0.001);
+  assert.equal(plan.glb.placement.dimensions.height,5);
+  assert.ok(Math.abs(plan.glb.placement.headingDeg-23)<0.01);
+  assert.equal(plan.glb.placement.height,8);
+  assert.equal(plan.glb.autoFit.surface.status,'unavailable');
+  assert.match(field('glb-fit-status').textContent,/未取得摄影高程/);
+  assert.match(field('glb-fit-status').textContent,/原高度保留/);
+  assert.equal(plan.inputs.feature.id,'camp-outline');
+});
+
+test('automatic surface placement samples the selected photography over the fitted footprint and saves its height audit',async()=>{
+  const {p}=autoFitPanel(true);
+  let count=0;
+  p.readGlbSurface=async(model:{id:string},points:unknown[])=>{assert.equal(model.id,'photo');count=points.length;return points.map((_,i)=>i===0?null:12+i/100);};
+  await p.runGlb();
+  const plan=p.preview.record,surface=plan.glb.autoFit.surface;
+  assert.ok(count>20);
+  assert.equal(surface.sampleCount,count);assert.equal(surface.validCount,count-1);
+  assert.equal(surface.status,'sampled');assert.equal(plan.glb.placement.height,surface.maximum);
+  assert.equal(plan.inputs.sampleCount,count);assert.equal(plan.modelId,'photo');
+  const restored=structuredClone(plan);
+  assert.deepEqual(restored.glb.autoFit,plan.glb.autoFit);
+  p.records.set(plan.id,restored);p.editGlbPlan(plan.id);
+  assert.equal(p.value('glb-placement-mode'),'cad-auto');
+  assert.deepEqual(p.glbAutoFit,restored.glb.autoFit);
+});
+
+test('explicit height edits select manual mode and are never replaced by the next automatic sample',async t=>{
+  const descriptor=Object.getOwnPropertyDescriptor(globalThis,'HTMLInputElement');
+  class Input {id='tw-glb-elevation';type='number';dataset={};}
+  Object.defineProperty(globalThis,'HTMLInputElement',{configurable:true,value:Input});
+  t.after(()=>{if(descriptor)Object.defineProperty(globalThis,'HTMLInputElement',descriptor);else Reflect.deleteProperty(globalThis,'HTMLInputElement');});
+  const {p,field}=autoFitPanel(true);
+  await p.runGlb();
+  field('glb-elevation').value='42.123';
+  p.edited({target:new Input()});
+  assert.equal(field('glb-placement-mode').value,'manual');
+  assert.equal(p.glbAutoFit,undefined);
+  p.readGlbSurface=async()=>{assert.fail('manual override must not sample again');};
+  await p.runGlb();
+  assert.equal(p.preview.record.glb.placement.height,42.123);
+  assert.equal(p.preview.record.glb.placementMode,'manual');
+  assert.equal(p.preview.record.glb.autoFit,undefined);
+});
+
+test('insufficient or cancelled photography cannot create an automatic placement preview',async()=>{
+  const {p,field}=autoFitPanel(true);
+  p.readGlbSurface=async(_model:unknown,points:unknown[])=>points.map(()=>null);
+  await assert.rejects(p.runGlb(),/摄影高程不足/);
+  assert.equal(p.preview,undefined);assert.equal(field('glb-elevation').value,'8');
+  p.readGlbSurface=async()=>{p.analysis.abort();return [10,11,12];};
+  await p.runGlb();
+  assert.equal(p.preview,undefined);assert.equal(field('glb-elevation').value,'8');
+});
+
+test('restoring an older plan leaves its exact placement in manual mode',()=>{
+  const {p,field}=autoFitPanel();
+  const old={...oldPlan(),modelId:''};
+  p.records.set(old.id,old);p.editGlbPlan(old.id);
+  assert.equal(field('glb-placement-mode').value,'manual');
+  assert.equal(field('glb-heading').value,'35');assert.equal(field('glb-length').value,'40');
+});
+
+test('every separate building footprint must have enough photography, even if total coverage passes',async()=>{
+  const {p}=autoFitPanel(true);
+  p.resource().footprints=[{outer:[[0,0],[9,0],[9,10],[0,10]]},{outer:[[11,0],[20,0],[20,10],[11,10]]}];
+  p.readGlbSurface=async(_model:unknown,points:unknown[])=>points.map((_,i)=>i>=points.length-10?null:12);
+  await assert.rejects(p.runGlb(),/第 2 个建筑底面.*摄影高程不足/);
+  assert.equal(p.preview,undefined);
+});
+
+for (const action of ['glb-cancel-edit','glb-clear-logo']) test(`${action} cancels a delayed GLB ready callback before it can restore the retired preview`,async()=>{
+  const {p}=autoFitPanel();
+  await p.runGlb();
+  const old=p.preview.record;
+  p.records.set(old.id,old);p.glbEditing=old.id;p.preview=undefined;
+  let finish!:()=>void,entered!:()=>void,destroyed=0;
+  const loaded=new Promise<void>(resolve=>{entered=resolve;});
+  p.cancel=function(this:{analysis?:AbortController}){this.analysis?.abort();this.analysis=undefined;};
+  p.draw=()=>{entered();return {ready:new Promise<void>(resolve=>{finish=resolve;}),destroy(){destroyed++;},zoom(){assert.fail('cancelled preview must not zoom');}};};
+  const running=p.runGlb();await loaded;
+  const button={disabled:false,id:'tw-'+action,dataset:{},hasAttribute:()=>false};
+  p.click({target:{closest:()=>button}});
+  finish();await running;
+  assert.equal(p.preview,undefined);assert.ok(destroyed>=1);assert.equal(p.records.get(old.id),old);
+  if(action==='glb-cancel-edit') assert.equal(p.glbEditing,undefined);
+  if(action==='glb-clear-logo') assert.equal(p.glbLogo,undefined);
+});

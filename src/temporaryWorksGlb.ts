@@ -11,6 +11,14 @@ export type TemporaryWorksGlbConfig = {
   resourceId: TemporaryWorksGlbResourceId;
   placement: TemporaryWorksGlbPlacement;
   clippingEnabled: boolean;
+  /** Absent in older records, whose saved placement remains manual. */
+  placementMode?: 'cad-auto' | 'manual';
+  autoFit?: {
+    featureId: string; featureLayer: string; method: 'rectangle' | 'inscribed'; flip180: boolean;
+    scale: { x: number; y: number; z: number }; coverageRatio: number;
+    targetArea: number; footprintArea: number; message: string;
+    surface: { status: 'sampled' | 'unavailable'; sampleCount: number; validCount: number; minimum?: number; maximum?: number };
+  };
   branding?: { text?: string; logoUrl?: string; visible?: boolean };
 };
 export type TemporaryWorksGlbResource = {
@@ -46,7 +54,9 @@ let manifestPromise: Promise<TemporaryWorksGlbManifest> | undefined;
 export function loadTemporaryWorksGlbManifest(): Promise<TemporaryWorksGlbManifest> {
   if (!manifestPromise) {
     const base = import.meta.env?.BASE_URL ?? '/';
-    manifestPromise = fetch(`${base}models/temporary-works/manifest.json`).then(async response => {
+    // The private package can change independently of the application build. Its hashes
+    // must be re-read on each page load before constructing versioned model URLs.
+    manifestPromise = fetch(`${base}models/temporary-works/manifest.json`, {cache:'no-store'}).then(async response => {
       if (!response.ok) throw new Error(`临建资源清单加载失败（HTTP ${response.status}）。`);
       const result = await response.json() as TemporaryWorksGlbManifest;
       if (result.schemaVersion !== 1 || !Array.isArray(result.assets)) throw new Error('不支持的临建资源清单版本。');

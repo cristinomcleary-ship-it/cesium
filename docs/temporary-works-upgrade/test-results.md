@@ -2,17 +2,20 @@
 
 日期：2026-11-05（Asia/Shanghai）。Node.js `v24.22.1`。基准 `v1.2.0` / `2258754`；原远端 `a2665fe3`，接续的原本地提交 `ff1df93`。
 
-**主套件与生产构建通过；完整测试范围仍有既有失败和环境阻断，不能宣称全部验收通过。** 主套件在接续源码上执行，发布整理工作区的 `src/`、`server/`、`tests/` 共 476 份源码与该测试快照逐字节一致。模型几何、私有清单、原始日志及完整哈希快照保存在私有交付中。
+**R2 修正：类型检查、生产构建和主回归通过；浏览器现场验收仍未完成。** 针对模型暗淡、残留立体旧字和 CAD 只取中心问题，新增局部模型照明、带源码哈希校验的几何文字替换、按结构底面自动拟合与多点摄影取高。代码和真实私有资源分别验证，不能把离线图当成现场效果。
+
+最终主回归在应用源码冻结后重跑；165 个文件、1299 项通过。完整日志与私有模型映射保存在交付包。下文独立旧脚本、Python 的结果来自本会话前一轮完整接续核查，相关附属源码本轮未改，未将旧失败或未运行范围算作通过。
 
 ## 类型、构建和主回归
 
 |实际执行命令|结果|
 |---|---|
 |`node node_modules/typescript/bin/tsc --noEmit`|exit 0|
-|`npm run build`|exit 0；执行 tsc 和 Vite，构建 24.70 秒|
-|`node tools/run-temporary-works-regression.mjs all --output <verification>`|exit 0；163 个测试文件，1270 项通过，0 失败/跳过/取消|
-|`node --test tools/inspect-video-ar-recovery.test.cjs tools/validate-platform-ar-checkpoints.test.mjs`|exit 0；18 项通过，0 失败|
-|`node tools/install-temporary-works-assets.mjs --from <private-bundle>`|真实运行资源安装成功；5 文件完整性通过|
+|`npm run build`|exit 0；执行 tsc 和 Vite，Vite 构建 23.29 秒|
+|`node tools/run-temporary-works-regression.mjs all --output <verification>`|exit 0；165 个测试文件，1299 项通过，0 失败/跳过/取消|
+|`node --test tools/temporary-works-assets/geometry-signs.test.mjs`|exit 0；25 项通过，0 失败；真实文档/网格/序列化 API 配合合成几何，验证批次保护及新字面朝向|
+|`node --test tools/inspect-video-ar-recovery.test.cjs tools/validate-platform-ar-checkpoints.test.mjs`|前一轮 exit 0；18 项通过，0 失败；本轮未改相关源码|
+|`node tools/install-temporary-works-assets.mjs --from <private-bundle>`|前一轮安装成功；本轮保留旧副本后重建运行资源并执行下列校验|
 |`node tools/install-temporary-works-assets.mjs --check`|exit 0；3 类 GLB 和 LOGO、清单通过|
 |`node tools/install-temporary-works-assets.mjs --check --to dist/models/temporary-works`|exit 0；构建后资源通过|
 |`node tools/temporary-works-assets/verify.mjs`|3 份最终 GLB 均 Validator 0 errors；项目部 37 条切线生成 warnings|
@@ -52,14 +55,22 @@ PYTHONPATH=video_ar_backend python3 -m unittest discover -s video_ar_backend/tes
 
 ## 浏览器及真实现场
 
-最终生产构建实际执行：
+R2 最终生产构建实际执行：
 
 ```sh
-PLAYWRIGHT_MODULE=/opt/codex/cua_node/lib/node_modules/playwright/index.mjs BROWSER_EXECUTABLE=/usr/bin/chromium TW_GLB_OUT=<browser-final> node tools/verify-temporary-works-glb.mjs
+PLAYWRIGHT_MODULE=/opt/codex/cua_node/lib/node_modules/playwright/index.mjs BROWSER_EXECUTABLE=/usr/bin/chromium TW_GLB_OUT=<browser-r2> node tools/verify-temporary-works-glb.mjs
 ```
 
-结果 exit 1；读取最终生产入口成功，Chromium 启动时报 `process_singleton_posix.cc: socket() failed: Operation not permitted`，场景检查 0 项，截图 0 张。另启动 `--serve-only`，可用浏览器访问隔离预览返回 `ERR_CONNECTION_REFUSED`。未修改系统权限或绕过隔离。
+结果 exit 1；读取最终生产入口成功，Chromium 启动时报 `process_singleton_posix.cc: socket() failed: Operation not permitted`，场景检查 0 项，截图 0 张。前一轮另启动 `--serve-only`，可用浏览器访问隔离预览返回 `ERR_CONNECTION_REFUSED`；本轮未重复该路径。未修改系统权限或绕过隔离。
 
 以下 4 个独立浏览器脚本未完成：`full-app-five-scope-smoke`、`scene-display-delete-regression`、`scene-display-performance-regression`、`video-overlay-render-targets-browser`。
 
 临建脚本的摄影是合成测试面；真实工地摄影数据未取得，未进行真实 GLB 与现场摄影联合验收。尚需检查：模型逐面外观与品牌、文字朝向、实际启停/删除/刷新后的遮挡、其他剪裁与场景联动、便道现场贴合、控制坐标/高程和设备帧率。没有真实场景截图可交付。
+
+## 图纸、品牌与照明专项
+
+自动拟合覆盖 Y/Z 轴、偏心锚点、真实模型矩阵、独立长宽、原高度、完整凹边界、180° 正面反转、200 顶点搜索预算和保存恢复；摄影取高对每块独立底面分别检查有效率。额外覆盖退出编辑和清除 LOGO 后的延迟任务取消，以及模型专属照明和资源释放。
+
+真实 DWG 已取得并解析，但未能唯一指定驻地和钢筋厂的完整闭合轮廓；图纸单位信息也存在冲突。未据此编造实际位置或把其他设施边界作为验收。详细图层/实体和图示仅保存在私有 CAD 核查记录。
+
+新模型已按源节点核查并移除已确认的旧单位/旧项目立体字，使用精确字面替换。原件、旧运行副本均保留；离线整场图用于核对新字位置和朝向。真实浏览器中的亮度、文字渲染和摄影贴合仍未验收。

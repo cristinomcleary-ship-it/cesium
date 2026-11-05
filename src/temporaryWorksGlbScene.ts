@@ -4,9 +4,20 @@ import { Axis, BoundingSphere, Cartesian2, Cartesian3, Cesium3DTileset, Color, H
 import { TemporaryWorksClippingManager } from './temporaryWorksClipping';
 import { getTemporaryWorksGlbFootprints, getTemporaryWorksGlbModelMatrix, loadTemporaryWorksGlbManifest,
   type TemporaryWorksGlbConfig, type TemporaryWorksGlbResource } from './temporaryWorksGlb';
+import { applyTemporaryWorksGlbAmbientFill, temporaryWorksGlbLightingOptions } from './temporaryWorksGlbLighting';
 
 export type TemporaryWorksGlbStatus = { state: 'loading'|'ready'|'waiting'|'blocked'|'error'|'hidden'|'disabled'; message: string };
 const managers = new WeakMap<Viewer, TemporaryWorksClippingManager>();
+/** Version only this deployment's private runtime assets; leave external/signed URLs intact. */
+export function getTemporaryWorksRuntimeGlbUrl(asset: TemporaryWorksGlbResource, base: string, pageUrl: string) {
+  const baseUrl = new URL(base, pageUrl), url = new URL(asset.url, baseUrl);
+  const runtimeRoot = new URL('models/temporary-works/', baseUrl);
+  if (url.origin === new URL(pageUrl).origin && url.origin === runtimeRoot.origin &&
+      url.pathname.startsWith(runtimeRoot.pathname) && typeof asset.sha256 === 'string' && /^[a-f\d]{64}$/i.test(asset.sha256)) {
+    url.searchParams.set('v', asset.sha256.toLowerCase());
+  }
+  return url.href;
+}
 function clippingManager(viewer: Viewer) {
   let manager = managers.get(viewer);
   if (!manager) { manager = new TemporaryWorksClippingManager(viewer); managers.set(viewer, manager); }
@@ -60,9 +71,11 @@ export function renderTemporaryWorksGlb(viewer: Viewer, options: TemporaryWorksG
     if (!viewer.isDestroyed()) {
       entities.forEach(e => viewer.entities.remove(e));
       if (model && collection.contains(model)) collection.remove(model);
-      else if (model && !model.isDestroyed()) model.destroy();
       requestRender();
     }
+    // Covers destroyPrimitives=false collections and viewer teardown as well. Model owns
+    // its default IBL/environment map, so this releases their GPU resources exactly once.
+    if (model && !model.isDestroyed()) model.destroy();
   }
   async function addBranding() {
     const branding = options.branding;
@@ -130,12 +143,16 @@ export function renderTemporaryWorksGlb(viewer: Viewer, options: TemporaryWorksG
       corners.push(Matrix4.multiplyByPoint(matrix,new Cartesian3(x,y,z),new Cartesian3()));
     BoundingSphere.fromPoints(corners,bounds);
     const base = import.meta.env?.BASE_URL ?? '/';
-    const loaded = await Model.fromGltfAsync({url:new URL(asset.url,new URL(base,window.location.href)).href,
+    const loaded = await Model.fromGltfAsync({url:getTemporaryWorksRuntimeGlbUrl(asset,base,window.location.href),
       modelMatrix:matrix,upAxis:Axis.Z,forwardAxis:Axis.X,minimumPixelSize:0,show:visible,
+      ...temporaryWorksGlbLightingOptions(),
       incrementallyLoadTextures:false,enableVerticalExaggeration:false,id:`temporary-works:${options.id}`});
     if (destroyed || viewer.isDestroyed()) { if (!loaded.isDestroyed()) loaded.destroy(); return; }
     loaded.show = visible;
-    model = collection.add(loaded);
+    // Take ownership before attaching so an attachment failure also releases model/IBL.
+    model = loaded;
+    applyTemporaryWorksGlbAmbientFill(loaded);
+    collection.add(loaded);
     // fromGltfAsync resolves before the first GPU update. Clipping is installed only after the model is ready.
     await new Promise<void>((resolve,reject) => {
       const start = performance.now();

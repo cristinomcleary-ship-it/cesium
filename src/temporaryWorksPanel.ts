@@ -10,6 +10,8 @@ import { renderRoadSectionPreview } from "./temporaryWorksRoadSectionView";
 import { solveDrapedRoad } from "./temporaryWorksDrapedRoad";
 import { loadTemporaryWorksGlbManifest, getTemporaryWorksGlbFootprints, type TemporaryWorksGlbConfig, type TemporaryWorksGlbManifest, type TemporaryWorksGlbResourceId } from "./temporaryWorksGlb";
 import { glbFootprintsInsideSite } from "./temporaryWorksGlbSite";
+import { fitTemporaryWorksGlbToBoundary } from "./temporaryWorksGlbAutoFit";
+import { glbGroundSamplePoints, summarizeGlbGroundSamples } from "./temporaryWorksGlbGrounding";
 import { renderTemporaryWorksGlb } from "./temporaryWorksGlbScene";
 import { temporaryWorksFormHtml } from "./temporaryWorksForm";
 import "./temporaryWorksPanel.css";
@@ -280,6 +282,7 @@ export class TemporaryWorksPanel {
   private glbEditing?: string;
   private glbLogo: string | undefined = defaultLogoUrl();
   private glbLogoReadToken = 0;
+  private glbAutoFit?: TemporaryWorksGlbConfig["autoFit"];
 
   constructor(private readonly options: TemporaryWorksPanelOptions) {
     this.options.root.innerHTML = temporaryWorksFormHtml;
@@ -338,6 +341,7 @@ export class TemporaryWorksPanel {
     if (this.disposed) return;
     this.input("run").disabled = !this.upgradeEnabled || !this.editable() || (!this.isGlb() && !this.feature()) || !!(this.analysis || this.cadRead || this.sectionRead) || this.busySave;
     this.input("place-facility").disabled = !this.upgradeEnabled || !this.editable() || !!(this.analysis || this.cadRead || this.sectionRead) || this.busySave;
+    this.input("glb-use-boundary").disabled = this.resourceId() === "wall" || !this.upgradeEnabled || !this.editable() || !!(this.analysis || this.cadRead || this.sectionRead) || this.busySave;
     for (const key of ["cad", "section"]) {
       const hasFile = !!this.input(key).files?.length;
       this.input("remove-" + key).disabled = !hasFile || this.busySave;
@@ -405,7 +409,7 @@ export class TemporaryWorksPanel {
     this.sectionUrl = undefined; this.selectedModel = ""; this.lastCadInfo = "";
     this.options.root.innerHTML = temporaryWorksFormHtml;
     this.input("upgrade-enabled").checked = this.upgradeEnabled;
-    this.glbEditing = undefined; this.glbLogo = defaultLogoUrl(); this.glbLogoReadToken++;
+    this.glbEditing = undefined; this.glbAutoFit = undefined; this.glbLogo = defaultLogoUrl(); this.glbLogoReadToken++;
     this.updateGlbResource();
     this.refresh(); this.list(); this.updateFields(); this.featurePreview();
     this.options.onPlansChanged?.();
@@ -576,6 +580,9 @@ export class TemporaryWorksPanel {
 
     this.input("glb-cancel-edit").hidden = !this.glbEditing;
     this.input("glb-clipping").disabled = this.resourceId() === "wall";
+    this.input("glb-use-boundary").disabled = this.resourceId() === "wall" || !!this.analysis;
+    this.input("glb-flip").disabled = this.resourceId() === "wall" || this.value("glb-placement-mode") !== "cad-auto";
+    this.select("glb-placement-mode").disabled = this.resourceId() === "wall";
     if (this.resourceId() === "wall") this.input("glb-clipping").checked = false;
     const facilityMode = this.facilityMode();
     this.group("building", !isRoad && facilityMode === "cad");
@@ -584,7 +591,7 @@ export class TemporaryWorksPanel {
     this.el("place-facility").textContent = facilityMode === "pad" ? "在摄影场景中生成场坪" : "在摄影场景中生成模型";
     if (!isRoad) {
       const buildingHint = this.kind() === "camp" ? "办公楼、宿舍和门卫室" : "加工厂房、围栏和大门";
-      this.el("facility-hint").textContent = facilityMode === "glb" ? "选择真实项目部、钢筋棚或独立宣传墙，按建筑底面基准点精确布置。CAD 场界可用于检查模型是否在范围内。" : facilityMode === "standard" ? `选择${KIND_NAMES[this.kind()]}的场地边界，系统沿场界方向布置${buildingHint}。填写坐标和标高后可在主场景查看。`
+      this.el("facility-hint").textContent = facilityMode === "glb" ? "项目部和钢筋棚默认按所选 CAD 闭合轮廓自动确定位置、朝向和长宽，并读取摄影表面高程；也可切换手动精确布置。独立宣传墙采用手动位置。" : facilityMode === "standard" ? `选择${KIND_NAMES[this.kind()]}的场地边界，系统沿场界方向布置${buildingHint}。填写坐标和标高后可在主场景查看。`
         : facilityMode === "cad" ? "选择场地边界，再勾选图纸上的房屋或厂房轮廓并填写建筑高度。"
         : "按所选场地边界和标高生成硬化面，用于单独复核场坪及土方。";
     }
@@ -602,6 +609,7 @@ export class TemporaryWorksPanel {
     this.cancel(false); this.dropPreview(); this.clearReview();
     const k = input.id.slice(3);
     if (["glb-length","glb-width","glb-height"].includes(k) && this.value("glb-scale-mode") === "uniform") this.scaleGlbDimensions(k.slice(4) as "length"|"width"|"height");
+    if (["glb-lon","glb-lat","glb-elevation","glb-heading","glb-length","glb-width","glb-height"].includes(k)) this.useManualGlbPlacement();
     if (["width", "anchor-x", "anchor-y", "anchor-lon", "anchor-lat", "rotation", "meridian", "zone", "b-x", "b-y", "b-lon", "b-lat"].includes(k))
       this.clearOverlay();
     if (k.startsWith("gk-") || k === "zone" || k === "meridian") { this.resetProjected(); this.clearOverlay(); }
@@ -639,8 +647,14 @@ export class TemporaryWorksPanel {
       this.updateGlbResource();
       this.input("glb-brand-visible").checked = this.resourceId() === "wall";
       this.input("glb-clipping").checked = this.resourceId() !== "wall";
+      this.select("glb-placement-mode").value = this.resourceId() === "wall" ? "manual" : "cad-auto";
+      this.glbAutoFit = undefined;
     }
-    if (k === "glb-scale-mode" && this.value(k) === "uniform") this.scaleGlbDimensions();
+    if (k === "glb-scale-mode") { if (this.value(k) === "uniform") this.scaleGlbDimensions(); this.useManualGlbPlacement(); }
+    if (k === "glb-placement-mode" || k === "glb-flip") {
+      this.glbAutoFit = undefined;
+      this.el("glb-fit-status").textContent = this.value("glb-placement-mode") === "manual" ? "手动模式：保留当前坐标、旋转及尺寸，生成时不会自动覆盖。" : "生成时将按所选闭合轮廓重新适配，并读取摄影表面高程。";
+    }
     if (k === "xray") {
       if (this.preview) this.preview.handle.xray = this.input("xray").checked;
       for (const h of this.handles.values()) h.xray = this.input("xray").checked;
@@ -727,9 +741,9 @@ export class TemporaryWorksPanel {
         case "glb-pick": this.pick("glb"); break;
         case "glb-use-boundary": void this.useGlbBoundary(); break;
         case "glb-sample-height": void this.sampleGlbHeight(); break;
-        case "glb-reset-size": this.updateGlbResource(); this.cancel(false); this.dropPreview(); break;
-        case "glb-clear-logo": this.glbLogoReadToken++; this.glbLogo = undefined; this.input("glb-logo").value = ""; this.dropPreview(); break;
-        case "glb-cancel-edit": this.glbEditing = undefined; this.dropPreview(); this.updateFields(); break;
+        case "glb-reset-size": this.updateGlbResource(); this.useManualGlbPlacement(); this.cancel(false); this.dropPreview(); break;
+        case "glb-clear-logo": this.cancel(false); this.glbLogoReadToken++; this.glbLogo = undefined; this.input("glb-logo").value = ""; this.dropPreview(); break;
+        case "glb-cancel-edit": this.cancel(false); this.glbEditing = undefined; this.dropPreview(); this.updateFields(); break;
         case "close": this.close(); this.options.onRequestClose?.(); break;
         case "pick": this.pick(); break;
         case "pick-a": this.pick("A"); break;
@@ -1073,6 +1087,7 @@ export class TemporaryWorksPanel {
           const p = pickPlanningReference(this.options.viewer, model.tileset, event.position);
           if (!p) { this.status("此处没有拾取到所选倾斜摄影表面，请在模型上重新点选。"); return; }
           if (target === "glb") {
+            this.useManualGlbPlacement();
             this.input("glb-lon").value = String(p.longitude); this.input("glb-lat").value = String(p.latitude);
             this.stopPick(); void this.sampleGlbHeight(); return;
           }
@@ -1327,30 +1342,84 @@ export class TemporaryWorksPanel {
       }
     } catch (error) { if (token === this.generation && logoToken === this.glbLogoReadToken) this.failure(error); }
   }
+  private useManualGlbPlacement() {
+    this.select("glb-placement-mode").value = "manual";
+    this.glbAutoFit = undefined;
+    this.input("glb-flip").disabled = true;
+    this.el("glb-fit-status").textContent = "手动模式：保留当前坐标、旋转及尺寸，生成时不会自动覆盖。";
+  }
+  private describeGlbAutoFit(audit: NonNullable<TemporaryWorksGlbConfig["autoFit"]>) {
+    const surface = audit.surface;
+    const ground = surface.status === "sampled"
+      ? `摄影取高 ${surface.validCount}/${surface.sampleCount} 点有效；表面高差 ${valueText(surface.maximum!-surface.minimum!)} m；采用最高有效高程 ${valueText(surface.maximum!)} m 防止采样点嵌入。摄影表面可能包含地物，水平底面在低处可能悬空，仍须现场核验。`
+      : "未取得摄影高程，仅完成平面适配；须填写实测椭球高，尚未完成摄影落位验收。";
+    return `${audit.featureLayer} / ${audit.featureId} · ${audit.message} · X/Y 缩放 ${valueText(audit.scale.x)} / ${valueText(audit.scale.y)}，原高度保留；底面覆盖所选轮廓 ${valueText(audit.coverageRatio*100)}%。${ground}`;
+  }
+  private async applyGlbBoundaryFit(job: AbortController, feature: PlanningCadFeature, coordinates: PlanningCadCoordinates) {
+    const resource = this.resource();
+    if (!resource || resource.id === "wall") throw new Error("请先选择项目部或钢筋棚资源。");
+    if (!feature.closed || feature.points.length < 3) throw new Error("请先导入并选择驻地或钢筋厂的 CAD 闭合轮廓，核对图纸坐标；无图纸时请选择手动布置。");
+    const frame = createPlanCoordinateFrame(coordinates, feature.points[0]);
+    const flip180 = this.input("glb-flip").checked;
+    const fit = fitTemporaryWorksGlbToBoundary(resource, feature.points.map(frame.cadToLocal), {flip180});
+    const anchor = frame.localToGeo(fit.anchor);
+    for (const [key,value] of Object.entries({lon:anchor.longitude,lat:anchor.latitude,heading:fit.headingDeg,length:fit.dimensions.length,width:fit.dimensions.width,height:fit.dimensions.height}))
+      this.input("glb-"+key).value = String(value);
+    this.select("glb-scale-mode").value = fit.scaleMode;
+    const audit: NonNullable<TemporaryWorksGlbConfig["autoFit"]> = {
+      featureId:feature.id,featureLayer:feature.layer,method:fit.method,flip180,scale:fit.scale,
+      coverageRatio:fit.coverageRatio,targetArea:fit.targetArea,footprintArea:fit.footprintArea,message:fit.message,
+      surface:{status:"unavailable",sampleCount:0,validCount:0},
+    };
+    this.glbAutoFit = audit;
+    this.el("glb-fit-status").textContent = this.describeGlbAutoFit(audit);
+    const model = this.options.getTilesets().find(item => item.id === this.value("model"));
+    if (model) {
+      // withPlanningSurface uses an isolated scene containing only the selected photography.
+      // Saved models, the current preview, and clipping are not sampled as ground.
+      const groups = fit.footprints.map(ring => glbGroundSamplePoints([ring]));
+      const points = groups.flat().map(frame.localToGeo);
+      if (points.length > 2048) throw new Error("建筑底面过于复杂，自动摄影取高采样量超限，请核对模型轮廓。");
+      this.status(`正在按建筑底面读取 ${points.length} 个摄影表面高程…`);
+      const heights = await this.readGlbSurface(model,points,job);
+      job.signal.throwIfAborted();
+      let offset = 0;
+      for (const [index,group] of groups.entries()) {
+        try { summarizeGlbGroundSamples(heights.slice(offset,offset+group.length)); }
+        catch (error) { throw new Error(`第 ${index+1} 个建筑底面：${error instanceof Error ? error.message : String(error)}`); }
+        offset += group.length;
+      }
+      const surface = summarizeGlbGroundSamples(heights);
+      audit.surface = surface;
+      this.input("glb-elevation").value = String(surface.maximum);
+      this.el("glb-fit-status").textContent = this.describeGlbAutoFit(audit);
+    }
+    job.signal.throwIfAborted();
+    return audit;
+  }
   private async useGlbBoundary() {
-    try {
-      const feature = this.feature();
-      if (!feature?.closed || feature.points.length < 3) throw new Error("请先导入并选择 CAD 闭合场界，核对坐标转换参数。");
-      const frame = createPlanCoordinateFrame(this.coordinates(), feature.points[0]);
-      const points = feature.points.map(frame.cadToLocal);
-      const center = frame.localToGeo({x:points.reduce((n,p)=>n+p.x,0)/points.length,y:points.reduce((n,p)=>n+p.y,0)/points.length});
-      this.input("glb-lon").value = String(center.longitude); this.input("glb-lat").value = String(center.latitude);
-      await this.sampleGlbHeight();
-    } catch (error) { this.failure(error); }
+    if (!this.upgradeEnabled || !this.editable() || this.busySave || this.cadRead || this.sectionRead) return;
+    this.select("glb-placement-mode").value = "cad-auto";
+    this.input("glb-flip").disabled = false;
+    await this.runGlb();
   }
   private async sampleGlbHeight() {
+    this.useManualGlbPlacement();
     this.cancel(false); this.dropPreview();
     const job = new AbortController(); this.analysis = job; this.buttons();
     try {
       const model = this.model(), point = {longitude:this.num("glb-lon","底面基准经度"),latitude:this.num("glb-lat","底面基准纬度")};
       this.status("正在读取底面基准位置的摄影高程…");
-      const height = await withPlanningSurface(this.options.viewer,model.tileset,{signal:job.signal},async sample => (await sample([point]))[0]);
+      const height = (await this.readGlbSurface(model,[point],job))[0];
       job.signal.throwIfAborted();
       if (height === null || !Number.isFinite(height)) throw new Error("底面基准点没有有效摄影高程，请重新选点或填写实测椭球高。");
       this.input("glb-elevation").value = String(height);
       this.status("已读取底面摄影高程。核对尺寸、旋转和底面位置后生成预览。");
     } catch (error) { if (!job.signal.aborted) this.failure(error); }
     finally { if (this.analysis === job) this.analysis = undefined; this.buttons(); }
+  }
+  private readGlbSurface(model: Model, points: PlanningLocation[], job: AbortController) {
+    return withPlanningSurface(this.options.viewer,model.tileset,{signal:job.signal},sample => sample(points));
   }
   private editGlbPlan(id: string) {
     const plan = this.records.get(id);
@@ -1365,6 +1434,10 @@ export class TemporaryWorksPanel {
     this.input("name").value = plan.name;
     for (const [key,value] of Object.entries({lon:p.longitude,lat:p.latitude,elevation:p.height,heading:p.headingDeg,length:p.dimensions.length,width:p.dimensions.width,height:p.dimensions.height})) this.input("glb-"+key).value=String(value);
     this.select("glb-scale-mode").value = p.scaleMode;
+    this.select("glb-placement-mode").value = glb.placementMode ?? "manual";
+    this.glbAutoFit = glb.autoFit ? structuredClone(glb.autoFit) : undefined;
+    this.input("glb-flip").checked = glb.autoFit?.flip180 ?? false;
+    this.el("glb-fit-status").textContent = this.glbAutoFit ? this.describeGlbAutoFit(this.glbAutoFit) : "已恢复保存的位置与尺寸；此方案按手动方式保留，不会重新自动缩放。";
     this.input("glb-clipping").checked = glb.clippingEnabled;
     this.input("glb-brand-visible").checked = glb.branding?.visible === true;
     this.input("glb-brand-text").value = glb.branding?.text ?? ""; this.glbLogo = glb.branding?.logoUrl;
@@ -1380,8 +1453,23 @@ export class TemporaryWorksPanel {
       const resource = this.resource();
       if (!resource) throw new Error("未找到所选真实模型，请检查资源清单。");
       const model = this.options.getTilesets().find(item => item.id === this.value("model")), generation = this.generation;
+      const matrix = Matrix4.clone(model?.tileset.modelMatrix ?? Matrix4.IDENTITY), rootTransform = Matrix4.clone(model?.tileset.root.transform ?? Matrix4.IDENTITY);
+      const checkSource = () => {
+        if (generation !== this.generation || !this.editable() || (model && (this.options.getTilesets().find(m=>m.id===model.id)?.tileset !== model.tileset || !Matrix4.equals(matrix,model.tileset.modelMatrix) || !Matrix4.equals(rootTransform,model.tileset.root.transform)))) throw new Error("摄影模型、项目或权限已变化，请重新生成预览。");
+      };
+      const old = this.glbEditing ? this.records.get(this.glbEditing) : undefined;
+      const selectedFeature = this.feature();
+      const coordinates: PlanningCadCoordinates = selectedFeature ? this.coordinates() : old?.inputs.coordinates ?? {mode:"geographic",axisOrder:"eastNorth"};
+      const automatic = resource.id !== "wall" && this.value("glb-placement-mode") === "cad-auto";
+      if (automatic) {
+        const boundary = selectedFeature ?? (old?.inputs.feature.sourceType !== "GLB" ? old?.inputs.feature : undefined);
+        if (!boundary) throw new Error("请先选择驻地或钢筋厂的 CAD 闭合轮廓并核对坐标；无图纸时请选择手动精确布置。");
+        await this.applyGlbBoundaryFit(job,boundary,coordinates);
+        job.signal.throwIfAborted(); checkSource();
+      }
       const glb: TemporaryWorksGlbConfig = {
         resourceId:this.resourceId(), clippingEnabled:this.resourceId() !== "wall" && this.input("glb-clipping").checked,
+        placementMode:automatic ? "cad-auto" : "manual",autoFit:automatic ? this.glbAutoFit : undefined,
         placement:{longitude:this.num("glb-lon","底面基准经度"),latitude:this.num("glb-lat","底面基准纬度"),height:this.num("glb-elevation","底面椭球高"),
           headingDeg:this.num("glb-heading","平面旋转角"),scaleMode:this.value("glb-scale-mode") as "uniform"|"xyz",
           dimensions:{length:this.num("glb-length","目标长度"),width:this.num("glb-width","目标宽度"),height:this.num("glb-height","目标高度")}},
@@ -1389,27 +1477,20 @@ export class TemporaryWorksPanel {
       };
       if (glb.clippingEnabled && !model) throw new Error("启用摄影遮挡时，请先加载并选择倾斜摄影模型；独立坐标布置可先关闭摄影遮挡。");
       const footprints = getTemporaryWorksGlbFootprints(resource,glb.placement);
-      const old = this.glbEditing ? this.records.get(this.glbEditing) : undefined;
-      const selectedFeature = this.feature();
       if (selectedFeature && !selectedFeature.closed) throw new Error("临建场地请选择 CAD 闭合场界。");
-      const coordinates: PlanningCadCoordinates = selectedFeature ? this.coordinates() : old?.inputs.coordinates ?? {mode:"geographic",axisOrder:"eastNorth"};
       const feature: PlanningCadFeature = selectedFeature ?? old?.inputs.feature ?? {id:"manual-glb-footprint",layer:"建筑底面",sourceType:"GLB",closed:true,points:footprints[0].outer.map(p=>({x:p.longitude,y:p.latitude}))};
       if (feature.sourceType !== "GLB") {
         const siteFrame = createPlanCoordinateFrame(coordinates,feature.points[0]);
         if (!glbFootprintsInsideSite(footprints.map(part=>part.outer.map(siteFrame.geoToLocal)),feature.points.map(siteFrame.cadToLocal)))
           throw new Error("实际建筑底面超出所选 CAD 场界，请调整位置、旋转或目标尺寸后重试。");
       }
-      const matrix = Matrix4.clone(model?.tileset.modelMatrix ?? Matrix4.IDENTITY), rootTransform = Matrix4.clone(model?.tileset.root.transform ?? Matrix4.IDENTITY);
-      const checkSource = () => {
-        if (generation !== this.generation || !this.editable() || (model && (this.options.getTilesets().find(m=>m.id===model.id)?.tileset !== model.tileset || !Matrix4.equals(matrix,model.tileset.modelMatrix) || !Matrix4.equals(rootTransform,model.tileset.root.transform)))) throw new Error("摄影模型、项目或权限已变化，请重新生成预览。");
-      };
       const p = glb.placement;
       const record: TemporaryWorksPlan = {
         id:old?.id ?? newId(),name:this.value("name") || resource.name,kind:glb.resourceId === "steel" ? "steel" : "camp",visible:true,createdAt:old?.createdAt ?? new Date().toISOString(),
         modelId:model?.id ?? "",modelName:model?.name ?? "未关联摄影模型",glb,earthworkDisabled:true,mesh:{vertices:[],triangles:[]},metrics:{planArea:0,coveredArea:0,excludedArea:0,cutVolume:0,fillVolume:0},
         inputs:{cadName:selectedFeature ? this.cadFile?.name ?? "CAD 场界" : old?.inputs.cadName ?? "底面基准点定位",modelMatrix:Matrix4.toArray(matrix),modelRootTransform:Matrix4.toArray(rootTransform),
           feature,coordinates,reference:{longitude:p.longitude,latitude:p.latitude,height:p.height},referenceInput:{mode:"geo",first:p.longitude,second:p.latitude},
-          design:{reference:{x:0,y:0},referenceHeight:p.height,finishedOffset:0,surfaceToTreatment:0,treatmentDepth:0},facilityMode:"glb",spacing:0,sampleCount:0,refinementLevels:0,budgetLimited:false},
+          design:{reference:{x:0,y:0},referenceHeight:p.height,finishedOffset:0,surfaceToTreatment:0,treatmentDepth:0},facilityMode:"glb",spacing:0,sampleCount:glb.autoFit?.surface.sampleCount ?? 0,refinementLevels:0,budgetLimited:false},
       };
       this.status(`正在加载「${resource.name}」并关联建筑底面摄影遮挡…`);
       const handle = this.draw(record), discard = () => handle.destroy();
@@ -1419,7 +1500,7 @@ export class TemporaryWorksPanel {
       finally { job.signal.removeEventListener("abort",discard); }
       this.preview = {record,handle,checkSource,replaceId:old?.id};
       this.review(record,false); handle.zoom();
-      this.status(`真实模型预览已生成。底面基准点、实际尺寸与摄影遮挡需在场景中核对，保存后可独立编辑。`);
+      this.status(glb.autoFit ? `真实模型已按图纸轮廓生成预览。${this.describeGlbAutoFit(glb.autoFit)} 保存后可独立编辑。` : "真实模型预览已生成。底面基准点、实际尺寸与摄影遮挡需在场景中核对，保存后可独立编辑。");
     } catch (error) { if (!job.signal.aborted) this.failure(error); }
     finally { if (this.analysis === job) this.analysis = undefined; this.buttons(); }
   }
@@ -1623,6 +1704,8 @@ export class TemporaryWorksPanel {
       row("目标尺寸 · 长×宽×高", `${valueText(p.dimensions.length)} × ${valueText(p.dimensions.width)} × ${valueText(p.dimensions.height)} m`);
       row("平面旋转", `${valueText(p.headingDeg)}°（东→北）`);
       row("缩放方式", p.scaleMode === "uniform" ? "等比例" : "XYZ 独立缩放");
+      row("布置方式", plan.glb.placementMode === "cad-auto" ? "CAD 轮廓自动布置（保留原模型高度）" : "手动精确布置");
+      if (plan.glb.autoFit) row("图纸适配与取高记录", this.describeGlbAutoFit(plan.glb.autoFit));
       row("摄影遮挡", plan.glb.clippingEnabled ? "按建筑底面自动关联；实际状态见摄影遮挡提示" : "已关闭");
       row("关联场界", `${inputs.cadName} · ${inputs.feature.layer} · ${inputs.feature.id}`);
       host.append(dl);

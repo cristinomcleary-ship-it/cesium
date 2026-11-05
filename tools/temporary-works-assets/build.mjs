@@ -12,6 +12,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
+import {rewriteGeometrySigns} from './geometry-signs.mjs';
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const source=path.resolve(process.argv[2]||'../source-models');
 const out=path.join(repo,'public/models/temporary-works');
@@ -33,6 +34,26 @@ const configs=[
 const manifest=process.argv[3]?JSON.parse(await fs.readFile(path.join(out,'manifest.json'),'utf8')):{schemaVersion:1,unit:'metre',coordinateConvention:'GLTF scene coordinates; Y up; footprint pairs are X,Z; Cesium ENU = X,-Z,Y.',assets:[]};
 const audits=process.argv[3]?JSON.parse(await fs.readFile(path.join(reports,'assets-audit.json'),'utf8')):[];
 const sha=b=>createHash('sha256').update(b).digest('hex');
+// Source-node bindings and geometry hashes belong to the private model package.
+// Refuse to build branded assets without a matching, explicitly audited map.
+const brandingMapPath=path.resolve(process.argv[4]||path.join(source,'branding-mapping.json'));
+let privateBrandingMap;
+async function auditedBrandingPlan(id,bytes){
+ if(!privateBrandingMap)privateBrandingMap=JSON.parse(await fs.readFile(brandingMapPath,'utf8'));
+ const entry=privateBrandingMap[id];
+ if(privateBrandingMap.schemaVersion!==1||entry?.sourceSha256!==sha(bytes)||!Array.isArray(entry.plan)||!entry.plan.length)throw new Error('Missing or mismatched private branding map for '+id);
+ return entry.plan;
+}
+let suppliedLogo;
+function logoFromCamp(doc){
+ const texture=doc.getRoot().listNodes().find(n=>n.getName()==='Logo_中铁二十四局_1')?.getMesh()?.listPrimitives().map(p=>p.getMaterial()?.getBaseColorTexture()).find(Boolean);
+ if(!texture?.getImage())throw new Error('Supplied corporate logo is missing');
+ return texture.getImage();
+}
+async function corporateLogo(doc,id){
+ if(!suppliedLogo)suppliedLogo=logoFromCamp(id==='camp'?doc:await io.read(path.join(source,configs.find(c=>c.id==='camp').file)));
+ return suppliedLogo;
+}
 const vec=(a,m)=>[m[0]*a[0]+m[4]*a[1]+m[8]*a[2]+m[12],m[1]*a[0]+m[5]*a[1]+m[9]*a[2]+m[13],m[2]*a[0]+m[6]*a[1]+m[10]*a[2]+m[14]];
 function hull(points){
  const p=[...new Map(points.map(a=>[a.map(n=>n.toFixed(5)).join(','),a])).values()].sort((a,b)=>a[0]-b[0]||a[1]-b[1]);
@@ -46,9 +67,10 @@ function meshStats(doc){
  root.getDefaultScene().traverse(n=>{if(!n.getMesh())return;nodes++;const inst=n.getExtension('EXT_mesh_gpu_instancing');const count=inst?inst.listAttributes()[0].getCount():1;for(const p of n.getMesh().listPrimitives()){draws++;renderTriangles+=count*(p.getIndices()?.getCount()??p.getAttribute('POSITION')?.getCount()??0)/3;}});
  return {uniqueTriangles,renderTriangles,nodes,draws,textures:root.listTextures().length};
 }
-function geometryAudit(doc,baseNames){
+function geometryAudit(doc,baseNames,excludedNames=new Set()){
  const min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinity,-Infinity],baseVertices=[],nodeBounds=[];
  doc.getRoot().getDefaultScene().traverse(n=>{
+  if(excludedNames.has(n.getName()))return;
   const mesh=n.getMesh();if(!mesh)return;const m=n.getWorldMatrix(),mn=[Infinity,Infinity,Infinity],mx=[-Infinity,-Infinity,-Infinity];
   const isBase=baseNames.includes(n.getName());
   for(const pr of mesh.listPrimitives()){
@@ -109,6 +131,14 @@ function replaceSignBands(doc,sourceTexture,logo,axis,bands,options={}){
 for(const config of configs.filter(c=>!process.argv[3]||c.id===process.argv[3])){
  const bytes=await fs.readFile(path.join(source,config.file));console.log('Decoding',config.id);
  const doc=await io.readBinary(bytes);const rawStats=meshStats(doc);const originalTextures=[...doc.getRoot().listTextures()];const originalMeshes=[...doc.getRoot().listMeshes()];
+ // Keep placement calibration independent of replacement lettering and float32
+ // face coordinates; existing saved instances continue using the same datum.
+ const sourceGeometry=geometryAudit(doc,config.baseNodes,new Set(config.exclude.map(n=>n.name)));
+ const brandingRepairs=[];
+ if(config.id==='camp'||config.id==='steel'){
+  const plan=await auditedBrandingPlan(config.id,bytes);
+  brandingRepairs.push({kind:'source-geometry-lettering-replacement',planSha256:sha(await fs.readFile(brandingMapPath)),entries:await rewriteGeometrySigns(doc,{plan,sharp,logoImage:await corporateLogo(doc,config.id)})});
+ }
  for(const entry of config.exclude){const node=doc.getRoot().listNodes().find(n=>n.getName()===entry.name);if(!node)throw new Error('Missing audited exclusion '+entry.name);node.dispose();}
  // The supplied old alternate logo (image 142) is unreachable. Pruning removes it and other unused export data.
  await doc.transform(prune({keepLeaves:false}));
@@ -116,7 +146,6 @@ for(const config of configs.filter(c=>!process.argv[3]||c.id===process.argv[3]))
   // Keep the actual body and inset face geometry; branding is an independent runtime object.
   for(const mat of doc.getRoot().listMaterials())if(mat.getName()==='CorporateSignFace')mat.setBaseColorTexture(null).setBaseColorFactor([1,1,1,1]);
  }
- const brandingRepairs=[];
  if(config.id==='steel'){
   // The supplied company footer starts below a thin surviving strip of the old
   // footer. Replace the full old strip, including its filtered edges, with a
@@ -150,7 +179,7 @@ for(const config of configs.filter(c=>!process.argv[3]||c.id===process.argv[3]))
    materialRepairs.push({mesh:mesh.getName(),reason:'Source primitive had textured material without TEXCOORD_0; preserve geometry and use its original baseColorFactor.'});
   }
  }
- const audit=geometryAudit(doc,config.baseNodes);console.log('Bounds',config.id,audit.bounds,'floor',audit.floor,'footprint',audit.outer);
+ const audit=sourceGeometry;console.log('Bounds',config.id,audit.bounds,'floor',audit.floor,'footprint',audit.outer);
  const anchor=[(Math.min(...audit.outer.map(p=>p[0]))+Math.max(...audit.outer.map(p=>p[0])))/2,audit.floor,(Math.min(...audit.outer.map(p=>p[1]))+Math.max(...audit.outer.map(p=>p[1])))/2];
  // Engineering LOD: detailed plants and small accessories below 2m dominate the source (52.6M rendered triangles).
  const simplified=[];
@@ -186,7 +215,7 @@ for(const config of configs.filter(c=>!process.argv[3]||c.id===process.argv[3]))
  // actual deployed bytes, so count the final decoded geometry and instances.
  const stats=meshStats(await io.readBinary(result));
  const asset={id:config.id,name:config.name,url:'models/temporary-works/'+config.id+'.glb',upAxis:'Y',bounds:audit.bounds,anchor,dimensions:{length:audit.bounds.max[0]-audit.bounds.min[0],width:audit.bounds.max[2]-audit.bounds.min[2],height:audit.bounds.max[1]-audit.bounds.min[1]},footprints:[{outer:audit.outer,holes:[]}],sourceSha256:sha(bytes),sha256:sha(result),sourceFile:config.file,bytes:result.byteLength,sourceBytes:bytes.byteLength,baseHeight:audit.floor,baseDescription:config.id==='camp'?'主场坪底板真实四角（源节点3073），包含整套项目部建筑和院内实体地坪；非场景包围盒。':config.id==='steel'?'厂房围护底部顶点闭合外轮廓（源3DGeom-58/375），排除屋顶挑檐及宣传附件。':'独立宣传墙主体底面四角；正面标识板厚度另计。',verification:{geometry:'Decoded reachable geometry in metres, cumulative node transforms applied; explicit isolated helpers excluded.',dimensions:'Model geometry dimensions, not survey-certified construction dimensions. Set target dimensions from site/design drawings.',footprint:'Convex structural base outline; audited selected base is convex and has no holes.',brand:'Reachable former-contractor logo texture 3 replaced with supplied CRCC logo; mixed former-contractor header/strip textures 5/26 replaced in UV-separated logo primitives, old-company honours texture 25 replaced by supplied logo; remaining safety pictograms, national flag and generic content retained. Independent wall face uses configurable runtime branding.'},excludedNodes:config.exclude,performance:{...stats,simplifiedPrimitives:simplified.length},editableBranding:config.id==='wall'};
- asset.verification.brand=config.id==='steel'?'Supplied CR24 company slogans and safety pictograms retained; former footer remnants hidden by a UV-separated solid band, without editing the source texture.':config.id==='wall'?'Original wall body retained; independent runtime text and logo provide editable branding.':'Former contractor logos and honours replaced; mixed logo bands split in UV space. Former-project stadium rendering replaced with the supplied site-plan template marked pending project information. Generic safety content and national flag retained.';
+ asset.verification.brand=config.id==='wall'?'Original wall body retained; independent runtime text and logo provide editable branding.':'Audited former-company and former-project lettering/logo meshes removed from the source derivative, including both ends where present. Exact CR24/CRCC wording and owner-provided slogans replace them on alpha-cutout faces aligned to the measured signs. Private source-file and per-node geometry hashes verified before mutation. Texture branding repairs retained; safety pictograms, national flag and unrelated structure preserved. Offline visual review is required; this statement does not certify a real Cesium scene.';
  asset.verification.performance='Counts from final decoded GLB bytes, including GPU instances.';
  manifest.assets=manifest.assets.filter(a=>a.id!==config.id);manifest.assets.push(asset);const oldAudit=audits.findIndex(a=>a.id===config.id);if(oldAudit>=0)audits.splice(oldAudit,1);audits.push({id:config.id,sourceStats:rawStats,outputStats:stats,sourceBytes:bytes.byteLength,outputBytes:result.byteLength,sourceSha256:asset.sourceSha256,outputSha256:asset.sha256,excludedNodes:config.exclude,simplified,baseNodes:config.baseNodes,baseBottomVertices:audit.outer,bounds:audit.bounds,anchor,units:'metres',materialRepairs,brandingRepairs,sourceBrandingExtras:doc.getRoot().getAsset().extras??null});
  console.log('Written',config.id,result.byteLength,stats);
