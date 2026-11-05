@@ -138,13 +138,15 @@ test('changing a plan target leaves other plans on original tileset; unrelated t
   } finally { f.close(); other.destroy(); }
 });
 
-test('world positions are ECEF geography, independent of translated tileset local coordinates and height', () => {
+test('world positions preserve building ellipsoid heights and are independent of translated tileset local coordinates', () => {
   const f = fixture();
   try {
     f.tileset.modelMatrix = Matrix4.fromTranslation(new Cartesian3(1000000, 500000, 20000));
-    f.manager.upsert({ id: 'A', tileset: f.tileset, footprints: footprint() });
+    f.manager.upsert({ id: 'A', tileset: f.tileset, footprints: [{outer: rect().map((p, i) => ({...p, height: 1000 + i}))}] });
     const position = f.tileset.clippingPolygons.get(0).positions[0];
-    assert.ok(Cartesian3.equalsEpsilon(position, Cartesian3.fromDegrees(121, 31, 0), 1e-14));
+    assert.ok(Cartesian3.equalsEpsilon(position, Cartesian3.fromDegrees(121, 31, 1000), 1e-14));
+    assert.ok(!Cartesian3.equalsEpsilon(position, Cartesian3.fromDegrees(121, 31, 0), 1e-6));
+    assert.ok(Cartesian3.equalsEpsilon(f.tileset.clippingPolygons.get(0).positions[1], Cartesian3.fromDegrees(121.001, 31, 1001), 1e-14));
   } finally { f.close(); }
 });
 

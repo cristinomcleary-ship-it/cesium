@@ -4,7 +4,7 @@ import {
 } from 'cesium';
 import { ShapeUtils, Vector2 } from 'three';
 
-export type TemporaryWorksClipPoint = { longitude: number; latitude: number };
+export type TemporaryWorksClipPoint = { longitude: number; latitude: number; height?: number };
 export type TemporaryWorksFootprint = {
   outer: readonly TemporaryWorksClipPoint[];
   /** Courtyards/voids remain visible. They are decomposed, never passed as nested Cesium rings. */
@@ -24,8 +24,8 @@ type Attachment = { collection: ClippingPolygonCollection; polygons: ClippingPol
 const status = (state: TemporaryWorksClipState, message: string, polygons = 0): TemporaryWorksClipStatus => ({ state, message, polygons });
 
 function ring(points: readonly TemporaryWorksClipPoint[]): TemporaryWorksClipPoint[] {
-  const result = points.map(p => ({ longitude: p.longitude, latitude: p.latitude }));
-  if (result.some(p => !Number.isFinite(p.longitude) || Math.abs(p.longitude) > 180 || !Number.isFinite(p.latitude) || Math.abs(p.latitude) > 90))
+  const result = points.map(p => ({ longitude: p.longitude, latitude: p.latitude, height: p.height ?? 0 }));
+  if (result.some(p => !Number.isFinite(p.longitude) || Math.abs(p.longitude) > 180 || !Number.isFinite(p.latitude) || Math.abs(p.latitude) > 90 || !Number.isFinite(p.height)))
     throw new Error('建筑底面包含无效经纬度，摄影遮挡未更新。');
   if (result.length > 1 && result[0].longitude === result.at(-1)!.longitude && result[0].latitude === result.at(-1)!.latitude) result.pop();
   if (result.length < 3) throw new Error('建筑底面至少需要三个不同的顶点。');
@@ -91,7 +91,7 @@ export function buildTemporaryWorksClipPolygons(
       for (let j = 1; j < i; j++) if (ringsIntersect(planar[i], planar[j]) || inside(planar[i][0], planar[j]) || inside(planar[j][0], planar[i]))
         throw new Error('建筑底面孔洞不能交叠或相互包含。');
     }
-    const world = (points: readonly TemporaryWorksClipPoint[]) => points.map(p => Cartesian3.fromDegrees(p.longitude, p.latitude, 0, ellipsoid));
+    const world = (points: readonly TemporaryWorksClipPoint[]) => points.map(p => Cartesian3.fromDegrees(p.longitude, p.latitude, p.height ?? 0, ellipsoid));
     if (!holes.length) polygons.push(new ClippingPolygon({ positions: world(outer), ellipsoid }));
     else {
       const points = all.flat(), faces = ShapeUtils.triangulateShape(planar[0], planar.slice(1));
