@@ -17,7 +17,8 @@ function fixture(webgl2 = true) {
   const viewer = { scene: { context: { webgl2 }, postUpdate, requestRender() { renders++; } }, isDestroyed: () => false } as unknown as Viewer;
   const tileset = new Cesium3DTileset({}); // Actual Cesium ownership/destroy setters; only Viewer/WebGL is mocked.
   const manager = new TemporaryWorksClippingManager(viewer);
-  return { tileset, manager, postUpdate, renders: () => renders, close: () => { manager.dispose(); if (!tileset.isDestroyed()) tileset.destroy(); } };
+  return { tileset, manager, postUpdate, polygonCount: () => tileset.clippingPolygons?.length,
+    renders: () => renders, close: () => { manager.dispose(); if (!tileset.isDestroyed()) tileset.destroy(); } };
 }
 function geographicArea(polygons: ReturnType<typeof buildTemporaryWorksClipPolygons>): number {
   return polygons.reduce((sum, polygon) => {
@@ -47,6 +48,10 @@ test('overlapping buildings use a union collection; removing one keeps all other
     assert.equal(f.manager.getStatus('steel')!.state, 'active');
     f.manager.remove('steel');
     assert.equal(f.tileset.clippingPolygons, undefined);
+    assert.equal(f.postUpdate.numberOfListeners, 0);
+    f.manager.upsert({ id: 'new', tileset: f.tileset, footprints: footprint() });
+    assert.equal(f.postUpdate.numberOfListeners, 1);
+    assert.equal(f.polygonCount(), 1);
   } finally { f.close(); }
 });
 
@@ -60,16 +65,16 @@ test('hide/show and global disable restore only their own photography regions', 
     f.manager.setVisible('B', false);
     assert.equal(f.tileset.clippingPolygons, undefined);
     f.manager.setVisible('A', true);
-    assert.equal(f.tileset.clippingPolygons.length, 1);
+    assert.equal(f.polygonCount(), 1);
     f.manager.setEnabled(false);
     assert.equal(f.tileset.clippingPolygons, undefined);
     assert.equal(f.manager.getStatus('A')!.state, 'disabled');
     f.manager.setEnabled(true);
-    assert.equal(f.tileset.clippingPolygons.length, 1);
+    assert.equal(f.polygonCount(), 1);
     f.manager.setVisible('B', true);
-    assert.equal(f.tileset.clippingPolygons.length, 2);
+    assert.equal(f.polygonCount(), 2);
     f.manager.setPlanEnabled('A', false);
-    assert.equal(f.tileset.clippingPolygons.length, 1);
+    assert.equal(f.polygonCount(), 1);
   } finally { f.close(); }
 });
 

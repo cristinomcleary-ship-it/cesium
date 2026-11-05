@@ -112,14 +112,13 @@ export function buildTemporaryWorksClipPolygons(
 export class TemporaryWorksClippingManager {
   private readonly entries = new Map<string, Entry>();
   private readonly attachments = new Map<Cesium3DTileset, Attachment>();
-  private readonly stopWatching: (() => void) | undefined;
+  private stopWatching: (() => void) | undefined;
   private enabled = true;
   private disposed = false;
   private readonly viewer: Viewer;
 
   constructor(viewer: Viewer) {
     this.viewer = viewer;
-    this.stopWatching = viewer.scene.postUpdate?.addEventListener(() => this.synchronize());
   }
 
   upsert(input: TemporaryWorksClipInput): TemporaryWorksClipStatus {
@@ -128,6 +127,7 @@ export class TemporaryWorksClippingManager {
     // Validate completely before changing the existing record/collection.
     const polygons = buildTemporaryWorksClipPolygons(input.footprints, input.tileset.ellipsoid ?? Ellipsoid.WGS84);
     this.entries.set(input.id, { ...input, polygons, status: status('disabled', '摄影遮挡待更新') });
+    this.stopWatching ??= this.viewer.scene.postUpdate?.addEventListener(() => this.synchronize());
     this.synchronize();
     return this.getStatus(input.id)!;
   }
@@ -156,11 +156,13 @@ export class TemporaryWorksClippingManager {
 
   remove(id: string): void {
     if (this.entries.delete(id)) this.synchronize();
+    if (!this.entries.size) { this.stopWatching?.(); this.stopWatching = undefined; }
   }
 
   clear(): void {
     this.entries.clear();
     this.synchronize();
+    this.stopWatching?.(); this.stopWatching = undefined;
   }
 
   /** May also be called explicitly after layer updates, before requesting a frame. */
@@ -227,7 +229,6 @@ export class TemporaryWorksClippingManager {
 
   dispose(): void {
     if (this.disposed) return;
-    this.stopWatching?.();
     this.clear();
     this.disposed = true;
   }
