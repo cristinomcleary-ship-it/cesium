@@ -573,9 +573,10 @@ export class TemporaryWorksPanel {
     this.el("section-title").textContent = isRoad ? "贴地便道结构与施工里程分段" : "历史方案参数";
     this.el("hardening-label").textContent = "硬化层厚度（m）";
     this.el("treatment-label").textContent = "地基处理厚度（m）";
-    this.input("glb-width").readOnly = this.value("glb-scale-mode") === "uniform";
-    this.input("glb-height").readOnly = this.value("glb-scale-mode") === "uniform";
+
     this.input("glb-cancel-edit").hidden = !this.glbEditing;
+    this.input("glb-clipping").disabled = this.resourceId() === "wall";
+    if (this.resourceId() === "wall") this.input("glb-clipping").checked = false;
     const facilityMode = this.facilityMode();
     this.group("building", !isRoad && facilityMode === "cad");
     this.group("building-height", !isRoad && facilityMode === "cad");
@@ -600,7 +601,7 @@ export class TemporaryWorksPanel {
     if (!input.id.startsWith("tw-") && !input.dataset.gradeField) return;
     this.cancel(false); this.dropPreview(); this.clearReview();
     const k = input.id.slice(3);
-    if (k === "glb-length" && this.value("glb-scale-mode") === "uniform") this.scaleGlbDimensions();
+    if (["glb-length","glb-width","glb-height"].includes(k) && this.value("glb-scale-mode") === "uniform") this.scaleGlbDimensions(k.slice(4) as "length"|"width"|"height");
     if (["width", "anchor-x", "anchor-y", "anchor-lon", "anchor-lat", "rotation", "meridian", "zone", "b-x", "b-y", "b-lon", "b-lat"].includes(k))
       this.clearOverlay();
     if (k.startsWith("gk-") || k === "zone" || k === "meridian") { this.resetProjected(); this.clearOverlay(); }
@@ -637,6 +638,7 @@ export class TemporaryWorksPanel {
       this.select("facility-mode").value = "glb";
       this.updateGlbResource();
       this.input("glb-brand-visible").checked = this.resourceId() === "wall";
+      this.input("glb-clipping").checked = this.resourceId() !== "wall";
     }
     if (k === "glb-scale-mode" && this.value(k) === "uniform") this.scaleGlbDimensions();
     if (k === "xray") {
@@ -920,7 +922,9 @@ export class TemporaryWorksPanel {
         const v = row.querySelector<HTMLInputElement>(`[data-grade-field="${k}"]`)!.value;
         return v.trim() ? Number(v) : NaN;
       };
-      return { start: get("start"), end: get("end"), gradePct: get("gradePct") };
+      // New roads follow sampled photography. Hidden legacy grades must not
+      // reject a construction segment or influence its restored chainage.
+      return { start: get("start"), end: get("end"), gradePct: 0 };
     });
     return validateRoadGrades(rows, this.measuredLength);
   }
@@ -945,9 +949,8 @@ export class TemporaryWorksPanel {
     const info = this.el("grade-status"); info.removeAttribute("data-error");
     if (!this.measuredLength) { info.textContent = "请先选取 CAD 中心线。"; return; }
     try {
-      const grades = this.getGrades(), rise = grades.reduce((v, g) => v + (g.end - g.start) * g.gradePct / 100, 0);
+      const grades = this.getGrades();
       info.textContent = `${grades.length} 个施工里程段覆盖全长；高程将逐点跟随摄影表面。`;
-      void rise;
     } catch (error) {
       info.textContent = error instanceof Error ? error.message : String(error); info.toggleAttribute("data-error", true);
     }
@@ -986,10 +989,10 @@ export class TemporaryWorksPanel {
     this.status("已交换起终点和里程分段。便道高程仍逐点贴合摄影表面。");
   }
   private crossSection() {
-    const values = ["width", "thickness", "treatment", "slope-height", "slope-width"].map(k => this.value(k) === "" ? NaN : Number(this.value(k)));
-    const [width, hard, treatment, high, wide] = values;
+    const values = ["width", "thickness", "treatment"].map(k => this.value(k) === "" ? NaN : Number(this.value(k)));
+    const [width, hard, treatment] = values;
     renderRoadSectionPreview(this.el("road-section-preview"), {
-      width, hardeningDepth: hard, treatmentDepth: treatment, slopeHeight: high, slopeWidth: wide,
+      width, hardeningDepth: hard, treatmentDepth: treatment, slopeHeight: 1, slopeWidth: 0, surfaceMode: "draped",
     });
   }
 
@@ -1296,12 +1299,12 @@ export class TemporaryWorksPanel {
     }
     this.el("glb-asset-info").textContent = `${resource.name} · 核验尺寸 ${valueText(d.length)} × ${valueText(d.width)} × ${valueText(d.height)} m · ${resource.footprints.length} 个底面轮廓`;
   }
-  private scaleGlbDimensions() {
-    const resource = this.resource(), length = Number(this.value("glb-length"));
-    if (!resource || !(length > 0)) return;
-    const scale = length / resource.dimensions.length;
-    this.input("glb-width").value = String(resource.dimensions.width * scale);
-    this.input("glb-height").value = String(resource.dimensions.height * scale);
+  private scaleGlbDimensions(dimension: "length"|"width"|"height" = "length") {
+    const resource = this.resource(), target = Number(this.value("glb-" + dimension));
+    if (!resource || !(target > 0)) return;
+    const scale = target / resource.dimensions[dimension];
+    for (const key of ["length","width","height"] as const)
+      if (key !== dimension) this.input("glb-"+key).value = String(resource.dimensions[key] * scale);
   }
   private async readGlbLogo() {
     const logoToken = ++this.glbLogoReadToken;
@@ -1316,7 +1319,12 @@ export class TemporaryWorksPanel {
       const data = await new Promise<string>((resolve,reject) => {
         const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file);
       });
-      if (token === this.generation && logoToken === this.glbLogoReadToken && !this.disposed) { this.glbLogo = data; this.input("glb-brand-visible").checked = true; this.status("LOGO 已读取，将作为独立可替换对象随方案保存。"); }
+      if (token === this.generation && logoToken === this.glbLogoReadToken && !this.disposed) {
+        // A preview may have started while FileReader was pending. It still contains the previous logo.
+        this.cancel(false); this.dropPreview();
+        this.glbLogo = data; this.input("glb-brand-visible").checked = true;
+        this.status("LOGO 已读取，请重新生成预览后保存。");
+      }
     } catch (error) { if (token === this.generation && logoToken === this.glbLogoReadToken) this.failure(error); }
   }
   private async useGlbBoundary() {
@@ -1371,33 +1379,34 @@ export class TemporaryWorksPanel {
       job.signal.throwIfAborted();
       const resource = this.resource();
       if (!resource) throw new Error("未找到所选真实模型，请检查资源清单。");
-      const model = this.model(), generation = this.generation;
+      const model = this.options.getTilesets().find(item => item.id === this.value("model")), generation = this.generation;
       const glb: TemporaryWorksGlbConfig = {
-        resourceId:this.resourceId(), clippingEnabled:this.input("glb-clipping").checked,
+        resourceId:this.resourceId(), clippingEnabled:this.resourceId() !== "wall" && this.input("glb-clipping").checked,
         placement:{longitude:this.num("glb-lon","底面基准经度"),latitude:this.num("glb-lat","底面基准纬度"),height:this.num("glb-elevation","底面椭球高"),
           headingDeg:this.num("glb-heading","平面旋转角"),scaleMode:this.value("glb-scale-mode") as "uniform"|"xyz",
           dimensions:{length:this.num("glb-length","目标长度"),width:this.num("glb-width","目标宽度"),height:this.num("glb-height","目标高度")}},
         branding:{visible:this.input("glb-brand-visible").checked,text:this.value("glb-brand-text"),logoUrl:this.glbLogo},
       };
+      if (glb.clippingEnabled && !model) throw new Error("启用摄影遮挡时，请先加载并选择倾斜摄影模型；独立坐标布置可先关闭摄影遮挡。");
       const footprints = getTemporaryWorksGlbFootprints(resource,glb.placement);
       const old = this.glbEditing ? this.records.get(this.glbEditing) : undefined;
       const selectedFeature = this.feature();
       if (selectedFeature && !selectedFeature.closed) throw new Error("临建场地请选择 CAD 闭合场界。");
       const coordinates: PlanningCadCoordinates = selectedFeature ? this.coordinates() : old?.inputs.coordinates ?? {mode:"geographic",axisOrder:"eastNorth"};
       const feature: PlanningCadFeature = selectedFeature ?? old?.inputs.feature ?? {id:"manual-glb-footprint",layer:"建筑底面",sourceType:"GLB",closed:true,points:footprints[0].outer.map(p=>({x:p.longitude,y:p.latitude}))};
-      if (selectedFeature) {
-        const siteFrame = createPlanCoordinateFrame(coordinates,selectedFeature.points[0]);
-        if (!glbFootprintsInsideSite(footprints.map(part=>part.outer.map(siteFrame.geoToLocal)),selectedFeature.points.map(siteFrame.cadToLocal)))
+      if (feature.sourceType !== "GLB") {
+        const siteFrame = createPlanCoordinateFrame(coordinates,feature.points[0]);
+        if (!glbFootprintsInsideSite(footprints.map(part=>part.outer.map(siteFrame.geoToLocal)),feature.points.map(siteFrame.cadToLocal)))
           throw new Error("实际建筑底面超出所选 CAD 场界，请调整位置、旋转或目标尺寸后重试。");
       }
-      const matrix = Matrix4.clone(model.tileset.modelMatrix), rootTransform = Matrix4.clone(model.tileset.root.transform);
+      const matrix = Matrix4.clone(model?.tileset.modelMatrix ?? Matrix4.IDENTITY), rootTransform = Matrix4.clone(model?.tileset.root.transform ?? Matrix4.IDENTITY);
       const checkSource = () => {
-        if (generation !== this.generation || !this.editable() || this.options.getTilesets().find(m=>m.id===model.id)?.tileset !== model.tileset || !Matrix4.equals(matrix,model.tileset.modelMatrix) || !Matrix4.equals(rootTransform,model.tileset.root.transform)) throw new Error("摄影模型、项目或权限已变化，请重新生成预览。");
+        if (generation !== this.generation || !this.editable() || (model && (this.options.getTilesets().find(m=>m.id===model.id)?.tileset !== model.tileset || !Matrix4.equals(matrix,model.tileset.modelMatrix) || !Matrix4.equals(rootTransform,model.tileset.root.transform)))) throw new Error("摄影模型、项目或权限已变化，请重新生成预览。");
       };
       const p = glb.placement;
       const record: TemporaryWorksPlan = {
         id:old?.id ?? newId(),name:this.value("name") || resource.name,kind:glb.resourceId === "steel" ? "steel" : "camp",visible:true,createdAt:old?.createdAt ?? new Date().toISOString(),
-        modelId:model.id,modelName:model.name,glb,earthworkDisabled:true,mesh:{vertices:[],triangles:[]},metrics:{planArea:0,coveredArea:0,excludedArea:0,cutVolume:0,fillVolume:0},
+        modelId:model?.id ?? "",modelName:model?.name ?? "未关联摄影模型",glb,earthworkDisabled:true,mesh:{vertices:[],triangles:[]},metrics:{planArea:0,coveredArea:0,excludedArea:0,cutVolume:0,fillVolume:0},
         inputs:{cadName:selectedFeature ? this.cadFile?.name ?? "CAD 场界" : old?.inputs.cadName ?? "底面基准点定位",modelMatrix:Matrix4.toArray(matrix),modelRootTransform:Matrix4.toArray(rootTransform),
           feature,coordinates,reference:{longitude:p.longitude,latitude:p.latitude,height:p.height},referenceInput:{mode:"geo",first:p.longitude,second:p.latitude},
           design:{reference:{x:0,y:0},referenceHeight:p.height,finishedOffset:0,surfaceToTreatment:0,treatmentDepth:0},facilityMode:"glb",spacing:0,sampleCount:0,refinementLevels:0,budgetLimited:false},
@@ -1418,6 +1427,7 @@ export class TemporaryWorksPanel {
   private async run() {
     if (!this.upgradeEnabled || !this.editable() || this.busySave || this.cadRead || this.sectionRead) return;
     if (this.isGlb()) { await this.runGlb(); return; }
+    if (this.kind() !== "road") { this.failure(new Error("新增临建设施请使用真实 GLB 资源布置。历史设施和土方数据仍可查看、显示或删除。")); return; }
     this.cancel(false); this.dropPreview(); this.clearReview();
     if (this.kind() !== "road") this.clearOverlay();
     const job = new AbortController();
@@ -1457,11 +1467,10 @@ export class TemporaryWorksPanel {
         ...(roadLine ? { centerline: points } : { gradeEastPct: this.num("grade-east", "向东坡度"), gradeNorthPct: this.num("grade-north", "向北坡度") }),
       };
       const roadInput = roadLine ? { width: this.num("width", "路面宽度"), hardeningDepth: design.surfaceToTreatment,
-        treatmentDepth: design.treatmentDepth, slopeHeight: this.num("slope-height", "路基边坡的高"),
+        treatmentDepth: design.treatmentDepth, slopeHeight: 1,
         slopeWidth: 0, grades: this.getGrades(), stationFactors } : undefined;
-      if (roadInput && (roadInput.width <= 0 || roadInput.slopeHeight <= 0 || roadInput.slopeWidth < 0))
-        throw new Error("路面宽度和边坡的高须大于零，边坡的宽须为非负数。");
-      if (design.surfaceToTreatment < 0 || design.treatmentDepth < 0) throw new Error("硬化面至处理顶面的距离和另挖深度均须大于或等于零。");
+      if (roadInput && roadInput.width <= 0) throw new Error("路面宽度须大于零。");
+      if (design.surfaceToTreatment < 0 || design.treatmentDepth < 0) throw new Error("硬化层厚度和地基处理厚度均须大于或等于零。");
       const mode = kind === "road" ? undefined : this.facilityMode();
       const selected = new Set([...this.select("building").selectedOptions].map(o => o.value));
       const buildingFeatures = mode === "cad" ? this.cad.filter(f => f.closed && selected.has(f.id)) : [];

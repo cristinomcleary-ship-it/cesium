@@ -4,6 +4,7 @@ type RoadSectionInputs = {
   treatmentDepth: number;
   slopeHeight: number;
   slopeWidth: number;
+  surfaceMode?: 'draped';
 };
 
 const dimension = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 3, useGrouping: false });
@@ -36,6 +37,8 @@ export function renderRoadSectionPreview(host: HTMLElement, section: RoadSection
       <path d="M${left(base)} ${yBottom + 3}v6m0 -3H${right(base)}m0 -3v6" fill="none" stroke="#9eacbd"/>
       <text x="145" y="${yBottom + 21}" fill="#dce6ef">处理底宽 ${n(base)} m</text>
     </svg>
-    <figcaption style="font-size:11px;color:#acbfcd">硬化层厚 ${n(hardeningDepth)} m · 硬化底宽 ${n(mid)} m<br>地基处理深 ${n(treatmentDepth)} m · 边坡高宽比 ${n(slopeHeight)}∶${n(slopeWidth)}</figcaption>
+    <figcaption style="font-size:11px;color:#acbfcd">硬化层厚 ${n(hardeningDepth)} m · 硬化底宽 ${n(mid)} m<br>${section.surfaceMode === 'draped'
+      ? `地基处理厚 ${n(treatmentDepth)} m · 底面贴合摄影，侧边竖直`
+      : `地基处理深 ${n(treatmentDepth)} m · 边坡高宽比 ${n(slopeHeight)}∶${n(slopeWidth)}`}</figcaption>
   </figure>`;
 }

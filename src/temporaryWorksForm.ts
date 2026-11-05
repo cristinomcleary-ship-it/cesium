@@ -122,7 +122,7 @@ export const temporaryWorksFormHtml = `
     <details data-tw-group="glb" open>
       <summary><span class="tw-step">03</span>模型布置 · 建筑底面基准</summary>
       <div class="tw-body">
-        <p class="tw-hint">位置对应已核验建筑底面的中心基准点。尺寸以米计，原点与上轴修正随模型自动应用。</p>
+        <p class="tw-hint">位置对应已核验建筑底面的中心基准点。尺寸以米计；等比例模式修改任一尺寸会同步其余两项。原点与上轴修正随模型自动应用。</p>
         <div class="tw-grid">
           <label>底面基准经度（°）<input id="tw-glb-lon" type="number" min="-180" max="180" step="any"/></label>
           <label>底面基准纬度（°）<input id="tw-glb-lat" type="number" min="-90" max="90" step="any"/></label>
@@ -130,6 +130,7 @@ export const temporaryWorksFormHtml = `
           <label>平面旋转（°，东→北）<input id="tw-glb-heading" type="number" step="any" value="0"/></label>
         </div>
         <div class="tw-actions"><button id="tw-glb-pick" type="button">拾取摄影底面位置</button><button id="tw-glb-use-boundary" type="button">采用 CAD 场界中心</button><button id="tw-glb-sample-height" type="button">读取当前位置摄影高程</button></div>
+        <p class="tw-hint">输入实测坐标与椭球高可独立布置模型；拾取、摄影取高和摄影遮挡需要加载并选择倾斜摄影。</p>
         <label>尺寸调整<select id="tw-glb-scale-mode"><option value="uniform">等比例缩放</option><option value="xyz">高级 · XYZ 独立缩放</option></select></label>
         <div class="tw-grid">
           <label>目标长度 X（m）<input id="tw-glb-length" type="number" min="0" step="any"/></label>

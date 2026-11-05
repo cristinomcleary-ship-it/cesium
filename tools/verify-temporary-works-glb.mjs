@@ -271,6 +271,12 @@ try {
   report.entrySha256 = createHash('sha256').update(await readFile(join(dist, report.entry.slice(1)))).digest('hex');
   manifest = await (await fetch(origin+'/models/temporary-works/manifest.json')).json();
   assert.deepEqual(manifest.assets.map(a=>a.id).sort(),['camp','steel','wall']);
+  if (process.argv.includes('--serve-only')) {
+    console.log('ISOLATED_ACCEPTANCE_URL '+origin);
+    console.log('SYNTHETIC_SURVEY_URL '+origin+'/__glb_survey/tileset.json');
+    console.log('Manual verification only; no automated checks have been marked as passed.');
+    await new Promise(()=>{});
+  }
   browser = await chromium.launch({ headless: true, executablePath: process.env.BROWSER_EXECUTABLE || undefined,
     args: ['--no-sandbox','--use-angle=swiftshader','--enable-unsafe-swiftshader','--disable-dev-shm-usage','--disable-background-timer-throttling','--disable-renderer-backgrounding'] });
   const context = await browser.newContext({ viewport: { width: 1500, height: 1000 }, deviceScaleFactor: 1, timezoneId: 'Asia/Shanghai' });
