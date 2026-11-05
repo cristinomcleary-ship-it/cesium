@@ -9,21 +9,25 @@ export const temporaryWorksFormHtml = `
   </div>
 
   <div class="tw-scroll">
+    <label class="tw-check tw-upgrade-switch"><input id="tw-upgrade-enabled" type="checkbox" checked/>启用真实模型、摄影遮挡与贴地便道</label>
+    <p class="tw-hint">关闭后暂停新增功能的显示与摄影遮挡，原有场景及历史方案继续保留。</p>
     <details open>
-      <summary><span class="tw-step">01</span>规划范围</summary>
+      <summary><span class="tw-step">01</span>临建资源库与场地选择</summary>
       <div class="tw-body">
         <div class="tw-grid">
           <label>临建类型<select id="tw-kind">
-            <option value="road">施工便道</option><option value="camp">项目驻地</option><option value="steel">钢筋加工场</option>
+            <option value="road">贴地施工便道</option><option value="camp" selected>项目驻地 / 宣传设施</option><option value="steel">钢筋加工场</option>
           </select></label>
           <label>方案名称<input id="tw-name" type="text" maxlength="80" placeholder="如 1 号便道"/></label>
         </div>
         <div data-tw-group="site" class="tw-subgroup" hidden>
-          <label>摄影场景布置方式<select id="tw-facility-mode" data-facility-scene-version="20261102g"><option value="standard" selected>自动布置标准模型</option><option value="cad">按 CAD 建筑轮廓布置</option><option value="pad">仅生成硬化场坪</option></select></label>
+          <label>摄影场景布置方式<select id="tw-facility-mode" data-facility-scene-version="20261102g"><option value="glb" selected>真实 GLB 资源布置</option><option value="standard" hidden>历史标准设施</option><option value="cad" hidden>历史 CAD 建筑轮廓</option><option value="pad" hidden>历史硬化场坪</option></select></label>
+          <label>三维资源<select id="tw-glb-resource"><option value="camp">项目部 · 中铁二十四局</option><option value="steel">钢筋棚 · 中铁二十四局</option><option value="wall">独立宣传墙</option></select></label>
+          <p id="tw-glb-asset-info" class="tw-hint" role="status">正在读取模型核验信息…</p>
           <p id="tw-facility-hint" class="tw-hint"></p>
           <button type="button" id="tw-place-facility" class="tw-primary">在摄影场景中生成模型</button>
         </div>
-        <div class="tw-actions tw-reference-actions"><button type="button" id="tw-preview-steel">查看钢筋加工场参考样式</button><button type="button" id="tw-preview-camp">查看项目驻地参考样式</button></div>
+        <div class="tw-actions tw-reference-actions" hidden><button type="button" id="tw-preview-steel">查看钢筋加工场参考样式</button><button type="button" id="tw-preview-camp">查看项目驻地参考样式</button></div>
         <label>倾斜摄影模型<select id="tw-model"><option value="">请选择已加载的摄影模型</option></select></label>
         <label><span id="tw-plan-file-label">道路中心线 CAD</span><input id="tw-cad" type="file" accept="${cadAccept}"/></label>
         <div class="tw-actions tw-upload-actions"><button id="tw-replace-cad" type="button" disabled>更换图纸</button><button id="tw-remove-cad" type="button" disabled>移除图纸</button></div>
@@ -31,7 +35,7 @@ export const temporaryWorksFormHtml = `
           <label>图层<select id="tw-layer"><option value="">导入后选择</option></select></label>
           <label>规划图元<select id="tw-feature"><option value="">导入后选择</option></select></label>
         </div>
-        <p class="tw-hint">便道请选择未闭合的道路中心线。驻地与钢筋加工场请选择场地闭合边界。</p>
+        <p class="tw-hint">便道请选择未闭合的道路中心线。驻地与钢筋棚可选取闭合场界核对布置；也可直接填写底面基准位置。</p>
         <div id="tw-cad-preview" class="tw-preview" aria-label="平面图预览"></div>
         <div id="tw-cad-info" class="tw-hint"></div>
         <div data-tw-group="road" class="tw-route-info">
@@ -115,7 +119,40 @@ export const temporaryWorksFormHtml = `
       <div class="tw-actions"><button type="button" id="tw-place-preview">在摄影模型上预览图纸</button><button type="button" id="tw-place-zoom" disabled>定位到图纸</button><button type="button" id="tw-place-hide" disabled>隐藏图纸预览</button></div>
       <small id="tw-overlay-status" class="tw-hint" data-state="idle" role="status">选择图元并填写坐标后，可预览完整便道中心线或场地轮廓。</small>
     </div>
-    <details open>
+    <details data-tw-group="glb" open>
+      <summary><span class="tw-step">03</span>模型布置 · 建筑底面基准</summary>
+      <div class="tw-body">
+        <p class="tw-hint">位置对应已核验建筑底面的中心基准点。尺寸以米计，原点与上轴修正随模型自动应用。</p>
+        <div class="tw-grid">
+          <label>底面基准经度（°）<input id="tw-glb-lon" type="number" min="-180" max="180" step="any"/></label>
+          <label>底面基准纬度（°）<input id="tw-glb-lat" type="number" min="-90" max="90" step="any"/></label>
+          <label>底面椭球高（m）<input id="tw-glb-elevation" type="number" step="any"/></label>
+          <label>平面旋转（°，东→北）<input id="tw-glb-heading" type="number" step="any" value="0"/></label>
+        </div>
+        <div class="tw-actions"><button id="tw-glb-pick" type="button">拾取摄影底面位置</button><button id="tw-glb-use-boundary" type="button">采用 CAD 场界中心</button><button id="tw-glb-sample-height" type="button">读取当前位置摄影高程</button></div>
+        <label>尺寸调整<select id="tw-glb-scale-mode"><option value="uniform">等比例缩放</option><option value="xyz">高级 · XYZ 独立缩放</option></select></label>
+        <div class="tw-grid">
+          <label>目标长度 X（m）<input id="tw-glb-length" type="number" min="0" step="any"/></label>
+          <label>目标宽度 Z（m）<input id="tw-glb-width" type="number" min="0" step="any"/></label>
+          <label>目标高度 Y（m）<input id="tw-glb-height" type="number" min="0" step="any"/></label>
+        </div>
+        <div class="tw-actions"><button id="tw-glb-reset-size" type="button">恢复核验原尺寸</button><button id="tw-glb-cancel-edit" type="button" hidden>退出编辑</button></div>
+      </div>
+    </details>
+    <details data-tw-group="glb" open>
+      <summary><span class="tw-step">04</span>企业标识与摄影遮挡</summary>
+      <div class="tw-body">
+        <label class="tw-check"><input id="tw-glb-brand-visible" type="checkbox"/>显示独立可替换宣传文字 / LOGO</label>
+        <label>宣传文字<textarea id="tw-glb-brand-text" maxlength="200" rows="2">东方雄师 铁建劲旅
+编制经纬 筑梦城市</textarea></label>
+        <label>替换中铁二十四局 LOGO 图片<input id="tw-glb-logo" type="file" accept="image/png,image/jpeg,image/webp"/></label>
+        <div class="tw-actions"><button id="tw-glb-clear-logo" type="button">移除附加 LOGO</button></div>
+        <p class="tw-hint">默认采用提供模型中的中铁二十四局 LOGO，支持上传替换或移除。宣传墙与文字独立管理，原模型的国旗与安全警示保留。</p>
+        <label class="tw-check"><input id="tw-glb-clipping" type="checkbox" checked/>按建筑底面自动遮挡所选摄影模型</label>
+        <p id="tw-glb-clip-status" class="tw-hint" role="status">显示、隐藏与删除会同步更新对应摄影遮挡。</p>
+      </div>
+    </details>
+    <details id="tw-datum-section" hidden>
       <summary><span class="tw-step">03</span>相对高程基准</summary>
       <div class="tw-body">
         <p id="tw-road-datum" class="tw-hint" data-tw-group="road">优先以起点 K0+000.000 的模型表面为 ±0.000。起点缺测时，在半幅路宽内（最远 10 m）就近取高，仍以 K0 为校准桩号。附近也缺测时，改在沿线首个有效路面桩号校准。下方标高填在校准桩号处。</p>
@@ -130,7 +167,7 @@ export const temporaryWorksFormHtml = `
         <label><span id="tw-finished-label">校准桩号处路面顶相对标高（m）</span><input id="tw-finished" type="number" step="any" placeholder="相对 ±0.000，可为负值"/></label>
       </div>
     </details>
-    <details open>
+    <details id="tw-design-section" open>
       <summary><span class="tw-step">04</span><span id="tw-section-title">便道断面与分段纵坡</span></summary>
       <div class="tw-body">
         <div data-tw-group="site" class="tw-subgroup">
@@ -150,24 +187,24 @@ export const temporaryWorksFormHtml = `
         <p class="tw-hint">断面 CAD 可选择竖直线读取厚度，PDF 或图片可对照原图填写厚度与场地坡度。</p>
         </div>
         <div class="tw-grid">
-          <label><span id="tw-hardening-label">硬化层厚度（m）</span><input id="tw-thickness" type="number" min="0" step="any" placeholder="向下垂距"/></label>
+          <label><span id="tw-hardening-label">硬化层厚度（m）</span><input id="tw-thickness" type="number" min="0" step="any" placeholder="向上叠加厚度"/></label>
           <label><span id="tw-treatment-label">地基处理深度（m）</span><input id="tw-treatment" type="number" min="0" step="any" value="0"/></label>
         </div>
         <p class="tw-hint" data-tw-group="site">另挖深度填 0 时，计量至地基处理顶面。若需挖至处理底面，填写设计处理厚度。</p>
         <div data-tw-group="road" class="tw-subgroup">
           <p class="tw-subtitle">便道横断面</p>
           <label>路面总宽（m）<input id="tw-width" type="number" min="0" step="any" placeholder="两侧路面边缘之间的水平距离"/></label>
-          <div class="tw-grid">
+          <div class="tw-grid" hidden>
             <label>路基边坡 · 高<input id="tw-slope-height" type="number" min="0" step="any" value="1"/></label>
-            <label>路基边坡 · 宽<input id="tw-slope-width" type="number" min="0" step="any" placeholder="例如 1.5"/></label>
+            <label>路基边坡 · 宽<input id="tw-slope-width" type="number" min="0" step="any" value="0"/></label>
           </div>
-          <p class="tw-hint">高宽比 1∶1.5 表示竖向变化 1 m、水平展开 1.5 m。处理底面位于硬化顶面以下，垂距为硬化层厚度与地基处理深度之和。从路面边缘向下按该比例向两侧展开，计算底面取地基处理底面。</p>
+          <p class="tw-hint">处理底面逐点贴合所选摄影表面，向上叠加处理厚度和硬化厚度。结构侧边竖直封闭，层厚按竖向距离控制；陡坎和缺测段将标为未生成。</p>
           <div id="tw-road-section-preview"></div>
-          <p class="tw-subtitle">分段纵坡</p>
-          <p class="tw-hint">从所示起点算起，里程单位 m，沿起点至终点升高填正值，降低填负值。各坡段按原 CAD 桩号连续覆盖全长。模型外或空洞处跳过建模和计量，重新进入覆盖范围时沿用原桩号与纵坡。</p>
-          <div class="tw-grade-grid tw-grade-head"><span>起里程（m）</span><span>止里程（m）</span><span>纵坡（%）</span><span></span></div>
+          <p class="tw-subtitle">施工里程分段</p>
+          <p class="tw-hint">保留原 CAD 桩号与分段位置，实际高程由摄影表面决定。分段不会改变结构厚度，缺测区不会补造高程。</p>
+          <div class="tw-grade-grid tw-grade-head"><span>起里程（m）</span><span>止里程（m）</span><span class="tw-legacy-grade">历史纵坡（%）</span><span></span></div>
           <div id="tw-grades"></div>
-          <button type="button" id="tw-add-grade" disabled>添加坡段</button>
+          <button type="button" id="tw-add-grade" disabled>添加里程段</button>
           <p id="tw-grade-status" class="tw-hint" role="status"></p>
         </div>
         <div data-tw-group="site" class="tw-subgroup">
@@ -178,28 +215,28 @@ export const temporaryWorksFormHtml = `
           </div>
           <p class="tw-hint">沿对应方向升高时取正，两个坡度均为 0 时按水平硬化面计算。</p>
         </div>
-        <label class="tw-check tw-confirm"><input id="tw-confirmed" type="checkbox"/>已核对设计标高、断面参数与坡度</label>
+        <label class="tw-check tw-confirm"><input id="tw-confirmed" type="checkbox"/>已核对路宽、结构厚度与摄影表面</label>
       </div>
     </details>
     <details open>
-      <summary><span class="tw-step">05</span>采样与土方估算</summary>
+      <summary><span class="tw-step">05</span>预览与状态</summary>
       <div class="tw-body">
         <label>采样间距（m）<input id="tw-grid" type="number" min="0" step="any" value="2"/></label>
         <p data-tw-group="road" class="tw-hint">便道按所填间距生成网格，自动分批读取摄影模型高程。可在计算过程中取消。</p>
-        <p class="tw-hint">间距越小，采样越密。仅统计有模型表面支撑的网格，边缘空缺会减少计量面积。摄影表面可能包含树木与构筑物，请核对地面条件。</p>
+        <p class="tw-hint">间距越小，采样越密。缺测区不生成便道，摄影表面可能包含树木与构筑物，请核对实际地面条件。</p>
         <label class="tw-check"><input type="checkbox" id="tw-xray"/>透视显示埋入原地面的设计面</label>
         <div id="tw-draft-actions" class="tw-actions" hidden><button type="button" id="tw-draft-drawing" data-tw-group="road">查看完整 CAD 中心线</button><button type="button" id="tw-draft-visibility">隐藏模型预览</button><button type="button" id="tw-discard-draft">移除模型预览</button></div>
         <div id="tw-metrics" class="tw-metrics" aria-live="polite"></div>
       </div>
     </details>
     <div class="tw-records">
-      <h3>已保存方案</h3>
+      <h3>06 · 已保存方案</h3>
       <div id="tw-plans" class="tw-plans"></div>
     </div>
   </div>
 
   <div class="tw-foot">
     <div id="tw-status" class="tw-status" role="status" aria-live="polite">选择模型，导入 CAD 平面规划图。</div>
-    <div class="tw-actions"><button id="tw-run" type="button" class="tw-primary">计算并预览</button><button id="tw-cancel" type="button" disabled>取消</button><button id="tw-save" type="button" disabled>保存方案</button></div>
+    <div class="tw-actions"><button id="tw-run" type="button" class="tw-primary">生成并预览</button><button id="tw-cancel" type="button" disabled>取消</button><button id="tw-save" type="button" disabled>保存方案</button></div>
   </div>
 </div>`;
