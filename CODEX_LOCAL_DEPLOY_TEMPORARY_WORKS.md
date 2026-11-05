@@ -6,11 +6,11 @@
 
 - 仓库：https://github.com/cristinomcleary-ship-it/cesium.git
 - 交付分支：`feature/temporary-works-glb-integration`
-- 固定应用代码提交：`d4b92f43b7322f5ea35fc8ae624a6635e4f35de5`
+- 固定应用代码提交：`b1211276010be579bd50681c45f689bb9f7d2eda`
 - Draft PR：https://github.com/cristinomcleary-ship-it/cesium/pull/8 ，保持 Draft，不合并。
-- 私有资源包：`Cesium-Temporary-Works-Private-Assets-20261105.zip`，18,714,666 字节。
-- 包 SHA-256：`00c62bbe757d7d66c8cc6784923c253dea80e0d87c2ed1fa203c18812e9634db`。
-- 从用户提供的私有下载入口获取资源，或优先检查用户已下载的同名 ZIP；不要请求再次上传原 GLB。包内运行资源位于 `temporary-works/`。Library 标识和云端 /workspace 路径不是 Windows 文件路径。
+- 私有资源包：`Cesium-Temporary-Works-Private-Assets-20261105.zip`，R2 修正版，50,506,749 字节。
+- 包 SHA-256：`010b8d9b5826babdc139eeba6245e597abadfb936a9f801352c74bb505c90ba1`。
+- 从用户提供的私有下载入口获取资源，或优先检查用户已下载且哈希匹配的同名 ZIP（同名旧包不是 R2）；不要请求再次上传原 GLB。包内运行资源位于 `temporary-works/`。Library 标识和云端 /workspace 路径不是 Windows 文件路径。
 
 ## 1. 识别原工程和回退点
 
@@ -31,7 +31,7 @@
 
 ```powershell
 git fetch origin feature/temporary-works-glb-integration
-git cat-file -e d4b92f43b7322f5ea35fc8ae624a6635e4f35de5^{commit}
+git cat-file -e b1211276010be579bd50681c45f689bb9f7d2eda^{commit}
 ```
 
 比较本机 HEAD、v1.2.0 和交付代码，检查本机新增功能及未提交修改。使用独立本地整合工作区先处理冲突和构建，不直接覆盖现用源码。根据实际历史采用安全快进、合并或逐项整合；不要把本机较新功能回退到旧版本。保留原始暂存/未暂存状态的记录，任何冲突按代码业务含义解决。
@@ -67,7 +67,7 @@ node tools/run-temporary-works-regression.mjs all
 node --test tools/inspect-video-ar-recovery.test.cjs tools/validate-platform-ar-checkpoints.test.mjs
 ```
 
-任何命令失败应记录并定位，不得被后续成功覆盖。参考 `docs/temporary-works-upgrade/test-results.md`：云端主套件 1270/1270、补充工具 18/18；5 个独立脚本已有 v1.2.0 同错误基线；Python 部分缺 cv2/paho。按本机实际环境运行适用附属测试，对已有失败逐项对照，新增失败须先处理。不能将已知失败简单计作通过。
+任何命令失败应记录并定位，不得被后续成功覆盖。参考 `docs/temporary-works-upgrade/test-results.md`：R2 云端主套件 1299/1299、品牌几何工具 25/25；此前补充工具 18/18；5 个独立脚本已有 v1.2.0 同错误基线；Python 部分缺 cv2/paho。按本机实际环境运行适用附属测试，对已有失败逐项对照，新增失败须先处理。不能将已知失败简单计作通过。
 
 在已确认的工程根目录创建唯一的新构建目录，禁止对原 dist 使用 emptyOutDir：
 
@@ -102,7 +102,9 @@ helper 会预检目标、最后写入 HTML、保留不相关旧文件，但不�
 
 通过原 URL 和原浏览器配置打开应用。原场景资料只读；新增验收内容使用独立可删除的测试方案，不删除生产设施或改写其位置。
 
-1. 项目部、钢筋棚：原尺寸、等比/XYZ 缩放、旋转、输入定位及摄影拾取、保存/刷新恢复、显隐/编辑/删除；关闭遮挡的独立坐标布置也要检查。
+1. 项目部、钢筋棚：先核实工程 CAD 单位/配准，选择各设施的闭合设计轮廓，点击“按图纸轮廓自动布置”。验证中心、朝向、长宽和保留高度、180° 反转、完整底面在界内及覆盖率；非矩形不能假定完全贴合。确认多点摄影有效率及高差，留意树木等地物和水平底面悬空；对照现场控制高程。再验证手动定位/等比/XYZ、保存刷新、显隐/编辑/删除；旧方案不能被自动重新布置。
+   云端取得的《平面布置图(2).dwg》未能确认驻地/钢筋厂闭合外轮廓，且 INSUNITS 与图示单位冲突。优先使用本机当前工程已上传并配准的真实图纸和已选设施边界；不得将泥浆厂/集土坑/单个钢筋工位当成整个厂区。确实缺少正确轮廓时明确标为未验收，不能猜造。
+   核对新版驻地屋顶、两翼、旗台、门墙及院内标识和钢筋棚两端，确认旧单位与项目名称已清除；新字是精确透明平面字面。检查临建专属照明在实际场景的效果，其他摄影和机械亮度应不变。网络面板的私有模型 URL 应带与 manifest 一致的 SHA 版本，刷新后不得继续加载旧包。
 2. 宣传墙：独立新增、文字/LOGO 更换及延迟读取后的新预览、保存/刷新、显隐/定位/删除。确认钢筋棚旧底栏残片不可见，项目部待配置图板未被当成真实项目资料。
 3. 摄影遮挡：关联正确图层，启用/关闭/隐藏/删除/重载/总开关、多临建同时存在、保留其他裁剪；比较实际场景像素及非目标区域。
 4. 便道：真实摄影上的处理层底面贴合、处理层和硬化层厚度、弯道/孔洞/陡坎、现场高程基准；确认新建不计算土方，旧历史方案仍读取。
