@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Cartesian3, Cesium3DTileset, ClippingPlane, ClippingPlaneCollection, ClippingPolygonCollection, Event, ImageBasedLighting, Model, type Viewer } from 'cesium';
+import { Cartesian3, Cesium3DTileset, ClippingPlane, ClippingPlaneCollection, ClippingPolygonCollection, CustomShader, CustomShaderTranslucencyMode, Event, ImageBasedLighting, LightingModel, Model, Primitive, ShadowMode, type MaterialAppearance, type Viewer } from 'cesium';
 import { getTemporaryWorksRuntimeGlbUrl, renderTemporaryWorksGlb } from './temporaryWorksGlbScene.ts';
 import type { TemporaryWorksGlbConfig, TemporaryWorksGlbResource } from './temporaryWorksGlb.ts';
 
@@ -27,7 +27,7 @@ function fixture(options:{destroyPrimitives?:boolean;failAdd?:boolean}={}) {
   const originalLoader=Model.fromGltfAsync,originalFetch=globalThis.fetch;
   const oldWindow=Object.getOwnPropertyDescriptor(globalThis,'window');
   Object.defineProperty(globalThis,'window',{configurable:true,value:{location:{href:'http://localhost/'}}});
-  globalThis.fetch=async()=>new Response(JSON.stringify({schemaVersion:1,assets:[asset]}),{status:200});
+  globalThis.fetch=async()=>new Response(JSON.stringify({schemaVersion:1,assets:[asset,{...asset,id:'wall'}]}),{status:200});
   const active=new Set<Model>(),entities=new Set<unknown>(),postUpdate=new Event();
   let viewerDestroyed=false;
   const sceneLight=Object.freeze({color:Object.freeze({red:1,green:1,blue:1}),intensity:2});
@@ -38,7 +38,7 @@ function fixture(options:{destroyPrimitives?:boolean;failAdd?:boolean}={}) {
   isDestroyed:()=>viewerDestroyed} as unknown as Viewer;
   const tileset=new Cesium3DTileset({}),other=new Cesium3DTileset({});
   const handles:ReturnType<typeof renderTemporaryWorksGlb>[]=[];
-  const render=(id='saved-plan',extra:Partial<TemporaryWorksGlbConfig>={})=>{
+  const render=(id='saved-plan',extra:Partial<TemporaryWorksGlbConfig> & {brightnessPercent?:number}={})=>{
     const handle=renderTemporaryWorksGlb(viewer,{...config,...extra,id,tileset});handles.push(handle);return handle;
   };
   return {active,tileset,other,postUpdate,render,viewer,sceneLight,setViewerDestroyed:()=>{viewerDestroyed=true;},close:()=>{
@@ -149,34 +149,92 @@ test('removing a foreign clipping owner restores the active plan and ready statu
   } finally {f.close();}
 });
 
-test('temporary works use neutral local light and model-owned IBL without changing scene/material settings',async()=>{
-  const f=fixture(),models:ReturnType<typeof modelStub>[]=[];
+test('temporary works retain PBR material channels with fixed local illumination and model-owned IBL',async()=>{
+  const f=fixture(),models:ReturnType<typeof modelStub>[]=[],shaders:CustomShader[]=[];
   try {
     Model.fromGltfAsync=async options=>{
       assert.ok(options.lightColor);
       assert.equal(options.lightColor.x,options.lightColor.y);assert.equal(options.lightColor.y,options.lightColor.z);
-      assert.ok(options.lightColor.x>2&&options.lightColor.x<=3,'modest lift above default SunLight');
-      assert.ok(options.environmentMapOptions?.brightness&&options.environmentMapOptions.brightness>1&&options.environmentMapOptions.brightness<=1.5);
+      assert.equal(options.lightColor.x,0,'the model receives no scene sunlight');
+      assert.equal(options.environmentMapOptions?.enabled,false,'no time-dependent environment capture');
       assert.equal(options.imageBasedLighting,undefined,'Cesium retains IBL ownership');
-      assert.equal(options.color,undefined);assert.equal(options.colorBlendMode,undefined);assert.equal(options.customShader,undefined);
-      assert.equal(options.shadows,undefined,'retain standard depth and shadow rendering');
+      assert.equal(options.color,undefined);assert.equal(options.colorBlendMode,undefined);
+      assert.ok(options.customShader instanceof CustomShader);shaders.push(options.customShader);
+      assert.equal(options.customShader.lightingModel,LightingModel.PBR,'retain legacy diffuse textures and alpha');
+      assert.equal(options.customShader.translucencyMode,CustomShaderTranslucencyMode.INHERIT);
+      assert.equal(options.shadows,ShadowMode.DISABLED,'solar shadow changes cannot darken the presentation model');
       const model=modelStub();models.push(model);return model as unknown as Model;
     };
     const first=f.render('first');await first.ready;
     const second=f.render('second');await second.ready;
     const a=models[0].imageBasedLighting,b=models[1].imageBasedLighting;
-    assert.notEqual(a,b);assert.notEqual(a.sphericalHarmonicCoefficients,b.sphericalHarmonicCoefficients);
-    assert.equal(a.sphericalHarmonicCoefficients.length,9);
-    assert.ok(a.sphericalHarmonicCoefficients.every(c=>[c.x,c.y,c.z].every(Number.isFinite)));
-    assert.ok(a.sphericalHarmonicCoefficients[0].x>0.35449,'fill exceeds Cesium default low ambient');
-    assert.equal(a.sphericalHarmonicCoefficients[0].x,a.sphericalHarmonicCoefficients[0].y);
-    assert.equal(a.sphericalHarmonicCoefficients[0].y,a.sphericalHarmonicCoefficients[0].z);
-    assert.equal(a.specularEnvironmentMaps,undefined,'retain model dynamic environment reflections');
+    assert.notEqual(a,b);assert.notEqual(shaders[0],shaders[1]);
+    assert.equal(a.imageBasedLightingFactor.x,0);assert.equal(a.imageBasedLightingFactor.y,0);
+    assert.equal(b.imageBasedLightingFactor.x,0);assert.equal(b.imageBasedLightingFactor.y,0);
     assert.equal(f.viewer.scene.light,f.sceneLight);assert.equal(f.sceneLight.intensity,2);
     first.destroy();first.destroy();assert.equal(a.isDestroyed(),true);assert.equal(models[0].destroyCalls,1);
+    assert.equal(shaders[0].isDestroyed(),true);assert.equal(shaders[1].isDestroyed(),false);
     assert.equal(b.isDestroyed(),false);assert.equal(models[1].destroyCalls,0);
-    second.destroy();assert.equal(b.isDestroyed(),true);assert.equal(models[1].destroyCalls,1);
+    second.destroy();assert.equal(b.isDestroyed(),true);assert.equal(models[1].destroyCalls,1);assert.equal(shaders[1].isDestroyed(),true);
   } finally {f.close();}
+});
+
+test('brightness before and after model readiness changes one uniform without loading or rebuilding clipping',async()=>{
+  const f=fixture(),entered=deferred<void>(),loading=deferred<Model>();
+  let shader:CustomShader|undefined,loads=0;
+  try {
+    Model.fromGltfAsync=async options=>{loads++;shader=options.customShader;entered.resolve();return loading.promise;};
+    const handle=f.render('adjusted',{brightnessPercent:125});await entered.promise;
+    assert.equal(shader!.uniforms.u_twBrightness.value,1.25);
+    const source=shader!.fragmentShaderText;
+    handle.setBrightness(150);assert.equal(handle.brightnessPercent,150);assert.equal(shader!.uniforms.u_twBrightness.value,1.5);
+    loading.resolve(modelStub() as unknown as Model);await handle.ready;
+    const clip=f.tileset.clippingPolygons;
+    for(const percent of [100,200,50,75,160])handle.setBrightness(percent);
+    assert.equal(loads,1);assert.equal(f.active.size,1);assert.equal(f.tileset.clippingPolygons,clip);
+    assert.equal(shader!.fragmentShaderText,source);assert.equal(shader!.uniforms.u_twBrightness.value,1.6);
+    assert.equal(f.viewer.scene.light,f.sceneLight);
+    handle.destroy();assert.equal(shader!.isDestroyed(),true);
+    assert.doesNotThrow(()=>handle.setBrightness(100));assert.equal(f.active.size,0);
+  } finally {f.close();}
+});
+
+test('early deletion releases the application-owned lighting shader even before GLB loading resolves',async()=>{
+  const f=fixture(),entered=deferred<void>(),loading=deferred<Model>();
+  let shader:CustomShader|undefined;
+  try {
+    Model.fromGltfAsync=async options=>{shader=options.customShader;entered.resolve();return loading.promise;};
+    const handle=f.render();await entered.promise;handle.destroy();
+    assert.equal(shader!.isDestroyed(),true);
+    const model=modelStub();loading.resolve(model as unknown as Model);await handle.ready;
+    assert.equal(model.destroyCalls,1);assert.equal(f.active.size,0);assert.equal(f.tileset.clippingPolygons,undefined);
+  } finally {f.close();}
+});
+
+test('multiple wall text planes share a safe material template, update uniforms without repainting and release resources',async()=>{
+  const f=fixture(),previous=Object.getOwnPropertyDescriptor(globalThis,'document');
+  let paints=0;
+  Object.defineProperty(globalThis,'document',{configurable:true,value:{createElement:(name:string)=>{
+    assert.equal(name,'canvas');
+    return {width:0,height:0,getContext:()=>({fillRect(){paints++;},fillText(){paints++;}})};
+  }}});
+  try {
+    Model.fromGltfAsync=async()=>modelStub() as unknown as Model;
+    const first=f.render('wall-one',{resourceId:'wall',branding:{visible:true,text:'中铁二十四局'}});await first.ready;
+    const second=f.render('wall-two',{resourceId:'wall',branding:{visible:true,text:'安全施工'},brightnessPercent:120});await second.ready;
+    const planes=[...f.active].filter(p=>p instanceof Primitive) as unknown as Primitive[];
+    assert.equal(planes.length,2);
+    const a=(planes[0].appearance as MaterialAppearance).material,b=(planes[1].appearance as MaterialAppearance).material;
+    assert.notEqual(a.uniforms.image,b.uniforms.image);
+    const image=a.uniforms.image,source=a.shaderSource,paintCount=paints;
+    first.setBrightness(170);assert.equal(a.uniforms.brightness,1.7);assert.equal(b.uniforms.brightness,1.2);
+    assert.equal(a.uniforms.image,image);assert.equal(a.shaderSource,source);assert.equal(paints,paintCount);
+    first.show=false;assert.equal(planes[0].show,false);assert.equal(planes[1].show,true);
+    first.destroy();assert.equal(planes[0].isDestroyed(),true);assert.equal(a.isDestroyed(),true);
+    assert.equal(b.isDestroyed(),false);second.destroy();assert.equal(b.isDestroyed(),true);assert.equal(f.active.size,0);
+  } finally {
+    f.close();if(previous)Object.defineProperty(globalThis,'document',previous);else Reflect.deleteProperty(globalThis,'document');
+  }
 });
 
 test('collections that do not destroy removed primitives cannot leak model-owned lighting',async()=>{

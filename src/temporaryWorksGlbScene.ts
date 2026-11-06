@@ -1,10 +1,10 @@
-import { Axis, BoundingSphere, Cartesian2, Cartesian3, Cesium3DTileset, Color, HeadingPitchRange,
-  ImageMaterialProperty, LabelStyle, Math as CesiumMath, Matrix3, Matrix4, Model, Plane, Quaternion,
+import { Axis, BoundingSphere, Cartesian2, Cartesian3, Cesium3DTileset, Color, GeometryInstance, HeadingPitchRange,
+  LabelStyle, Material, MaterialAppearance, Math as CesiumMath, Matrix3, Matrix4, Model, PlaneGeometry, Primitive,
   Transforms, VerticalOrigin, type Entity, type Viewer } from 'cesium';
 import { TemporaryWorksClippingManager } from './temporaryWorksClipping';
 import { getTemporaryWorksGlbFootprints, getTemporaryWorksGlbModelMatrix, loadTemporaryWorksGlbManifest,
   type TemporaryWorksGlbConfig, type TemporaryWorksGlbResource } from './temporaryWorksGlb';
-import { applyTemporaryWorksGlbAmbientFill, temporaryWorksGlbLightingOptions } from './temporaryWorksGlbLighting';
+import { applyTemporaryWorksGlbAmbientFill, createTemporaryWorksGlbLighting, temporaryWorksGlbLightingOptions } from './temporaryWorksGlbLighting';
 
 export type TemporaryWorksGlbStatus = { state: 'loading'|'ready'|'waiting'|'blocked'|'error'|'hidden'|'disabled'; message: string };
 const managers = new WeakMap<Viewer, TemporaryWorksClippingManager>();
@@ -18,7 +18,7 @@ export function getTemporaryWorksRuntimeGlbUrl(asset: TemporaryWorksGlbResource,
   }
   return url.href;
 }
-function clippingManager(viewer: Viewer) {
+export function getTemporaryWorksClippingManager(viewer: Viewer) {
   let manager = managers.get(viewer);
   if (!manager) { manager = new TemporaryWorksClippingManager(viewer); managers.set(viewer, manager); }
   return manager;
@@ -26,12 +26,14 @@ function clippingManager(viewer: Viewer) {
 
 /** Each handle owns only its primitive, branding entities and clipping ID. No global layer state changes. */
 export function renderTemporaryWorksGlb(viewer: Viewer, options: TemporaryWorksGlbConfig & {
-  id: string; tileset?: Cesium3DTileset; onStatus?: (status: TemporaryWorksGlbStatus) => void;
+  id: string; tileset?: Cesium3DTileset; onStatus?: (status: TemporaryWorksGlbStatus) => void; brightnessPercent?: number;
 }) {
-  const collection = viewer.scene.primitives, manager = clippingManager(viewer);
+  const collection = viewer.scene.primitives, manager = getTemporaryWorksClippingManager(viewer);
+  const lighting = createTemporaryWorksGlbLighting(options.placement, options.brightnessPercent);
   // Handles may overlap briefly while an edited plan is being validated. Never reuse the saved ID as ownership token.
   const clippingId = `tw-glb:${options.id}:${crypto.randomUUID()}`;
   const entities: Entity[] = [];
+  const brandingSurfaces: {primitive: Primitive; material: Material}[] = [];
   let model: Model | undefined, asset: TemporaryWorksGlbResource | undefined;
   let stopStatusWatch: (() => void) | undefined;
   let visible = true, destroyed = false, tileset = options.tileset;
@@ -76,6 +78,13 @@ export function renderTemporaryWorksGlb(viewer: Viewer, options: TemporaryWorksG
     // Covers destroyPrimitives=false collections and viewer teardown as well. Model owns
     // its default IBL/environment map, so this releases their GPU resources exactly once.
     if (model && !model.isDestroyed()) model.destroy();
+    for (const surface of brandingSurfaces) {
+      if (!viewer.isDestroyed() && collection.contains(surface.primitive)) collection.remove(surface.primitive);
+      if (!surface.primitive.isDestroyed()) surface.primitive.destroy();
+      if (!surface.material.isDestroyed()) surface.material.destroy();
+    }
+    brandingSurfaces.length = 0;
+    lighting.destroy();
   }
   async function addBranding() {
     const branding = options.branding;
@@ -120,8 +129,32 @@ export function renderTemporaryWorksGlb(viewer: Viewer, options: TemporaryWorksG
       const frame=Transforms.eastNorthUpToFixedFrame(Cartesian3.fromDegrees(longitude,latitude,height));
       const rotation=Matrix3.multiply(Matrix3.fromRotationZ(CesiumMath.toRadians(options.placement.headingDeg)),Matrix3.fromRotationX(Math.PI/2),new Matrix3());
       const worldRotation=Matrix3.multiply(Matrix4.getMatrix3(frame,new Matrix3()),rotation,new Matrix3());
-      entities.push(viewer.entities.add({name:`临建宣传面板 · ${options.id}`,position:face,orientation:Quaternion.fromRotationMatrix(worldRotation),
-        plane:{plane:new Plane(Cartesian3.UNIT_Z,0),dimensions:new Cartesian2(dimensions.length*0.98,dimensions.height*0.94),material:new ImageMaterialProperty({image:canvas})},show:visible}));
+      // A single depth-tested, unlit image plane. Brightness changes its float
+      // uniform, never this canvas/texture; it does not follow the scene's sun.
+      const material = new Material({fabric:{type:'TemporaryWorksPresentationImage',
+        // Cache only a serializable default template, never a particular canvas.
+        uniforms:{image:Material.DefaultImageId,brightness:lighting.brightnessPercent/100},
+        source:`czm_material czm_getMaterial(czm_materialInput materialInput) {
+          czm_material material = czm_getDefaultMaterial(materialInput);
+          vec4 texel = texture(image, materialInput.st);
+          vec3 colour = czm_srgbToLinear(texel.rgb) * brightness;
+          #ifndef HDR
+            colour = czm_linearToSrgb(czm_pbrNeutralTonemapping(colour));
+          #endif
+          material.diffuse = colour;
+          material.alpha = texel.a;
+          return material;
+        }`},translucent:false});
+      material.uniforms.image=canvas;
+      const surfaceMatrix=Matrix4.fromRotationTranslation(worldRotation,face);
+      Matrix4.multiplyByScale(surfaceMatrix,new Cartesian3(dimensions.length*0.98,dimensions.height*0.94,1),surfaceMatrix);
+      const primitive=new Primitive({geometryInstances:new GeometryInstance({
+        geometry:new PlaneGeometry({vertexFormat:MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat}),
+        modelMatrix:surfaceMatrix,
+      }),appearance:new MaterialAppearance({material,flat:true,faceForward:true,translucent:false}),
+      asynchronous:false,allowPicking:false,show:visible});
+      brandingSurfaces.push({primitive,material});
+      collection.add(primitive);
       return;
     }
     if (text) entities.push(viewer.entities.add({name:`临建宣传文字 · ${options.id}`,position,
@@ -146,6 +179,7 @@ export function renderTemporaryWorksGlb(viewer: Viewer, options: TemporaryWorksG
     const loaded = await Model.fromGltfAsync({url:getTemporaryWorksRuntimeGlbUrl(asset,base,window.location.href),
       modelMatrix:matrix,upAxis:Axis.Z,forwardAxis:Axis.X,minimumPixelSize:0,show:visible,
       ...temporaryWorksGlbLightingOptions(),
+      customShader:lighting.shader,
       incrementallyLoadTextures:false,enableVerticalExaggeration:false,id:`temporary-works:${options.id}`});
     if (destroyed || viewer.isDestroyed()) { if (!loaded.isDestroyed()) loaded.destroy(); return; }
     loaded.show = visible;
@@ -179,8 +213,14 @@ export function renderTemporaryWorksGlb(viewer: Viewer, options: TemporaryWorksG
     yard:{flag:false,spaces:0}, standardPlacement:undefined, bounds, ready, hasStructure:true,
     builtStructureCount:1, structureBuilt:[true], endpoints:[],
     get status() { return status; },
+    get brightnessPercent() { return lighting.brightnessPercent; },
+    setBrightness(percent: number) {
+      if (destroyed || !lighting.setBrightness(percent)) return;
+      for (const {material} of brandingSurfaces) material.uniforms.brightness = lighting.brightnessPercent / 100;
+      requestRender();
+    },
     get show() { return visible; },
-    set show(value:boolean) { visible = value; if (model && !model.isDestroyed()) model.show = value; entities.forEach(e => { e.show = value; }); syncClipping(); requestRender(); },
+    set show(value:boolean) { visible = value; if (model && !model.isDestroyed()) model.show = value; entities.forEach(e => { e.show = value; }); brandingSurfaces.forEach(e => { e.primitive.show = value; }); syncClipping(); requestRender(); },
     get xray() { return false; }, set xray(_value:boolean) { /* GLB always uses physical depth testing. */ },
     setTileset(value:Cesium3DTileset|undefined) { if (tileset !== value || status.state === 'waiting' || status.state === 'blocked') { tileset=value;syncClipping(); } },
     zoom() { if (!destroyed && !viewer.isDestroyed()) viewer.camera.flyToBoundingSphere(bounds,{offset:new HeadingPitchRange(-0.5,-0.6,Math.max(15,bounds.radius*2.8))}); },
