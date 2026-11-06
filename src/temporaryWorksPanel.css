@@ -121,3 +121,16 @@
 #tw-control-status[data-warning], #tw-overlay-status[data-state="error"] { color: #ffd294; }
 #tw-place-preview { border-color: var(--tw-accent); }
 #tw-cad-preview[data-picking] svg { cursor: crosshair; }
+
+/* New placements keep the existing CAD and project workbench lifecycle. */
+.tw-upgrade-switch { margin: 12px 10px 4px; font-weight: 650; }
+.tw-workbench[data-glb="true"] #tw-grid,
+.tw-workbench[data-glb="true"] label:has(> #tw-grid),
+.tw-workbench[data-glb="true"] label:has(> #tw-xray) { display: none; }
+.tw-workbench .tw-legacy-grade,
+.tw-workbench [data-grade-field="gradePct"] { display: none; }
+.tw-workbench .tw-grade-grid { grid-template-columns: 1fr 1fr 32px; }
+.tw-workbench input[readonly] { opacity: .7; background: rgba(20, 40, 60, .32); }
+.tw-workbench #tw-glb-asset-info,
+.tw-workbench #tw-glb-clip-status { padding: 9px; border-left: 3px solid #4bc9c1; background: rgba(75,201,193,.07); }
+.tw-workbench textarea { width: 100%; box-sizing: border-box; resize: vertical; color: inherit; font: inherit; border: 1px solid rgba(130,168,192,.3); border-radius: 5px; padding: 7px; background: rgba(13,26,38,.6); }

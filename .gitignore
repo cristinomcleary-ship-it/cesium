@@ -45,3 +45,11 @@ acad.err
 
 # Proprietary standalone SDK runtime, installed locally only
 /tools/sketchup-sdk/
+
+# Private temporary-works assets and derived model evidence must never be committed
+/node_modules
+/public/models/temporary-works/
+/private-assets/
+/private-asset-audit/
+/docs/temporary-works-upgrade/assets-*.json
+/docs/temporary-works-upgrade/private/
