@@ -46,6 +46,8 @@ type RoadAudit = {
   pavementStationRange?: [number, number];
   bendJoin?: "round-union";
   samplingBatches?: number;
+  samplePartitions?: number;
+  peakWorkingSamples?: number;
   length: number; reversed: boolean; grades: RoadGradeRange[]; slopeHeight: number; slopeWidth: number; referenceStation: number;
   hardeningBottomWidth: number; formationWidth: number; pavementArea: number; coveredPavementArea: number;
 };
@@ -1581,7 +1583,7 @@ export class TemporaryWorksPanel {
             (extra, batch) => {
               ++samplingBatches;
               if (batch.phase === "datum") return sample(extra.map(frame.localToGeo), progress("搜索起点附近的模型表面"));
-              const stage = batch.phase === "initial" ? `第 ${batch.chunk} 个网格分区 · 读取路基表面` : "全线模型覆盖边缘加密";
+              const stage = batch.phase === "initial" ? `第 ${batch.chunk} 个网格分区 · 读取路基表面` : `第 ${batch.chunk} 个网格分区 · 核验并加密摄影表面`;
               return sample(extra.map(frame.localToGeo), done => {
                 if (!job.signal.aborted) this.status(`${stage} ${batch.offset+done} / ${batch.total}，累计已读取 ${batch.completed+done} 个网格位置`);
               });
@@ -1589,7 +1591,7 @@ export class TemporaryWorksPanel {
           job.signal.throwIfAborted();
           design.reference = r.vertices.length ? {x:r.vertices[0].x,y:r.vertices[0].y} : points[0];
           design.referenceHeight = r.vertices[0]?.groundHeight ?? 0;
-          const audit: RoadAudit = {surfaceMode:"draped", missingTriangles:r.missingTriangles,steepTriangles:r.steepTriangles,unresolvedTriangles:r.unresolvedTriangles,maxObservedDeviation:r.maxObservedDeviation,sampleSpacing:r.sampleSpacing,surfaceTolerance:r.surfaceTolerance,maxSlope:r.maxSlope, length:r.length, reversed, bendJoin:r.bendJoin, samplingBatches, grades:roadInput.grades, slopeHeight:roadInput.slopeHeight, slopeWidth:roadInput.slopeWidth,
+          const audit: RoadAudit = {surfaceMode:"draped", missingTriangles:r.missingTriangles,steepTriangles:r.steepTriangles,unresolvedTriangles:r.unresolvedTriangles,maxObservedDeviation:r.maxObservedDeviation,sampleSpacing:r.sampleSpacing,surfaceTolerance:r.surfaceTolerance,maxSlope:r.maxSlope, length:r.length, reversed, bendJoin:r.bendJoin, samplingBatches, samplePartitions:r.samplePartitions,peakWorkingSamples:r.peakWorkingSamples, grades:roadInput.grades, slopeHeight:roadInput.slopeHeight, slopeWidth:roadInput.slopeWidth,
             referenceStation:r.vertices[0]?.roadStation ?? 0, hardeningBottomWidth:r.hardeningBottomWidth, formationWidth:r.formationWidth,
             pavementArea:r.pavementArea, coveredPavementArea:r.coveredPavementArea};
           const vertices: Vertex[] = [];
@@ -1800,6 +1802,8 @@ export class TemporaryWorksPanel {
       `路宽 ${valueText(inputs.width!)} m，处理厚度 ${valueText(design.treatmentDepth)} m，硬化厚度 ${valueText(design.surfaceToTreatment)} m，竖向厚度逐点一致。`,
       `有效网格高程全部来自选定摄影表面。缺测、陡坎和未满足贴合精度的部分不生成。`,
       `表面取样 ${inputs.sampleCount} 个位置，初始采样间距 ${valueText(r.sampleSpacing ?? inputs.spacing)} m，细化 ${inputs.refinementLevels} 级，已生成网格最大探针偏差 ${valueText(r.maxObservedDeviation ?? 0)} m。`,
+      ...(r.samplePartitions ? [`沿线自动处理 ${valueText(r.samplePartitions)} 个网格分区，共 ${valueText(r.samplingBatches ?? 0)} 批摄影采样；分区接缝使用相同实测高程，累计采样量不受单分区点数上限限制。`] : []),
+      ...(r.peakWorkingSamples !== undefined ? [`单分区临时采样位置峰值 ${valueText(r.peakWorkingSamples)} 个，完成该分区后释放临时数据。`] : []),
       `贴合容差 ${valueText(r.surfaceTolerance ?? .02)} m，最大允许坡率 ${valueText(r.maxSlope ?? 1)}。实测穿透检查采用 0.00001 m 数值阈值；探针之间更小的摄影突起仍须在实际场景复核。`,
       ...r.grades.map(g=>`${stationLabel(g.start)} ～ ${stationLabel(g.end)} · 施工里程分段`),
     ];

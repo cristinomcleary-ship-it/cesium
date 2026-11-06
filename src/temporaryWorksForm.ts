@@ -227,7 +227,7 @@ export const temporaryWorksFormHtml = `
       <summary><span class="tw-step">05</span>预览与状态</summary>
       <div class="tw-body">
         <label>采样间距（m）<input id="tw-grid" type="number" min="0" step="any" value="2"/></label>
-        <p data-tw-group="road" class="tw-hint">便道按所填间距生成网格，自动分批读取摄影模型高程。可在计算过程中取消。</p>
+        <p data-tw-group="road" class="tw-hint">长距离便道自动分区采样并连续接合，无需手动拆线。初始间距取所填值、1 米与半路宽的较小值，实际间距见结果；可在计算过程中取消。</p>
         <p class="tw-hint">间距越小，采样越密。缺测区不生成便道，摄影表面可能包含树木与构筑物，请核对实际地面条件。</p>
         <label class="tw-check"><input type="checkbox" id="tw-xray"/>透视显示埋入原地面的设计面</label>
         <div id="tw-draft-actions" class="tw-actions" hidden><button type="button" id="tw-draft-drawing" data-tw-group="road">查看完整 CAD 中心线</button><button type="button" id="tw-draft-visibility">隐藏模型预览</button><button type="button" id="tw-discard-draft">移除模型预览</button></div>

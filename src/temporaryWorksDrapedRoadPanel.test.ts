@@ -43,3 +43,23 @@ test('the draped cross-section stays vertical with no dependence on hidden legac
   assert.match(host.innerHTML, /地基处理厚 0.5 m · 底面贴合摄影，侧边竖直/);
   assert.doesNotMatch(host.innerHTML, /边坡高宽比/);
 });
+
+test('saved draped-road facts distinguish cumulative samples from per-partition work and retain older records', () => {
+  const panel = Object.create(TemporaryWorksPanel.prototype);
+  const inputs = {
+    width: 4, spacing: 2, sampleCount: 520000, refinementLevels: 3,
+    feature: { points: [{x:0,y:0},{x:10000,y:0}] },
+    design: {treatmentDepth:.4,surfaceToTreatment:.2},
+    road: {surfaceMode:'draped',length:10000,grades:[],sampleSpacing:1},
+  };
+  const old = panel.roadFacts(structuredClone(inputs)).join('\n');
+  assert.match(old, /520000 个位置/);
+  assert.doesNotMatch(old, /undefined|NaN|自动处理/);
+  const restored = structuredClone({...inputs,road:{...inputs.road,samplePartitions:80,samplingBatches:1100,peakWorkingSamples:8000}});
+  const latest = panel.roadFacts(restored).join('\n');
+  assert.match(latest, /80 个网格分区/);
+  assert.match(latest, /1,100 批摄影采样/);
+  assert.match(latest, /峰值 8,000 个/);
+  assert.match(latest, /累计采样量不受单分区点数上限限制/);
+  assert.equal(inputs.road.sampleSpacing,1);
+});
