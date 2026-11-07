@@ -1,0 +1,923 @@
+{
+  "date": "2026-11-06",
+  "baseCommit": "19b150b3fa7c040a6ab4954ce7827efe4c25aec3",
+  "branch": "feature/designed-roads-hardening-lighting",
+  "scope": "Code-only Draft; real-scene GPU and performance acceptance incomplete",
+  "node": "v24.22.1",
+  "sourceFingerprint": "8bdd15c9eb907bd404521ea7a203c0de2c2316ff48c946a922e2943b737da220",
+  "changedSourceFiles": [
+    {
+      "path": "package-lock.json",
+      "sha256": "738bee5b58706691631dd96633d1f17a8a9e6ef90801d7e832790cfd958f26f4",
+      "bytes": 79922
+    },
+    {
+      "path": "package.json",
+      "sha256": "de80f454c5abc14e58c3c8f8de4a24f17cbc0a62c1610e71a24bc139681bd476",
+      "bytes": 862
+    },
+    {
+      "path": "src/temporaryWorksDesignedPanel.test.ts",
+      "sha256": "39b76c8d2e75e71a86b90074ea4f787f8cd5b5530a62702d1e9ee367bb9b3aff",
+      "bytes": 20458
+    },
+    {
+      "path": "src/temporaryWorksDesignedRoad.test.ts",
+      "sha256": "d5d91b4c81b91af932109a1797fbcd3f3023f818a9e5a7d91aa9d35bb9b685b3",
+      "bytes": 10980
+    },
+    {
+      "path": "src/temporaryWorksDesignedRoad.ts",
+      "sha256": "32cbde5fcb8dd83ae2852d9175571258e07dfa3915158d0604addd5e9526e207",
+      "bytes": 15153
+    },
+    {
+      "path": "src/temporaryWorksDesignedRoad.worker.ts",
+      "sha256": "5314cd60e9196574ac1aaa2a0f10bd607ef87dcfd02ae137492172a243c2fdd9",
+      "bytes": 992
+    },
+    {
+      "path": "src/temporaryWorksDesignedRoadTransfer.ts",
+      "sha256": "7efb924810beb72ef5b832e8196626c431bac7e6435029ed737a30f6d6d6cdb2",
+      "bytes": 2952
+    },
+    {
+      "path": "src/temporaryWorksDrapedRoadPanel.test.ts",
+      "sha256": "2294ec702bb63e88ace926c1713547fc4953f6004cefb050e0437654a7a5d99d",
+      "bytes": 5565
+    },
+    {
+      "path": "src/temporaryWorksForm.ts",
+      "sha256": "2f8291c14e2f67fb1ff6429b4e85118c41c755ed49b892ff243f55ee96a8ed94",
+      "bytes": 24062
+    },
+    {
+      "path": "src/temporaryWorksGlbLifecycle.test.ts",
+      "sha256": "cc4166860c8c7ef53abaadb311ca20b475f0d1c1d770bea91300103b06e14709",
+      "bytes": 19234
+    },
+    {
+      "path": "src/temporaryWorksGlbLighting.ts",
+      "sha256": "f9927f33d202574c3d0ec13ac4d0c4592b61e846081fac184b86ba579ecbc8c9",
+      "bytes": 4710
+    },
+    {
+      "path": "src/temporaryWorksGlbPanel.test.ts",
+      "sha256": "4225b661ad7c933e2e3ce83214c5d66165ea1c6342bb5319436b25a10f1f5dba",
+      "bytes": 17676
+    },
+    {
+      "path": "src/temporaryWorksGlbScene.ts",
+      "sha256": "ac8e6327e8fb47b481627a531d257d8e45d8f5f5c22ede63dd320bfb0de758c7",
+      "bytes": 14893
+    },
+    {
+      "path": "src/temporaryWorksHardening.test.ts",
+      "sha256": "174ec72d3914c881460ce3f14ca6acd3dfa21a8ebbddb2cc3259413f311b0565",
+      "bytes": 15556
+    },
+    {
+      "path": "src/temporaryWorksHardening.ts",
+      "sha256": "616451f3db45c5a408ad4767dad2b9e3eb1f502a04f2c980a9034aba3fb28aa3",
+      "bytes": 26842
+    },
+    {
+      "path": "src/temporaryWorksHardening.worker.ts",
+      "sha256": "2390240aafb9a524c7213479a112f7f882ecdc88de17456c2da25af8b067d17b",
+      "bytes": 481
+    },
+    {
+      "path": "src/temporaryWorksHardeningEditor.css",
+      "sha256": "4ffe2bb8518e91c79579e06cd606771f41481793099f5db173198b498def2eac",
+      "bytes": 2220
+    },
+    {
+      "path": "src/temporaryWorksHardeningEditor.test.ts",
+      "sha256": "273ffa74dd9b8c5cd206660353ed185756bac424b636b0b8c363ac12721d0a58",
+      "bytes": 8899
+    },
+    {
+      "path": "src/temporaryWorksHardeningEditor.ts",
+      "sha256": "eff8f473813daaee988e03520a29e721f3f223f9ae9b0f730fdf4948d2437f96",
+      "bytes": 36571
+    },
+    {
+      "path": "src/temporaryWorksHardeningEditorGeometry.ts",
+      "sha256": "d1ad0bd3de902f5a8118fb03f71b45c43313285ed565634733edae83241a9188",
+      "bytes": 4804
+    },
+    {
+      "path": "src/temporaryWorksLifecycle.test.ts",
+      "sha256": "c23e2d1b6ce661c2f3bea05502ffd3eff22384982bd574b4995468b619ac6308",
+      "bytes": 4635
+    },
+    {
+      "path": "src/temporaryWorksLightingPreferences.test.ts",
+      "sha256": "ad78984e3e9bafd6c6200124b4f9b550bcd4ff2f36b2c34ac8a3c2aeb920a815",
+      "bytes": 4591
+    },
+    {
+      "path": "src/temporaryWorksLightingPreferences.ts",
+      "sha256": "b663dcbe75108f41b6aa10a9a420e1aaf08bb797a9aed47204326852097042a0",
+      "bytes": 3686
+    },
+    {
+      "path": "src/temporaryWorksPanel.css",
+      "sha256": "916bbba17f01ee02ed337a1fa6f0f78a4cb249faed1759613e21bd0c0167564b",
+      "bytes": 9118
+    },
+    {
+      "path": "src/temporaryWorksPanel.ts",
+      "sha256": "0e7ebaf462386834b576abfbfdff62dbe892a641212426d0cdc280c20eab10d4",
+      "bytes": 147160
+    },
+    {
+      "path": "src/temporaryWorksRoadSectionView.ts",
+      "sha256": "d43aa5fbd64dc52a9f588182b6af9d0798d931a34a57c1a0edfe1d7f6d2dc2c4",
+      "bytes": 3057
+    },
+    {
+      "path": "src/temporaryWorksSurfaceComposition.test.ts",
+      "sha256": "e78083fac7018adfc3610c6d9bc01ea29674c011831af172bb5c8461beba8ee4",
+      "bytes": 13739
+    },
+    {
+      "path": "src/temporaryWorksSurfaceComposition.ts",
+      "sha256": "9ae3f00f6f89df2c51252fd11244a6042c12a1bc4bac4f1097abdc91dd5198bd",
+      "bytes": 14759
+    },
+    {
+      "path": "src/temporaryWorksSurfacePlans.test.ts",
+      "sha256": "64ae634026143eafef30bc60d980fcf75643d7dd069ddf1b583f85b1d8af8112",
+      "bytes": 11944
+    },
+    {
+      "path": "src/temporaryWorksSurfacePlans.ts",
+      "sha256": "8623f7335c000e8d1a19682e12f9e8d9b2246c790c1cbbd5704ad64aa8e816b3",
+      "bytes": 18115
+    },
+    {
+      "path": "src/temporaryWorksSurfaceScene.test.ts",
+      "sha256": "3c635579bceed4db29dc2a7fb6e8a43ea872b57778db6fbabaff1531517364cb",
+      "bytes": 9642
+    },
+    {
+      "path": "src/temporaryWorksSurfaceScene.ts",
+      "sha256": "2881a1ffc1147d6508091b586a9355be0d31bb6021e8909460e7a7e3938948a5",
+      "bytes": 15379
+    }
+  ],
+  "mainRegression": {
+    "startedAt": "2026-11-06T18:26:36.305Z",
+    "finishedAt": "2026-11-06T18:27:50.297Z",
+    "summary": {
+      "tests": 1420,
+      "suites": 0,
+      "pass": 1420,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "duration_ms": 73824.750576
+    },
+    "exitCode": 0,
+    "files": [
+      {
+        "path": "server/management/dashboardMetrics.test.ts",
+        "sha256": "444a16f6929408736b8f88a071ae07e932efdc04db47d37c2a253c0d4e32c9d5"
+      },
+      {
+        "path": "server/management/eventBridge.http.test.ts",
+        "sha256": "185bb0804fa130e465f0581faa59f92c8ca4694b8f114a997b581439e766c172"
+      },
+      {
+        "path": "server/management/fileLifecycle.http.test.ts",
+        "sha256": "a7f60564c1cf40e5ea1d61d74fe04360ce27cf5a48f74a13d20109ed477c20fb"
+      },
+      {
+        "path": "server/management/libraryEvidence.test.ts",
+        "sha256": "a5852d8a8ba0198ceb70f8ba7a1fba4962ce3a81b02738a3b4b5d5dcc545c632"
+      },
+      {
+        "path": "server/management/libraryPermissions.test.ts",
+        "sha256": "bd98ee9728c70a5d06a3eb86d9b5195defd00c3e243eebf40d4b79f571e18224"
+      },
+      {
+        "path": "server/management/machineryHttp.test.ts",
+        "sha256": "e33de9a5ea3fb35938001a357800363e484de69a7e16402fc8f382c0d60c312a"
+      },
+      {
+        "path": "server/management/machineryTelemetryGateway.test.ts",
+        "sha256": "079f8d5cdcd8f32f841f3f0a722237cb5ff5feb340f02b098c301dbdb0307666"
+      },
+      {
+        "path": "server/management/positioningGateway.test.ts",
+        "sha256": "a4b88fd05916a5ebf26fa40969e6439c4fd84c7a5c712c63aabe1166eedcb73a"
+      },
+      {
+        "path": "server/management/railSafetyHttp.test.ts",
+        "sha256": "30036e935c2b5d5d834450c6c6d2b8aec5a9eb9078e5b000b9ff827031e4d0d2"
+      },
+      {
+        "path": "server/management/railSafetyRisk.test.ts",
+        "sha256": "b6358bc72392b944024fccf3835e287418a4fc946fc2af8e2effc6b4e17f860f"
+      },
+      {
+        "path": "server/management/railwayTask.test.ts",
+        "sha256": "d4ac104fec41eefda48cad15eee524421e0a78c9c84e0aef13420aaef7e20809"
+      },
+      {
+        "path": "server/management/railwayWorkflow.http.test.ts",
+        "sha256": "8f3e14a4372ed849e8ca5f3e228fb2d39bb010636f3ff4a8b81f63e37a7cf7ea"
+      },
+      {
+        "path": "server/management/reliabilityHttp.test.ts",
+        "sha256": "28ab2f589026b5b00d06e8a132c800234be4e9aee4734e1bc9c1a31ee81b7176"
+      },
+      {
+        "path": "server/management/resourceUsage.test.ts",
+        "sha256": "8172340f4037449a090564bb67ac276c8a5c2fe780ff4ac438c8b2c503ddeee3"
+      },
+      {
+        "path": "server/management/taskResources.test.ts",
+        "sha256": "dc60475f72378e6487d17538bc055a72aee20aa483c71dc8617f0368bebc71e0"
+      },
+      {
+        "path": "server/managementStore.test.ts",
+        "sha256": "ae952580a348a583583a60424a56ab7c6d089bedb86cfed90cf9507a385d0685"
+      },
+      {
+        "path": "server/modelOptimization.test.ts",
+        "sha256": "d2d184feea94e2bd548d4fa6819bbd31387bd789875d3a18899bd57c69f9c53f"
+      },
+      {
+        "path": "server/projectLibrary.test.ts",
+        "sha256": "dde2245814a47cf2b7009a9bf290ef746eec217d4b269fa9a8aa9dbbda22b449"
+      },
+      {
+        "path": "server/safetyEventStore.test.ts",
+        "sha256": "6f167802e6b302209821abe13eba34d70695a0bdb4f0ca9171b4108a3283fdd3"
+      },
+      {
+        "path": "server/safetySpatialStore.test.ts",
+        "sha256": "b28c902d2b80e8209e4ce926b2d9adbca3e1eceaa61e66ab0740eebca0426453"
+      },
+      {
+        "path": "src/cadGeometryScheduler.test.ts",
+        "sha256": "f2ba687cd12d5b96fc4000378c295fd4369ddc591573e819d70d7a5d5c2c63a8"
+      },
+      {
+        "path": "src/cadImport.test.ts",
+        "sha256": "e0a929324bca6ed8dacba843f9786fdf8f12c9c380c89a836ec976b5e7d43b33"
+      },
+      {
+        "path": "src/cadImportWorkerClient.test.ts",
+        "sha256": "29e631cd809190c776e37e671eedf2578cd428a2b271a1ba29706936b893948a"
+      },
+      {
+        "path": "src/cadLoadRegistry.test.ts",
+        "sha256": "c35ff7a9f0279c9485182ec617fde4285056735568256cf65f68d93ec75160bb"
+      },
+      {
+        "path": "src/cadPointVisibility.test.ts",
+        "sha256": "aadc50ec67c146b6e8fb6835b10e46a9501f50bcdf7fb5931ecb28ba39f00c88"
+      },
+      {
+        "path": "src/cadPrimitiveBatching.test.ts",
+        "sha256": "0f3074731050ebfea781614b54341b3c5e868cc71543d82cc8244a5ab56f6d3d"
+      },
+      {
+        "path": "src/cadSpatialBatcher.test.ts",
+        "sha256": "4a752c341fae0d0e63ae579ca760e863fb1548f2f3b2919c21fef2435e7f9d21"
+      },
+      {
+        "path": "src/cameraNavigationPerformance.test.ts",
+        "sha256": "0d54427713c2df4b33ec7b980d7941c6fe302430df76499c05c8259e560d380e"
+      },
+      {
+        "path": "src/ccCameraRegistration.test.ts",
+        "sha256": "c2cff5087d1f9362cc29ae3fb99f8c6c5ca15c39b739b651e03775fa7f14039e"
+      },
+      {
+        "path": "src/ccCameraSmoothing.test.ts",
+        "sha256": "af48ce6b5a8e63ac6ebe6207434a046ddbd1fc5c4e375d58c53885ed01f94ba0"
+      },
+      {
+        "path": "src/ccCameraTrack.test.ts",
+        "sha256": "f1900b4cc1c1e602ccf6b03930299635193faa0b3df619249312fb0ef80b48d0"
+      },
+      {
+        "path": "src/ccSceneRegistration.test.ts",
+        "sha256": "651780dab59003cc4329208df17a3b6b1f5e7c32aa4b6b232151b68fee43d312"
+      },
+      {
+        "path": "src/cursorCoordinates.test.ts",
+        "sha256": "3dad11c4524ed8cb9d0c89169e3994d9177fe6843b286dde49f79e10d1412cfe"
+      },
+      {
+        "path": "src/digitalTwinDataCenter.test.ts",
+        "sha256": "bb71302f39a02871e40f34d479319d1bedae403e6e54fcaf6339034781787bd3"
+      },
+      {
+        "path": "src/dxfLoader.test.ts",
+        "sha256": "9a31481199d4196fc48050b568ba8d0dad635f8a85caa65a60a8e0b62205e793"
+      },
+      {
+        "path": "src/electronicSandTablePresentation.test.ts",
+        "sha256": "474fcf572b18b0397ab12cbfe3c155906a3ba4c6ed14f5fc972089c5040abb8a"
+      },
+      {
+        "path": "src/foundationPitDisplay.test.ts",
+        "sha256": "eee4f8fae65463eae8da49da4d61ebb4823e5fa3612f9dcfa699fbf2cd04022f"
+      },
+      {
+        "path": "src/machinery/machinery.test.ts",
+        "sha256": "3d2e9ea583195797ec93d9b75481f455d04e2d6e829495907c3fc89b0cc18018"
+      },
+      {
+        "path": "src/machinery/runtimeGeometry.test.ts",
+        "sha256": "f8e89babdf5ff780ea864d2a82bf2e63f9c50ea8cd5f5652e8f0add8ba90e822"
+      },
+      {
+        "path": "src/machineryCaptureSession.test.ts",
+        "sha256": "53ffe27523e0cc21ebfcb8845c2d2254bfcfaa4436d17df4c69f1d5dd3d0e9c5"
+      },
+      {
+        "path": "src/machineryDocuments.test.ts",
+        "sha256": "a54f62316a650f8c670e220627edcfcf9f3897012f3f8584b7ea4d57088cb224"
+      },
+      {
+        "path": "src/machineryEditorParameters.test.ts",
+        "sha256": "f842857e17e683714e6ea73f25a9228ce22ad75fc59bfc3f5531b0bad7b594bc"
+      },
+      {
+        "path": "src/machineryIntegration.test.ts",
+        "sha256": "9568e691b75e1e5d556607fee5dae066424f8753fc214c4d50c18e40f5444e37"
+      },
+      {
+        "path": "src/machineryPoseRecorder.test.ts",
+        "sha256": "2a26c783e69d2d9804021b70fd5e8bb0c93424927e4e314e699bc2fc79a01d4c"
+      },
+      {
+        "path": "src/machinerySurfacePicker.test.ts",
+        "sha256": "5907768a43f7e065f3365c569187ea4a2d5026209b9db1ef0ff7fe4af51206f2"
+      },
+      {
+        "path": "src/machineryTelemetry.test.ts",
+        "sha256": "1dd48b102c07f2b8edd9f70d4751fdb1e66eba21fb403557b9be285e0226faf9"
+      },
+      {
+        "path": "src/machineryTelemetryController.test.ts",
+        "sha256": "6148d6114f9025a585efd074d1b3a91a70eec6a3797da8f65d5cbf03067197b1"
+      },
+      {
+        "path": "src/management/coordinationView.test.ts",
+        "sha256": "44cb2c530cde517d521dbfcea61fe87649f67234c54ba2cf005ee8a40b5c7c51"
+      },
+      {
+        "path": "src/management/fieldSceneState.test.ts",
+        "sha256": "5adedccbe42d7f1e90f5f0aac83af4905c4736520afd886d766d16dfe0f7a5da"
+      },
+      {
+        "path": "src/management/fieldView.test.ts",
+        "sha256": "e561b5dd094b431d897a63463ab39b96fa61098448891ec5f3fe7a2c3f7fcbd5"
+      },
+      {
+        "path": "src/management/formCategories.test.ts",
+        "sha256": "b3b2f386dbaa119006b8df971377fadb332f447daca97d9621b9fb4483fc133d"
+      },
+      {
+        "path": "src/management/ganttView.test.ts",
+        "sha256": "6f8a4258d15ddb7a188e1de7818f0ffc6571fbbd3ea26ab522d6d1ee6622b1ba"
+      },
+      {
+        "path": "src/management/metricsState.test.ts",
+        "sha256": "e9834f47894433354813328dc8d47545c9f276018821af36f1d70a36299280cf"
+      },
+      {
+        "path": "src/management/railwayFieldData.test.ts",
+        "sha256": "84a01e6d3065d0150469ecf7939b63065a53f56c420161f3fb9fbd4a8b5c2d86"
+      },
+      {
+        "path": "src/management/railwayPlanImport.test.ts",
+        "sha256": "dda898852ff8ce302ca838e189281ec8655f3066ca398f78124fb11d246248e2"
+      },
+      {
+        "path": "src/management/workflows.test.ts",
+        "sha256": "2a3afdc932b8090c71600bff71ee0df753fa3597c8194ecfa52b30d51800ab8c"
+      },
+      {
+        "path": "src/management/workpointRelations.test.ts",
+        "sha256": "42252ef97506e4a778189abbcc472d34e95a22b4bfce74627f5969dcce99f154"
+      },
+      {
+        "path": "src/markupDisplay.test.ts",
+        "sha256": "85b5f4b4628342342e6237c38b4cea73f5f7a6e8b94955ea64ec0daa06c3d86d"
+      },
+      {
+        "path": "src/modelQualityState.test.ts",
+        "sha256": "bfb419b01ede40362b862fda1d92a1db570407174d15246766f0db13a847ed61"
+      },
+      {
+        "path": "src/railSafetyDisplay.test.ts",
+        "sha256": "e39dc1d783a5bd530146fa78016cadee90d71f1ddff530f8e46e0a63f3128058"
+      },
+      {
+        "path": "src/railSafetyEffects.test.ts",
+        "sha256": "aaa99bb400a2e5283091c68a08ffcd304c7a87f4c7d42c192135a058e882aec4"
+      },
+      {
+        "path": "src/railSafetyFallDemo.test.ts",
+        "sha256": "abf689c2008d96d8d587d0278a10f7f9f0d8e4258f4f814b7b74ed0f0fd9b204"
+      },
+      {
+        "path": "src/railSafetyFallDemoGeometry.test.ts",
+        "sha256": "8f8d974c42d4c16cc931336aec67cf7f4e74ea53357a761e774f6e33bb8cf313"
+      },
+      {
+        "path": "src/railSafetyFallExportProject.test.ts",
+        "sha256": "073ccc980df82c560a1977fc8cf344be2d870743f59d61fd6276a89a3899aea4"
+      },
+      {
+        "path": "src/railSafetyFallProjection.test.ts",
+        "sha256": "db6206a966a5d2dd66929e9a32db5a1022b68323cd03701195f14e4002e4b463"
+      },
+      {
+        "path": "src/railSafetyFallProjectionClient.test.ts",
+        "sha256": "f0baf031d716d862af05b23478e0526fabeb24fd54ce6fc689997acfda1cc4ab"
+      },
+      {
+        "path": "src/railSafetyFallProjectionTexture.test.ts",
+        "sha256": "b9db9ef60eaad3fa3c52dac29482d42c81d7275d65c2ec345a2746996ba91d5c"
+      },
+      {
+        "path": "src/railSafetyGeometry.test.ts",
+        "sha256": "9e5914846b78f5f4e8d7f2b1fd4858eb896c76416616b0c8ca0af408c43f304b"
+      },
+      {
+        "path": "src/railSafetyPanelFallExport.test.ts",
+        "sha256": "2e413d2eb8dfecda8ee0c43aca6b272793488860b4b62b344a6c4c931a9ab9f7"
+      },
+      {
+        "path": "src/railSafetyPositioning.test.ts",
+        "sha256": "4731122b221fb60f018d0b36f5c7d43a232c22ead4bbdb97c91f8cb59f9ca9af"
+      },
+      {
+        "path": "src/railSafetyPositioningClient.test.ts",
+        "sha256": "2efadb50109359eae18ae25fd317e4af1a505ef68ec01f5cb6dcf91102146c01"
+      },
+      {
+        "path": "src/railSafetyProjectionRaster.test.ts",
+        "sha256": "1d0da2f6c5d179ba831392b3e60acad65baf478868dbcb2d2da805e595f1153b"
+      },
+      {
+        "path": "src/railSafetyScene.test.ts",
+        "sha256": "e1e6d17d970e4b41d7a10c437bad4031327b8bb4509d5b7dceab23bf1bcc45dc"
+      },
+      {
+        "path": "src/railSafetyTaskView.test.ts",
+        "sha256": "415c42e1fdf04db03950914b1fc25ae281933450d6fc7f1cb3abd24435ce0af0"
+      },
+      {
+        "path": "src/renderErrorRecovery.test.ts",
+        "sha256": "612447bd4e1fa8cd3d4eb1d74b91dd286ee1568ab65ef3ebf51002dbd57af4b8"
+      },
+      {
+        "path": "src/safetyCadPreviewBounds.test.ts",
+        "sha256": "136f2aee23e4d8251fdcb08d108c756f996dd402029d22edc5ff1c5986e79ba5"
+      },
+      {
+        "path": "src/safetyData.test.ts",
+        "sha256": "41b76a82de467d6a076a021bb4792f42613b7424e212f5c2c10c4356af1b2010"
+      },
+      {
+        "path": "src/safetyEventData.test.ts",
+        "sha256": "f79a52e38fab36901006b129d632beeb32bbc32c0c346290f875b5181a2c4a43"
+      },
+      {
+        "path": "src/safetyModelOptimization.test.ts",
+        "sha256": "61f69a5b7ac3191dc637af4cac145b1a854c69ff90c4b1ad001c49858532b039"
+      },
+      {
+        "path": "src/safetyPresentationRuntime.test.ts",
+        "sha256": "d323eddae185a6a7433c8e58dd82d35640f24cb4b3335d2cf7803e847fcd42db"
+      },
+      {
+        "path": "src/safetyScenePresentation.test.ts",
+        "sha256": "9ce0ff1ebfcaa753d89275db9f6a6e292851d1b28c8b6b45928c5a34105d34a8"
+      },
+      {
+        "path": "src/safetySceneVisibility.test.ts",
+        "sha256": "e24ff2919f32bfb49175cdc719a633b9ee5ac725810c823fbb30ac9daf644d3d"
+      },
+      {
+        "path": "src/safetySelection.test.ts",
+        "sha256": "a830dc9495c329e255555802db82910c7e42755867dfb7563dbae1e173be4b1d"
+      },
+      {
+        "path": "src/safetySpatial.test.ts",
+        "sha256": "adaa1d7ee6975aa18e0a0660c8a894ff7736f36e129a1f9b2125f1c930a18580"
+      },
+      {
+        "path": "src/safetySpatialDisplayGeometry.test.ts",
+        "sha256": "694c2053d17bfe7d532f9cd3d791a3106fa9154b4017027d2d9ce70f29f5fbca"
+      },
+      {
+        "path": "src/safetySpatialEditorGeometry.test.ts",
+        "sha256": "304455984752efe9f6f8c1b7600e5304d59da291febd1ef598ded1da2ca048d3"
+      },
+      {
+        "path": "src/safetyVideoRoam.test.ts",
+        "sha256": "13f48c3218a61ba608d088ac179582fca60c8a6e09005314b1ab5dafc69159c7"
+      },
+      {
+        "path": "src/safetyVideoStatus.test.ts",
+        "sha256": "b6c8622c864444a6040925298cacd4d01b2886dd1ce94ccf529bdb981d6bcb37"
+      },
+      {
+        "path": "src/safetyWorldEffectGeometry.test.ts",
+        "sha256": "62d3546a3c70c207a72b468b64f369913ace7ada7e3f40a7e5f9d1ddb8e0be9e"
+      },
+      {
+        "path": "src/sceneDisplayPanel.test.ts",
+        "sha256": "03bd70e33d1b8ac9c3fa121152536001d256b98be2002fbfcd0d6c18c338dac3"
+      },
+      {
+        "path": "src/sceneDisplayResources.test.ts",
+        "sha256": "399d9d12828275a93e87243807b6e9a231f2ea7f6052a939ecc7be22c499b2ce"
+      },
+      {
+        "path": "src/sceneDisplayStore.test.ts",
+        "sha256": "a9e6485b4cf060fae37795f45b3072ac42b1eae0e9f4928678ab5a1b11c08b60"
+      },
+      {
+        "path": "src/sceneVideoReady.test.ts",
+        "sha256": "7b296286754e9404610ec9f1a9b0bc682682271cafda133aab6f022427b3a7b8"
+      },
+      {
+        "path": "src/sceneVideoRecorder.test.ts",
+        "sha256": "8879f8d0c7ba142c194fbeecd4e5ef79050e9ca688b3844c84913c341040b95a"
+      },
+      {
+        "path": "src/subsurfacePicking.test.ts",
+        "sha256": "c35b92bdc77380d36ef85f11f89d646074bcf9644476d4ea24ba0ac13b2a7ef1"
+      },
+      {
+        "path": "src/temporaryWorksArchitecture.test.ts",
+        "sha256": "2136a118ea4e727e2c67b908754924651ffab1ad53b951fc48556ec52c0bd993"
+      },
+      {
+        "path": "src/temporaryWorksBends.test.ts",
+        "sha256": "b543a059a03ea89144c8174c59d15f3d9c94d511fcfb91a868a1d76d48c51c2e"
+      },
+      {
+        "path": "src/temporaryWorksCad.test.ts",
+        "sha256": "05903c35c38d63167c3703ed413432e0b25603778c73a83fa29d5114ce15da5f"
+      },
+      {
+        "path": "src/temporaryWorksClipping.test.ts",
+        "sha256": "e3c95c99ae1fbd2e6cd46024dcc7760e74bb65870d6973a91d071a0d8e9df982"
+      },
+      {
+        "path": "src/temporaryWorksCompanySign.test.ts",
+        "sha256": "128f43a7d00d64528bf01dec7347cc4f9060399f86bbda88f927e6a27fe70b3f"
+      },
+      {
+        "path": "src/temporaryWorksCourtyard.test.ts",
+        "sha256": "63ff4332f2e6b4a07acaaf13ea8c6e3ca135131b16c7e5262157d39678079592"
+      },
+      {
+        "path": "src/temporaryWorksDesignedPanel.test.ts",
+        "sha256": "39b76c8d2e75e71a86b90074ea4f787f8cd5b5530a62702d1e9ee367bb9b3aff"
+      },
+      {
+        "path": "src/temporaryWorksDesignedRoad.test.ts",
+        "sha256": "d5d91b4c81b91af932109a1797fbcd3f3023f818a9e5a7d91aa9d35bb9b685b3"
+      },
+      {
+        "path": "src/temporaryWorksDrapedRoad.test.ts",
+        "sha256": "e34a36f1d0e62e8405b3510e9589a106ed47fe845afdf6bb0eb06b4c6aec1470"
+      },
+      {
+        "path": "src/temporaryWorksDrapedRoadBudget.test.ts",
+        "sha256": "b18e70c4c38cc6512da70f863bcddf26430d1a71a86ae3c9e833983a245cb7af"
+      },
+      {
+        "path": "src/temporaryWorksDrapedRoadPanel.test.ts",
+        "sha256": "2294ec702bb63e88ace926c1713547fc4953f6004cefb050e0437654a7a5d99d"
+      },
+      {
+        "path": "src/temporaryWorksGeometry.test.ts",
+        "sha256": "1bdfd3aba03534d15b3e079ac3006396928e014ee07f98b96ccb9234e1643af1"
+      },
+      {
+        "path": "src/temporaryWorksGlb.test.ts",
+        "sha256": "9f5be6b7368901feb6d9a30a7edee1cc9460197f3599c2a97e6e58af74999dbf"
+      },
+      {
+        "path": "src/temporaryWorksGlbAutoFit.test.ts",
+        "sha256": "0c2ee9e3c04f8b18d93f262dd951552ebc1b1c4e91ca87d5d72b827f9bc78fe1"
+      },
+      {
+        "path": "src/temporaryWorksGlbGrounding.test.ts",
+        "sha256": "c5c7590b6f26420d6c1f879832a39c95f11e38597c7b1883a0ed46e479ad7e2e"
+      },
+      {
+        "path": "src/temporaryWorksGlbLifecycle.test.ts",
+        "sha256": "cc4166860c8c7ef53abaadb311ca20b475f0d1c1d770bea91300103b06e14709"
+      },
+      {
+        "path": "src/temporaryWorksGlbPanel.test.ts",
+        "sha256": "4225b661ad7c933e2e3ce83214c5d66165ea1c6342bb5319436b25a10f1f5dba"
+      },
+      {
+        "path": "src/temporaryWorksGlbSite.test.ts",
+        "sha256": "effb3f9b7ed0e839eb6b7d1709a9a6496cc5e0d6a83143b3fcf87314e4b54ea3"
+      },
+      {
+        "path": "src/temporaryWorksHardening.test.ts",
+        "sha256": "174ec72d3914c881460ce3f14ca6acd3dfa21a8ebbddb2cc3259413f311b0565"
+      },
+      {
+        "path": "src/temporaryWorksHardeningEditor.test.ts",
+        "sha256": "273ffa74dd9b8c5cd206660353ed185756bac424b636b0b8c363ac12721d0a58"
+      },
+      {
+        "path": "src/temporaryWorksLifecycle.test.ts",
+        "sha256": "c23e2d1b6ce661c2f3bea05502ffd3eff22384982bd574b4995468b619ac6308"
+      },
+      {
+        "path": "src/temporaryWorksLightingPreferences.test.ts",
+        "sha256": "ad78984e3e9bafd6c6200124b4f9b550bcd4ff2f36b2c34ac8a3c2aeb920a815"
+      },
+      {
+        "path": "src/temporaryWorksPlacement.test.ts",
+        "sha256": "bc975caad7d6f88dcc017e421e28b674ed85615d7380b330a8da7ea1e86f588b"
+      },
+      {
+        "path": "src/temporaryWorksRoad.test.ts",
+        "sha256": "04d00f8904707b1904c50bd4ac2c9ff61f70294c6e9a4ebf6122b0074ec26cd6"
+      },
+      {
+        "path": "src/temporaryWorksRoadAxis.test.ts",
+        "sha256": "8890410f89fa109df12d26cbd2d4b053eb2e6474b704bf63d6b5b5616be64a19"
+      },
+      {
+        "path": "src/temporaryWorksRoadBudget.test.ts",
+        "sha256": "bc2f982a39e3e5d71a4d7009a2ae14aa24fb95ece6a1d7e8a106eef57f1b8f1f"
+      },
+      {
+        "path": "src/temporaryWorksRoadConflict.test.ts",
+        "sha256": "a891269d3f8816d620c5881520e926ffd02b1a33b8875d2b511016255951573d"
+      },
+      {
+        "path": "src/temporaryWorksRoadCoordinates.test.ts",
+        "sha256": "6cfc8ebd8dfbf084b6f64d72d67ba530950f1635b21b25d181d34aa458e33512"
+      },
+      {
+        "path": "src/temporaryWorksRoadCoverage.test.ts",
+        "sha256": "f3f488e1dac10739757657b88479c39d02e52005d7d2ecd907101d802488dbfd"
+      },
+      {
+        "path": "src/temporaryWorksRoadRows.test.ts",
+        "sha256": "6ceb5f965066b46ed69ef350c46fc56b8dcd076baca64c5947226927ac2baf08"
+      },
+      {
+        "path": "src/temporaryWorksRoadWorker.test.ts",
+        "sha256": "ed86de9e333f9241cd63a9a74c12eb2e96ce1726605fb1184511bcedba3a0ade"
+      },
+      {
+        "path": "src/temporaryWorksScene.test.ts",
+        "sha256": "2800605111efc173c85c7eb78f9978ab3f15b261b8abf31f829b6bc0c16216e0"
+      },
+      {
+        "path": "src/temporaryWorksSiteLayout.test.ts",
+        "sha256": "895e7d5541bf89e75a041742d891e0a4b5adbe1e1fa2974d8551c551bfe36187"
+      },
+      {
+        "path": "src/temporaryWorksSurfaceBounds.test.ts",
+        "sha256": "3f7f641a99f0b87057abef75edadacf250c2b9ed7a38a750373498379e07aeb4"
+      },
+      {
+        "path": "src/temporaryWorksSurfaceComposition.test.ts",
+        "sha256": "e78083fac7018adfc3610c6d9bc01ea29674c011831af172bb5c8461beba8ee4"
+      },
+      {
+        "path": "src/temporaryWorksSurfacePlans.test.ts",
+        "sha256": "64ae634026143eafef30bc60d980fcf75643d7dd069ddf1b583f85b1d8af8112"
+      },
+      {
+        "path": "src/temporaryWorksSurfaceScene.test.ts",
+        "sha256": "3c635579bceed4db29dc2a7fb6e8a43ea872b57778db6fbabaff1531517364cb"
+      },
+      {
+        "path": "src/temporaryWorksYard.test.ts",
+        "sha256": "a2ecccf22ca0f11a6096b26f254ab189b6fd53203ea06abf192f5dfa50b88fa2"
+      },
+      {
+        "path": "src/videoArCamera.test.ts",
+        "sha256": "623d1518e0ae6d16208ac878ae30f2084ff730ceae894adc376c03031fd1e7c3"
+      },
+      {
+        "path": "src/videoArCameraFrame.test.ts",
+        "sha256": "1ff259515ab5afc9c8a3ade300b76376c8be763a90d833e3e0856d90825ebdcc"
+      },
+      {
+        "path": "src/videoArControlPointSession.test.ts",
+        "sha256": "88af8d553e314b2f6f674fadb077831d28ec5784311068dd5706020007b06089"
+      },
+      {
+        "path": "src/videoArControlPoints.test.ts",
+        "sha256": "62dcf3a80f818accb9c4d30de1fb41315114fd7a9bb4f72999046f2fd80730a4"
+      },
+      {
+        "path": "src/videoArCpuReprojection.test.ts",
+        "sha256": "c65532cceab9a2c80e491d1859b8d40f6a069a2f514474031a516c757306f708"
+      },
+      {
+        "path": "src/videoArGeoreference.test.ts",
+        "sha256": "0b5268c7d2c24b36ee8d197662ec94643d06af01ffbf22af4a8b0b5f36f87076"
+      },
+      {
+        "path": "src/videoArHeight.test.ts",
+        "sha256": "3f409fa9f9da5eda050dae346b3d2ca625e0180bc29d542cf0415ba961e12b87"
+      },
+      {
+        "path": "src/videoArInputProfile.test.ts",
+        "sha256": "0378000a73a94cca4c3c325c362638c703782e87eef48ac517ba62131726f1dc"
+      },
+      {
+        "path": "src/videoArPerformance.test.ts",
+        "sha256": "d62434bdc8229a888b72cd52344a78fc2eea5e3ac074359c5e767c9401a0655e"
+      },
+      {
+        "path": "src/videoArProjection.test.ts",
+        "sha256": "42ebd96ec22f7519b6ec882f87bca00fcaebff09c93e21d8d270935960778006"
+      },
+      {
+        "path": "src/videoArSurface.test.ts",
+        "sha256": "71916d63a5f7f483c415a4caf1f63009f81722ef8af989fd951039ff12652714"
+      },
+      {
+        "path": "src/videoArTextureFrame.test.ts",
+        "sha256": "d8fd7681f472e41074677c09c7df9a91610864c5cc43448adb5b58712dfae191"
+      },
+      {
+        "path": "src/videoArTextureQuality.test.ts",
+        "sha256": "1b03a8b821f3cfdb1dacd1b57d137662e2ee95778c4ac009e4520682de6c0322"
+      },
+      {
+        "path": "src/videoFrameExtraction.test.ts",
+        "sha256": "81ca375f087fb21c2c574abcbb68a9a9681ac747d8c50b388158b6d103161306"
+      },
+      {
+        "path": "src/videoFramePos.test.ts",
+        "sha256": "0a8936927f6883a5ca7576f113adf054012ea72303cc8954d8d24e60cbd506c6"
+      },
+      {
+        "path": "src/videoOverlayAnnotations.test.ts",
+        "sha256": "4f55aab169e34045f4c35c2f000d59bd3e930e02dbea0873efab3f4d3ff22646"
+      },
+      {
+        "path": "src/videoOverlayAutosave.test.ts",
+        "sha256": "059307d3fd519d2cd68ae1c8fd4a8c6165e5399d68407f759908cd5903a61303"
+      },
+      {
+        "path": "src/videoOverlayCacheStore.test.ts",
+        "sha256": "cc6d3d017b2fc78d47b768aa16bd9a0aef72fca4e63808372a4e255fed082c39"
+      },
+      {
+        "path": "src/videoOverlayDrapedCad.test.ts",
+        "sha256": "0d822b6991740b2dd83350822976394751ded4bca311953b37d6db6b34e6faba"
+      },
+      {
+        "path": "src/videoOverlayEffects.test.ts",
+        "sha256": "5348579f740535a9980dcb875dd8cadc50fce56381f83241c161c8cff212922e"
+      },
+      {
+        "path": "src/videoOverlayExport.test.ts",
+        "sha256": "b7371ae2ebf05b8285b58d70f56b1cb0bcfa9175410b4240dcf602c24fc91175"
+      },
+      {
+        "path": "src/videoOverlayLifecycle.test.ts",
+        "sha256": "0604569e5959752c66082c3c42ccf4398427cf709979c6feb10fa929e5d673c6"
+      },
+      {
+        "path": "src/videoOverlayNativeCache.test.ts",
+        "sha256": "001bd0d07224d6b50e4382bbbd243d102dabc14b49bc74d67c0afd23bca4cd41"
+      },
+      {
+        "path": "src/videoOverlayOcclusion.test.ts",
+        "sha256": "d9ceaa381b1ba39961d0d1e28182358c21439ab07d4e75271c7611f9afe6992a"
+      },
+      {
+        "path": "src/videoOverlayRenderTargets.test.ts",
+        "sha256": "f34318db7f56d767a5061e74e84e18bdff57b74b4fbf6e702f0ad029de531426"
+      },
+      {
+        "path": "src/videoOverlayResources.test.ts",
+        "sha256": "58bbc8effb96e863391bf18091d1d19eb114a788f7f2ed145057f5f57fd4fc6f"
+      },
+      {
+        "path": "src/videoOverlaySpatialAnnotations.test.ts",
+        "sha256": "46f411b908f5c37aed59103f45233aa95c2d6962a8b0e8a8c4ad08d2d49f09db"
+      },
+      {
+        "path": "src/videoOverlaySpatialBinding.test.ts",
+        "sha256": "838e2b5772d17ad131fb8bc137a41662fdddbc8f16beec93761b388b7f6e7a16"
+      },
+      {
+        "path": "tests/destroyed-clipping-recovery.test.mjs",
+        "sha256": "bcec0cae04642aa3555643dccc868119631807721be3b9091b28f2a6a1292330"
+      },
+      {
+        "path": "tests/github-code-backup.test.mjs",
+        "sha256": "c01599f8c7cbeb98fc9e36b487d66bde204e0341416df7179dfb9ddc1d8668d3"
+      },
+      {
+        "path": "tests/install-staged-build.test.mjs",
+        "sha256": "e36cdc9683d852f1767174df7589dc8478ef53f6cc41cbdac86f877545e23268"
+      },
+      {
+        "path": "tests/local-data-deletion.test.mjs",
+        "sha256": "335d57ca66bed74612fdedaec664a95cf5b2613cd0fc8479760f753a9ed90f4c"
+      },
+      {
+        "path": "tests/machinery-documents-workspace.test.mjs",
+        "sha256": "4eb40aefb1434cc692fdab78a5d18676cf7b5ea6760cbdb163ed1fa0181472b3"
+      },
+      {
+        "path": "tests/model-middleware-headless.test.mjs",
+        "sha256": "7dd4aad483bf8640af631a26ae68c422ddfcd9133a780f247133579092e6d761"
+      },
+      {
+        "path": "tests/privateTemporaryWorksAssets.test.mjs",
+        "sha256": "91d060c0862e4f8ddbe2bb60b86f6cb745feca72020a6325b52a46067970c413"
+      },
+      {
+        "path": "tests/scene-library-cad-lifecycle.test.mjs",
+        "sha256": "8ca6ca624d1c5298570d1ca8eb0843769c3322d52ccb1f82d10779679327cee6"
+      },
+      {
+        "path": "tests/sketchup-headless.test.mjs",
+        "sha256": "cd0c5f08dd020503c5e60457932907e3fda76d1de168f7d2ff25eeb3f3da94db"
+      },
+      {
+        "path": "tests/sketchup-texture-writer-pool.test.mjs",
+        "sha256": "fcba377b07830457db3372ca350fbbebc1f40d6beda59d5dff617c9e68c3897b"
+      },
+      {
+        "path": "tests/video-overlay-cache-signature.test.mjs",
+        "sha256": "dcfd0776f3bc512e5e2368be47301c3f13b2e200ed2f7e9011d00a713e7bc70e"
+      },
+      {
+        "path": "tests/video-overlay-deletion.test.mjs",
+        "sha256": "6e4385c3164af973e7a81f1685bf234057ca9da51754d6393cf6967d09ffa67e"
+      },
+      {
+        "path": "tests/video-overlay-group-drag.test.mjs",
+        "sha256": "9d82a211a216c07ba86ad242a88e50aee63e75fb1f4da8bb272d3176d17dd19f"
+      }
+    ]
+  },
+  "typecheck": {
+    "exitCode": 0
+  },
+  "build": {
+    "exitCode": 0,
+    "viteSeconds": 46.27
+  },
+  "toolRegression": {
+    "exitCode": 0,
+    "pass": 43,
+    "fail": 0,
+    "skipped": 0
+  },
+  "supplemental": {
+    "nodeScripts": {
+      "pass": 5,
+      "fail": 5
+    },
+    "arV2": {
+      "exitCode": 1,
+      "pass": 11,
+      "errors": 5,
+      "skipped": 0,
+      "missingDependencies": [
+        "cv2"
+      ]
+    },
+    "videoBackend": {
+      "exitCode": 1,
+      "pass": 85,
+      "errors": 3,
+      "skipped": 4,
+      "missingDependencies": [
+        "paho",
+        "cv2"
+      ]
+    }
+  },
+  "browserAcceptance": "incomplete",
+  "windowsDeployment": "not performed; preserve local 01bff9fb changes"
+}

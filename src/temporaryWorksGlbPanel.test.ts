@@ -11,10 +11,17 @@ const {TemporaryWorksPanel} = await import('./temporaryWorksPanel.ts');
 const glb = {resourceId:'camp',clippingEnabled:true,placement:{longitude:121,latitude:31,height:8,headingDeg:35,
   scaleMode:'uniform',dimensions:{length:40,width:20,height:10}},branding:{visible:true,text:'东方雄师 铁建劲旅',logoUrl:'data:image/png;base64,AA=='}};
 const oldPlan = () => ({id:'saved-camp',name:'项目部',kind:'camp',visible:true,createdAt:'2026-11-05T00:00:00Z',glb:structuredClone(glb),inputs:{feature:{id:'source-cad'},road:undefined}});
-const panel = (fields:object) => Object.assign(Object.create(TemporaryWorksPanel.prototype),{
+// These focused lifecycle fixtures bypass the DOM constructor, so initialise the
+// same project-scoped state that production field initializers normally create.
+const panel = (fields:object) => {
+  const options=(fields as {options?:object}).options;
+  return Object.assign(Object.create(TemporaryWorksPanel.prototype),{
   projectId:'project-a',generation:3,upgradeEnabled:true,disposed:false,busySave:false,overrides:new Map(),records:new Map(),handles:new Map(),
+  lighting:{schemaVersion:1,globalPercent:100,overrides:{}},surfaceReady:new Set(),surfaceDerived:new Map(),surfaceStates:new Map(),surfaceRevision:0,
   buttons(){},list(){},review(){},updateFields(){},status(){},failure(error:Error){throw error;},...fields,
-});
+  options:{getTilesets:()=>[],viewer:{scene:{requestRender(){}}},...options},
+  });
+};
 
 test('editing a real model preserves the saved model and clipping until its replacement is committed',async()=>{
   const old=oldPlan(), draft={...structuredClone(old),id:'preview-camp',name:'项目部调整',glb:{...glb,placement:{...glb.placement,height:12}}};
@@ -92,7 +99,7 @@ test('deleting the edited original also retires its unsaved model preview and cl
   t.after(()=>{Reflect.deleteProperty(globalThis,'window');});
   const old=oldPlan();let destroyed=0,discarded=0;
   const p=panel({records:new Map([[old.id,old]]),handles:new Map([[old.id,{destroy(){destroyed++;}}]]),pendingDelete:new Set(),
-    glbEditing:old.id,preview:{replaceId:old.id,handle:{destroy(){discarded++;}}},
+    glbEditing:old.id,preview:{record:structuredClone(old),replaceId:old.id,handle:{destroy(){discarded++;}}},
     dropPreview(this:{preview?:{handle:{destroy():void}}}){this.preview?.handle.destroy();this.preview=undefined;},
     options:{store:{async remove(){}}},
   });
@@ -171,13 +178,13 @@ function autoFitPanel(withPhotography=false) {
   const p=standalonePanel();
   const values:Record<string,{value:string;checked:boolean;disabled:boolean;textContent:string}>={};
   const field=(key:string)=>values[key]??=( {value:'',checked:false,disabled:false,textContent:''} );
-  for (const [key,value] of Object.entries({'glb-placement-mode':'cad-auto','glb-lon':'121','glb-lat':'31','glb-elevation':'8','glb-heading':'0',
+  for (const [key,value] of Object.entries({brightness:'100','glb-placement-mode':'cad-auto','glb-lon':'121','glb-lat':'31','glb-elevation':'8','glb-heading':'0',
     'glb-scale-mode':'uniform','glb-length':'20','glb-width':'10','glb-height':'5',model:withPhotography?'photo':'',name:'CAD camp'})) field(key).value=value;
   const feature={id:'camp-outline',layer:'驻地轮廓',sourceType:'LWPOLYLINE',closed:true,points:[{x:0,y:0},{x:40,y:0},{x:40,y:20},{x:0,y:20}]};
   const model={id:'photo',name:'现场摄影',tileset:{modelMatrix:Matrix4.clone(Matrix4.IDENTITY),root:{transform:Matrix4.clone(Matrix4.IDENTITY)}}};
   Object.assign(p,{input:field,select:field,el:field,value:(key:string)=>field(key).value,
     feature:()=>feature,coordinates:()=>({mode:'local',referenceX:0,referenceY:0,longitude:121,latitude:31,rotation:23,unit:'m',axisOrder:'eastNorth'}),
-    options:{getTilesets:()=>withPhotography?[model]:[],canEdit:()=>true},
+    options:{...p.options,getTilesets:()=>withPhotography?[model]:[],canEdit:()=>true},
     readGlbSurface:async(_model:unknown,points:unknown[])=>points.map((_,i)=>10+i/100),
   });
   return {p,field,feature};

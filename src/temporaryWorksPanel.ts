@@ -1,13 +1,22 @@
-import { RoadRouteConflict, markConflictStations, type RoadConflictMark } from "./temporaryWorksRoadConflict";
+import { type RoadConflictMark } from "./temporaryWorksRoadConflict";
 import { Matrix4, ScreenSpaceEventHandler, ScreenSpaceEventType, type Cartesian2, type Cesium3DTileset, type Viewer } from "cesium";
 import { checkProjectedControl, createPlanCoordinateFrame, createRoadCoordinateFrame, readPlanningCad, type PlanningCadCoordinates, type PlanningCadFeature } from "./temporaryWorksCad";
-import { buildPlanningMesh, calculatePlanningEarthwork, refinePlanningCoverage, type PlanningDesign } from "./temporaryWorksGeometry";
+import type { calculatePlanningEarthwork, PlanningDesign } from "./temporaryWorksGeometry";
 import { formatRoadStation as stationLabel, pickPlanningReference, renderPlanningMesh, withPlanningSurface, type PlanningLocation } from "./temporaryWorksScene";
 import { roadLength, validateRoadGrades, type RoadGradeRange, type RoadReferenceSource } from "./temporaryWorksRoad";
 import { cgcs2000ZoneMeridian, parseLongitude } from "./coordinateUtils";
 import { fitPlanningControls, renderPlanningCadPreview, type PlanningCadPreviewInput } from "./temporaryWorksPlacement";
 import { renderRoadSectionPreview } from "./temporaryWorksRoadSectionView";
-import { solveDrapedRoad } from "./temporaryWorksDrapedRoad";
+import { solveDesignedRoad } from "./temporaryWorksDesignedRoad";
+import { renderTemporaryWorksSurface } from "./temporaryWorksSurfaceScene";
+import type { TemporaryWorksFootprint } from "./temporaryWorksClipping";
+import { TemporaryWorksHardeningEditor, type HardeningEditorValue } from "./temporaryWorksHardeningEditor";
+import { solveHardening, type HardeningResult } from "./temporaryWorksHardening";
+import { TemporaryWorksSurfaceComposition } from "./temporaryWorksSurfaceComposition";
+import { surfacePlanBounds, prepareHardeningParameters, toWorldHardeningResult, bindHardeningFacilities,
+  surfaceResourceVersion, hardeningValueForCurrentFacilities, type HardeningSavedConfig } from "./temporaryWorksSurfacePlans";
+import { loadTemporaryWorksLightingPreferences, saveTemporaryWorksLightingPreferences, getEffectiveTemporaryWorksBrightness,
+  withTemporaryWorksBrightnessOverride, type TemporaryWorksLightingPreferences } from "./temporaryWorksLightingPreferences";
 import { loadTemporaryWorksGlbManifest, getTemporaryWorksGlbFootprints, type TemporaryWorksGlbConfig, type TemporaryWorksGlbManifest, type TemporaryWorksGlbResourceId } from "./temporaryWorksGlb";
 import { glbFootprintsInsideSite } from "./temporaryWorksGlbSite";
 import { fitTemporaryWorksGlbToBoundary } from "./temporaryWorksGlbAutoFit";
@@ -16,23 +25,28 @@ import { renderTemporaryWorksGlb } from "./temporaryWorksGlbScene";
 import { temporaryWorksFormHtml } from "./temporaryWorksForm";
 import "./temporaryWorksPanel.css";
 
-type Kind = "road" | "camp" | "steel";
+type Kind = "road" | "camp" | "steel" | "hardening";
 type FacilityMode = "glb" | "standard" | "cad" | "pad";
 const FACILITY_MODES = {glb:"真实 GLB 模型", standard:"标准设施模型", cad:"CAD 建筑轮廓", pad:"仅硬化场坪"};
 type Unit = "m" | "cm" | "mm";
 type Triangle = [number, number, number];
 type Building = { footprint: PlanningLocation[]; height: number };
-type Vertex = PlanningLocation & { surfaceHeight: number; baseHeight: number; groundHeight: number; formationHeight: number;
+type Vertex = PlanningLocation & { surfaceHeight: number; baseHeight: number; groundHeight?: number; formationHeight: number;
   roadOffset?: number; roadStation?: number; roadPart?: "core" | "slope" };
 type Model = { id: string; name: string; tileset: Cesium3DTileset };
-type MeshHandle = ReturnType<typeof renderPlanningMesh> | ReturnType<typeof renderTemporaryWorksGlb>;
+type MeshHandle = ReturnType<typeof renderPlanningMesh> | ReturnType<typeof renderTemporaryWorksGlb> | ReturnType<typeof renderTemporaryWorksSurface>;
 type Metrics = Pick<ReturnType<typeof calculatePlanningEarthwork>, "planArea" | "coveredArea" | "excludedArea" | "cutVolume" | "fillVolume">;
 type RegistrationAudit = ReturnType<typeof fitPlanningControls> & {
   second: {cad:{x:number;y:number};geo:PlanningLocation};
 };
 type ProjectedCheck = ReturnType<typeof checkProjectedControl> & {cad:{x:number;y:number};geo:PlanningLocation};
 type RoadAudit = {
-  surfaceMode?: "draped";
+  surfaceMode?: "draped" | "designed";
+  startHeight?: number;
+  endHeight?: number;
+  gradesEnabled?: boolean;
+  gradeDraft?: {start:string;end:string;gradePct:string}[];
+  algorithmVersion?: string;
   missingTriangles?: number;
   steepTriangles?: number;
   unresolvedTriangles?: number;
@@ -52,7 +66,7 @@ type RoadAudit = {
   hardeningBottomWidth: number; formationWidth: number; pavementArea: number; coveredPavementArea: number;
 };
 
-const KIND_NAMES = { road: "施工便道", camp: "项目驻地", steel: "钢筋加工场" };
+const KIND_NAMES = { road: "施工便道", camp: "项目驻地", steel: "钢筋加工场", hardening: "场地硬化" };
 const valueText = (n: number) => n.toLocaleString("zh-CN", { maximumFractionDigits: 3 });
 function roadDatumDescription(road: RoadAudit) {
   if (road.referenceSource === "nearby")
@@ -112,6 +126,8 @@ export interface TemporaryWorksPlan {
   sectionAttachment?: File;
   glb?: TemporaryWorksGlbConfig;
   earthworkDisabled?: boolean;
+  surface?: { version: 1; footprints: TemporaryWorksFootprint[]; clippingEnabled: boolean };
+  hardening?: HardeningSavedConfig;
 }
 
 export interface TemporaryWorksStore {
@@ -122,7 +138,7 @@ export interface TemporaryWorksStore {
 }
 
 function canAddStandardFacility(plan: TemporaryWorksPlan) {
-  return plan.kind !== "road" && (!plan.inputs.facilityMode || plan.inputs.facilityMode === "pad")
+  return (plan.kind === "camp" || plan.kind === "steel") && (!plan.inputs.facilityMode || plan.inputs.facilityMode === "pad")
     && !plan.building && !plan.buildings?.length && !plan.inputs.structures?.length;
 }
 
@@ -271,7 +287,7 @@ export class TemporaryWorksPanel {
   private thicknessSource?: string;
   private sectionUrl?: string;
   private reviewUrl?: string;
-  private preview?: { record: TemporaryWorksPlan; handle: MeshHandle; checkSource(): void; replaceId?: string };
+  private preview?: { record: TemporaryWorksPlan; handle: MeshHandle; checkSource(): void; replaceId?: string; canSave?:boolean };
   private readonly records = new Map<string, TemporaryWorksPlan>();
   private readonly handles = new Map<string, MeshHandle>();
   private readonly pendingDelete = new Set<string>();
@@ -285,9 +301,23 @@ export class TemporaryWorksPanel {
   private glbLogo: string | undefined = defaultLogoUrl();
   private glbLogoReadToken = 0;
   private glbAutoFit?: TemporaryWorksGlbConfig["autoFit"];
+  private roadEditing?: string;
+  private hardeningEditing?: string;
+  private hardeningEditor?: TemporaryWorksHardeningEditor;
+  private composition?: TemporaryWorksSurfaceComposition<TemporaryWorksPlan, {plan:TemporaryWorksPlan;result:HardeningResult;handle:MeshHandle}>;
+  private surfaceStates = new Map<string,string>();
+  private surfaceDerived = new Map<string,TemporaryWorksPlan>();
+  private surfaceReady = new Set<string>();
+  private previewSurfaceId?: string;
+  private lighting:TemporaryWorksLightingPreferences = {schemaVersion:1,globalPercent:100,overrides:{}};
+  private lightingFrame?: number;
+  private objectBrightnessDraft?: number;
+  private surfaceRevision=0;
+  private restoredCoordinates?:PlanningCadCoordinates;
 
   constructor(private readonly options: TemporaryWorksPanelOptions) {
     this.options.root.innerHTML = temporaryWorksFormHtml;
+    this.mountHardeningEditor();
     const on = (type: string, fn: (event: Event) => void) => options.root.addEventListener(type, fn, { signal: this.listeners.signal });
     on("click", event => this.click(event));
     on("input", event => this.edited(event));
@@ -317,11 +347,191 @@ export class TemporaryWorksPanel {
     return Number(value);
   }
   private kind(): Kind { return this.select("kind").value as Kind; }
-  private isGlb() { return this.kind() !== "road" && this.facilityMode() === "glb"; }
-  private newPlan(plan: TemporaryWorksPlan) { return !!plan.glb || plan.inputs?.road?.surfaceMode === "draped"; }
+  private isGlb() { return (this.kind() === "camp" || this.kind() === "steel") && this.facilityMode() === "glb"; }
+  private newPlan(plan: TemporaryWorksPlan) { return !!plan.glb || !!plan.surface || !!plan.hardening || plan.inputs?.road?.surfaceMode === "draped"; }
   private visible(plan: TemporaryWorksPlan) { return (this.overrides.get(plan.id) ?? plan.visible) && (!this.newPlan(plan) || this.upgradeEnabled); }
   private resourceId() { return this.value("glb-resource") as TemporaryWorksGlbResourceId; }
   private resource() { return this.manifest?.assets.find(asset => asset.id === this.resourceId()); }
+  private mountHardeningEditor() {
+    this.hardeningEditor=new TemporaryWorksHardeningEditor({root:this.el("hardening-editor"),viewer:this.options.viewer,
+      getModel:()=>this.options.getTilesets().find(m=>m.id===this.value("model")),
+      beginInteractionSession:()=>this.options.beginInteractionSession?.(),
+      onPreview:value=>this.runHardening(value),
+      onChange:()=>{this.cancel(false);this.dropPreview();},
+      onCancel:()=>{this.cancel(false);this.dropPreview();this.hardeningEditing=undefined;},
+      onError:error=>this.failure(error)});
+  }
+  private restoreBrightnessControls() {
+    this.input("brightness").value=String(this.lighting.globalPercent);
+    this.el("brightness-value").textContent=`${this.lighting.globalPercent}%`;
+    this.el("object-brightness-controls").hidden=!this.glbEditing;
+    const percent=this.objectBrightnessDraft;
+    this.select("object-brightness-mode").value=percent===undefined?"inherit":"custom";
+    this.input("object-brightness").value=String(percent??this.lighting.globalPercent);
+    this.el("object-brightness-value").textContent=`${percent??this.lighting.globalPercent}%`;
+    this.el("object-brightness-field").hidden=percent===undefined;
+  }
+  private updateBrightness(object:boolean,save:boolean) {
+    if (!this.projectId) return;
+    if (object) this.objectBrightnessDraft=this.value("object-brightness-mode")==="custom" ? Number(this.value("object-brightness")) : undefined;
+    else this.lighting={...this.lighting,globalPercent:Number(this.value("brightness"))};
+    this.restoreBrightnessControls();
+    const apply=()=>{
+      this.lightingFrame=undefined;
+      for (const [id,handle] of this.handles) if ("setBrightness" in handle)
+        handle.setBrightness(this.glbEditing===id ? this.objectBrightnessDraft??this.lighting.globalPercent : getEffectiveTemporaryWorksBrightness(this.lighting,id));
+      const preview=this.preview;
+      if (preview && "setBrightness" in preview.handle) preview.handle.setBrightness(this.glbEditing
+        ? this.objectBrightnessDraft??this.lighting.globalPercent : getEffectiveTemporaryWorksBrightness(this.lighting,preview.record.id));
+      this.options.viewer.scene.requestRender();
+    };
+    if (typeof requestAnimationFrame==="function") this.lightingFrame??=requestAnimationFrame(apply); else apply();
+    // Object overrides remain an edit draft until explicitly saved.
+    if (save && !object) try { saveTemporaryWorksLightingPreferences(this.projectId,this.lighting); }
+    catch(error) { this.failure(error); }
+  }
+  private saveObjectBrightness() {
+    const id=this.glbEditing,projectId=this.projectId;
+    if(!id || !projectId || !this.records.get(id)?.glb)return;
+    const next=withTemporaryWorksBrightnessOverride(this.lighting,id,this.objectBrightnessDraft);
+    saveTemporaryWorksLightingPreferences(projectId,next);
+    this.lighting=next;
+    this.status("当前模型亮度已保存在本浏览器、本项目。");
+  }
+  private surfaceComposition() {
+    return this.composition??=new TemporaryWorksSurfaceComposition<TemporaryWorksPlan,{plan:TemporaryWorksPlan;result:HardeningResult;handle:MeshHandle}>({
+      build:async(entry,blockers,signal)=>{
+        const source=entry.data, config=source.hardening!;
+        const prepared=prepareHardeningParameters(source,blockers.map(b=>b.data),this.manifest);
+        if (prepared.unknownFacilities.length) throw new Error(`「${source.name}」需要确认设施地坪范围、标高和厚度：${prepared.unknownFacilities.join("、")}`);
+        const result=await solveHardening(prepared.parameters,{signal}); signal.throwIfAborted();
+        if (!result.canSave) throw new Error(`「${source.name}」与相邻设施存在未确认高差，请编辑后重新预览。`);
+        const world=toWorldHardeningResult(result,config.reference);
+        const plan:TemporaryWorksPlan={...source,mesh:world.mesh,surface:{version:1,footprints:world.footprints,clippingEnabled:config.clippingEnabled},
+          metrics:{planArea:result.sourceArea,coveredArea:result.visibleArea,excludedArea:result.excludedArea,cutVolume:0,fillVolume:0}};
+        const handle=renderTemporaryWorksSurface(this.options.viewer,{id:entry.id,kind:"hardening",...world.mesh,footprints:world.footprints,sideEdges:world.sideEdges,
+          tileset:this.options.getTilesets().find(m=>m.id===source.modelId)?.tileset,clippingEnabled:config.clippingEnabled});
+        handle.show=false;
+        try {await handle.ready;signal.throwIfAborted();return {plan,result,handle};} catch(error){handle.destroy();throw error;}
+      },
+      commit:(entry,built)=>{
+        const clippingEnabled=entry.data.hardening?.clippingEnabled??false;
+        built.plan={...built.plan,hardening:entry.data.hardening,surface:{...built.plan.surface!,clippingEnabled}};
+        if("setClippingEnabled" in built.handle)built.handle.setClippingEnabled(clippingEnabled);
+        const old=this.handles.get(entry.id);
+        this.handles.set(entry.id,built.handle); built.handle.show=this.visible(entry.data);
+        old?.destroy(); this.surfaceReady.add(entry.id);
+        this.surfaceDerived.set(entry.id,built.plan);
+        this.surfaceStates.set(entry.id,built.result.visibleArea?"硬化已生成":"当前被其他设施覆盖");
+        this.list();
+        const bounds=surfacePlanBounds({...built.plan,hardening:undefined},this.manifest);
+        return bounds && built.result.visibleArea>0 ? {bounds,data:built.plan} : undefined;
+      },
+      suspend:id=>{this.handles.get(id)?.destroy();this.handles.delete(id);this.surfaceReady.delete(id);this.surfaceDerived.delete(id);},
+      discard:built=>built.handle.destroy(),
+      onError:(id,error)=>{this.surfaceStates.set(id,error instanceof Error?error.message:String(error));if(!this.disposed)this.list();}
+    });
+  }
+  private registerSurface(plan:TemporaryWorksPlan,prepared=false) {
+    if(this.disposed)return;
+    const bounds=surfacePlanBounds(plan,this.manifest);
+    if (!bounds || plan.glb?.resourceId==="wall") return;
+    const entry={id:plan.id,kind:plan.hardening?"hardening" as const:plan.kind==="road"?"road" as const:"facility" as const,
+      bounds,priority:plan.hardening?.priority??(Date.parse(plan.createdAt)||0),visible:this.visible(plan),
+      ready:plan.hardening?true:this.surfaceReady.has(plan.id),data:plan};
+    const actual=prepared?surfacePlanBounds({...plan,hardening:undefined},this.manifest):undefined;
+    if(prepared && plan.hardening)this.surfaceComposition().upsertReady(entry,actual && plan.mesh.triangles.length ? {bounds:actual,data:plan}:undefined);
+    else this.surfaceComposition().upsert(entry);
+    this.refreshHardeningFacilities();
+  }
+  private refreshHardeningFacilities() {
+    this.hardeningEditor?.setFacilities([...this.records.values()].filter(p=>p.glb && p.glb.resourceId!=="wall").map(p=>{
+      const asset=this.manifest?.assets.find(a=>a.id===p.glb!.resourceId);let resourceVersion:string|undefined;
+      try{if(asset)resourceVersion=surfaceResourceVersion(asset);}catch{/* Await a verified private manifest. */}
+      return {id:p.id,name:p.name,resourceVersion};
+    }));
+  }
+  private registerSurfacePreview(plan:TemporaryWorksPlan,handle:MeshHandle,replaceId?:string) {
+    if (replaceId) this.composition?.remove(replaceId);
+    const previewPlan={...plan,hardening:undefined};
+    const bounds=surfacePlanBounds(previewPlan,this.manifest); if(!bounds)return;
+    const id=`preview:${plan.id}`;this.previewSurfaceId=id;
+    // This is already the visible derived coverage, never the uncut hardening source.
+    if(plan.hardening)this.surfaceComposition().upsertReady({id,kind:"hardening",bounds,priority:plan.hardening.priority,orderKey:plan.id,
+      visible:handle.show,ready:true,data:plan},plan.mesh.triangles.length ? {bounds,data:plan}:undefined);
+    else this.surfaceComposition().upsert({id,kind:plan.kind==="road"?"road":"facility",bounds,priority:-1,visible:handle.show,ready:true,data:previewPlan});
+  }
+  private async changeSurfaceClipping(id:string) {
+    const plan=this.records.get(id),projectId=this.projectId,generation=this.generation;
+    if(!plan?.surface || !projectId || !this.editable())return;
+    const enabled=!plan.surface.clippingEnabled;
+    const saved=await this.options.store.updateExisting(projectId,id,stored=>({...stored,surface:{...stored.surface!,clippingEnabled:enabled},
+      ...(stored.hardening?{hardening:{...stored.hardening,clippingEnabled:enabled}}:{})}));
+    if(generation!==this.generation || !this.records.has(id))return;
+    this.records.set(id,saved);const handle=this.handles.get(id);
+    if(handle && "setClippingEnabled" in handle)handle.setClippingEnabled(enabled);
+    const update=(current:TemporaryWorksPlan):TemporaryWorksPlan=>({...current,
+      ...(current.surface?{surface:{...current.surface,clippingEnabled:enabled}}:{}),
+      ...(current.hardening?{hardening:{...current.hardening,clippingEnabled:enabled}}:{})});
+    const derived=this.surfaceDerived.get(id);if(derived)this.surfaceDerived.set(id,update(derived));
+    this.composition?.updateMetadata(id,update);this.surfaceRevision++;
+    this.list();
+  }
+  private async runHardening(value:HardeningEditorValue) {
+    if(!this.editable() || !this.upgradeEnabled || this.busySave)return;
+    this.cancel(false);this.dropPreview();this.clearReview();
+    const job=new AbortController();this.analysis=job;this.buttons();let candidate:MeshHandle|undefined;
+    try {
+      await this.composition?.whenIdle();job.signal.throwIfAborted();
+      const revision=this.surfaceRevision,generation=this.generation,model=this.options.getTilesets().find(m=>m.id===this.value("model"));
+      if(value.clippingEnabled && !model)throw new Error("请选定需要遮挡的摄影图层，或关闭遮挡后预览场地。");
+      const old=this.hardeningEditing?this.records.get(this.hardeningEditing):undefined;
+      const id=old?.id??newId(),createdAt=old?.createdAt??new Date().toISOString();
+      const config:HardeningSavedConfig={...structuredClone(value),version:1,priority:old?.hardening?.priority??Date.now(),
+        facilityBindings:bindHardeningFacilities(value,[...this.records.values()],this.manifest)};
+      const coords:PlanningCadCoordinates={mode:"geographic",axisOrder:"eastNorth"};
+      const plan:TemporaryWorksPlan={id,name:value.name||"硬化场地",kind:"hardening",visible:old?.visible??true,createdAt,
+        modelId:model?.id??"",modelName:model?.name??"未关联摄影",hardening:config,earthworkDisabled:true,
+        mesh:{vertices:[],triangles:[]},metrics:{planArea:0,coveredArea:0,excludedArea:0,cutVolume:0,fillVolume:0},
+        inputs:{cadName:"场景框选",modelMatrix:model?Matrix4.toArray(model.tileset.modelMatrix):[],modelRootTransform:model?Matrix4.toArray(model.tileset.root.transform):[],
+          feature:{id:"hardening-boundary",layer:"硬化范围",sourceType:"POLYGON",closed:true,points:value.boundary.map(p=>({x:p.longitude,y:p.latitude}))},
+          coordinates:coords,reference:value.reference,referenceInput:{mode:"geo",first:value.reference.longitude,second:value.reference.latitude},
+          design:{reference:{x:0,y:0},referenceHeight:value.reference.height,finishedOffset:0,surfaceToTreatment:value.thickness,treatmentDepth:0},spacing:0,sampleCount:0,refinementLevels:0,budgetLimited:false}};
+      const blockers=[...this.records.values()].filter(p=>p.id!==id && this.visible(p) && this.surfaceReady.has(p.id))
+        .filter(p=>!p.hardening || p.hardening.priority<config.priority || p.hardening.priority===config.priority && p.id<id)
+        .flatMap(p=>p.hardening ? (this.composition?.getCoverage(p.id) ? [this.composition.getCoverage(p.id)!.data] : []) : [p]);
+      blockers.sort((a,b)=>Number(!!a.hardening)-Number(!!b.hardening) || (a.hardening?.priority??Date.parse(a.createdAt))-(b.hardening?.priority??Date.parse(b.createdAt)) || (a.id<b.id?-1:a.id>b.id?1:0));
+      const prepared=prepareHardeningParameters(plan,blockers,this.manifest,value.acceptedHeightDifference);
+      if(prepared.unknownFacilities.length)throw new Error(`请先圈定以下设施的实际地坪范围并确认顶标高和厚度：${prepared.unknownFacilities.join("、")}`);
+      this.status("正在生成水泥面并检查局部重叠，不进行摄影高程采样…");
+      const result=await solveHardening(prepared.parameters,{signal:job.signal});job.signal.throwIfAborted();
+      const world=toWorldHardeningResult(result,value.reference);
+      plan.mesh=world.mesh;plan.surface={version:1,footprints:world.footprints,clippingEnabled:value.clippingEnabled};
+      plan.metrics={planArea:result.sourceArea,coveredArea:result.visibleArea,excludedArea:result.excludedArea,cutVolume:0,fillVolume:0};
+      if(value.acceptedHeightDifference)config.acceptedDependencies=prepared.dependencyFingerprints;
+      const checkSource=()=>{if(generation!==this.generation || revision!==this.surfaceRevision || !this.editable())throw new Error("相邻设施或项目已变化，请重新生成硬化预览。");
+        if(!result.canSave)throw new Error("场地与相邻设施存在未确认高差，请调整标高或明确保留高差后重新预览。");};
+      candidate=renderTemporaryWorksSurface(this.options.viewer,{id,kind:"hardening",...world.mesh,footprints:world.footprints,sideEdges:world.sideEdges,
+        tileset:model?.tileset,clippingEnabled:value.clippingEnabled});
+      candidate.show=false;const handle=candidate,abort=()=>handle.destroy();job.signal.addEventListener("abort",abort,{once:true});
+      try{await handle.ready;job.signal.throwIfAborted();}finally{job.signal.removeEventListener("abort",abort);}
+      if(generation!==this.generation || revision!==this.surfaceRevision)throw new Error("相邻设施已变化，请重新预览。");
+      if(old)this.handles.get(old.id)?.show && (this.handles.get(old.id)!.show=false);
+      handle.show=true;this.preview={record:plan,handle,checkSource,replaceId:old?.id,canSave:result.canSave};candidate=undefined;
+      this.registerSurfacePreview(plan,handle,old?.id);this.review(plan,false);handle.zoom();
+      const conflicts=result.conflicts.map(c=>`${c.name??c.id}：${c.maxDifference===null?"标高待确认":`高差 ${valueText(c.maxDifference)} m`}${c.accepted?"（已明确保留，未接顺）":"（待确认）"}`).join("；");
+      this.hardeningEditor?.setStatus(conflicts || `可见硬化 ${valueText(result.visibleArea)} m²，重叠避让 ${valueText(result.excludedArea)} m²。`,!result.canSave);
+      this.status(result.canSave?`硬化预览已生成，请从侧面检查后保存。${conflicts}`:`预览存在待确认高差，暂不能保存：${conflicts}`,!result.canSave);
+    }catch(error){if(!job.signal.aborted)this.failure(error);}
+    finally{candidate?.destroy();if(this.analysis===job)this.analysis=undefined;this.buttons();}
+  }
+  private editHardeningPlan(id:string) {
+    const plan=this.records.get(id);if(!plan?.hardening || !this.editable())return;
+    this.cancel(false);this.dropPreview();this.hardeningEditing=id;this.glbEditing=undefined;this.roadEditing=undefined;
+    this.select("kind").value="hardening";this.selectedModel=plan.modelId;this.refresh();
+    this.hardeningEditor?.setValue(hardeningValueForCurrentFacilities(plan,[...this.records.values()],this.manifest));this.refreshHardeningFacilities();this.updateFields();
+    this.status(`正在编辑「${plan.name}」，保存前请重新检查重叠和高差。`);
+  }
   private facilityMode() { return this.select("facility-mode").value as FacilityMode; }
   private feature() { return this.cad.find(f => f.id === this.value("feature")); }
   private editable() { return this.projectId !== null && this.options.canEdit?.() !== false; }
@@ -341,7 +551,7 @@ export class TemporaryWorksPanel {
   }
   private buttons() {
     if (this.disposed) return;
-    this.input("run").disabled = !this.upgradeEnabled || !this.editable() || (!this.isGlb() && !this.feature()) || !!(this.analysis || this.cadRead || this.sectionRead) || this.busySave;
+    this.input("run").disabled = !this.upgradeEnabled || !this.editable() || (!this.isGlb() && this.kind() !== "hardening" && !this.feature()) || !!(this.analysis || this.cadRead || this.sectionRead) || this.busySave;
     this.input("place-facility").disabled = !this.upgradeEnabled || !this.editable() || !!(this.analysis || this.cadRead || this.sectionRead) || this.busySave;
     this.input("glb-use-boundary").disabled = this.resourceId() === "wall" || !this.upgradeEnabled || !this.editable() || !!(this.analysis || this.cadRead || this.sectionRead) || this.busySave;
     for (const key of ["cad", "section"]) {
@@ -349,7 +559,8 @@ export class TemporaryWorksPanel {
       this.input("remove-" + key).disabled = !hasFile || this.busySave;
       this.input("replace-" + key).disabled = !hasFile || this.busySave;
     }
-    this.input("save").disabled = !this.editable() || !this.preview || this.busySave;
+    this.input("save").disabled = !this.editable() || !this.preview || this.preview.canSave===false || this.busySave;
+    this.hardeningEditor?.setEnabled(this.upgradeEnabled && this.editable() && !this.busySave);
     this.el("draft-actions").hidden = !this.preview;
     if (this.preview) {
       const visible = this.preview.handle.show;
@@ -374,12 +585,20 @@ export class TemporaryWorksPanel {
     this.cancel(false);
     this.dropPreview();
     this.clearReview();
+    this.hardeningEditor?.cancelDrawing();
+    this.glbEditing=undefined;this.objectBrightnessDraft=undefined;this.updateBrightness(false,false);
   }
   destroy() {
     if (this.disposed) return;
+    this.disposed=true;
     this.cancel(false);
     this.listeners.abort();
-    void this.setProject(null);
+    this.hardeningEditor?.destroy(); this.hardeningEditor=undefined;
+    this.composition?.destroy(); this.composition=undefined;
+    if (this.lightingFrame!==undefined) cancelAnimationFrame(this.lightingFrame);
+    this.generation++;this.projectId=null;this.dropPreview();
+    for(const handle of this.handles.values())handle.destroy();
+    this.handles.clear();this.records.clear();this.surfaceReady.clear();
     if (this.sectionUrl) URL.revokeObjectURL(this.sectionUrl);
     this.disposed = true;
     this.options.root.replaceChildren();
@@ -402,6 +621,9 @@ export class TemporaryWorksPanel {
     this.cadRead?.abort(); this.cadRead = undefined;
     this.sectionRead?.abort(); this.sectionRead = undefined;
     this.dropPreview(); this.clearReview();
+    this.composition?.destroy(); this.composition=undefined;
+    this.hardeningEditor?.destroy(); this.hardeningEditor=undefined;
+    this.surfaceReady.clear(); this.surfaceStates.clear();this.surfaceDerived.clear();
     for (const handle of this.handles.values()) handle.destroy();
     this.records.clear(); this.handles.clear(); this.overrides.clear();
     this.busySave = false;
@@ -410,8 +632,14 @@ export class TemporaryWorksPanel {
     if (this.sectionUrl) URL.revokeObjectURL(this.sectionUrl);
     this.sectionUrl = undefined; this.selectedModel = ""; this.lastCadInfo = "";
     this.options.root.innerHTML = temporaryWorksFormHtml;
+    this.mountHardeningEditor();
+    this.lighting=loadTemporaryWorksLightingPreferences(projectId ?? "");
+    this.objectBrightnessDraft=undefined;
+    this.restoreBrightnessControls();
     this.input("upgrade-enabled").checked = this.upgradeEnabled;
     this.glbEditing = undefined; this.glbAutoFit = undefined; this.glbLogo = defaultLogoUrl(); this.glbLogoReadToken++;
+    this.roadEditing=undefined; this.hardeningEditing=undefined;
+    this.restoredCoordinates=undefined;this.surfaceRevision++;
     this.updateGlbResource();
     this.refresh(); this.list(); this.updateFields(); this.featurePreview();
     this.options.onPlansChanged?.();
@@ -422,6 +650,8 @@ export class TemporaryWorksPanel {
       for (const plan of plans) {
         if (this.records.has(plan.id)) continue;
         this.records.set(plan.id, plan);
+      }
+      for (const plan of plans) {
         try { this.restoreDrawing(plan); }
         catch (error) { this.failure(error); }
       }
@@ -454,20 +684,29 @@ export class TemporaryWorksPanel {
     this.selectedModel = current;
     for (const [id, handle] of this.handles) {
       const plan = this.records.get(id);
-      if (plan?.glb && "setTileset" in handle) handle.setTileset(items.find(item => item.id === plan.modelId)?.tileset);
+      if (plan && "setTileset" in handle) handle.setTileset(items.find(item => item.id === plan.modelId)?.tileset);
     }
     this.buttons();
   }
   getDisplayItems(): TemporaryWorksDisplayItem[] {
     return [...this.records.values()].map(p => ({ id: p.id, name: p.name, typeName: p.glb?.resourceId === "wall" ? "独立宣传墙" : KIND_NAMES[p.kind], visible: p.visible }));
   }
-  setPlanVisible(id: string, visible: boolean) {
+  setPlanVisible(id: string, visible: boolean,force=false) {
     if (!this.records.has(id)) return;
     const handle = this.handles.get(id), record = this.records.get(id)!;
     const renderedVisible = visible && (!this.newPlan(record) || this.upgradeEnabled);
-    if ((this.overrides.get(id) ?? record.visible) === visible && (!handle || handle.show === renderedVisible)) return;
+    if (!force && (this.overrides.get(id) ?? record.visible) === visible && (!handle || handle.show === renderedVisible)) return;
+    if(this.preview?.record.hardening)this.dropPreview();
+    this.surfaceRevision++;
     this.overrides.set(id, visible);
-    if (handle) handle.show = renderedVisible;
+    if(this.preview?.replaceId===id){
+      if(handle)handle.show=false;
+      this.preview.handle.show=renderedVisible;
+      this.registerSurfacePreview(this.preview.record,this.preview.handle,id);
+    }else{
+      if (handle) handle.show = renderedVisible;
+      this.registerSurface(record);
+    }
     this.list();
   }
   private async changePlanVisibility(id: string, visible: boolean) {
@@ -478,7 +717,7 @@ export class TemporaryWorksPanel {
       if (token !== this.generation || !this.records.has(id)) return;
       this.records.set(id,saved);
     }
-    this.setPlanVisible(id,visible);
+    this.setPlanVisible(id,visible,true);
     this.options.onVisibilityChange?.(id,visible);
   }
   locatePlan(id: string) { this.handles.get(id)?.zoom(); }
@@ -488,9 +727,20 @@ export class TemporaryWorksPanel {
     this.cancel(false); this.dropPreview(); this.review(plan, true);
   }
   private draw(plan: TemporaryWorksPlan): MeshHandle {
+    if (plan.surface && !plan.hardening) {
+      const handle = renderTemporaryWorksSurface(this.options.viewer, {
+        id:plan.id, kind:"road", vertices:plan.mesh.vertices, triangles:plan.mesh.triangles,
+        footprints:plan.surface.footprints, road:{width:plan.inputs.width!,length:plan.inputs.road!.length},
+        tileset:this.options.getTilesets().find(item=>item.id===plan.modelId)?.tileset,
+        clippingEnabled:plan.surface.clippingEnabled,
+      });
+      handle.show = this.visible(plan);
+      return handle;
+    }
     if (plan.glb) {
       const handle = renderTemporaryWorksGlb(this.options.viewer, {
         id: plan.id, ...plan.glb,
+        brightnessPercent:this.glbEditing===plan.id ? this.objectBrightnessDraft??this.lighting.globalPercent : getEffectiveTemporaryWorksBrightness(this.lighting,plan.id),
         tileset: this.options.getTilesets().find(item => item.id === plan.modelId)?.tileset,
         onStatus: message => { if (!this.disposed) this.el("glb-clip-status").textContent = message.message; },
       });
@@ -504,18 +754,25 @@ export class TemporaryWorksPanel {
       const frame = createPlanCoordinateFrame(plan.inputs.coordinates, outline[0]);
       standard = {boundary:outline.map(p => frame.localToGeo(frame.cadToLocal(p)))};
     }
-    const h = renderPlanningMesh(this.options.viewer, plan.kind, plan.mesh.vertices, plan.mesh.triangles, plan.buildings ?? plan.building,
+    const h = renderPlanningMesh(this.options.viewer, plan.kind === "hardening" ? "camp" : plan.kind, plan.mesh.vertices, plan.mesh.triangles, plan.buildings ?? plan.building,
       road ? { width: plan.inputs.width!, length: road.length } : undefined, plan.inputs.campYard === true, standard);
     h.xray = this.input("xray").checked;
     h.show = this.visible(plan);
     return h;
   }
   private restoreDrawing(plan: TemporaryWorksPlan) {
+    if (plan.hardening) { this.registerSurface(plan); return; }
     const handle = this.draw(plan);
     this.handles.set(plan.id, handle);
-    handle.ready.catch(error => {
+    handle.ready.then(()=>{
+      if (this.handles.get(plan.id)!==handle || this.disposed) return;
+      if(this.preview?.record.hardening)this.dropPreview();
+      this.surfaceRevision++;
+      this.surfaceReady.add(plan.id); this.registerSurface(plan);
+    }).catch(error => {
       if (this.handles.get(plan.id) !== handle) return;
       this.handles.delete(plan.id);
+      this.surfaceReady.delete(plan.id); this.composition?.remove(plan.id);
       handle.destroy();
       this.failure(error);
     });
@@ -529,6 +786,7 @@ export class TemporaryWorksPanel {
     this.options.viewer.canvas.classList.remove("tw-picking");
   }
   private cancel(announce = true) {
+    this.hardeningEditor?.cancelDrawing();
     this.el("cad-preview").querySelectorAll("[data-road-conflict-segment], [data-road-conflict-details]").forEach(item => item.remove());
     const working = this.analysis || this.pickHandler || this.cadPick || this.overlayJob;
     if (this.overlayJob) this.clearOverlay("已取消图纸预览。");
@@ -539,8 +797,17 @@ export class TemporaryWorksPanel {
   }
   private dropPreview() {
     if (this.preview) {
+      const replaceId=this.preview.replaceId;
       this.preview.handle.destroy();
       this.preview = undefined;
+      if (this.previewSurfaceId) { this.composition?.remove(this.previewSurfaceId); this.previewSurfaceId=undefined; }
+      if (replaceId) {
+        const original=this.records.get(replaceId);
+        if (original) {
+          const handle=this.handles.get(replaceId); if (handle) handle.show=this.visible(original);
+          this.registerSurface(original);
+        }
+      }
       this.el("metrics").replaceChildren();
     }
     this.buttons();
@@ -564,21 +831,31 @@ export class TemporaryWorksPanel {
     this.projectionReadout();
     this.group("linear", mode !== "geographic");
     const isRoad = this.kind() === "road";
+    const isHardening = this.kind() === "hardening";
+    this.el("hardening-editor").hidden = !isHardening;
+    this.el("cad-controls").hidden = isHardening;
+    this.el("coordinates-section").hidden = isHardening;
+    this.el("overlay-tools").hidden = isHardening;
+    this.hardeningEditor?.setVisible(isHardening);
     this.input("name").placeholder = `如 1 号${KIND_NAMES[this.kind()]}`;
     this.el("finished-label").textContent = isRoad ? "校准桩号处路面顶相对标高（m）" : "基准点处硬化顶面相对标高（m）";
     this.el("plan-file-label").textContent = isRoad ? "道路中心线 CAD" : "场地平面规划 CAD";
     this.el("section-title").textContent = isRoad ? "便道断面与分段纵坡" : "典型断面与开挖底面";
     this.el("hardening-label").textContent = isRoad ? "硬化层厚度（m）" : "硬化面至地基处理顶面（m）";
     this.el("treatment-label").textContent = isRoad ? "地基处理深度（m）" : "处理顶面以下另挖深度（m）";
-    this.group("road", isRoad); this.group("site", !isRoad);
+    this.group("road", isRoad); this.group("site", !isRoad && !isHardening);
     const glb = this.isGlb();
     this.group("glb", glb);
-    this.el("datum-section").hidden = glb || isRoad;
-    this.el("design-section").hidden = glb;
+    this.el("datum-section").hidden = glb || isRoad || isHardening;
+    this.el("design-section").hidden = glb || isHardening;
     this.options.root.querySelector<HTMLElement>(".tw-workbench")!.dataset.glb = String(glb);
-    this.el("section-title").textContent = isRoad ? "贴地便道结构与施工里程分段" : "历史方案参数";
+    this.el("section-title").textContent = isRoad ? "便道结构与可选纵坡" : "历史方案参数";
     this.el("hardening-label").textContent = "硬化层厚度（m）";
     this.el("treatment-label").textContent = "地基处理厚度（m）";
+    this.input("thickness").placeholder = "自设计顶面向下生成";
+    this.el("road-grade-editor").hidden = !this.input("road-grades-enabled").checked;
+    this.el("road-cancel-edit").hidden = !this.roadEditing;
+    this.restoreBrightnessControls();
 
     this.input("glb-cancel-edit").hidden = !this.glbEditing;
     this.input("glb-clipping").disabled = this.resourceId() === "wall";
@@ -591,7 +868,7 @@ export class TemporaryWorksPanel {
     this.group("building-height", !isRoad && facilityMode === "cad");
     this.group("camp-yard", this.kind() === "camp" && facilityMode === "standard");
     this.el("place-facility").textContent = facilityMode === "pad" ? "在摄影场景中生成场坪" : "在摄影场景中生成模型";
-    if (!isRoad) {
+    if (!isRoad && !isHardening) {
       const buildingHint = this.kind() === "camp" ? "办公楼、宿舍和门卫室" : "加工厂房、围栏和大门";
       this.el("facility-hint").textContent = facilityMode === "glb" ? "项目部和钢筋棚默认按所选 CAD 闭合轮廓自动确定位置、朝向和长宽，并读取摄影表面高程；也可切换手动精确布置。独立宣传墙采用手动位置。" : facilityMode === "standard" ? `选择${KIND_NAMES[this.kind()]}的场地边界，系统沿场界方向布置${buildingHint}。填写坐标和标高后可在主场景查看。`
         : facilityMode === "cad" ? "选择场地边界，再勾选图纸上的房屋或厂房轮廓并填写建筑高度。"
@@ -608,8 +885,10 @@ export class TemporaryWorksPanel {
     const input = event.target;
     if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) || ["file", "checkbox"].includes(input.type)) return;
     if (!input.id.startsWith("tw-") && !input.dataset.gradeField) return;
+    if (["tw-brightness","tw-object-brightness"].includes(input.id)) { this.updateBrightness(input.id==="tw-object-brightness",false); return; }
     this.cancel(false); this.dropPreview(); this.clearReview();
     const k = input.id.slice(3);
+    if(["anchor-x","anchor-y","anchor-lon","anchor-lat","rotation","meridian","zone","gk-x","gk-y","gk-lon","gk-lat"].includes(k))this.restoredCoordinates=undefined;
     if (["glb-length","glb-width","glb-height"].includes(k) && this.value("glb-scale-mode") === "uniform") this.scaleGlbDimensions(k.slice(4) as "length"|"width"|"height");
     if (["glb-lon","glb-lat","glb-elevation","glb-heading","glb-length","glb-width","glb-height"].includes(k)) this.useManualGlbPlacement();
     if (["width", "anchor-x", "anchor-y", "anchor-lon", "anchor-lat", "rotation", "meridian", "zone", "b-x", "b-y", "b-lon", "b-lat"].includes(k))
@@ -622,13 +901,15 @@ export class TemporaryWorksPanel {
     if (["meridian","zone"].includes(k)) this.projectionReadout();
     if (k === "thickness") { this.thicknessSource = undefined; this.updateSectionLabel(); }
     if (k !== "name") this.input("confirmed").checked = false;
-    if (input.dataset.gradeField) this.gradeStatus();
+    if (input.dataset.gradeField || k==="road-elevation") this.gradeStatus();
     if (["width", "thickness", "treatment", "slope-height", "slope-width"].includes(k)) this.crossSection();
   }
   private changed(event: Event) {
     const el = event.target;
     if (!(el instanceof HTMLInputElement || el instanceof HTMLSelectElement) || !el.id.startsWith("tw-")) return;
     const k = el.id.slice(3);
+    if (k==="brightness" || k==="object-brightness") { this.updateBrightness(k==="object-brightness",true); return; }
+    if (k==="object-brightness-mode") { this.updateBrightness(true,false); return; }
     if (el instanceof HTMLInputElement && el.type !== "file" && el.type !== "checkbox") return;
     if (k === "upgrade-enabled") {
       this.upgradeEnabled = this.input("upgrade-enabled").checked;
@@ -637,8 +918,9 @@ export class TemporaryWorksPanel {
       catch { preferenceSaved = false; }
       this.cancel(false); this.dropPreview();
       for (const [id, handle] of this.handles) { const plan = this.records.get(id); if (plan && this.newPlan(plan)) handle.show = this.visible(plan); }
+      this.surfaceRevision++;for(const plan of this.records.values())this.registerSurface(plan);
       this.buttons(); this.list();
-      this.status((this.upgradeEnabled ? "真实模型、摄影遮挡和贴地便道已启用。" : "新增功能已暂停显示，对应摄影遮挡已撤销。") + (preferenceSaved ? "" : "浏览器未能保存开关状态，刷新前请检查存储权限。"), !preferenceSaved);
+      this.status((this.upgradeEnabled ? "临建模型、设计便道与场地硬化已启用。" : "新增功能已暂停显示，对应摄影遮挡已撤销。") + (preferenceSaved ? "" : "浏览器未能保存开关状态，刷新前请检查存储权限。"), !preferenceSaved);
       return;
     }
     if (k === "glb-logo") { void this.readGlbLogo(); return; }
@@ -662,11 +944,12 @@ export class TemporaryWorksPanel {
       for (const h of this.handles.values()) h.xray = this.input("xray").checked;
       return;
     }
-    const chooseSiteBoundary = k === "kind" && this.kind() !== "road" && !!this.cadFile;
+    const chooseSiteBoundary = k === "kind" && this.isGlb() && !!this.cadFile;
     if (k === "kind") {
+      this.roadEditing=undefined;this.hardeningEditing=undefined;this.glbEditing=undefined;this.objectBrightnessDraft=undefined;
       this.input("finished").value = "";
       this.select("facility-mode").value = "glb";
-      if (this.kind() !== "road") { this.select("glb-resource").value = this.kind(); this.updateGlbResource(); this.input("glb-brand-visible").checked = false; }
+      if (this.kind() === "camp" || this.kind() === "steel") { this.select("glb-resource").value = this.kind(); this.updateGlbResource(); this.input("glb-brand-visible").checked = false; }
       if (chooseSiteBoundary) {
         this.select("layer").value = "";
         this.input("ref-x").value = ""; this.input("ref-y").value = "";
@@ -680,6 +963,7 @@ export class TemporaryWorksPanel {
     if (k !== "confirmed") this.input("confirmed").checked = false;
     if (["cad","kind","layer","model","building","facility-mode","feature","coord","unit","axis","prefix","band-width","projection-source"].includes(k)) this.clearOverlay();
     if (["coord","unit","axis"].includes(k)) this.resetRegistration();
+    if (["coord","unit","axis","prefix","band-width","projection-source","cad"].includes(k))this.restoredCoordinates=undefined;
     if (["coord","unit","axis","cad","model","projection-source","band-width","prefix"].includes(k)) this.resetProjected();
     if (k === "cad") { void this.readPlan(); return; }
     if (k === "section") { void this.readSection(); return; }
@@ -705,6 +989,7 @@ export class TemporaryWorksPanel {
     }
     if (k === "ref-mode") { this.input("ref-x").value = ""; this.input("ref-y").value = ""; }
     this.updateFields(); this.crossSection();
+    if (k === "road-grades-enabled") this.gradeStatus();
     if (chooseSiteBoundary) this.status(`请为${KIND_NAMES[this.kind()]}重新选择场地边界，并核对基准点。`);
     if (this.kind() !== "road" && (k === "layer" || k === "feature") && this.feature()) {
       const boundary = this.feature()!;
@@ -723,7 +1008,12 @@ export class TemporaryWorksPanel {
       if (!record) return;
       if (action === "standardize") void this.addStandardFacility(id).catch(e => this.failure(e));
       if (action === "inspect") this.inspectPlan(id);
-      if (action === "edit") this.editGlbPlan(id);
+      if (action === "edit") {
+        if (record.hardening) this.editHardeningPlan(id);
+        else if (record.inputs.road?.surfaceMode === "designed") this.editDesignedRoad(id);
+        else this.editGlbPlan(id);
+      }
+      if (action === "clipping") void this.changeSurfaceClipping(id).catch(error=>this.failure(error));
       if (action === "locate") this.locatePlan(id);
       if (action === "hide") {
         const visible = !(this.overrides.get(id) ?? record.visible);
@@ -740,12 +1030,15 @@ export class TemporaryWorksPanel {
         b.closest("[data-grade-row]")?.remove(); this.gradeEdited(); return;
       }
       switch (b.id.slice(3)) {
+        case "brightness-reset": this.input("brightness").value="100"; this.updateBrightness(false,true); break;
+        case "object-brightness-save": this.saveObjectBrightness(); break;
+        case "road-cancel-edit": this.cancel(false); this.dropPreview(); this.roadEditing = undefined; this.updateFields(); break;
         case "glb-pick": this.pick("glb"); break;
         case "glb-use-boundary": void this.useGlbBoundary(); break;
         case "glb-sample-height": void this.sampleGlbHeight(); break;
         case "glb-reset-size": this.updateGlbResource(); this.useManualGlbPlacement(); this.cancel(false); this.dropPreview(); break;
         case "glb-clear-logo": this.cancel(false); this.glbLogoReadToken++; this.glbLogo = undefined; this.input("glb-logo").value = ""; this.dropPreview(); break;
-        case "glb-cancel-edit": this.cancel(false); this.glbEditing = undefined; this.dropPreview(); this.updateFields(); break;
+        case "glb-cancel-edit": this.cancel(false); this.glbEditing = undefined; this.objectBrightnessDraft=undefined; this.dropPreview(); this.updateFields(); this.updateBrightness(false,false); break;
         case "close": this.close(); this.options.onRequestClose?.(); break;
         case "pick": this.pick(); break;
         case "pick-a": this.pick("A"); break;
@@ -782,6 +1075,7 @@ export class TemporaryWorksPanel {
             const visible = !this.preview.handle.show;
             this.preview.handle.show = visible;
             this.preview.record.visible = visible;
+            this.registerSurfacePreview(this.preview.record,this.preview.handle,this.preview.replaceId);
             this.buttons();
           }
           break;
@@ -932,17 +1226,20 @@ export class TemporaryWorksPanel {
     this.gradeStatus(); this.crossSection(); this.projectionReadout();
   }
   private gradeRows() { return Array.from(this.el("grades").querySelectorAll<HTMLElement>("[data-grade-row]")); }
-  private getGrades() {
-    const rows = this.gradeRows().map(row => {
-      const get = (k: keyof RoadGradeRange) => {
-        const v = row.querySelector<HTMLInputElement>(`[data-grade-field="${k}"]`)!.value;
-        return v.trim() ? Number(v) : NaN;
-      };
-      // New roads follow sampled photography. Hidden legacy grades must not
-      // reject a construction segment or influence its restored chainage.
-      return { start: get("start"), end: get("end"), gradePct: 0 };
-    });
-    return validateRoadGrades(rows, this.measuredLength);
+  private gradeDraft() {
+    return this.gradeRows().map(row => ({
+      start:row.querySelector<HTMLInputElement>('[data-grade-field="start"]')!.value,
+      end:row.querySelector<HTMLInputElement>('[data-grade-field="end"]')!.value,
+      gradePct:row.querySelector<HTMLInputElement>('[data-grade-field="gradePct"]')!.value,
+    }));
+  }
+  private getDesignedGrades() {
+    if (!this.input("road-grades-enabled").checked) return [{start:0,end:this.measuredLength,gradePct:0}];
+    return validateRoadGrades(this.gradeDraft().map(g=>({
+      start:g.start.trim() ? Number(g.start) : NaN,
+      end:g.end.trim() ? Number(g.end) : NaN,
+      gradePct:g.gradePct.trim() ? Number(g.gradePct) : NaN,
+    })), this.measuredLength);
   }
   private appendGrade(grade: RoadGradeRange) {
     const row = element("div"); row.className = "tw-grade-grid"; row.setAttribute("data-grade-row", "");
@@ -965,8 +1262,9 @@ export class TemporaryWorksPanel {
     const info = this.el("grade-status"); info.removeAttribute("data-error");
     if (!this.measuredLength) { info.textContent = "请先选取 CAD 中心线。"; return; }
     try {
-      const grades = this.getGrades();
-      info.textContent = `${grades.length} 个施工里程段覆盖全长；高程将逐点跟随摄影表面。`;
+      const grades = this.getDesignedGrades(), enabled = this.input("road-grades-enabled").checked;
+      const start = this.value("road-elevation"), end = start ? grades.reduce((z,g)=>z+(g.end-g.start)*g.gradePct/100,Number(start)) : NaN;
+      info.textContent = `${enabled ? grades.length+" 个纵坡段覆盖全长" : "全线平坡，草稿纵坡不参与计算"}${Number.isFinite(end) ? `；终点顶椭球高 ${valueText(end)} m` : "；请填写起点路面顶标高"}。`;
     } catch (error) {
       info.textContent = error instanceof Error ? error.message : String(error); info.toggleAttribute("data-error", true);
     }
@@ -996,19 +1294,23 @@ export class TemporaryWorksPanel {
   private reverseRoute() {
     const length = this.measuredLength;
     if (!this.roadFeature || !length) return;
-    const grades = this.getGrades();
+    const enabled = this.input("road-grades-enabled").checked;
+    const grades = enabled ? this.getDesignedGrades() : this.gradeDraft().map(g=>({start:Number(g.start),end:Number(g.end),gradePct:Number(g.gradePct)}));
+    if (enabled) {
+      const start = this.num("road-elevation","起点路面顶椭球高");
+      this.input("road-elevation").value = compactNumber(grades.reduce((h,g)=>h+(g.end-g.start)*g.gradePct/100,start));
+    }
     this.clearOverlay();
     this.reversed = !this.reversed;
     this.setGrades(grades.reverse().map(g => ({start:length - g.end, end:length - g.start, gradePct:-g.gradePct})));
-    this.input("finished").value = "";
     this.featurePreview(); this.gradeEdited();
-    this.status("已交换起终点和里程分段。便道高程仍逐点贴合摄影表面。");
+    this.status("已交换起终点；启用的纵坡反序反号，原道路空间标高保持不变。未启用的草稿请重新复核。");
   }
   private crossSection() {
     const values = ["width", "thickness", "treatment"].map(k => this.value(k) === "" ? NaN : Number(this.value(k)));
     const [width, hard, treatment] = values;
     renderRoadSectionPreview(this.el("road-section-preview"), {
-      width, hardeningDepth: hard, treatmentDepth: treatment, slopeHeight: 1, slopeWidth: 0, surfaceMode: "draped",
+      width, hardeningDepth: hard, treatmentDepth: treatment, slopeHeight: 1, slopeWidth: 0, surfaceMode: "designed",
     });
   }
 
@@ -1189,7 +1491,7 @@ export class TemporaryWorksPanel {
       this.overlaySource = valid;
       const coordinates = this.coordinates(), kind = this.kind();
       const ids = new Set(Array.from(this.select("building").selectedOptions,o=>o.value));
-      const input: PlanningCadPreviewInput = {coordinates, kind, feature, reversed:this.reversed,
+      const input: PlanningCadPreviewInput = {coordinates, kind:kind==="hardening"?"camp":kind, feature, reversed:this.reversed,
         buildings:kind==="road"?[]:this.cad.filter(f=>f.closed && ids.has(f.id))};
       if (kind==="road" && this.value("width")) {
         const width = this.num("width","路面宽度");
@@ -1280,6 +1582,7 @@ export class TemporaryWorksPanel {
   }
 
   private coordinates(): PlanningCadCoordinates {
+    if(this.restoredCoordinates)return structuredClone(this.restoredCoordinates);
     const mode = this.value("coord");
     const axisOrder = this.value("axis") as "eastNorth" | "northEast";
     const unit = this.value("unit") as Unit;
@@ -1297,10 +1600,26 @@ export class TemporaryWorksPanel {
       longitude: this.num("anchor-lon", "已知点经度"), latitude: this.num("anchor-lat", "已知点纬度"), rotation: this.num("rotation", "坐标旋转角") };
   }
 
+  private restoreCoordinates(crs:PlanningCadCoordinates) {
+    this.select("coord").value=crs.mode;this.select("axis").value=crs.axisOrder;
+    if(crs.mode!=="geographic")this.select("unit").value=crs.unit;
+    if(crs.mode==="local")for(const [key,value] of Object.entries({"anchor-x":crs.referenceX,"anchor-y":crs.referenceY,"anchor-lon":crs.longitude,"anchor-lat":crs.latitude,rotation:crs.rotation}))this.input(key).value=String(value);
+    if(crs.mode==="gaussKruger"){
+      this.input("meridian").value=String(crs.centralMeridian);this.input("zone").value=String(crs.zoneNumber);
+      this.input("prefix").checked=crs.hasZonePrefix;this.select("band-width").value=String(crs.bandWidth??3);
+      this.select("projection-source").value=crs.bandWidth?"zone":"meridian";
+    }
+    this.restoredCoordinates=structuredClone(crs);
+  }
+
   private async loadGlbResources() {
     try {
       this.manifest = await loadTemporaryWorksGlbManifest();
-      if (!this.disposed) this.updateGlbResource(!this.glbEditing && !this.value("glb-length"));
+      if (!this.disposed) {
+        this.updateGlbResource(!this.glbEditing && !this.value("glb-length"));
+        for(const plan of this.records.values())if(plan.glb && this.surfaceReady.has(plan.id))this.registerSurface(plan);
+        this.refreshHardeningFacilities();
+      }
     } catch (error) {
       if (!this.disposed) { this.el("glb-asset-info").textContent = "模型资源清单未加载，可重试生成时重新读取。"; this.failure(error); }
     }
@@ -1428,6 +1747,8 @@ export class TemporaryWorksPanel {
     if (!plan?.glb || !this.editable()) return;
     this.cancel(false); this.dropPreview(); this.clearReview();
     this.glbEditing = id; this.glbLogoReadToken++;
+    this.roadEditing=undefined;this.hardeningEditing=undefined;
+    this.objectBrightnessDraft=this.lighting.overrides[id];this.restoreBrightnessControls();
     const glb = plan.glb, p = glb.placement;
     this.select("kind").value = glb.resourceId === "steel" ? "steel" : "camp";
     this.select("facility-mode").value = "glb"; this.select("glb-resource").value = glb.resourceId;
@@ -1496,205 +1817,146 @@ export class TemporaryWorksPanel {
       };
       this.status(`正在加载「${resource.name}」并关联建筑底面摄影遮挡…`);
       const handle = this.draw(record), discard = () => handle.destroy();
+      handle.show=false;
       job.signal.addEventListener("abort",discard,{once:true});
       try { await handle.ready; job.signal.throwIfAborted(); checkSource(); }
       catch (error) { discard(); throw error; }
       finally { job.signal.removeEventListener("abort",discard); }
+      const original=old?this.handles.get(old.id):undefined;if(original)original.show=false;
+      handle.show=true;
       this.preview = {record,handle,checkSource,replaceId:old?.id};
+      this.registerSurfacePreview(record,handle,old?.id);
       this.review(record,false); handle.zoom();
       this.status(glb.autoFit ? `真实模型已按图纸轮廓生成预览。${this.describeGlbAutoFit(glb.autoFit)} 保存后可独立编辑。` : "真实模型预览已生成。底面基准点、实际尺寸与摄影遮挡需在场景中核对，保存后可独立编辑。");
     } catch (error) { if (!job.signal.aborted) this.failure(error); }
     finally { if (this.analysis === job) this.analysis = undefined; this.buttons(); }
   }
 
-  private async run() {
-    if (!this.upgradeEnabled || !this.editable() || this.busySave || this.cadRead || this.sectionRead) return;
-    if (this.isGlb()) { await this.runGlb(); return; }
-    if (this.kind() !== "road") { this.failure(new Error("新增临建设施请使用真实 GLB 资源布置。历史设施和土方数据仍可查看、显示或删除。")); return; }
+  private async runDesignedRoad() {
     this.cancel(false); this.dropPreview(); this.clearReview();
-    if (this.kind() !== "road") this.clearOverlay();
-    const job = new AbortController();
+    const job = new AbortController(), generation = this.generation;
     this.analysis = job; this.buttons();
-    let markConflict: ((e: RoadRouteConflict) => void) | undefined;
+    let candidate: MeshHandle | undefined;
     try {
-      const model = this.model(), kind = this.kind(), feature = this.feature(), file = this.cadFile;
-      if (!feature || !file) throw new Error("请先导入 CAD 平面规划图并选取规划线形。");
-      if (kind !== "road" && !feature.closed) throw new Error("项目驻地和钢筋加工场需要闭合场地边界。");
-      if (!this.input("confirmed").checked) throw new Error("请核对设计标高和断面尺寸后勾选确认。");
-      if (kind !== "road" && this.input("section").files?.length && !this.sectionFile) throw new Error("断面图未成功读取，请重新选择文件。");
-      const coordinates = this.coordinates(), roadLine = kind === "road";
-      if (roadLine && feature.closed) throw new Error("便道需要选择未闭合的 CAD 中心线。");
-      const frame = (roadLine ? createRoadCoordinateFrame : createPlanCoordinateFrame)(coordinates, feature.points[0]);
+      const feature = this.feature(), file = this.cadFile, model = this.model();
+      if (!feature || !file || feature.closed) throw new Error("请导入 CAD 并选择开放的道路中心线。");
+      if (!this.input("confirmed").checked) throw new Error("请核对设计标高、结构厚度和纵坡后勾选确认。");
+      const coordinates = this.coordinates(), frame = createRoadCoordinateFrame(coordinates, feature.points[0]);
       const points = feature.points.map(frame.cadToLocal);
-      const reversed = roadLine && this.reversed;
-      if (reversed) points.reverse();
+      if (this.reversed) points.reverse();
       const factors = coordinates.mode === "geographic" ? undefined : feature.stationFactors;
-      const stationFactors = reversed ? factors?.slice().reverse() : factors;
-      if (roadLine) {
-        markConflict = error => {
-          const raw = reversed ? [...feature.points].reverse() : feature.points;
-          const marks = markConflictStations(raw, points, stationFactors, error.stations);
-          drawFeature(this.el("cad-preview"), feature, true, reversed, marks);
-        };
-      }
-      const refMode = !roadLine && this.value("ref-mode") === "geo" ? "geo" : "cad";
-      const routeStart = reversed ? feature.points.at(-1)! : feature.points[0];
-      const first = roadLine ? routeStart.x : this.num("ref-x", "基准点第一坐标");
-      const second = roadLine ? routeStart.y : this.num("ref-y", "基准点第二坐标");
-      const localRef = roadLine ? points[0] : refMode === "geo"
-        ? frame.geoToLocal({ longitude: first, latitude: second }) : frame.cadToLocal({ x: first, y: second });
-      const location = refMode === "geo" ? { longitude: first, latitude: second } : frame.localToGeo(localRef);
-      const design: PlanningDesign = { reference: localRef, referenceHeight: NaN,
-        finishedOffset: roadLine ? 0 : this.num("finished", "硬化面相对标高"), surfaceToTreatment: this.num("thickness", "硬化层厚度"),
-        treatmentDepth: this.num("treatment", "地基处理深度"),
-        ...(roadLine ? { centerline: points } : { gradeEastPct: this.num("grade-east", "向东坡度"), gradeNorthPct: this.num("grade-north", "向北坡度") }),
-      };
-      const roadInput = roadLine ? { width: this.num("width", "路面宽度"), hardeningDepth: design.surfaceToTreatment,
-        treatmentDepth: design.treatmentDepth, slopeHeight: 1,
-        slopeWidth: 0, grades: this.getGrades(), stationFactors } : undefined;
-      if (roadInput && roadInput.width <= 0) throw new Error("路面宽度须大于零。");
-      if (design.surfaceToTreatment < 0 || design.treatmentDepth < 0) throw new Error("硬化层厚度和地基处理厚度均须大于或等于零。");
-      const mode = kind === "road" ? undefined : this.facilityMode();
-      const selected = new Set([...this.select("building").selectedOptions].map(o => o.value));
-      const buildingFeatures = mode === "cad" ? this.cad.filter(f => f.closed && selected.has(f.id)) : [];
-      if (mode === "cad" && !buildingFeatures.length) throw new Error("请选择至少一个建筑闭合轮廓，或切换为自动布置标准模型、仅生成硬化场坪。");
-      const buildingHeight = buildingFeatures.length ? this.num("building-height", kind === "camp" ? "房屋高度" : "厂房高度") : 0;
-      if (buildingFeatures.length && (buildingHeight <= 0 || buildingHeight > 300)) throw new Error("房屋或厂房的建模高度应大于零且不超过 300 米。");
-      const buildings = buildingFeatures.map(f => ({ footprint: f.points.map(p => frame.localToGeo(frame.cadToLocal(p))), height: buildingHeight }));
-      const spacing = this.num("grid", "采样间距");
-      const name = this.value("name") || `${KIND_NAMES[kind]} · ${feature.layer}`;
+      const stationFactors = this.reversed ? factors?.slice().reverse() : factors;
+      const startHeight = this.num("road-elevation", "起点路面顶椭球高"), gradesEnabled = this.input("road-grades-enabled").checked;
+      const parameters = {width:this.num("width","路面宽度"),hardeningDepth:this.num("thickness","硬化厚度"),treatmentDepth:this.num("treatment","处理厚度"),stationFactors};
       const matrix = Matrix4.clone(model.tileset.modelMatrix), rootTransform = Matrix4.clone(model.tileset.root.transform);
       const checkSource = () => {
-        if (this.model().tileset !== model.tileset || !Matrix4.equals(matrix, model.tileset.modelMatrix) ||
-            !Matrix4.equals(rootTransform, model.tileset.root.transform)) throw new Error("倾斜摄影模型或定位已变化，请重新计算。");
+        if (generation !== this.generation || !this.editable() || this.model().tileset !== model.tileset ||
+          !Matrix4.equals(matrix,model.tileset.modelMatrix) || !Matrix4.equals(rootTransform,model.tileset.root.transform))
+          throw new Error("项目、权限或摄影定位已变化，请重新预览。");
       };
-      const progress = (label: string) => (done: number, total: number) => {
-        if (!job.signal.aborted) this.status(`${label} · ${done} / ${total} 个位置`);
-      };
-      this.status(`正在采样「${model.name}」的基准点和设计范围…`);
-      const { mesh, metrics, road, sampleCount, refinementLevels, budgetLimited } = await withPlanningSurface(this.options.viewer, model.tileset, { signal: job.signal }, async (sample, surfaceSignal) => {
-        const initial = roadInput ? undefined : buildPlanningMesh({kind:"boundary",points},spacing);
-        const [height, ...ground] = roadInput ? [null] : await sample([location, ...(initial?.points.map(frame.localToGeo) ?? [])], progress("采样实景表面"));
-        job.signal.throwIfAborted();
-        if (roadInput) {
-          this.status("正在沿中心线和横断面采样摄影表面，生成贴地便道…");
-          let samplingBatches = 0;
-          const r = await solveDrapedRoad(points,{...roadInput,stationBreaks:roadInput.grades.flatMap(g=>[g.start,g.end])},spacing,
-            (extra, batch) => {
-              ++samplingBatches;
-              if (batch.phase === "datum") return sample(extra.map(frame.localToGeo), progress("搜索起点附近的模型表面"));
-              const stage = batch.phase === "initial" ? `第 ${batch.chunk} 个网格分区 · 读取路基表面` : `第 ${batch.chunk} 个网格分区 · 核验并加密摄影表面`;
-              return sample(extra.map(frame.localToGeo), done => {
-                if (!job.signal.aborted) this.status(`${stage} ${batch.offset+done} / ${batch.total}，累计已读取 ${batch.completed+done} 个网格位置`);
-              });
-            }, {signal: surfaceSignal});
-          job.signal.throwIfAborted();
-          design.reference = r.vertices.length ? {x:r.vertices[0].x,y:r.vertices[0].y} : points[0];
-          design.referenceHeight = r.vertices[0]?.groundHeight ?? 0;
-          const audit: RoadAudit = {surfaceMode:"draped", missingTriangles:r.missingTriangles,steepTriangles:r.steepTriangles,unresolvedTriangles:r.unresolvedTriangles,maxObservedDeviation:r.maxObservedDeviation,sampleSpacing:r.sampleSpacing,surfaceTolerance:r.surfaceTolerance,maxSlope:r.maxSlope, length:r.length, reversed, bendJoin:r.bendJoin, samplingBatches, samplePartitions:r.samplePartitions,peakWorkingSamples:r.peakWorkingSamples, grades:roadInput.grades, slopeHeight:roadInput.slopeHeight, slopeWidth:roadInput.slopeWidth,
-            referenceStation:r.vertices[0]?.roadStation ?? 0, hardeningBottomWidth:r.hardeningBottomWidth, formationWidth:r.formationWidth,
-            pavementArea:r.pavementArea, coveredPavementArea:r.coveredPavementArea};
-          const vertices: Vertex[] = [];
-          let firstPavementStation = Infinity, lastPavementStation = -Infinity;
-          for (let i = 0; i < r.vertices.length; i++) {
-            if (i > 0 && i % 4096 === 0) {
-              progress("生成三维便道")(i, r.vertices.length);
-              await new Promise<void>(resolve => setTimeout(resolve, 0));
-              job.signal.throwIfAborted();
-            }
-            const { x, y, ...levels } = r.vertices[i];
-            if (levels.roadPart === "core") {
-              firstPavementStation = Math.min(firstPavementStation, levels.roadStation);
-              lastPavementStation = Math.max(lastPavementStation, levels.roadStation);
-            }
-            vertices.push({ ...frame.localToGeo({x, y}), ...levels });
-          }
-          if (Number.isFinite(firstPavementStation)) audit.pavementStationRange = [firstPavementStation, lastPavementStation];
-          return { mesh:{vertices,triangles:r.triangles}, metrics:{planArea:r.planArea,coveredArea:r.coveredArea,excludedArea:r.excludedArea,cutVolume:0,fillVolume:0},
-            road:audit, sampleCount:r.sampleCount,refinementLevels:r.refinementLevels,budgetLimited:r.budgetLimited };
-        }
-        if (height === null || !Number.isFinite(height)) throw new Error("基准点未落在所选模型的有效表面，请检查坐标或重新拾取。");
-        design.referenceHeight = height;
-        const refined = await refinePlanningCoverage(initial!, ground, extra => sample(extra.map(frame.localToGeo), progress("细化模型覆盖边缘")));
-        const result = calculatePlanningEarthwork(refined.mesh, refined.ground, design);
-        const { planArea, coveredArea, excludedArea, cutVolume, fillVolume } = result;
-        const vertices: Vertex[] = [], remap = new Map<number, number>();
-        const triangles = result.triangles.map(triangle => triangle.map(i => {
-          const prev = remap.get(i);
-          if (prev !== undefined) return prev;
-          const index = vertices.length; remap.set(i, index);
-          vertices.push({ ...frame.localToGeo(refined.mesh.points[i]), surfaceHeight: result.finishedHeights[i],
-            baseHeight: result.treatmentTopHeights[i], groundHeight: refined.ground[i]!, formationHeight: result.formationHeights[i] });
-          return index;
-        }) as Triangle);
-        return {mesh:{vertices,triangles},metrics:{planArea,coveredArea,excludedArea,cutVolume,fillVolume},road:undefined,
-          sampleCount:refined.mesh.points.length,refinementLevels:refined.levels,budgetLimited:refined.budgetLimited};
-      });
-      job.signal.throwIfAborted();
-      checkSource();
-      if (!this.editable()) throw new Error("项目权限已变化，请重新打开临建规划。");
-      const {planArea, cutVolume, fillVolume} = metrics;
-      if (!mesh.triangles.length) throw new Error(`所选范围没有形成有效覆盖网格。规划面积 ${valueText(planArea)} m²，有效覆盖面积 0 m²。请核对定位、摄影覆盖和间距。`);
-      const sampleLocation = road ? frame.localToGeo(design.reference) : location;
-      const record: TemporaryWorksPlan = {
-        id: newId(), name, kind, modelId: model.id, modelName: model.name, visible: true, createdAt: new Date().toISOString(),
-        mesh, metrics, earthworkDisabled:roadLine,
-        ...(buildings.length === 1 ? { building: buildings[0] } : buildings.length ? { buildings } : {}),
-        inputs: { cadName: file.name, modelMatrix: Matrix4.toArray(matrix), modelRootTransform: Matrix4.toArray(rootTransform),
-          ...(mode ? {facilityMode:mode} : {}),
-          ...(kind === "camp" && mode !== "pad" ? {campYard:this.input("camp-yard").checked} : {}),
-          feature, coordinates, ...(this.registration ? {registration:this.registration} : {}),
-          ...(this.projected?.applied ? {projectedCheck:this.projected.check} : {}), reference: { ...sampleLocation, height: design.referenceHeight },
-          referenceInput: road?.datumMode === "road-coverage"
-            ? {mode:"geo", first:sampleLocation.longitude, second:sampleLocation.latitude}
-            : {mode:refMode, first, second}, design, width: roadInput?.width, road, spacing, sampleCount, refinementLevels, budgetLimited,
-          ...(roadInput ? {} : {sectionName:this.sectionFile?.name, thicknessSource:this.thicknessSource}) },
-        ...(roadInput ? {} : {sectionAttachment:this.sectionFile}),
-      };
-      const handle = this.draw(record);
-      const discard = () => handle.destroy();
-      job.signal.addEventListener("abort", discard, {once:true});
-      try {
-        await handle.ready;
-        job.signal.throwIfAborted();
-        if (mode === "standard" && !handle.standardPlacement)
-          throw new Error("当前有效场坪未能容纳完整标准模型。请检查场界或切换布置方式。");
-        checkSource();
-      } catch (error) {
-        discard();
-        throw error;
-      } finally {
-        job.signal.removeEventListener("abort", discard);
+      this.status("正在按设计标高生成便道，不进行摄影表面采样…");
+      const result = await solveDesignedRoad(points,parameters,{startHeight,gradesEnabled,grades:this.getDesignedGrades()},{signal:job.signal});
+      job.signal.throwIfAborted(); checkSource();
+      const vertices: Vertex[] = [];
+      for (let i=0;i<result.vertices.length;i++) {
+        if (i && i%4096===0) { await new Promise<void>(resolve=>setTimeout(resolve,0)); job.signal.throwIfAborted(); }
+        const {x,y,...levels} = result.vertices[i];
+        vertices.push({...frame.localToGeo({x,y}),...levels});
       }
-      if (handle.standardPlacement) record.inputs.facilityPlacement = handle.standardPlacement;
-      if (record.inputs.campYard && handle.yard) record.inputs.campLayout = {flag:handle.yard.flag, spaces:handle.yard.spaces};
-      if (buildingFeatures.length) record.inputs.structures = buildingFeatures.map((f, i) => ({ feature: f.id, layer: f.layer, included: handle.structureBuilt[i] }));
-      this.preview = { record, handle, checkSource };
-      this.review(record, false); handle.zoom();
-      const discarded = mode === "cad" ? buildings.length - handle.builtStructureCount : 0;
-      const buildingNote = discarded ? `${discarded} 个建筑轮廓位于有效范围外，已舍弃。` : "";
-      const datumNote = road?.datumMode === "road-coverage" ? roadDatumDescription(road) + "。" : "";
-      const previewName = road ? "预览已生成 · 三维便道仅含有效覆盖网格"
-        : mode === "standard" ? `预览已生成 · ${KIND_NAMES[kind]}标准模型已放入摄影场景` : "预览已生成";
-      this.status(road?.surfaceMode === "draped" ? `${previewName} · 处理底面贴合摄影表面，未生成面积 ${valueText(metrics.excludedArea)} m²。缺测 ${road.missingTriangles}、陡坎 ${road.steepTriangles}、贴合未通过 ${road.unresolvedTriangles} 个网格；请核对后保存。`
-        : `${previewName} · 预计挖方 ${valueText(cutVolume)} m³，填方 ${valueText(fillVolume)} m³。${datumNote}${buildingNote}核对后可保存方案。`);
-    } catch (error) {
-      if (!job.signal.aborted) {
-        if (error instanceof RoadRouteConflict) markConflict?.(error);
-        this.failure(error);
+      const old = this.roadEditing ? this.records.get(this.roadEditing) : undefined;
+      const id = old?.id ?? newId(), reference = frame.localToGeo(points[0]);
+      const road:RoadAudit = {surfaceMode:"designed",startHeight:result.startHeight,endHeight:result.endHeight,
+        gradesEnabled,gradeDraft:this.gradeDraft(),algorithmVersion:result.algorithmVersion,
+        length:result.length,reversed:this.reversed,grades:result.grades,slopeHeight:1,slopeWidth:0,referenceStation:0,
+        formationWidth:result.formationWidth,hardeningBottomWidth:result.hardeningBottomWidth,
+        pavementArea:result.pavementArea,coveredPavementArea:result.coveredPavementArea,bendJoin:result.bendJoin};
+      const record:TemporaryWorksPlan = {id,name:this.value("name") || "施工便道",kind:"road",visible:old?.visible ?? true,
+        createdAt:old?.createdAt ?? new Date().toISOString(),modelId:model.id,modelName:model.name,earthworkDisabled:true,
+        mesh:{vertices,triangles:result.triangles},metrics:{planArea:result.planArea,coveredArea:result.coveredArea,excludedArea:0,cutVolume:0,fillVolume:0},
+        surface:{version:1,clippingEnabled:this.input("road-clipping").checked,footprints:result.footprintsXY.map(f=>({
+          outer:f.outer.map(p=>({...frame.localToGeo(p),height:startHeight})),holes:f.holes.map(r=>r.map(p=>({...frame.localToGeo(p),height:startHeight})))
+        }))},
+        inputs:{cadName:file.name,feature,coordinates,modelMatrix:Matrix4.toArray(matrix),modelRootTransform:Matrix4.toArray(rootTransform),
+          reference:{...reference,height:startHeight},referenceInput:{mode:"geo",first:reference.longitude,second:reference.latitude},
+          design:{reference:points[0],referenceHeight:startHeight,finishedOffset:0,surfaceToTreatment:parameters.hardeningDepth,treatmentDepth:parameters.treatmentDepth,centerline:points},
+          width:parameters.width,road,spacing:result.meshSpacing,sampleCount:0,refinementLevels:0,budgetLimited:false,
+          ...(this.registration?{registration:this.registration}:{}),...(this.projected?.applied?{projectedCheck:this.projected.check}:{})}};
+      candidate = this.draw(record); candidate.show = false;
+      const handle = candidate, discard = () => handle.destroy();
+      job.signal.addEventListener("abort",discard,{once:true});
+      try { await handle.ready; job.signal.throwIfAborted(); checkSource(); }
+      finally { job.signal.removeEventListener("abort",discard); }
+      const original=old?this.handles.get(old.id):undefined;if(original)original.show=false;
+      handle.show = true;
+      this.preview = {record,handle,checkSource,replaceId:old?.id}; candidate = undefined;
+      this.registerSurfacePreview(record,handle,old?.id);
+      this.review(record,false); handle.zoom();
+      this.status(`便道预览完成：${valueText(result.length)} m，${vertices.length} 个顶点；摄影取高 0 次。请核对高差和遮挡后保存。`);
+    } catch (error) { if (!job.signal.aborted) this.failure(error); }
+    finally { candidate?.destroy(); if (this.analysis===job) this.analysis=undefined; this.buttons(); }
+  }
+
+  private editDesignedRoad(id:string) {
+    const plan = this.records.get(id), road = plan?.inputs.road;
+    if (!plan || road?.surfaceMode!=="designed" || !this.editable()) return;
+    this.cancel(false); this.dropPreview(); this.roadEditing=id; this.glbEditing=undefined; this.hardeningEditing=undefined;
+    this.select("kind").value="road"; this.input("name").value=plan.name;
+    this.cadFile=new File([],plan.inputs.cadName); this.cad=[plan.inputs.feature]; this.reversed=road.reversed;
+    this.selectedModel=plan.modelId; this.refresh(); this.rebuildFeatures(); this.select("feature").value=plan.inputs.feature.id;
+    this.restoreCoordinates(plan.inputs.coordinates);
+    this.roadFeature=plan.inputs.feature; this.featurePreview();this.reversed=road.reversed;
+    this.input("road-elevation").value=String(road.startHeight);
+    this.input("road-grades-enabled").checked=road.gradesEnabled===true;
+    this.input("road-clipping").checked=plan.surface?.clippingEnabled!==false;
+    this.input("width").value=String(plan.inputs.width);
+    this.input("thickness").value=String(plan.inputs.design.surfaceToTreatment);
+    this.input("treatment").value=String(plan.inputs.design.treatmentDepth);
+    this.setGrades(road.grades);
+    if (road.gradeDraft) {
+      this.el("grades").replaceChildren();
+      for (const raw of road.gradeDraft) {
+        this.appendGrade({start:0,end:1,gradePct:0}); const row=this.gradeRows().at(-1)!;
+        for (const key of ["start","end","gradePct"] as const) row.querySelector<HTMLInputElement>(`[data-grade-field="${key}"]`)!.value=raw[key];
       }
     }
-    finally { if (this.analysis === job) this.analysis = undefined; this.buttons(); }
+    this.input("confirmed").checked=false; this.updateFields(); this.gradeStatus(); this.crossSection();
+    this.status(`正在编辑「${plan.name}」，生成预览并保存后才更新记录。`);
+  }
+
+  private async run() {
+    if (!this.upgradeEnabled || !this.editable() || this.busySave || this.cadRead || this.sectionRead) return;
+    try {
+      if (this.kind()==="hardening") await this.runHardening(this.hardeningEditor!.getValue());
+      else if (this.kind()==="road") await this.runDesignedRoad();
+      else if (this.isGlb()) await this.runGlb();
+      else throw new Error("新增临建设施请使用真实 GLB 资源。历史设施和土方数据仍可查看，按原网格和原指标保留。");
+    } catch(error) { this.failure(error); }
   }
 
   private review(plan: TemporaryWorksPlan, saved: boolean) {
     this.clearReview();
+    if(saved && plan.hardening)plan=this.surfaceDerived.get(plan.id)??plan;
     this.inspecting = saved ? plan.id : undefined;
     const { metrics: m, inputs } = plan, d = inputs.design;
     const host = this.el("metrics");
     host.append(element("strong", `${saved ? "已保存" : "预览"} · ${plan.name}`));
     const dl = element("dl");
     const row = (label: string, value: string) => dl.append(element("dt", label), element("dd", value));
+    if(plan.hardening || inputs.road?.surfaceMode==="designed") {
+      const r=inputs.road,h=plan.hardening;
+      row("高程方式",h?(h.slopeEnabled?"用户指定场地坡面":"用户指定水平场地"):(r!.gradesEnabled?"用户分段纵坡":"全线平坡"));
+      row(h?"参考点顶椭球高":"起点路面顶椭球高",`${valueText(h?.reference.height??r!.startHeight!)} m`);
+      if(r){row("终点路面顶椭球高",`${valueText(r.endHeight!)} m`);row("便道长度 / 宽度",`${valueText(r.length)} / ${valueText(inputs.width!)} m`);}
+      row("设计范围面积",`${valueText(m.planArea)} m²`);row("当前显示面积",`${valueText(m.coveredArea)} m²`);
+      if(h){row("重叠避让面积",`${valueText(m.excludedArea)} m²`);row("水泥层厚度",`${valueText(h.thickness)} m`);}
+      else row("硬化 / 处理层厚度",`${valueText(d.surfaceToTreatment)} / ${valueText(d.treatmentDepth)} m`);
+      row("摄影自动取高","0 次，未按树冠或水面确定标高");row("摄影遮挡",plan.surface?.clippingEnabled?"已请求启用，具体状态见方案列表":"已关闭");
+      host.append(dl);host.append(element("p","结构从设计顶面向下生成，不计算土方。请侧视核对外围与相邻设施高差；摄影遮挡不能代替接顺设计。"));
+      if(h?.acceptedHeightDifference)host.append(element("p","本方案明确保留已复核的交界高差，不能视为已无缝接顺；相邻设施变化后需要重新核对。"));
+      if(r)for(const g of r.grades)host.append(element("p",`${stationLabel(g.start)} ～ ${stationLabel(g.end)}：${g.gradePct}%`));
+      if(saved)this.status(`正在查看已保存方案「${plan.name}」。`);
+      return;
+    }
     if (!plan.earthworkDisabled) {
       row("历史预计挖方", `${valueText(m.cutVolume)} m³`);
       row("历史预计填方", `${valueText(m.fillVolume)} m³`);
@@ -1837,21 +2099,23 @@ export class TemporaryWorksPanel {
       }
       const actions = element("div");
       const buttons = [["inspect", "复核"], ["locate", "定位"], ["hide", visible ? "隐藏" : "显示"]];
-      if (p.glb) buttons.unshift(["edit", "编辑"]);
+      if (p.glb || p.hardening || p.inputs.road?.surfaceMode==="designed") buttons.unshift(["edit", "编辑"]);
+      if(p.surface)buttons.push(["clipping",p.surface.clippingEnabled?"关闭遮挡":"启用遮挡"]);
       if (canAddStandardFacility(p)) buttons.push(["standardize", "补建标准模型"]);
       buttons.push(["delete", "删除"]);
       for (const [action, text] of buttons) {
         const b = element("button", text); b.type = "button"; b.dataset.twAction = action; b.setAttribute("aria-label", `${text} · ${p.name}`);
         if (action === "hide") b.setAttribute("aria-pressed", String(visible));
         if (action === "locate" && !visible) { b.disabled = true; b.title = "显示此设施后可定位"; }
-        if (action === "delete" || action === "standardize" || action === "edit") b.disabled = !this.editable();
+        if (action === "delete" || action === "standardize" || action === "edit" || action==="clipping") b.disabled = !this.editable();
         if (action === "standardize" && this.upgrading) b.disabled = true;
         if (action === "delete" && this.upgrading === JSON.stringify([this.projectId,p.id])) b.disabled = true;
         if (this.pendingDelete.has(JSON.stringify([this.projectId, p.id]))) b.disabled = true;
         actions.append(b);
       }
       const handle = this.handles.get(p.id);
-      if (p.glb && handle && "status" in handle) label.append(element("small", handle.status.message));
+      if (handle && "status" in handle) label.append(element("small", handle.status.message));
+      if(p.hardening && this.surfaceStates.has(p.id))label.append(element("small",this.surfaceStates.get(p.id)));
       row.append(label, actions); list.append(row);
     }
   }
@@ -1884,6 +2148,8 @@ export class TemporaryWorksPanel {
       this.records.set(id, current); this.handles.set(id, candidate);
       candidate.show = visible;
       const finished = candidate; candidate = undefined;
+      if(this.preview?.record.hardening)this.dropPreview();
+      this.surfaceRevision++;this.surfaceReady.add(id);this.registerSurface(current);
       if (visible) finished.zoom();
       if (!this.preview) this.review(current, true);
       this.options.onPlansChanged?.();
@@ -1906,14 +2172,28 @@ export class TemporaryWorksPanel {
         : draft.record;
       if (!draft.replaceId) await this.options.store.put(projectId, plan);
       if (this.generation !== token) return;
-      if (draft.replaceId) { this.handles.get(draft.replaceId)?.destroy(); draft.handle.show = this.visible(plan); }
-      this.glbEditing = undefined;
+      let needsRebuild=this.preview!==draft;
+      try{draft.checkSource();}catch{needsRebuild=true;}
+      if (draft.replaceId) this.handles.get(draft.replaceId)?.destroy();
+      let lightingWarning="";
+      if(plan.glb && this.glbEditing){
+        this.lighting=withTemporaryWorksBrightnessOverride(this.lighting,plan.id,this.objectBrightnessDraft);
+        try{saveTemporaryWorksLightingPreferences(projectId,this.lighting);}catch(error){lightingWarning=` 模型方案已保存，但亮度偏好未能保存：${error instanceof Error?error.message:String(error)}`;}
+      }
+      this.glbEditing = undefined;this.objectBrightnessDraft=undefined;this.roadEditing=undefined;this.hardeningEditing=undefined;
       this.records.set(plan.id, plan);
-      if (this.preview === draft) {
-        this.handles.set(plan.id, draft.handle); this.preview = undefined;
-      } else this.restoreDrawing(plan);
+      if(this.previewSurfaceId){this.composition?.remove(this.previewSurfaceId);this.previewSurfaceId=undefined;}
+      if(this.preview===draft)this.preview=undefined;
+      this.surfaceRevision++;
+      if(!needsRebuild){
+        draft.handle.show=this.visible(plan);this.handles.set(plan.id,draft.handle);this.surfaceReady.add(plan.id);
+        if(plan.hardening)this.surfaceDerived.set(plan.id,plan);
+        this.registerSurface(plan,!!plan.hardening);
+      }else{
+        draft.handle.destroy();this.handles.delete(plan.id);this.surfaceReady.delete(plan.id);this.restoreDrawing(plan);
+      }
       this.list(); this.updateFields(); this.options.onPlansChanged?.(); this.review(plan, true);
-      this.status(`已保存「${plan.name}」，可在已保存方案或场景显示中管理。`);
+      this.status(`已保存「${plan.name}」${needsRebuild?"的源参数；相邻条件已变化，正在重新检查显示，请核对方案状态。":"，可在已保存方案或场景显示中管理。"}${lightingWarning}`,!!lightingWarning);
     } catch (error) { if (this.generation === token) this.failure(error); }
     finally { if (this.generation === token) { this.busySave = false; this.buttons(); } }
   }
@@ -1926,7 +2206,9 @@ export class TemporaryWorksPanel {
     try {
       await this.options.store.remove(projectId, id);
       if (!this.disposed && this.projectId === projectId) {
+        if(this.preview?.record.hardening)this.dropPreview();
         this.handles.get(id)?.destroy(); this.handles.delete(id); this.records.delete(id); this.overrides.delete(id);
+        this.surfaceRevision++;this.surfaceReady.delete(id);this.composition?.remove(id);this.surfaceStates.delete(id);this.surfaceDerived.delete(id);
         if (this.preview?.replaceId === id) this.dropPreview();
         if (this.glbEditing === id) { this.glbEditing = undefined; this.updateFields(); }
         if (this.inspecting === id) this.clearReview();

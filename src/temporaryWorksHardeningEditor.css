@@ -1,0 +1,27 @@
+.twh-editor { display: grid; gap: 12px; }
+.twh-editor[hidden], .twh-editor [hidden] { display: none !important; }
+.twh-editor fieldset { min-width: 0; margin: 0; padding: 12px; border: 1px solid #375066; border-radius: 8px; }
+.twh-editor legend { padding: 0 5px; font-weight: 600; }
+.twh-editor .twh-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.twh-editor label { display: flex; flex-direction: column; gap: 4px; }
+.twh-editor .twh-wide { grid-column: 1 / -1; }
+.twh-editor .twh-check { display: flex; flex-direction: row; align-items: flex-start; gap: 7px; margin: 8px 0; }
+.twh-editor .twh-check input { flex: 0 0 auto; width: auto; margin-top: 3px; }
+.twh-editor input, .twh-editor select { box-sizing: border-box; min-width: 0; width: 100%; }
+.twh-editor .twh-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 9px 0; }
+.twh-editor .twh-hint { font-size: 12px; line-height: 1.65; opacity: .85; margin: 8px 0; }
+.twh-editor .twh-status { white-space: pre-line; line-height: 1.65; margin: 0; }
+.twh-editor .twh-status[data-error] { color: #ffb4a5; }
+.twh-editor .twh-preview { min-height: 100px; background: #101f2e; border: 1px solid #324657; border-radius: 6px; overflow: hidden; }
+.twh-editor .twh-preview svg { display: block; width: 100%; height: 150px; }
+.twh-editor .twh-preview p { text-align: center; margin: 30px 12px; }
+.twh-editor .twh-region-list { display: grid; gap: 6px; padding: 0; margin: 8px 0; list-style: none; }
+.twh-editor .twh-region-list li { display: flex; gap: 6px; align-items: center; justify-content: space-between; }
+.twh-editor .twh-region-list span { overflow-wrap: anywhere; }
+.twh-editor .twh-region-list button { flex-shrink: 0; }
+.twh-editor .twh-vertices { max-height: 220px; overflow: auto; margin-top: 8px; }
+.twh-editor .twh-vertex { display: grid; grid-template-columns: 28px 1fr 1fr auto; gap: 4px; align-items: center; margin: 5px 0; }
+.twh-editor .twh-vertex input { font-size: 12px; }
+.twh-editor .twh-vertex label { display: contents; }
+.twh-editor .twh-outline-title { font-size: 12px; font-weight: 600; margin: 10px 0 5px; }
+@media (max-width: 430px) { .twh-editor .twh-grid { grid-template-columns: minmax(0, 1fr); } }
