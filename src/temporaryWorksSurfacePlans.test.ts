@@ -3,6 +3,9 @@ import test from 'node:test';
 import { bindHardeningFacilities, getSurfacePlanFootprints, hardeningValueForCurrentFacilities, prepareHardeningParameters,
   surfacePlanBounds, surfaceResourceVersion, toWorldHardeningResult, type HardeningSavedConfig } from './temporaryWorksSurfacePlans.ts';
 import { calculateHardening } from './temporaryWorksHardening.ts';
+import { calculateDesignedRoad } from './temporaryWorksDesignedRoad.ts';
+import { createRoadCoordinateFrame } from './temporaryWorksCad.ts';
+import polygonClipping from 'polygon-clipping';
 import { hardeningGeoFromLocal, hardeningLocalFromGeo, type HardeningReference } from './temporaryWorksHardeningEditorGeometry.ts';
 import type { TemporaryWorksPlan } from './temporaryWorksPanel.ts';
 import type { TemporaryWorksGlbManifest, TemporaryWorksGlbPlacement, TemporaryWorksGlbResource } from './temporaryWorksGlb.ts';
@@ -147,4 +150,58 @@ test('fully covered hardening produces no mask or redundant mesh on world conver
   const prepared=prepareHardeningParameters(source({boundary:rectangle(-10,-2,20,4)}),[road('road',100)]);
   const world=toWorldHardeningResult(calculateHardening(prepared.parameters),reference);
   assert.deepEqual(world.mesh,{vertices:[],triangles:[]});assert.deepEqual(world.footprints,[]);assert.deepEqual(world.sideEdges,[]);
+});
+
+async function capturedDesignedRoadOverlap() {
+  // Public synthetic GPU fixture, replayed through the same CAD and saved-world-coordinate path.
+  const centerline=[{x:-65,y:-35},{x:-15,y:-35},{x:20,y:-10},{x:65,y:-10}];
+  const frame=createRoadCoordinateFrame({mode:'local',unit:'m',axisOrder:'eastNorth',referenceX:0,referenceY:0,longitude:121,latitude:31,rotation:0},centerline[0]);
+  const result=await calculateDesignedRoad(centerline.map(frame.cadToLocal),{width:7,hardeningDepth:.3,treatmentDepth:.2},
+    {startHeight:2,gradesEnabled:false,grades:[]});
+  const saved=JSON.parse(JSON.stringify({...road('designed',2),
+    inputs:{road:{surfaceMode:'designed',algorithmVersion:result.algorithmVersion}},
+    mesh:{vertices:result.vertices.map(({x,y,...heights})=>({...frame.localToGeo({x,y}),...heights})),triangles:result.triangles},
+    surface:{version:1,clippingEnabled:true,footprints:result.footprintsXY.map(f=>({outer:f.outer.map(frame.localToGeo),holes:f.holes.map(r=>r.map(frame.localToGeo))}))},
+  })) as TemporaryWorksPlan;
+  const pad=source({reference:{longitude:121,latitude:31,height:2},boundary:[
+    {longitude:120.9992802483931,latitude:30.999420684409838},
+    {longitude:121.00028635193338,latitude:30.999420686098038},
+    {longitude:121.0002863554452,latitude:31.000595919110577},
+    {longitude:120.99928023956605,latitude:31.000595917422295},
+  ]});
+  return {saved,pad};
+}
+
+test('saved designed road and clicked hardening overlap use actual mesh coverage without rounded seams',async()=>{
+  const {saved,pad}=await capturedDesignedRoadOverlap(),before=structuredClone([saved,pad]);
+  const prepared=prepareHardeningParameters(pad,[saved]),input=prepared.parameters;
+  const result=calculateHardening(input);
+  assert.equal(result.canSave,true);assert.deepEqual(result.conflicts,[]);
+  assert.deepEqual([saved,pad],before,'composition cannot rewrite saved road or hardening source');
+  const occupant=input.blockers![0],mesh=occupant.surface!;
+  assert.ok(occupant.footprints[0].outer.length>saved.surface!.footprints[0].outer.length,
+    'reprojection retains the actual intermediate mesh boundary vertices');
+  for(const p of occupant.footprints[0].outer)
+    assert.ok(mesh.vertices.some(v=>v.x===p.x&&v.y===p.y),'every occupied boundary vertex comes from the actual drawable mesh');
+  const subject=input.footprints.map(f=>[f.outer.map(p=>[p.x,p.y] as [number,number])]);
+  const area=(geometry:number[][][][])=>geometry.reduce((sum,polygon)=>sum+polygon.reduce((s,ring,i)=>
+    s+(i?-1:1)*Math.abs(ring.reduce((a,p,j)=>{const q=ring[(j+1)%ring.length];return a+p[0]*q[1]-p[1]*q[0];},0))/2,0),0);
+  // The conforming road triangles have disjoint interiors: sum their individual intersections,
+  // independently of the composed boundary, to measure the true occupied area.
+  const occupied=mesh.triangles.reduce((sum,t)=>sum+area(polygonClipping.intersection(subject,
+    [[t.map(i=>[mesh.vertices[i].x,mesh.vertices[i].y] as [number,number])]])),0);
+  close(result.excludedArea,occupied,1e-6);close(result.visibleArea+occupied,result.sourceArea,1e-6);
+  const repeated=calculateHardening(prepareHardeningParameters(structuredClone(pad),[structuredClone(saved)]).parameters);
+  close(repeated.visibleArea,result.visibleArea,1e-7);
+
+  const raised=structuredClone(input);
+  raised.blockers![0].surface!.vertices.forEach(p=>{p.surfaceHeight+=.2;});
+  const high=calculateHardening(raised);
+  assert.equal(high.canSave,false);assert.equal(high.conflicts[0].kind,'height');close(high.conflicts[0].maxDifference!,.2,1e-7);
+  const missing=structuredClone(input);
+  const triangles=missing.blockers![0].surface!.triangles;
+  missing.blockers![0].surface!.triangles=triangles.filter((_,i)=>i!==Math.floor(triangles.length/2));
+  missing.acceptedHeightDifferences=[occupant.id];
+  const incomplete=calculateHardening(missing);
+  assert.equal(incomplete.canSave,false);assert.equal(incomplete.conflicts[0].kind,'unknown-height');
 });

@@ -90,3 +90,26 @@ test('synthetic tileset references only its generated local ground', () => {
   assert.equal(fixture.root.content.uri, 'ground.gltf');
   assert.equal(fixture.root.transform.length, 16);
 });
+
+test('synthetic ground passes Cesium root traversal SSE while remaining a zero-error leaf', async () => {
+  const C = await import('cesium');
+  const fixture = syntheticTileset(C);
+  const tile = Object.assign(Object.create(C.Cesium3DTile.prototype), {
+    _tileset: { _scaledGeometricError: fixture.geometricError, dynamicScreenSpaceError: false },
+    geometricError: fixture.root.geometricError,
+  });
+  const frame = {
+    mode: C.SceneMode.SCENE3D, pixelRatio: 1,
+    camera: { frustum: { sseDenominator: 2 } },
+    context: { drawingBufferWidth: 1280, drawingBufferHeight: 720 },
+  };
+  // BaseTraversal rejects the whole tileset when this parent-error SSE is <= 2,
+  // the preview's maximumScreenSpaceError. Exercise the installed engine method.
+  for (const distance of [320, 410, 2000]) {
+    tile._distanceToCamera = distance;
+    assert.ok(tile.getScreenSpaceError(frame, true) > 2, `ground must be requested at ${distance} m`);
+    assert.equal(tile.getScreenSpaceError(frame, false), 0, 'the full-resolution ground remains a leaf');
+  }
+  tile._tileset._scaledGeometricError = 0;
+  assert.equal(tile.getScreenSpaceError(frame, true), 0, 'the old fixture was rejected before loading ground.gltf');
+});

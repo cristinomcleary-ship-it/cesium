@@ -132,10 +132,11 @@ function simplifyRing(input:PlanXY[]) {
 }
 
 /** Extract actual exposed edges from the conforming top mesh, preserving enclosed holes. */
-export function designedRoadFootprints(vertices: readonly PlanXY[], triangles: readonly PlanningTriangle[]): DesignedRoadFootprint[] {
+export function designedRoadFootprints(vertices: readonly PlanXY[], triangles: readonly PlanningTriangle[], preserveBoundaryVertices=false): DesignedRoadFootprint[] {
   if (!vertices.length || !triangles.length) throw new Error('便道没有可用的投影网格。');
-  const origin=vertices[0];
-  const keys=vertices.map(p=>`${Math.round((p.x-origin.x)*1e7)}/${Math.round((p.y-origin.y)*1e7)}`);
+  // Topology uses the mesh's exact shared coordinates. Rounding distinct nearby
+  // vertices collapses valid thin faces and falsely reports non-manifold edges.
+  const keys=vertices.map(p=>`${p.x}/${p.y}`);
   const edges=new Map<string,{a:number;b:number;count:number}>();
   for (const face of triangles) {
     const ids=cross(vertices[face[0]],vertices[face[1]],vertices[face[2]])>0 ? face : [face[0],face[2],face[1]];
@@ -167,7 +168,7 @@ export function designedRoadFootprints(vertices: readonly PlanXY[], triangles: r
       at=choices[0];
       if(step===boundary.length) throw new Error('便道投影边界未闭合。');
     }
-    rings.push(simplifyRing(ring));
+    rings.push(preserveBoundaryVertices ? ring : simplifyRing(ring));
   }
   const result:DesignedRoadFootprint[]=rings.filter(r=>signedArea(r)>0).map(outer=>({outer,holes:[]}));
   for(const hole of rings.filter(r=>signedArea(r)<0)) {

@@ -230,9 +230,13 @@ function findHeightConflict(source: MultiPolygon,sourceEdges: Edge[],plane: Hard
       if (++count.value>HARDENING_LIMITS.heightIntersections) throw new Error('硬化接界高程核对过于复杂，请缩小范围或分区建模。');
       signal?.throwIfAborted();
       if (overlap.length) {
-        const part=polygonClipping.intersection(overlap,[[triangle.points.map(p=>[p.x,p.y] as Pair)]]);
+        const original:MultiPolygon=[[triangle.points.map(p=>[p.x,p.y] as Pair)]];
+        const part=polygonClipping.intersection(overlap,original);
         if (part.length) {
-          covered.push(part);
+          // Preserve shared mesh endpoints for the coverage boolean. Independently
+          // clipping neighbours first creates slightly different intersections on
+          // the same edge, which can disconnect polygon-clipping's output rings.
+          covered.push(original);
           for (const p of geometryPoints(part)) check(p,triangleValue(triangle.points,p,'surfaceHeight'));
         }
       }

@@ -24,6 +24,7 @@ export type HardeningSavedConfig = HardeningEditorValue & {
   acceptedDependencies?: Record<string, string>;
 };
 type SurfacePlan = Omit<TemporaryWorksPlan, 'hardening'> & { hardening?: HardeningSavedConfig };
+const isDesignedRoad=(plan:SurfacePlan)=>plan.kind==='road' && plan.inputs.road?.surfaceMode==='designed';
 
 function geoBounds(points:readonly HardeningGeoPoint[]):SurfaceCompositionBounds|undefined {
   if(!points.length)return;
@@ -41,6 +42,7 @@ const allFootprintPoints=(footprints:readonly TemporaryWorksFootprint[])=>footpr
 /** Bounds are only candidate filters. They are never converted into a clipping or floor polygon. */
 export function surfacePlanBounds(plan:SurfacePlan,manifest?:TemporaryWorksGlbManifest):SurfaceCompositionBounds|undefined {
   if(plan.hardening)return geoBounds(plan.hardening.boundary);
+  if(isDesignedRoad(plan))return geoBounds(plan.mesh.vertices);
   if(plan.surface)return geoBounds(allFootprintPoints(plan.surface.footprints));
   if(plan.glb) {
     const asset=assetFor(plan,manifest);
@@ -58,9 +60,9 @@ export function surfacePlanBounds(plan:SurfacePlan,manifest?:TemporaryWorksGlbMa
 
 const legacyFootprints=new WeakMap<object,TemporaryWorksFootprint[]>();
 
-/** Legacy geometry is read once; no sampler or mutating mesh migration is involved. */
+/** Display geometry is read once; no sampler or mutating mesh migration is involved. */
 export function getSurfacePlanFootprints(plan:SurfacePlan):TemporaryWorksFootprint[]|undefined {
-  if(plan.surface)return plan.surface.footprints;
+  if(plan.surface && !isDesignedRoad(plan))return plan.surface.footprints;
   if(plan.glb)return undefined;
   if(!plan.mesh.vertices.length||!plan.mesh.triangles.length)return [];
   const cached=legacyFootprints.get(plan.mesh);
@@ -75,7 +77,9 @@ export function getSurfacePlanFootprints(plan:SurfacePlan):TemporaryWorksFootpri
     if(!original)throw new Error('历史地面边界不能对应原坐标，请核对保存网格。');
     return {longitude:original.longitude,latitude:original.latitude,height:original.surfaceHeight};
   };
-  const footprints=designedRoadFootprints(local,plan.mesh.triangles).map(f=>({outer:f.outer.map(convert),holes:f.holes.map(h=>h.map(convert))}));
+  // Designed-road display edges include intermediate mesh vertices. Retain them:
+  // simplifying before geodetic reprojection creates slivers outside the actual mesh.
+  const footprints=designedRoadFootprints(local,plan.mesh.triangles,isDesignedRoad(plan)).map(f=>({outer:f.outer.map(convert),holes:f.holes.map(h=>h.map(convert))}));
   legacyFootprints.set(plan.mesh,footprints);
   return footprints;
 }

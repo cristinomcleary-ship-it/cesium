@@ -108,6 +108,136 @@ test('foreign clipping planes are preserved, including when added after temporar
   } finally { f.close(); }
 });
 
+test('foreign planes active-disabled-active-disabled cycle restores owned polygons without changing the planes', () => {
+  const f = fixture();
+  const currentPolygons = () => f.tileset.clippingPolygons;
+  const plane = new ClippingPlane(Cartesian3.UNIT_Y, -23.5);
+  const planes = new ClippingPlaneCollection({
+    planes: [plane], enabled: true, unionClippingRegions: true, edgeWidth: 2.75,
+    modelMatrix: Matrix4.fromTranslation(new Cartesian3(7, -13, 29)),
+  });
+  const matrix = planes.modelMatrix, originalMatrix = Matrix4.clone(matrix);
+  const originalColor = planes.edgeColor.clone();
+  const preserved = (enabled: boolean) => {
+    assert.equal(f.tileset.clippingPlanes, planes); assert.equal(planes.isDestroyed(), false);
+    assert.equal(planes.enabled, enabled); assert.equal(planes.length, 1); assert.equal(planes.get(0), plane);
+    assert.ok(Cartesian3.equals(plane.normal, Cartesian3.UNIT_Y)); assert.equal(plane.distance, -23.5);
+    assert.equal(planes.modelMatrix, matrix); assert.ok(Matrix4.equals(matrix, originalMatrix));
+    assert.equal(planes.unionClippingRegions, true); assert.equal(planes.edgeWidth, 2.75);
+    assert.ok(planes.edgeColor.equals(originalColor));
+  };
+  try {
+    f.tileset.clippingPlanes = planes;
+    assert.equal(f.manager.upsert({ id: 'A', tileset: f.tileset, footprints: footprint() }).state, 'blocked');
+    assert.equal(f.tileset.clippingPolygons, undefined); preserved(true);
+
+    planes.enabled = false; f.postUpdate.raiseEvent();
+    assert.equal(f.manager.getStatus('A')!.state, 'active');
+    const firstOwned = currentPolygons();
+    assert.ok(firstOwned); assert.equal(firstOwned.length, 1); assert.equal(firstOwned.isDestroyed(), false);
+    preserved(false);
+    f.postUpdate.raiseEvent(); assert.equal(f.tileset.clippingPolygons, firstOwned);
+
+    planes.enabled = true; f.postUpdate.raiseEvent();
+    assert.equal(f.manager.getStatus('A')!.state, 'blocked');
+    assert.equal(f.tileset.clippingPolygons, undefined); assert.equal(firstOwned.isDestroyed(), true);
+    preserved(true);
+
+    planes.enabled = false; f.postUpdate.raiseEvent();
+    assert.equal(f.manager.getStatus('A')!.state, 'active');
+    const secondOwned = currentPolygons();
+    assert.ok(secondOwned); assert.notEqual(secondOwned, firstOwned);
+    assert.equal(secondOwned.length, 1); assert.equal(secondOwned.isDestroyed(), false);
+    preserved(false);
+    f.manager.dispose(); assert.equal(secondOwned.isDestroyed(), true);
+    assert.equal(f.tileset.clippingPolygons, undefined); preserved(false);
+  } finally { f.close(); }
+});
+
+test('initially disabled foreign planes survive hide-show, global switches, clear and disposal', () => {
+  const f = fixture();
+  const currentPolygons = () => f.tileset.clippingPolygons;
+  const plane = new ClippingPlane(Cartesian3.UNIT_Z, 17);
+  const planes = new ClippingPlaneCollection({
+    planes: [plane], enabled: false, edgeWidth: 3,
+    modelMatrix: Matrix4.fromTranslation(new Cartesian3(-8, 12, 4)),
+  });
+  const matrix = planes.modelMatrix, originalMatrix = Matrix4.clone(matrix);
+  const preserved = () => {
+    assert.equal(f.tileset.clippingPlanes, planes); assert.equal(planes.isDestroyed(), false);
+    assert.equal(planes.enabled, false); assert.equal(planes.length, 1); assert.equal(planes.get(0), plane);
+    assert.ok(Cartesian3.equals(plane.normal, Cartesian3.UNIT_Z)); assert.equal(plane.distance, 17);
+    assert.equal(planes.modelMatrix, matrix); assert.ok(Matrix4.equals(matrix, originalMatrix));
+    assert.equal(planes.edgeWidth, 3);
+  };
+  try {
+    f.tileset.clippingPlanes = planes;
+    assert.equal(f.manager.upsert({ id: 'A', tileset: f.tileset, footprints: footprint() }).state, 'active');
+    const initial = currentPolygons(); assert.ok(initial); preserved();
+    assert.equal(f.manager.setVisible('A', false)!.state, 'hidden');
+    assert.equal(f.tileset.clippingPolygons, undefined); assert.equal(initial.isDestroyed(), true); preserved();
+    assert.equal(f.manager.setVisible('A', true)!.state, 'active');
+    const shown = currentPolygons(); assert.ok(shown); assert.notEqual(shown, initial); preserved();
+    f.manager.setEnabled(false);
+    assert.equal(f.manager.getStatus('A')!.state, 'disabled');
+    assert.equal(f.tileset.clippingPolygons, undefined); assert.equal(shown.isDestroyed(), true); preserved();
+    f.manager.setEnabled(true);
+    assert.equal(f.manager.getStatus('A')!.state, 'active');
+    const reenabled = currentPolygons(); assert.ok(reenabled); assert.notEqual(reenabled, shown); preserved();
+    f.manager.clear();
+    assert.equal(f.manager.getStatus('A'), undefined); assert.equal(f.tileset.clippingPolygons, undefined);
+    assert.equal(reenabled.isDestroyed(), true); assert.equal(f.postUpdate.numberOfListeners, 0); preserved();
+    assert.equal(f.manager.upsert({ id: 'B', tileset: f.tileset, footprints: footprint(121.002) }).state, 'active');
+    const lastOwned = currentPolygons(); assert.ok(lastOwned); preserved();
+    f.manager.dispose();
+    assert.equal(lastOwned.isDestroyed(), true); assert.equal(f.tileset.clippingPolygons, undefined);
+    assert.equal(f.postUpdate.numberOfListeners, 0); preserved();
+  } finally { f.close(); }
+});
+
+test('disabled foreign polygons remain blocked and untouched through visibility, clear and disposal', () => {
+  const f = fixture();
+  const foreign = new ClippingPolygonCollection({
+    polygons: buildTemporaryWorksClipPolygons(footprint(122)), enabled: false, inverse: true,
+  });
+  const originalPolygon = foreign.get(0), originalPositions = originalPolygon.positions.map(p => Cartesian3.clone(p));
+  const preserved = () => {
+    assert.equal(f.tileset.clippingPolygons, foreign); assert.equal(foreign.isDestroyed(), false);
+    assert.equal(foreign.enabled, false); assert.equal(foreign.inverse, true); assert.equal(foreign.length, 1);
+    assert.equal(foreign.get(0), originalPolygon);
+    assert.equal(originalPolygon.positions.length, originalPositions.length);
+    originalPositions.forEach((position, index) => assert.ok(Cartesian3.equals(position, originalPolygon.positions[index])));
+  };
+  try {
+    f.tileset.clippingPolygons = foreign;
+    assert.equal(f.manager.upsert({ id: 'A', tileset: f.tileset, footprints: footprint() }).state, 'blocked'); preserved();
+    assert.equal(f.manager.setVisible('A', false)!.state, 'hidden'); preserved();
+    assert.equal(f.manager.setVisible('A', true)!.state, 'blocked'); preserved();
+    f.manager.setEnabled(false); preserved();
+    f.manager.setEnabled(true); assert.equal(f.manager.getStatus('A')!.state, 'blocked'); preserved();
+    f.postUpdate.raiseEvent(); assert.equal(f.manager.getStatus('A')!.state, 'blocked'); preserved();
+    f.manager.clear(); assert.equal(f.manager.getStatus('A'), undefined); preserved();
+    f.manager.dispose(); assert.equal(f.postUpdate.numberOfListeners, 0); preserved();
+  } finally { f.close(); }
+});
+
+test('foreign planes with an undefined enabled value remain conservatively blocked', () => {
+  const f = fixture();
+  const plane = new ClippingPlane(Cartesian3.UNIT_X, 9);
+  const planes = new ClippingPlaneCollection({ planes: [plane] });
+  // The collection and Cesium ownership setter remain real; only an external
+  // unknown state is supplied. Only explicit false may release the conflict.
+  (planes as unknown as { enabled: boolean | undefined }).enabled = undefined;
+  try {
+    f.tileset.clippingPlanes = planes;
+    assert.equal(f.manager.upsert({ id: 'A', tileset: f.tileset, footprints: footprint() }).state, 'blocked');
+    f.postUpdate.raiseEvent();
+    assert.equal(f.manager.getStatus('A')!.state, 'blocked'); assert.equal(f.tileset.clippingPolygons, undefined);
+    f.manager.dispose();
+    assert.equal(f.tileset.clippingPlanes, planes); assert.equal(planes.enabled, undefined);
+    assert.equal(planes.isDestroyed(), false); assert.equal(planes.get(0), plane); assert.equal(plane.distance, 9);
+  } finally { f.close(); }
+});
 test('foreign replacement destroys old owned collection through Cesium and remains intact on disposal', () => {
   const f = fixture();
   const foreign = new ClippingPolygonCollection({ polygons: buildTemporaryWorksClipPolygons(footprint(122)) });

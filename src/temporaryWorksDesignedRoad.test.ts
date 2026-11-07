@@ -175,3 +175,27 @@ test('restricted browser fallback refuses a large route instead of blocking the 
   const short=await solveDesignedRoad(straight,section,flat);
   assert.equal(short.sampleCount,0);
 });
+
+// A valid conforming mesh can contain strips much thinner than a display pixel.
+// Coordinate rounding must not weld their distinct vertices or discard faces.
+test('footprints preserve exact topology across sub-micrometre valid strips',()=>{
+  const xs=[0,1,1+2e-8,10];
+  const vertices=xs.flatMap(x=>[{x,y:0},{x,y:1}]);
+  const triangles:[number,number,number][]=[];
+  for(let i=0;i<xs.length-1;i++) {
+    const a=i*2,b=a+2;
+    triangles.push([a,b,b+1],[a,b+1,a+1]);
+  }
+  const snapshot=structuredClone({vertices,triangles});
+  const footprints=designedRoadFootprints(vertices,triangles);
+  assert.equal(footprints.length,1);assert.equal(footprints[0].outer.length,4);
+  close(ringArea(footprints[0].outer),10);assert.equal(footprints[0].holes.length,0);
+  const preserved=designedRoadFootprints(vertices,triangles,true);
+  assert.equal(preserved[0].outer.length,8);close(ringArea(preserved[0].outer),10);
+  assert.deepEqual({vertices,triangles},snapshot);
+});
+
+test('exact footprint keys still reject repeated faces and non-manifold edges',()=>{
+  const vertices=[{x:0,y:0},{x:1,y:0},{x:0,y:1}];
+  assert.throws(()=>designedRoadFootprints(vertices,[[0,1,2],[0,1,2]]),/重复|非流形/);
+});

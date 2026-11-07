@@ -258,6 +258,7 @@ export class SubsurfaceTools {
   private interactionMode: InteractionMode = null;
   private interactionSuspensionDepth = 0;
   private sectionAnchor: Cartesian3 | null = null;
+  private pendingSectionUpdate: (() => void) | undefined;
   private excavationPoints: Cartesian3[] = [];
   private excavationPointSources: string[] = [];
   private excavationFinished = false;
@@ -335,7 +336,7 @@ export class SubsurfaceTools {
   }
 
   refreshClipping() {
-    if (element<HTMLInputElement>("#sectionEnabled").checked && this.sectionAnchor) this.applySectionClipping(); else this.clearSectionClipping();
+    if (element<HTMLInputElement>("#sectionEnabled").checked && this.sectionAnchor) this.requestSectionClipping(); else this.clearSectionClipping();
     if (this.excavationFinished && element<HTMLInputElement>("#clipExcavationSurface").checked) this.applyExcavationClipping(); else this.clearExcavationClipping();
   }
 
@@ -533,7 +534,7 @@ export class SubsurfaceTools {
         element<HTMLInputElement>("#sectionEnabled").checked = true;
         this.interactionMode = null;
         this.updateSectionGuide();
-        this.applySectionClipping();
+        this.requestSectionClipping();
         this.notify("剖面位置已确定，可拖动偏移量查看内部结构");
       } else if (this.interactionMode === "archive") {
         const cartographic = Cartographic.fromCartesian(position);
@@ -654,7 +655,34 @@ export class SubsurfaceTools {
     return Matrix4.multiply(inverse, worldFrame, new Matrix4());
   }
 
+  private requestSectionClipping() {
+    if (this.viewer.isDestroyed()) {
+      this.clearSectionClipping();
+      return;
+    }
+    // Other handlers pick the scene during the same canvas click. Attaching a
+    // new plane collection there exposes it before Cesium creates its texture.
+    // Apply once at the next normal frame, before primitive pre-pass updates.
+    this.pendingSectionUpdate ??= this.viewer.scene.preUpdate.addEventListener(() => {
+      this.pendingSectionUpdate?.();
+      this.pendingSectionUpdate = undefined;
+      if (this.viewer.isDestroyed()) return;
+      try {
+        // Read current controls, anchor and imports, not the scheduling event's snapshot.
+        this.applySectionClipping();
+      } catch (error) {
+        this.clearSectionClipping();
+        console.error("剖面裁剪更新失败", error);
+        this.notify(`剖面裁剪更新失败：${error instanceof Error ? error.message : String(error)}`, true);
+      }
+    });
+    this.viewer.scene.requestRender();
+  }
+
   private clearSectionClipping() {
+    this.pendingSectionUpdate?.();
+    this.pendingSectionUpdate = undefined;
+    if (this.viewer.isDestroyed()) return;
     for (const collection of this.clippingTargets.values()) {
       if (!collection.isDestroyed()) collection.enabled = false;
     }

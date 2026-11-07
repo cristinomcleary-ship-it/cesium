@@ -78,7 +78,9 @@ export function syntheticMaterials() {
 export function syntheticTileset(Cesium) {
   const { longitude, latitude, height } = syntheticOrigin;
   const transform = Cesium.Matrix4.toArray(Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(longitude, latitude, height)));
-  return { asset: { version: '1.1', gltfUpAxis: 'Z' }, geometricError: 0, root: {
+  // The tileset error describes omitting the entire ground. A zero value makes
+  // Cesium stop before requesting even this leaf tile at preview distances.
+  return { asset: { version: '1.1', gltfUpAxis: 'Z' }, geometricError: 1000, root: {
     boundingVolume: { box: [0, 0, 0, 165, 0, 0, 0, 165, 0, 0, 0, 1] }, geometricError: 0,
     transform, content: { uri: 'ground.gltf' },
   } };

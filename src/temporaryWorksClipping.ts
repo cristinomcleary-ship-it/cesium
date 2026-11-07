@@ -191,7 +191,7 @@ export class TemporaryWorksClippingManager {
       let blocked: TemporaryWorksClipStatus | undefined;
       const attached = this.attachments.get(tileset);
       if (tileset.isDestroyed()) blocked = status('blocked', '关联摄影模型已卸载，请重新关联');
-      else if (tileset.clippingPlanes || (tileset.clippingPolygons && tileset.clippingPolygons !== attached?.collection))
+      else if ((tileset.clippingPlanes && tileset.clippingPlanes.enabled !== false) || (tileset.clippingPolygons && tileset.clippingPolygons !== attached?.collection))
         blocked = status('blocked', '关联摄影模型正被其他裁剪功能使用，请关闭该功能后重试');
       else if (!ClippingPolygonCollection.isSupported(this.viewer.scene)) blocked = status('unsupported', '当前浏览器或显卡不支持 WebGL 2 多边形裁剪');
       if (!active.length || blocked) {
