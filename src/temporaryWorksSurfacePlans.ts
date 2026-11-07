@@ -1,6 +1,6 @@
 import { Cartesian3, Cartographic, Math as CesiumMath, Matrix4 } from 'cesium';
 import { designedRoadFootprints } from './temporaryWorksDesignedRoad';
-import { getTemporaryWorksGlbModelMatrix, type TemporaryWorksGlbManifest, type TemporaryWorksGlbPlacement, type TemporaryWorksGlbResource } from './temporaryWorksGlb';
+import { getTemporaryWorksGlbFootprints, getTemporaryWorksGlbModelMatrix, type TemporaryWorksGlbManifest, type TemporaryWorksGlbPlacement, type TemporaryWorksGlbResource } from './temporaryWorksGlb';
 import { HARDENING_LIMITS, type HardeningBlocker, type HardeningParameters, type HardeningResult } from './temporaryWorksHardening';
 import { hardeningGeoFromLocal, hardeningLocalFromGeo, type HardeningGeoPoint, type HardeningReference } from './temporaryWorksHardeningEditorGeometry';
 import { surfaceBoundsIntersect, type SurfaceCompositionBounds } from './temporaryWorksSurfaceComposition';
@@ -219,13 +219,26 @@ export function prepareHardeningParameters(source:SurfacePlan,plans:readonly Sur
       const asset=assetFor(plan,manifest),binding=config.facilityBindings?.[plan.id];
       const exclusions=config.facilityExclusions.filter(e=>e.objectId===plan.id);
       let version:string|undefined;
-      try{if(asset)version=surfaceResourceVersion(asset);}catch{/* User confirmation is required without an authoritative version. */}
-      if(!binding||!exclusions.length||!version||binding.resourceVersion!==version) {unknownFacilities.push(plan.id);continue;}
+      try{if(asset)version=surfaceResourceVersion(asset);}catch{/* Automatic occupancy only needs the validated footprint, never a guessed floor. */}
+      if(!asset) {unknownFacilities.push(plan.name);continue;}
       const placement=plan.glb.placement;
+      const automatic=getTemporaryWorksGlbFootprints(asset,placement).map(footprint=>({
+        outer:footprint.outer.map(local),holes:(footprint.holes??[]).map(ring=>ring.map(local)),
+      }));
+      // The manifest footprint includes real courtyard holes and follows the same transform as the GLB.
+      // Keep this occupant even when the optional, user-confirmed floor covers only part of the model.
+      const automaticBlocker:HardeningBlocker={id:plan.id,name:plan.name,kind:'facility',footprints:automatic,
+        footprintOnly:true,visible:true,ready:true};
+      if(!binding||!exclusions.length||!version||binding.resourceVersion!==version) {
+        blockers.push(automaticBlocker);accept(plan,version);continue;
+      }
       const {floorHeight,floorThickness}=transformedFacilityLevels(binding,placement);
-      if(!Number.isFinite(floorHeight)||!Number.isFinite(floorThickness)||floorThickness<=0){unknownFacilities.push(plan.id);continue;}
+      if(!Number.isFinite(floorHeight)||!Number.isFinite(floorThickness)||floorThickness<=0){
+        blockers.push(automaticBlocker);accept(plan,version);continue;
+      }
       blockers.push({id:plan.id,name:plan.name,kind:'facility',footprints:exclusions.map(exclusion=>({outer:transformedFacilityBoundary(exclusion,binding,placement).map(local)})),
         plane:{reference:local(placement),height:floorHeight},thickness:floorThickness,visible:true,ready:true});
+      blockers.push({...automaticBlocker,id:`${plan.id}:automatic-occupancy`});
       accept(plan,version);
       continue;
     }

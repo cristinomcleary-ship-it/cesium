@@ -23,6 +23,7 @@ import { fitTemporaryWorksGlbToBoundary } from "./temporaryWorksGlbAutoFit";
 import { glbGroundSamplePoints, summarizeGlbGroundSamples } from "./temporaryWorksGlbGrounding";
 import { renderTemporaryWorksGlb } from "./temporaryWorksGlbScene";
 import { temporaryWorksFormHtml } from "./temporaryWorksForm";
+import { translateTemporaryWorksPlan } from "./temporaryWorksPosition";
 import "./temporaryWorksPanel.css";
 
 type Kind = "road" | "camp" | "steel" | "hardening";
@@ -126,6 +127,8 @@ export interface TemporaryWorksPlan {
   sectionAttachment?: File;
   glb?: TemporaryWorksGlbConfig;
   earthworkDisabled?: boolean;
+  /** Geometry moved without refreshing the original photography samples. */
+  positionAdjusted?: boolean;
   surface?: { version: 1; footprints: TemporaryWorksFootprint[]; clippingEnabled: boolean };
   hardening?: HardeningSavedConfig;
 }
@@ -314,6 +317,7 @@ export class TemporaryWorksPanel {
   private objectBrightnessDraft?: number;
   private surfaceRevision=0;
   private restoredCoordinates?:PlanningCadCoordinates;
+  private positionEditing?: { id:string; source:TemporaryWorksPlan; offset:{east:number;north:number;up:number} };
 
   constructor(private readonly options: TemporaryWorksPanelOptions) {
     this.options.root.innerHTML = temporaryWorksFormHtml;
@@ -324,6 +328,7 @@ export class TemporaryWorksPanel {
     on("change", event => this.changed(event));
     document.addEventListener("keydown", event => {
       if (event.key !== "Escape" || !this.active) return;
+      if (this.positionEditing && !this.busySave) { this.cancel(false); this.dropPreview(); return; }
       if (this.pickHandler || this.cadPick || this.analysis || this.overlayJob) this.cancel();
     }, { signal: this.listeners.signal });
     this.updateFields(); this.featurePreview();
@@ -403,7 +408,7 @@ export class TemporaryWorksPanel {
       build:async(entry,blockers,signal)=>{
         const source=entry.data, config=source.hardening!;
         const prepared=prepareHardeningParameters(source,blockers.map(b=>b.data),this.manifest);
-        if (prepared.unknownFacilities.length) throw new Error(`「${source.name}」需要确认设施地坪范围、标高和厚度：${prepared.unknownFacilities.join("、")}`);
+        if (prepared.unknownFacilities.length) throw new Error(`「${source.name}」的相邻设施底面轮廓尚未就绪：${prepared.unknownFacilities.join("、")}`);
         const result=await solveHardening(prepared.parameters,{signal}); signal.throwIfAborted();
         if (!result.canSave) throw new Error(`「${source.name}」与相邻设施存在未确认高差，请编辑后重新预览。`);
         const world=toWorldHardeningResult(result,config.reference);
@@ -502,7 +507,7 @@ export class TemporaryWorksPanel {
         .flatMap(p=>p.hardening ? (this.composition?.getCoverage(p.id) ? [this.composition.getCoverage(p.id)!.data] : []) : [p]);
       blockers.sort((a,b)=>Number(!!a.hardening)-Number(!!b.hardening) || (a.hardening?.priority??Date.parse(a.createdAt))-(b.hardening?.priority??Date.parse(b.createdAt)) || (a.id<b.id?-1:a.id>b.id?1:0));
       const prepared=prepareHardeningParameters(plan,blockers,this.manifest,value.acceptedHeightDifference);
-      if(prepared.unknownFacilities.length)throw new Error(`请先圈定以下设施的实际地坪范围并确认顶标高和厚度：${prepared.unknownFacilities.join("、")}`);
+      if(prepared.unknownFacilities.length)throw new Error(`请先加载以下设施的有效底面轮廓：${prepared.unknownFacilities.join("、")}`);
       this.status("正在生成水泥面并检查局部重叠，不进行摄影高程采样…");
       const result=await solveHardening(prepared.parameters,{signal:job.signal});job.signal.throwIfAborted();
       const world=toWorldHardeningResult(result,value.reference);
@@ -559,7 +564,8 @@ export class TemporaryWorksPanel {
       this.input("remove-" + key).disabled = !hasFile || this.busySave;
       this.input("replace-" + key).disabled = !hasFile || this.busySave;
     }
-    this.input("save").disabled = !this.editable() || !this.preview || this.preview.canSave===false || this.busySave;
+    this.input("save").disabled = !this.editable() || !this.preview || this.preview.canSave===false || this.busySave || !!this.analysis;
+    this.positionControls();
     this.hardeningEditor?.setEnabled(this.upgradeEnabled && this.editable() && !this.busySave);
     this.el("draft-actions").hidden = !this.preview;
     if (this.preview) {
@@ -795,7 +801,8 @@ export class TemporaryWorksPanel {
     if (announce && working) this.status("已取消。");
     this.buttons();
   }
-  private dropPreview() {
+  private dropPreview(keepPosition=false) {
+    if (!keepPosition) this.positionEditing=undefined;
     if (this.preview) {
       const replaceId=this.preview.replaceId;
       this.preview.handle.destroy();
@@ -817,6 +824,104 @@ export class TemporaryWorksPanel {
     if (this.reviewUrl) URL.revokeObjectURL(this.reviewUrl);
     this.reviewUrl = undefined;
     this.el("metrics").replaceChildren();
+  }
+  private positionControls() {
+    const state=this.positionEditing;
+    this.el("position-controls").hidden=!state;
+    if(!state)return;
+    this.el("position-title").textContent=`位置调整 · ${state.source.name}`;
+    const o=state.offset;
+    this.el("position-offset").textContent=`累计偏移：东 ${valueText(o.east)} m · 北 ${valueText(o.north)} m · 高程 ${valueText(o.up)} m（保存前可取消）`;
+    const busy=!!this.analysis || this.busySave || !this.editable();
+    for(const k of ["forward","back","left","right","up","down","reset","step","height-step","axis"])
+      this.input(`position-${k}`).disabled=busy;
+    this.input("position-cancel").disabled=this.busySave;
+    this.input("position-save").disabled=busy || !this.preview || this.preview.replaceId!==state.id || this.preview.canSave===false;
+    const north=this.value("position-axis")==="north";
+    for(const [k,view,cardinal] of [["forward","↑ 前移","↑ 北移"],["back","↓ 后移","↓ 南移"],["left","← 左移","← 西移"],["right","右移 →","东移 →"]])
+      this.el(`position-${k}`).textContent=north?cardinal:view;
+  }
+  private startPositionAdjustment(id:string) {
+    const source=this.records.get(id);
+    if(!source || !this.editable() || this.busySave || (!this.upgradeEnabled && this.newPlan(source)))return;
+    this.cancel(false);this.dropPreview();this.clearReview();this.clearOverlay();
+    this.glbEditing=undefined;this.roadEditing=undefined;this.hardeningEditing=undefined;this.objectBrightnessDraft=undefined;
+    this.positionEditing={id,source,offset:{east:0,north:0,up:0}};
+    this.updateFields();this.buttons();
+    this.el("position-controls").scrollIntoView({block:"nearest"});
+    this.status(`正在调整「${source.name}」。方向按钮平移，升降按钮调整标高，完成后点击“保存位置”。`);
+  }
+  private async nudgePosition(direction:string) {
+    const state=this.positionEditing;
+    if(!state || this.analysis || this.busySave || !this.editable())return;
+    try {
+      const vertical=direction==="up" || direction==="down";
+      const step=this.num(vertical?"position-height-step":"position-step",vertical?"升降步长":"平移步长");
+      if(step<0.01 || step>1000)throw new Error("调整步长须为 0.01～1000 m。");
+      const offset={...state.offset};
+      if(vertical)offset.up+=(direction==="up"?1:-1)*step;
+      else {
+        const heading=this.value("position-axis")==="north"?0:this.options.viewer.camera.heading;
+        if(!Number.isFinite(heading))throw new Error("相机方向尚未就绪，请稍后调整。");
+        const angle=heading+({forward:0,right:Math.PI/2,back:Math.PI,left:-Math.PI/2}[direction]??NaN);
+        offset.east+=Math.sin(angle)*step;offset.north+=Math.cos(angle)*step;
+      }
+      await this.previewPosition(offset);
+    }catch(error){this.failure(error);}
+  }
+  private async buildPositionCandidate(plan:TemporaryWorksPlan,signal:AbortSignal):Promise<{plan:TemporaryWorksPlan;handle:MeshHandle;canSave:boolean}> {
+    let handle:MeshHandle|undefined;
+    let canSave=true;
+    try {
+      if(plan.hardening) {
+        const config=plan.hardening;
+        const blockers=[...this.records.values()].filter(p=>p.id!==plan.id && this.visible(p) && this.surfaceReady.has(p.id))
+          .filter(p=>!p.hardening || p.hardening.priority<config.priority || (p.hardening.priority===config.priority && p.id<plan.id))
+          .flatMap(p=>p.hardening?(this.composition?.getCoverage(p.id)?[this.composition.getCoverage(p.id)!.data]:[]):[p]);
+        blockers.sort((a,b)=>Number(!!a.hardening)-Number(!!b.hardening) || (a.hardening?.priority??Date.parse(a.createdAt))-(b.hardening?.priority??Date.parse(b.createdAt)) || (a.id<b.id?-1:a.id>b.id?1:0));
+        const prepared=prepareHardeningParameters(plan,blockers,this.manifest);
+        if(prepared.unknownFacilities.length)throw new Error("相邻设施底面轮廓尚未就绪，请等待模型加载完成后再调整。");
+        const result=await solveHardening(prepared.parameters,{signal});signal.throwIfAborted();
+        const world=toWorldHardeningResult(result,config.reference);canSave=result.canSave;
+        plan={...plan,mesh:world.mesh,surface:{version:1,footprints:world.footprints,clippingEnabled:config.clippingEnabled},
+          metrics:{planArea:result.sourceArea,coveredArea:result.visibleArea,excludedArea:result.excludedArea,cutVolume:0,fillVolume:0}};
+        handle=renderTemporaryWorksSurface(this.options.viewer,{id:plan.id,kind:"hardening",...world.mesh,footprints:world.footprints,sideEdges:world.sideEdges,
+          tileset:this.options.getTilesets().find(m=>m.id===plan.modelId)?.tileset,clippingEnabled:config.clippingEnabled});
+      } else handle=this.draw(plan);
+      handle.show=false;
+      const abort=()=>handle?.destroy();signal.addEventListener("abort",abort,{once:true});
+      try{signal.throwIfAborted();await handle.ready;signal.throwIfAborted();}finally{signal.removeEventListener("abort",abort);}
+      return {plan,handle,canSave};
+    }catch(error){handle?.destroy();throw error;}
+  }
+  private async previewPosition(offset:{east:number;north:number;up:number}) {
+    const state=this.positionEditing;
+    if(!state || this.busySave || !this.editable())return;
+    this.cancel(false);
+    // Keep the last successful candidate on a failed adjustment; publish the replacement only when ready.
+    const job=new AbortController(),generation=this.generation;this.analysis=job;this.buttons();
+    let candidate:Awaited<ReturnType<TemporaryWorksPanel["buildPositionCandidate"]>>|undefined;
+    try {
+      await this.composition?.whenIdle();job.signal.throwIfAborted();
+      const revision=this.surfaceRevision;
+      const checkSource=()=>{
+        if(this.generation!==generation || this.positionEditing!==state || this.records.get(state.id)!==state.source || !this.editable() || revision!==this.surfaceRevision)
+          throw new Error("原方案、相邻设施或项目已变化，请重新打开位置调整。");
+      };
+      checkSource();
+      candidate=await this.buildPositionCandidate(translateTemporaryWorksPlan(state.source,offset),job.signal);
+      job.signal.throwIfAborted();checkSource();
+      this.dropPreview(true);
+      this.handles.get(state.id) && (this.handles.get(state.id)!.show=false);
+      candidate.handle.show=this.visible(candidate.plan);
+      this.preview={record:candidate.plan,handle:candidate.handle,replaceId:state.id,checkSource,canSave:candidate.canSave};
+      state.offset={...offset};
+      this.registerSurfacePreview(candidate.plan,candidate.handle,state.id);
+      this.review(candidate.plan,false);
+      this.status(candidate.canSave?"位置预览已更新，相邻硬化会同步避让；点击“保存位置”生效。":"位置已预览，与相邻地面存在待确认高差。可恢复位置，或取消后进入硬化编辑复核高差。",!candidate.canSave);
+      candidate=undefined;
+    }catch(error){if(!job.signal.aborted && generation===this.generation)this.failure(error);}
+    finally{candidate?.handle.destroy();if(this.analysis===job)this.analysis=undefined;if(!this.disposed)this.buttons();}
   }
   private group(name: string, visible: boolean) {
     this.options.root.querySelectorAll<HTMLElement>(`[data-tw-group="${name}"]`).forEach(el => { el.hidden = !visible; });
@@ -885,6 +990,7 @@ export class TemporaryWorksPanel {
     const input = event.target;
     if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) || ["file", "checkbox"].includes(input.type)) return;
     if (!input.id.startsWith("tw-") && !input.dataset.gradeField) return;
+    if (input.id.startsWith("tw-position-")) return;
     if (["tw-brightness","tw-object-brightness"].includes(input.id)) { this.updateBrightness(input.id==="tw-object-brightness",false); return; }
     this.cancel(false); this.dropPreview(); this.clearReview();
     const k = input.id.slice(3);
@@ -908,6 +1014,7 @@ export class TemporaryWorksPanel {
     const el = event.target;
     if (!(el instanceof HTMLInputElement || el instanceof HTMLSelectElement) || !el.id.startsWith("tw-")) return;
     const k = el.id.slice(3);
+    if (k.startsWith("position-")) { this.positionControls(); return; }
     if (k==="brightness" || k==="object-brightness") { this.updateBrightness(k==="object-brightness",true); return; }
     if (k==="object-brightness-mode") { this.updateBrightness(true,false); return; }
     if (el instanceof HTMLInputElement && el.type !== "file" && el.type !== "checkbox") return;
@@ -1008,6 +1115,7 @@ export class TemporaryWorksPanel {
       if (!record) return;
       if (action === "standardize") void this.addStandardFacility(id).catch(e => this.failure(e));
       if (action === "inspect") this.inspectPlan(id);
+      if (action === "position") this.startPositionAdjustment(id);
       if (action === "edit") {
         if (record.hardening) this.editHardeningPlan(id);
         else if (record.inputs.road?.surfaceMode === "designed") this.editDesignedRoad(id);
@@ -1030,6 +1138,11 @@ export class TemporaryWorksPanel {
         b.closest("[data-grade-row]")?.remove(); this.gradeEdited(); return;
       }
       switch (b.id.slice(3)) {
+        case "position-forward": case "position-back": case "position-left": case "position-right":
+        case "position-up": case "position-down": void this.nudgePosition(b.id.slice(12)); break;
+        case "position-reset": this.cancel(false); this.dropPreview(true); if(this.positionEditing)this.positionEditing.offset={east:0,north:0,up:0}; this.positionControls(); break;
+        case "position-cancel": this.cancel(false); this.dropPreview(); this.status("已取消位置调整，恢复原方案。"); break;
+        case "position-save": void this.save(); break;
         case "brightness-reset": this.input("brightness").value="100"; this.updateBrightness(false,true); break;
         case "object-brightness-save": this.saveObjectBrightness(); break;
         case "road-cancel-edit": this.cancel(false); this.dropPreview(); this.roadEditing = undefined; this.updateFields(); break;
@@ -1940,6 +2053,7 @@ export class TemporaryWorksPanel {
     const { metrics: m, inputs } = plan, d = inputs.design;
     const host = this.el("metrics");
     host.append(element("strong", `${saved ? "已保存" : "预览"} · ${plan.name}`));
+    if(plan.positionAdjusted)host.append(element("p","此方案已整体调整位置，保留原形状和坡度；未重新读取摄影高程，原采样与土方不能作为新位置的计算结果。"));
     const dl = element("dl");
     const row = (label: string, value: string) => dl.append(element("dt", label), element("dd", value));
     if(plan.hardening || inputs.road?.surfaceMode==="designed") {
@@ -1988,7 +2102,7 @@ export class TemporaryWorksPanel {
     }
     if (inputs.road) {
       if (inputs.road.surfaceMode === "draped") {
-        row("高程方式", "逐点贴合摄影表面，向上叠加结构层");
+        row("高程方式", plan.positionAdjusted?"原贴地几何整体移动，未重新采样摄影":"逐点贴合摄影表面，向上叠加结构层");
         row("地基处理 / 硬化厚度", `${valueText(d.treatmentDepth)} / ${valueText(d.surfaceToTreatment)} m`);
         row("未生成网格", `缺测 ${inputs.road.missingTriangles ?? 0} · 陡坎 ${inputs.road.steepTriangles ?? 0} · 贴合未通过 ${inputs.road.unresolvedTriangles ?? 0}`);
       }
@@ -2099,6 +2213,7 @@ export class TemporaryWorksPanel {
       }
       const actions = element("div");
       const buttons = [["inspect", "复核"], ["locate", "定位"], ["hide", visible ? "隐藏" : "显示"]];
+      buttons.unshift(["position", "位置调整"]);
       if (p.glb || p.hardening || p.inputs.road?.surfaceMode==="designed") buttons.unshift(["edit", "编辑"]);
       if(p.surface)buttons.push(["clipping",p.surface.clippingEnabled?"关闭遮挡":"启用遮挡"]);
       if (canAddStandardFacility(p)) buttons.push(["standardize", "补建标准模型"]);
@@ -2107,7 +2222,8 @@ export class TemporaryWorksPanel {
         const b = element("button", text); b.type = "button"; b.dataset.twAction = action; b.setAttribute("aria-label", `${text} · ${p.name}`);
         if (action === "hide") b.setAttribute("aria-pressed", String(visible));
         if (action === "locate" && !visible) { b.disabled = true; b.title = "显示此设施后可定位"; }
-        if (action === "delete" || action === "standardize" || action === "edit" || action==="clipping") b.disabled = !this.editable();
+        if (action === "delete" || action === "standardize" || action === "edit" || action==="clipping" || action==="position") b.disabled = !this.editable() || this.busySave;
+        if (action === "position" && ((!this.upgradeEnabled && this.newPlan(p)) || this.upgrading)) b.disabled = true;
         if (action === "standardize" && this.upgrading) b.disabled = true;
         if (action === "delete" && this.upgrading === JSON.stringify([this.projectId,p.id])) b.disabled = true;
         if (this.pendingDelete.has(JSON.stringify([this.projectId, p.id]))) b.disabled = true;
@@ -2163,12 +2279,17 @@ export class TemporaryWorksPanel {
   }
   private async save() {
     const projectId = this.projectId, draft = this.preview, token = this.generation;
-    if (!projectId || !this.editable() || !draft || this.busySave) return;
+    if (!projectId || !this.editable() || !draft || this.busySave || this.analysis || draft.canSave===false) return;
     this.busySave = true; this.buttons();
     try {
       draft.checkSource();
       const plan = draft.replaceId
-        ? await this.options.store.updateExisting(projectId, draft.replaceId, stored => ({...draft.record,id:stored.id,createdAt:stored.createdAt,visible:stored.visible}))
+        ? await this.options.store.updateExisting(projectId, draft.replaceId, stored => {
+          draft.checkSource();
+          if (this.positionEditing && JSON.stringify({...stored,visible:undefined})!==JSON.stringify({...this.positionEditing.source,visible:undefined}))
+            throw new Error("原方案已在其他页面更新，请重新打开位置调整。");
+          return {...draft.record,id:stored.id,createdAt:stored.createdAt,visible:stored.visible};
+        })
         : draft.record;
       if (!draft.replaceId) await this.options.store.put(projectId, plan);
       if (this.generation !== token) return;
@@ -2181,6 +2302,7 @@ export class TemporaryWorksPanel {
         try{saveTemporaryWorksLightingPreferences(projectId,this.lighting);}catch(error){lightingWarning=` 模型方案已保存，但亮度偏好未能保存：${error instanceof Error?error.message:String(error)}`;}
       }
       this.glbEditing = undefined;this.objectBrightnessDraft=undefined;this.roadEditing=undefined;this.hardeningEditing=undefined;
+      this.positionEditing=undefined;
       this.records.set(plan.id, plan);
       if(this.previewSurfaceId){this.composition?.remove(this.previewSurfaceId);this.previewSurfaceId=undefined;}
       if(this.preview===draft)this.preview=undefined;

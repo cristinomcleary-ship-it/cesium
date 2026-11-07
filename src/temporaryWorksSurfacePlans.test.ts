@@ -51,12 +51,17 @@ test('legacy road actual outline is cached without mutating original mesh or usi
   for(const point of first[0].outer)assert.ok(p.mesh.vertices.some(v=>v.longitude===point.longitude&&v.latitude===point.latitude));
 });
 
-test('GLB bounds are only candidate boxes; resource footprints are not accepted as verified floors',()=>{
+test('GLB automatically excludes its real footprint without inventing floor levels from its bounds',()=>{
   const f=facility(),b=surfacePlanBounds(f,manifest)!;
   assert.ok(b.minX<reference.longitude&&b.maxX>reference.longitude);
   assert.equal(getSurfacePlanFootprints(f),undefined);
   const prepared=prepareHardeningParameters(source(),[f],manifest);
-  assert.deepEqual(prepared.unknownFacilities,['camp']);assert.equal(prepared.parameters.blockers!.length,0);
+  assert.deepEqual(prepared.unknownFacilities,[]);assert.equal(prepared.parameters.blockers!.length,1);
+  const blocker=prepared.parameters.blockers![0];
+  assert.equal(blocker.footprintOnly,true);assert.equal(blocker.plane,undefined);assert.equal(blocker.thickness,undefined);
+  const result=calculateHardening(prepared.parameters);
+  assert.equal(result.canSave,true);assert.deepEqual(result.conflicts,[]);close(result.excludedArea,400,.03);
+  assert.deepEqual(prepareHardeningParameters(source(),[f]).unknownFacilities,['camp']);
 });
 
 test('distant GLB does not require a floor confirmation, and inactive objects are caller filtered',()=>{
@@ -67,7 +72,7 @@ test('distant GLB does not require a floor confirmation, and inactive objects ar
   assert.equal(prepareHardeningParameters(source(),[p],manifest).parameters.blockers!.length,1);
 });
 
-test('confirmed facility floors use only user-drawn area and explicitly entered floor levels',()=>{
+test('optional confirmed floors retain exact levels while automatic building occupancy still applies',()=>{
   const input=value({facilityExclusions:[exclusion()]}),f=facility();
   const bindings=bindHardeningFacilities(input,[f],manifest);
   assert.equal(bindings.camp.floorHeight,100.5);assert.equal(bindings.camp.floorThickness,.2);
@@ -75,6 +80,11 @@ test('confirmed facility floors use only user-drawn area and explicitly entered 
   assert.deepEqual(prepared.unknownFacilities,[]);
   const b=prepared.parameters.blockers![0];assert.equal(b.plane!.height,100.5);assert.equal(b.thickness,.2);
   const x=b.footprints[0].outer.map(p=>p.x);close(Math.max(...x)-Math.min(...x),10);
+  assert.equal(prepared.parameters.blockers!.length,2);
+  assert.equal(prepared.parameters.blockers![1].footprintOnly,true);
+  const result=calculateHardening(prepared.parameters);
+  close(result.excludedArea,400,.03);assert.equal(result.conflicts.length,1);
+  assert.equal(result.conflicts[0].id,'camp');close(result.conflicts[0].maxDifference!,.5);
 });
 
 test('floor exclusions follow translation/heading/XYZ scale and remain bound to content hash',()=>{
@@ -87,7 +97,49 @@ test('floor exclusions follow translation/heading/XYZ scale and remain bound to 
   const xs=blocker.footprints[0].outer.map(p=>p.x),ys=blocker.footprints[0].outer.map(p=>p.y);
   close(Math.max(...xs)-Math.min(...xs),5,1e-3);close(Math.max(...ys)-Math.min(...ys),20,1e-3);close((Math.max(...xs)+Math.min(...xs))/2,20,1e-3);
   const changed={schemaVersion:1 as const,assets:[{...asset,sha256:'b'.repeat(64)}]};
-  assert.deepEqual(prepareHardeningParameters(saved,[moved],changed).unknownFacilities,['camp']);
+  const rebound=prepareHardeningParameters(saved,[moved],changed);
+  assert.deepEqual(rebound.unknownFacilities,[]);
+  assert.equal(rebound.parameters.blockers!.length,1);
+  assert.equal(rebound.parameters.blockers![0].footprintOnly,true,'stale manual floor must not replace current automatic occupancy');
+});
+
+test('automatic occupancy preserves courtyard holes and follows translation, heading and independent scales',()=>{
+  const courtyard={...asset,bounds:{min:[-50,-50,0] as [number,number,number],max:[50,50,10] as [number,number,number]},
+    footprints:[{outer:[[-10,-10],[10,-10],[10,10],[-10,10]] as [number,number][],
+      holes:[[[-5,-5],[5,-5],[5,5],[-5,5]] as [number,number][]]}]};
+  const assets:TemporaryWorksGlbManifest={schemaVersion:1,assets:[courtyard]};
+  const f=facility({...placement,...geo(10,5),headingDeg:90,dimensions:{length:40,width:10,height:30}});
+  const snapshot=structuredClone(f),prepared=prepareHardeningParameters(source(),[f],assets);
+  const occupant=prepared.parameters.blockers![0];
+  assert.equal(occupant.footprints[0].holes!.length,1);
+  const xs=occupant.footprints[0].outer.map(p=>p.x),ys=occupant.footprints[0].outer.map(p=>p.y);
+  close(Math.max(...xs)-Math.min(...xs),10,.001);close(Math.max(...ys)-Math.min(...ys),40,.002);
+  close((Math.max(...xs)+Math.min(...xs))/2,10,.001);close((Math.max(...ys)+Math.min(...ys))/2,5,.001);
+  const result=calculateHardening(prepared.parameters);
+  close(result.excludedArea,300,.02);close(result.visibleArea,9700,.02);
+  assert.equal(result.canSave,true);assert.deepEqual(result.conflicts,[]);
+  assert.equal(result.footprints.length,2,'courtyard remains a separate hardening island');
+  assert.deepEqual(f,snapshot,'automatic exclusions must not modify the facility');
+});
+
+test('automatic GLB occupancy and crossing road subtract their union once and recover after removal',()=>{
+  const p=source(),f=facility(),r=road('road',100);
+  const result=calculateHardening(prepareHardeningParameters(p,[f,r],manifest).parameters);
+  close(result.excludedArea,400+560-140,.03);assert.equal(result.canSave,true);
+  const onlyRoad=calculateHardening(prepareHardeningParameters(p,[r],manifest).parameters);
+  close(onlyRoad.excludedArea,560,1e-4);
+  const empty=calculateHardening(prepareHardeningParameters(p,[],manifest).parameters);
+  close(empty.excludedArea,0);
+  const distant=facility({...placement,...geo(150,0)});
+  close(calculateHardening(prepareHardeningParameters(p,[distant,r],manifest).parameters).excludedArea,560,1e-4);
+});
+
+test('automatic footprint occupancy needs neither a floor confirmation nor a content hash',()=>{
+  const assets:TemporaryWorksGlbManifest={schemaVersion:1,assets:[{...asset,sha256:undefined}]};
+  const prepared=prepareHardeningParameters(source(),[facility({...placement,height:250})],assets);
+  assert.deepEqual(prepared.unknownFacilities,[]);
+  assert.equal(prepared.parameters.blockers![0].plane,undefined);
+  assert.equal(calculateHardening(prepared.parameters).canSave,true);
 });
 
 test('editing transformed exclusions produces current world coordinates before a fresh bind',()=>{

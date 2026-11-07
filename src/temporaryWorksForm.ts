@@ -256,6 +256,24 @@ export const temporaryWorksFormHtml = `
     </details>
     <div class="tw-records">
       <h3>06 · 已保存方案</h3>
+      <section id="tw-position-controls" class="tw-position-controls" aria-label="临建设施位置调整" hidden>
+        <strong id="tw-position-title">位置调整</strong>
+        <div class="tw-grid">
+          <label>平移步长（m）<input id="tw-position-step" type="number" min="0.01" max="1000" step="any" value="1"/></label>
+          <label>升降步长（m）<input id="tw-position-height-step" type="number" min="0.01" max="1000" step="any" value="0.1"/></label>
+        </div>
+        <label>平移方向<select id="tw-position-axis"><option value="view">按当前视角前后左右</option><option value="north">按地图方向（上北下南）</option></select></label>
+        <div class="tw-position-pad">
+          <button id="tw-position-forward" type="button">↑ 前移</button>
+          <button id="tw-position-left" type="button">← 左移</button>
+          <button id="tw-position-back" type="button">↓ 后移</button>
+          <button id="tw-position-right" type="button">右移 →</button>
+        </div>
+        <div class="tw-actions"><button id="tw-position-up" type="button">＋ 升高</button><button id="tw-position-down" type="button">－ 降低</button><button id="tw-position-reset" type="button">恢复调整前位置</button></div>
+        <p id="tw-position-offset" class="tw-hint" role="status"></p>
+        <p class="tw-hint">整体移动并保留形状、坡度和厚度。相邻硬化自动更新；历史摄影采样与土方需在新位置重新核算。</p>
+        <div class="tw-actions"><button id="tw-position-save" type="button" class="tw-primary">保存位置</button><button id="tw-position-cancel" type="button">取消调整</button></div>
+      </section>
       <div id="tw-plans" class="tw-plans"></div>
     </div>
   </div>

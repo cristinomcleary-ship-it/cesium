@@ -13,6 +13,8 @@ export type HardeningBlocker = {
   footprints: readonly HardeningFootprint[];
   plane?: HardeningPlane;
   surface?: { vertices: readonly HardeningSurfaceVertex[]; triangles: readonly PlanningTriangle[] };
+  /** Occupancy only: exclude its plan footprint without claiming a known floor or connection level. */
+  footprintOnly?: boolean;
   /** A known structural thickness allows shared vertical wall intervals to be removed exactly. */
   thickness?: number;
   visible?: boolean; ready?: boolean;
@@ -184,6 +186,7 @@ function triangleValue(t: PreparedBlocker['triangles'][number]['points'],p: Plan
   return t[0][key]!*u+t[1][key]!*v+t[2][key]!*w;
 }
 function blockerLevels(blocker: PreparedBlocker,p: PlanXY): {top:number;bottom?:number}|undefined {
+  if (blocker.blocker.footprintOnly) return;
   if (blocker.blocker.plane) {
     const top=hardeningHeightAt(blocker.blocker.plane,p);
     return {top,bottom:blocker.blocker.thickness===undefined?undefined:top-blocker.blocker.thickness};
@@ -206,6 +209,9 @@ function edgeContacts(a: Edge,b: Edge): PlanXY[] {
 function findHeightConflict(source: MultiPolygon,sourceEdges: Edge[],plane: HardeningPlane,entry: PreparedBlocker,
   accepted: ReadonlySet<string>,count: {value:number},signal?: AbortSignal): HardeningConflict|undefined {
   signal?.throwIfAborted();
+  // A building outline is authoritative occupancy, but its model anchor is not a surveyed floor.
+  // Automatic exclusion needs no invented floor data or height-difference acknowledgement.
+  if (entry.blocker.footprintOnly) return;
   const overlap=polygonClipping.intersection(source,entry.geometry);
   const points=geometryPoints(overlap);
   // Include boundary-only contacts: touching a sloping road can have a real step despite zero overlap area.

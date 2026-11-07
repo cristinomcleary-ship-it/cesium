@@ -90,17 +90,20 @@ const form = `
     <details data-hde-coordinate-details><summary>调整边界点坐标</summary><div class="twh-vertices" data-hde-vertices></div></details>
   </fieldset>
   <fieldset data-hde-fieldset><legend>设施避让与摄影遮挡</legend>
+    <p class="twh-hint">已启用自动避让：框选后自动扣除范围内的施工便道、项目驻地、钢筋加工场和已有硬化面，无需逐个点选。设施移动、隐藏或删除后，硬化范围同步更新；驻地庭院等模型轮廓内的空地仍可硬化。</p>
+    <details class="twh-advanced"><summary>补充设施地坪避让范围（可选）</summary>
     <label>需要确认地坪范围的设施<select data-hde="facility"><option value="">无可选设施</option></select></label>
     <div class="twh-grid">
       <label>设施地坪顶椭球高（m）<input data-hde="facility-height" type="number" step="any" placeholder="明确确认实际地坪高程"/></label>
       <label>设施地坪厚度（m）<input data-hde="facility-thickness" type="number" min="0.001" step="any" placeholder="正值，不以楼高代替"/></label>
     </div>
     <div class="twh-actions"><button type="button" data-hde-action="facility">绘制随设施避让区</button></div>
-    <p class="twh-hint">便道和已核实地坪会按实际范围避让。先明确地坪顶标高和厚度，再沿真实边界圈定，不能把建筑底部基准或整个驻地院子当作地坪。随设施避让区在设施隐藏或移走后可补回；永久保留区始终不硬化。</p>
+    <p class="twh-hint">仅在设施自带底面轮廓之外还需保留地坪时使用。补充范围需填写真实地坪标高和厚度，并随设施移动；永久保留区始终不硬化。</p>
+    </details>
     <label class="twh-check"><input data-hde="clipping" type="checkbox" checked/>遮挡所选倾斜摄影图层</label>
     <p class="twh-hint" data-hde-model></p>
     <label class="twh-check"><input data-hde="accept-height" type="checkbox"/>保留已提示的高差，并扣除重叠范围</label>
-    <p class="twh-hint">高差不等于已接顺。改标高、坡度或边界后需重新确认；不改动已保存便道或建筑。</p>
+    <p class="twh-hint">与便道或已有硬化面接界时核对高差；自动避让建筑仅扣除占用轮廓，不代表地坪已接顺。改标高、坡度或边界后需重新确认。</p>
   </fieldset>
   <div class="twh-actions">
     <button type="button" data-hde-action="preview" class="tw-primary">生成 / 更新硬化预览</button>
