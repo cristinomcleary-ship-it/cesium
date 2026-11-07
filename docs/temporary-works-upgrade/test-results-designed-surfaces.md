@@ -1,5 +1,46 @@
 # 设计便道、场地硬化与亮度调节：验证记录
 
+## 2026-11-07 接续核查（北京时间）
+
+接续时远端 PR #9 仍为 Draft，功能提交 `a9618b757c1e788d784bafccda48f4a8d4be7e27`。会话恢复出的原工作树是较早的未提交快照，已原样保留，另建独立工作树复核远端源码。验证清单中的 32 个源码/依赖文件及 174 个测试文件 SHA-256 全部匹配；旧快照未发现独有未发布的实质修改。
+
+发现并修复本机部署阻断：`package.json` / npm 锁已包含 `polygon-clipping`，但 pnpm 锁遗漏它。使用与本机记录一致的 pnpm `11.25.0` 在隔离副本复现、生成及检查：
+
+|命令/核查|结果|
+|---|---|
+|原锁：`pnpm install --frozen-lockfile --lockfile-only --ignore-scripts`|exit 1，`ERR_PNPM_OUTDATED_LOCKFILE`，缺少新增依赖|
+|隔离副本补齐 pnpm 锁|exit 0；仅增加 `polygon-clipping@0.15.7`、`robust-predicates@3.0.3`、`splaytree@3.2.3`，165 个既有包及旧解析版本不变|
+|新锁：`pnpm install --frozen-lockfile --lockfile-only --ignore-scripts`|exit 0，锁哈希不变，未创建或改写共享 node_modules|
+|完整性与 Cesium 版本|新增三项 integrity 与 npm 锁逐字一致；engine `26.2.0` / widgets `16.1.1` 解析保持不变|
+
+新 pnpm 锁 SHA-256：`d2934c4af0636ef2dd785b81f2db5a51c751d6d5fae053326edf7bf09223eada`。上述是冻结锁文件检查，不冒称用户电脑完整安装成功。本次没有修改产品 `src`；下文 1420 项主套件及构建为功能提交已有记录，不改写为本次重新执行。
+
+新增可移植的隔离验证入口 `tools/designed-surfaces-preview/server.mjs`，以真实临建面板、合成 3D Tiles 和用户显式提供的本地私有资源进行检查，方案仅在内存中，不连接生产业务接口。
+
+|新入口专项检查|结果|
+|---|---|
+|`node tools/designed-surfaces-preview/server.mjs --help`|exit 0；不启动服务、不读取私有资源|
+|`node --test tools/designed-surfaces-preview/preview.test.mjs`|exit 0；8/8，0 跳过；覆盖回环地址、端口、只读资源白名单、链接越界、业务接口拒绝、真实换行 DXF 与合成 GLTF 夹具|
+|验证页 TypeScript 严格检查（命令如下）|exit 0；显式使用严格编译选项，未改主配置|
+|验证页 Vite 生产构建|exit 0；13.18 秒，输出到独立临时目录，未覆盖正式 dist|
+|同进程 HTTP 探针及关闭|最终 exit 0；首页、app.ts、3 个合成夹具、Cesium 依赖 JS 和 Widgets CSS 均 200；业务接口 404、POST 405；正常完成关闭并自然退出|
+
+首次 HTTP 探针完成响应检查后，旧顺序的关闭流程停住，已终止该探针自身进程（exit 130），没有把它记为通过。修复仅属于验证服务：并行关闭自己的 HTTP/Vite 资源，关闭自身剩余连接；最终探针消费完整响应并自然退出。HTTP 可加载和构建成功不代表浏览器已执行代码、shader 已实际绘制或帧率通过。本轮不包含私有模型 GPU 验收，不新增真实场景截图。
+
+验证页严格类型检查命令：
+
+```sh
+node node_modules/typescript/bin/tsc --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --lib ES2022,DOM,DOM.Iterable --types node --skipLibCheck --allowImportingTsExtensions --strict --noUnusedLocals --noUnusedParameters tools/designed-surfaces-preview/app.ts src/vite-env.d.ts
+```
+
+验证页构建由 `node --input-type=module` 调用 Vite `build`，配置来自 `previewViteConfig`，目标为 `esnext`，产物输出到独立验证目录。同进程 HTTP 检查由 `node --input-type=module` 调用 `startPreview` 后发起 GET/POST、消费响应体并在 finally 关闭，未使用浏览器自动化；这些附加检查没有并入主套件数量。
+
+按实际 Cesium Engine `26.2.0` 源码核对 shader 接口、材质与光照阶段、SpecGloss 分支、uniform 注入和资源销毁，未找到确定编译接口错误；这不是 GPU 验收。`Model.ready` 先于首次实际绘制，且局部照明后仍可能叠加全局雾、大气和 HDR，不能承诺不同环境的最终像素完全相同。
+
+浏览器访问隔离验证页本次明确返回 `net::ERR_CONNECTION_REFUSED`，未进入有效场景，截图和 GPU/流畅度验收仍未完成；本次临时验证进程已结束。用户 Windows 的 `01bff9fb` 仍未在远端取得，未更新正式服务。下一步由本机执行 [接续任务](../../CODEX_LOCAL_DEPLOY_DESIGNED_SURFACES.md)，保留其本机修复并完成实际场景与固定基线性能对比。
+
+## 功能提交已有执行记录
+
 日期：2026-11-06。开发基线 `19b150b3fa7c040a6ab4954ce7827efe4c25aec3`；分支 `feature/designed-roads-hardening-lighting`。本分支在独立工作树实现，原工作树、原方案和私有模型未被覆盖。
 
 **代码验证已执行；真实场景验收尚未完成，本记录不构成正式部署通过。** 使用 Node.js `v24.22.1`，锁定 Cesium `1.144.0` / Engine `26.2.0`。实现、资源接入、部署整合和回退方法见 [设计与部署说明](designed-surfaces.md)。
