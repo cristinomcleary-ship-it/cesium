@@ -68,12 +68,12 @@ function editor(fields: Record<string, any> = {}) {
   const input: Record<string, { value: string; checked: boolean }> = {};
   for (const [key, value] of Object.entries({ longitude: '121', latitude: '31', height: '120', thickness: '0.2', name: '场地', direction: '90', grade: '2', facility: '', 'facility-height': '', 'facility-thickness': '' }))
     input[key] = { value, checked: false };
-  for (const key of ['slope-enabled', 'clipping', 'accept-height']) input[key] = { value: '', checked: key === 'clipping' };
+  for (const key of ['slope-enabled', 'clipping', 'accept-height', 'manual-elevation']) input[key] = { value: '', checked: ['clipping','manual-elevation'].includes(key) };
   const instance = Object.assign(Object.create(TemporaryWorksHardeningEditor.prototype), {
     boundary: [{ longitude: 121, latitude: 31 }, { longitude: 121.001, latitude: 31 }, { longitude: 121.001, latitude: 31.001 }],
     holes: [], facilityExclusions: [], drawing: undefined, invalidVertexFields: new Set(), invalidVertexValues: new Map(),
     field(key: string) { return input[key]; },
-    cancelDrawing() {}, refresh() {}, refreshOutlines() {}, setStatus() {}, ...fields,
+    cancelDrawing() { this.drawing = undefined; }, refresh() {}, refreshOutlines() {}, setStatus() {}, ...fields,
   });
   return { instance, input };
 }
@@ -102,6 +102,106 @@ test('restoring a saved outline does not silently reuse a previous height-confli
   assert.deepEqual(restored.holes, saved.holes);
   saved.holes[0][0].longitude = 0;
   assert.equal(instance.holes[0][0].longitude, 121.0001);
+});
+
+test('new outlines default to automatic elevation and saved outlines preserve their exact level', () => {
+  const { instance, input } = editor();
+  const saved = instance.getValue();
+  delete saved.initialElevationMode;
+  instance.setValue();
+  assert.equal(input['manual-elevation'].checked, false);
+  assert.equal(input.height.value, '');
+  assert.equal(input.longitude.value, '');
+  assert.equal(input.latitude.value, '');
+  instance.setValue(saved);
+  assert.equal(instance.getValue().initialElevationMode, 'manual');
+  assert.equal(instance.getValue().reference.height, 120);
+  instance.setValue({ ...saved, initialElevationMode: 'automatic' });
+  assert.equal(instance.getValue().initialElevationMode, 'automatic');
+});
+
+test('automatic first click captures selected photography once, completes a rectangle, and needs no height input', () => {
+  let picks = 0;
+  const { instance, input } = editor({
+    options: { getModel: () => ({ id: 'photo', name: '摄影' }), pickInitialReference: () => { picks++; return { ...reference }; },
+      viewer: { camera: { getPickRay: () => ray(new Cartesian3(20, 10, 500), new Cartesian3(0, 0, -1)) } } },
+  });
+  input['manual-elevation'].checked = false;
+  input.height.value = ''; input.longitude.value = ''; input.latitude.value = '';
+  instance.drawing = instance.prepareDrawing('rectangle', 'outer');
+  assert.equal(instance.drawing.reference, undefined);
+  assert.equal(instance.pick({ x: 10, y: 10 }, false), undefined);
+  assert.equal(picks, 0, 'hover cannot select the initial datum');
+  instance.drawing.points.push(instance.pick({ x: 10, y: 10 }));
+  assert.equal(picks, 1);
+  assert.equal(input.height.value, '', 'cancel must remain able to keep the previous datum');
+  const opposite = instance.pick({ x: 20, y: 20 });
+  near(opposite.x, 20); near(opposite.y, 10);
+  assert.equal(picks, 1, 'the initial plane controls the subsequent point');
+  instance.drawing.points.push(opposite);
+  instance.finishDrawing();
+  const result = instance.getValue();
+  assert.equal(result.initialElevationMode, 'automatic');
+  assert.deepEqual(result.reference, reference);
+  assert.equal(result.boundary.length, 4);
+  const local = result.boundary.map((point: any) => hardeningLocalFromGeo(point, reference));
+  near(Math.max(...local.map((point: any) => point.x)), 20, 1e-5);
+  near(Math.max(...local.map((point: any) => point.y)), 10, 1e-5);
+});
+
+test('unavailable photography never fabricates a zero height or falls through to terrain', () => {
+  const messages: string[] = [];
+  const { instance, input } = editor({
+    options: { getModel: () => ({ id: 'photo', name: '摄影' }), pickInitialReference: () => undefined,
+      viewer: { camera: { getPickRay: () => { throw new Error('must not use another surface'); } } } },
+    setStatus: (message: string) => messages.push(message),
+  });
+  input['manual-elevation'].checked = false;
+  input.height.value = ''; input.longitude.value = ''; input.latitude.value = '';
+  instance.drawing = instance.prepareDrawing('rectangle', 'outer');
+  assert.equal(instance.pick({ x: 1, y: 1 }), undefined);
+  assert.equal(instance.drawing.reference, undefined);assert.equal(input.height.value, '');
+  assert.match(messages.at(-1)!, /未拾取到所选倾斜摄影/);
+  instance.options.getModel = () => undefined;
+  assert.throws(() => instance.prepareDrawing('rectangle', 'outer'), /选择已加载的倾斜摄影/);
+});
+
+test('cancelled or model-switched automatic drawing retains existing outline and reference', () => {
+  let model = 'photo';
+  const { instance } = editor({
+    options: { getModel: () => ({ id: model, name: model }), pickInitialReference: () => ({ ...reference, height: 145 }) },
+  });
+  const saved = instance.getValue();
+  instance.field('manual-elevation').checked = false;
+  instance.drawing = instance.prepareDrawing('polygon', 'outer');
+  instance.drawing.points.push(instance.pick({ x: 1, y: 1 }));
+  instance.cancelDrawing();
+  assert.deepEqual(instance.getValue().reference, saved.reference);
+  assert.deepEqual(instance.getValue().boundary, saved.boundary);
+  instance.drawing = instance.prepareDrawing('polygon', 'outer');
+  model = 'different-photo';
+  assert.throws(() => instance.pick({ x: 1, y: 1 }), /摄影已变化/);
+  assert.equal(instance.drawing, undefined);
+  assert.deepEqual(instance.getValue().reference, saved.reference);
+});
+
+test('resolved final datum updates outlines without changing mode or geometry, and rejects nonfinite data', () => {
+  const { instance, input } = editor();
+  input['manual-elevation'].checked = false;
+  const outline = structuredClone(instance.boundary);
+  instance.setResolvedReference({ ...reference, height: 133.125 });
+  assert.equal(instance.getValue().initialElevationMode, 'automatic');
+  assert.equal(instance.getValue().reference.height, 133.125);
+  assert.deepEqual(instance.boundary, outline);
+  assert.throws(() => instance.setResolvedReference({ ...reference, height: NaN }), /椭球高/);
+  assert.equal(instance.getValue().reference.height, 133.125);
+});
+
+test('manual and restored drawing keeps its saved level and never requests photography sampling', () => {
+  const { instance } = editor({ options: { pickInitialReference: () => { throw new Error('must preserve saved height'); } } });
+  const drawing = instance.prepareDrawing('polygon', 'outer');
+  assert.deepEqual(drawing.reference, reference);
+  assert.equal(drawing.automaticReference, false);
 });
 
 test('an incomplete vertex edit cannot preview the older coordinate behind invalid form text', () => {
