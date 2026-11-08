@@ -93,6 +93,17 @@ test('unknown levels cannot be accepted through the ordinary high-difference che
   assert.equal(result.canSave,false);assert.equal(result.conflicts[0].kind,'unknown-height');assert.equal(result.conflicts[0].accepted,false);
 });
 
+test('footprint-only occupancy excludes buildings without asserting a floor level or removing slab side walls',()=>{
+  const occupied:HardeningBlocker={id:'camp',kind:'facility',footprints:[rectangle(2,2,4)],footprintOnly:true};
+  const result=calculateHardening(parameters({blockers:[occupied]}));
+  near(result.visibleArea,84);assert.equal(result.canSave,true);assert.deepEqual(result.conflicts,[]);
+  assert.equal(result.sideEdges.length,8,'unknown building structure cannot erase concrete slab side walls');
+  for(const edge of result.sideEdges){near(edge.a.surfaceHeight,100);near(edge.a.baseHeight,99.7);}
+  topology(result);
+  const adjacent={...occupied,footprints:[rectangle(10,0,10)]};
+  assert.equal(calculateHardening(parameters({blockers:[adjacent]})).sideEdges.length,4);
+});
+
 test('a sloped occupant is checked across its overlap, not at a matching centre level',()=>{
   const result=calculateHardening(parameters({blockers:[blocker('road',rectangle(0,0,10),{plane:{reference:{x:5,y:5},height:100,gradeEastPct:2}})]}));
   assert.equal(result.canSave,false);near(result.conflicts[0].maxDifference!,.1);

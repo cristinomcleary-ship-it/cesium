@@ -133,3 +133,8 @@
 .tw-workbench #tw-glb-asset-info,
 .tw-workbench #tw-glb-clip-status { padding: 9px; border-left: 3px solid #4bc9c1; background: rgba(75,201,193,.07); }
 .tw-workbench textarea { width: 100%; box-sizing: border-box; resize: vertical; color: inherit; font: inherit; border: 1px solid rgba(130,168,192,.3); border-radius: 5px; padding: 7px; background: rgba(13,26,38,.6); }
+.tw-position-controls { margin: 10px 0 14px; padding: 12px; border: 1px solid #3a829b; border-radius: 8px; background: #102b3c; }
+.tw-position-controls > strong { display: block; margin-bottom: 10px; color: #b7efff; }
+.tw-position-pad { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 10px 0; }
+#tw-position-forward { grid-column: 2; }
+#tw-position-left { grid-column: 1; }
