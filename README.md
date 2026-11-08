@@ -1,6 +1,6 @@
 # Cesium CAD / 倾斜摄影浏览器
 
-当前临建设施模块预览版本为 **[临建设施1.0](docs/releases/temporary-facilities-v1.0.0.md)**（`temporary-facilities-v1.0.0`），包含按设计标高生成便道、矩形/多边形硬化及独立亮度调节。[模块版本信息](temporary-works-release.json)。
+当前临建设施模块预览版本为 **[临建设施1.1](docs/releases/temporary-facilities-v1.1.0.md)**（`temporary-facilities-v1.1.0`），新增驻地、钢筋场、便道、硬化的位置调整及硬化自动避让和移动联动，已通过本机部署与浏览器验收。[模块版本信息](temporary-works-release.json)。
 
 一个基于 CesiumJS + Vite + TypeScript 的工程数据浏览器，支持：
 

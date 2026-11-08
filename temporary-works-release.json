@@ -1,8 +1,10 @@
 {
-  "name": "临建设施1.0",
-  "version": "1.0.0",
-  "tag": "temporary-facilities-v1.0.0",
+  "name": "临建设施1.1",
+  "version": "1.1.0",
+  "tag": "temporary-facilities-v1.1.0",
   "channel": "preview",
-  "releaseDate": "2026-11-07",
-  "platformVersion": "1.2.0"
+  "releaseDate": "2026-11-08",
+  "platformVersion": "1.2.0",
+  "applicationCommit": "ad74683468bc4dec26008ac2ad3ab2c783d00068",
+  "releaseNotes": "docs/releases/temporary-facilities-v1.1.0.md"
 }
