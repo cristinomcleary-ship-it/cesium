@@ -236,3 +236,17 @@ test('direction controls support camera-relative movement, north-oriented moveme
   const old = f.p.preview; f.field('position-step').value = '0'; await f.p.nudgePosition('right');
   assert.equal(f.p.preview, old); assert.match(String(f.errors[0]), /步长/); assert.deepEqual(f.writes, []); f.composition.destroy();
 });
+
+for (const failSave of [false, true]) {
+  test(`position save ${failSave ? 'failure' : 'success'} re-enables saved-row actions after releasing busy state`, async () => {
+    const f = fixture(); await f.composition.whenIdle(); installPositionPreview(f);
+    const rowRefreshBusyStates: boolean[] = [];
+    f.p.list = () => rowRefreshBusyStates.push(f.p.busySave);
+    if (failSave) f.p.options.store.updateExisting = async () => { throw new Error('quota exceeded'); };
+    await f.p.save(); await f.composition.whenIdle();
+    assert.equal(f.p.busySave, false);
+    assert.equal(rowRefreshBusyStates.at(-1), false, 'saved-row actions must refresh after busySave is cleared');
+    assert.equal(f.errors.length, failSave ? 1 : 0);
+    f.composition.destroy();
+  });
+}

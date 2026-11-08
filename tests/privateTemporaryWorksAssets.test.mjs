@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, rm, readdir, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm, readdir, symlink, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -118,17 +118,60 @@ test('rejects embedded external resources so a valid checksum cannot import a re
   await assert.rejects(inspectBundle(f.source), /external or URI-based resources/);
 });
 
-test('rejects source file and destination directory symlinks without altering their targets', async t => {
+test('rejects source file symlinks without altering their targets', async t => {
   const f = await fixture(t);
   const external = join(f.root, 'external.glb');
   await writeFile(external, f.glb);
   await rm(join(f.source, 'camp.glb'));
-  await symlink(external, join(f.source, 'camp.glb'));
+  try {
+    await symlink(external, join(f.source, 'camp.glb'), 'file');
+  } catch (error) {
+    if (process.platform !== 'win32' || error.code !== 'EPERM') throw error;
+    t.skip('Windows file symlink privilege is unavailable; separate directory junction tests still exercise source and destination link rejection.');
+    return;
+  }
+  assert.equal((await lstat(join(f.source, 'camp.glb'))).isSymbolicLink(), true);
   await assert.rejects(installBundle(f.source, f.destination), /Symbolic links are not allowed/);
-  await rm(join(f.source, 'camp.glb')); await writeFile(join(f.source, 'camp.glb'), f.glb);
-  const externalDirectory = join(f.root, 'other'); await mkdir(externalDirectory);
-  await symlink(externalDirectory, f.destination);
-  await assert.rejects(installBundle(f.source, f.destination), /Symbolic links are not allowed/);
-  assert.deepEqual(await readdir(externalDirectory), []);
+  await assert.rejects(readdir(f.destination), { code: 'ENOENT' });
   assert.deepEqual(await readFile(external), f.glb);
+});
+
+// Directory junctions exercise the same lstat-based link rejection on Windows
+// without requiring the file-symlink privilege. Never skip these security checks.
+const directoryLinkType = process.platform === 'win32' ? 'junction' : 'dir';
+test('rejects a linked source bundle directory before creating the destination', async t => {
+  const f = await fixture(t);
+  const linkedSource = join(f.root, 'linked-source');
+  await symlink(f.source, linkedSource, directoryLinkType);
+  assert.equal((await lstat(linkedSource)).isSymbolicLink(), true);
+  await assert.rejects(installBundle(linkedSource, f.destination), /Symbolic links are not allowed/);
+  await assert.rejects(readdir(f.destination), { code: 'ENOENT' });
+  assert.deepEqual(await readFile(join(f.source, 'camp.glb')), f.glb);
+  assert.equal((await inspectBundle(f.source)).files.length, 5);
+});
+
+test('rejects a directory link at a source asset path without reading or altering its target', async t => {
+  const f = await fixture(t);
+  const externalDirectory = join(f.root, 'external');
+  await mkdir(externalDirectory);
+  await writeFile(join(externalDirectory, 'keep.txt'), 'external user file');
+  await rm(join(f.source, 'camp.glb'));
+  await symlink(externalDirectory, join(f.source, 'camp.glb'), directoryLinkType);
+  assert.equal((await lstat(join(f.source, 'camp.glb'))).isSymbolicLink(), true);
+  await assert.rejects(installBundle(f.source, f.destination), /Symbolic links are not allowed/);
+  await assert.rejects(readdir(f.destination), { code: 'ENOENT' });
+  assert.deepEqual(await readdir(externalDirectory), ['keep.txt']);
+  assert.equal(await readFile(join(externalDirectory, 'keep.txt'), 'utf8'), 'external user file');
+});
+
+test('rejects a linked destination directory and ancestor without altering their targets', async t => {
+  const f = await fixture(t);
+  const externalDirectory = join(f.root, 'other'); await mkdir(externalDirectory);
+  await writeFile(join(externalDirectory, 'keep.txt'), 'existing user file');
+  await symlink(externalDirectory, f.destination, directoryLinkType);
+  assert.equal((await lstat(f.destination)).isSymbolicLink(), true);
+  await assert.rejects(installBundle(f.source, f.destination), /Symbolic links are not allowed/);
+  await assert.rejects(installBundle(f.source, join(f.destination, 'nested')), /Symbolic links are not allowed/);
+  assert.deepEqual(await readdir(externalDirectory), ['keep.txt']);
+  assert.equal(await readFile(join(externalDirectory, 'keep.txt'), 'utf8'), 'existing user file');
 });

@@ -2317,7 +2317,7 @@ export class TemporaryWorksPanel {
       this.list(); this.updateFields(); this.options.onPlansChanged?.(); this.review(plan, true);
       this.status(`已保存「${plan.name}」${needsRebuild?"的源参数；相邻条件已变化，正在重新检查显示，请核对方案状态。":"，可在已保存方案或场景显示中管理。"}${lightingWarning}`,!!lightingWarning);
     } catch (error) { if (this.generation === token) this.failure(error); }
-    finally { if (this.generation === token) { this.busySave = false; this.buttons(); } }
+    finally { if (this.generation === token) { this.busySave = false; this.buttons(); this.list(); } }
   }
   async removePlan(id: string): Promise<boolean> {
     const projectId = this.projectId, record = this.records.get(id);

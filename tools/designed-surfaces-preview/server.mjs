@@ -113,7 +113,7 @@ export async function previewViteConfig(options) {
         });
       } },
       viteStaticCopy({ targets: ['Workers', 'Assets', 'ThirdParty', 'Widgets'].map(name => ({
-        src: path.join(repositoryRoot, 'node_modules/cesium/Build/Cesium', name).replaceAll('\\', '/'), dest: 'cesiumStatic',
+        src: fs.realpathSync(path.join(repositoryRoot, 'node_modules/cesium/Build/Cesium', name)).replaceAll('\\', '/'), dest: 'cesiumStatic',
       })) }),
     ],
   };

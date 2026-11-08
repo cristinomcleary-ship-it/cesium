@@ -11,7 +11,7 @@ before(async () => {
   await mkdir('tmp', { recursive: true });
   directory = await mkdtemp(join(resolve('tmp'), 'local-deletion-'));
   await build({ stdin: { contents: 'export { FoundationPitMonitoring } from "./src/foundationPitMonitoring.ts"; export { SubsurfaceTools, putArchiveRecord, deleteArchiveRecord } from "./src/subsurfaceTools.ts"; export { ThreeDReport } from "./src/threeDReport.ts"; export { ReportComposer } from "./src/reportComposer.ts"; export { ElectronicSandTable } from "./src/electronicSandTable.ts";', resolveDir: process.cwd(), loader: 'ts' }, outfile: join(directory, 'fixture.mjs'), bundle: true, platform: 'node', format: 'esm', packages: 'external', loader: { '.css': 'empty' }, plugins: [{ name: 'private-storage-test-exports', setup(builder) {
-    builder.onLoad({ filter: /\/subsurfaceTools\.ts$/ }, async args => ({ contents: await readFile(args.path, 'utf8') + '\nexport { putArchiveRecord, deleteArchiveRecord };', loader: 'ts', resolveDir: resolve('src') }));
+    builder.onLoad({ filter: /[\\/]subsurfaceTools\.ts$/ }, async args => ({ contents: await readFile(args.path, 'utf8') + '\nexport { putArchiveRecord, deleteArchiveRecord };', loader: 'ts', resolveDir: resolve('src') }));
   } }] });
   ({ FoundationPitMonitoring, SubsurfaceTools, putArchiveRecord, deleteArchiveRecord, ThreeDReport, ReportComposer, ElectronicSandTable } = await import(pathToFileURL(join(directory, 'fixture.mjs')).href));
 });
