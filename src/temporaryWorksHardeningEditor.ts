@@ -22,6 +22,8 @@ export type HardeningFacilityExclusion = {
 export type HardeningEditorValue = {
   name: string;
   reference: HardeningReference;
+  /** New outlines may take their initial placement from the selected photogrammetry. */
+  initialElevationMode?: 'automatic' | 'manual';
   boundary: HardeningGeoPoint[];
   holes: HardeningGeoPoint[][];
   thickness: number;
@@ -37,6 +39,8 @@ export type HardeningEditorOptions = {
   root: HTMLElement;
   viewer: Viewer;
   getModel?(): { id: string; name: string } | undefined;
+  /** Return a hit on the selected photogrammetry only; terrain and other objects are not substitutes. */
+  pickInitialReference?(screen: Cartesian2): HardeningReference | undefined;
   beginInteractionSession?(): void | (() => void);
   onPreview(value: HardeningEditorValue): void | Promise<void>;
   onCancel?(): void;
@@ -48,7 +52,9 @@ type DrawTarget = 'outer' | 'hole' | 'facility';
 type Drawing = {
   mode: 'rectangle' | 'polygon'; target: DrawTarget;
   points: HardeningLocalPoint[]; hover?: HardeningLocalPoint;
-  reference: HardeningReference; gradeEastPct: number; gradeNorthPct: number;
+  reference?: HardeningReference; gradeEastPct: number; gradeNorthPct: number;
+  automaticReference?: boolean;
+  modelId?: string;
   facility?: HardeningEditorFacility;
   floorHeight?: number;
   floorThickness?: number;
@@ -56,22 +62,30 @@ type Drawing = {
 
 const form = `
 <div class="twh-editor" role="region" aria-label="场地硬化编辑">
-  <fieldset data-hde-fieldset><legend>场地标高与结构</legend>
+  <fieldset data-hde-fieldset><legend>场地设置</legend>
     <div class="twh-grid">
       <label class="twh-wide">场地名称<input data-hde="name" type="text" maxlength="80" placeholder="如 1 号硬化场地"/></label>
-      <label>参考点经度（°）<input data-hde="longitude" type="number" min="-180" max="180" step="any"/></label>
-      <label>参考点纬度（°）<input data-hde="latitude" type="number" min="-89.9" max="89.9" step="any"/></label>
-      <label>参考点场地顶椭球高（m）<input data-hde="height" type="number" step="any" placeholder="必填，不自动取树冠或水面"/></label>
       <label>水泥层厚度（m）<input data-hde="thickness" type="number" min="0.001" step="any" placeholder="正值，向顶面以下生成"/></label>
     </div>
+    <p class="twh-hint" data-hde-elevation-hint>初始标高自动取自所选倾斜摄影，框选后可用位置调整升降。</p>
+    <details class="twh-advanced"><summary>手动标高与坡度（可选）</summary>
+    <label class="twh-check"><input data-hde="manual-elevation" type="checkbox"/>手动指定初始标高</label>
+    <div data-hde-manual-reference hidden>
+    <div class="twh-grid">
+      <label>参考点经度（°）<input data-hde="longitude" type="number" min="-180" max="180" step="any"/></label>
+      <label>参考点纬度（°）<input data-hde="latitude" type="number" min="-89.9" max="89.9" step="any"/></label>
+      <label>参考点场地顶椭球高（m）<input data-hde="height" type="number" step="any" placeholder="手动模式填写"/></label>
+    </div>
     <div class="twh-actions"><button type="button" data-hde-action="view-center">取视图中心作为平面参考</button></div>
-    <p class="twh-hint">只读取参考经纬度，不取摄影表面标高。工程标高须按项目已确认的关系换算为椭球高；参考点固定，修改边界不移动参考点。</p>
+    <p class="twh-hint">工程标高须按项目已确认的关系换算为椭球高。已有方案保留已保存的标高。</p>
+    </div>
     <label class="twh-check"><input data-hde="slope-enabled" type="checkbox"/>设置场地坡度</label>
     <div class="twh-grid" data-hde-slope hidden>
       <label>坡向（°，正北0°、正东90°）<input data-hde="direction" type="number" step="any" value="0"/></label>
       <label>坡率（%，正值向坡向升高）<input data-hde="grade" type="number" step="any" value="0"/></label>
     </div>
     <p class="twh-hint">未设置坡度时为水平场地。水泥层只封闭自身厚度，不自动填土或连接未知地面。</p>
+    </details>
   </fieldset>
   <fieldset data-hde-fieldset><legend>框选硬化范围</legend>
     <div class="twh-actions">
@@ -84,7 +98,7 @@ const form = `
       <button type="button" data-hde-action="undo">撤销上一点</button>
       <button type="button" data-hde-action="cancel-draw">取消圈选</button>
     </div>
-    <p class="twh-hint">先填顶标高，再在设计平面上选点。矩形依次选两个对角点；多边形点选边界后点击“完成圈选”或右键。Esc 取消。建议俯视操作。</p>
+    <p class="twh-hint">直接在所选倾斜摄影上框选：矩形依次选两个对角点；多边形点选边界后点击“完成圈选”或右键。Esc 取消。建议俯视操作，生成后可再调整位置和标高。</p>
     <div class="twh-preview" data-hde-preview></div>
     <ul class="twh-region-list" data-hde-regions></ul>
     <details data-hde-coordinate-details><summary>调整边界点坐标</summary><div class="twh-vertices" data-hde-vertices></div></details>
@@ -164,6 +178,7 @@ export class TemporaryWorksHardeningEditor {
     return target;
   }
   private field(name: string) { return this.element<HTMLInputElement>(`[data-hde="${name}"]`); }
+  private elevationMode(): 'automatic' | 'manual' { return this.field('manual-elevation').checked ? 'manual' : 'automatic'; }
   private reference(): HardeningReference {
     const reference = {
       longitude: numberValue(this.field('longitude').value, '参考点经度'),
@@ -180,10 +195,10 @@ export class TemporaryWorksHardeningEditor {
   }
 
   getValue(): HardeningEditorValue {
+    if (this.boundary.length < 3) throw new Error('请先框选硬化场地。');
     const reference = this.reference(), slopes = this.slopes();
     const thickness = numberValue(this.field('thickness').value, '水泥层厚度');
     if (thickness <= 0) throw new Error('水泥层厚度须大于零。');
-    if (this.boundary.length < 3) throw new Error('请先框选硬化场地。');
     if (this.drawing) throw new Error('请先完成或取消当前圈选。');
     if (this.invalidVertexFields.size) throw new Error('请先修正尚未应用的边界点坐标。');
     for (const exclusion of this.facilityExclusions) {
@@ -195,7 +210,7 @@ export class TemporaryWorksHardeningEditor {
       for (const point of ring) hardeningLocalFromGeo(point, reference);
     }
     return {
-      name: this.field('name').value.trim() || '硬化场地', reference,
+      name: this.field('name').value.trim() || '硬化场地', reference, initialElevationMode: this.elevationMode(),
       boundary: cloneRing(this.boundary), holes: this.holes.map(cloneRing), thickness,
       slopeEnabled: this.field('slope-enabled').checked, ...slopes,
       clippingEnabled: this.field('clipping').checked,
@@ -214,6 +229,8 @@ export class TemporaryWorksHardeningEditor {
     this.field('longitude').value = value?.reference ? String(value.reference.longitude) : '';
     this.field('latitude').value = value?.reference ? String(value.reference.latitude) : '';
     this.field('height').value = value?.reference ? String(value.reference.height) : '';
+    this.field('manual-elevation').checked = value?.initialElevationMode === 'manual' ||
+      (value?.initialElevationMode !== 'automatic' && !!value?.reference);
     this.field('thickness').value = value?.thickness === undefined ? '' : String(value.thickness);
     this.field('facility').value = '';
     this.field('facility-height').value = '';
@@ -226,7 +243,21 @@ export class TemporaryWorksHardeningEditor {
     // A previous confirmation is tied to the parent panel's dependency version, not a reusable UI consent.
     this.field('accept-height').checked = false;
     this.refresh(); this.refreshOutlines();
-    this.setStatus(value?.boundary?.length ? '已恢复场地范围；修改后请更新预览。' : '填写标高和厚度后，框选硬化场地。');
+    this.setStatus(value?.boundary?.length ? '已恢复场地范围及标高；修改后请更新预览。' : '选择倾斜摄影后直接框选范围，初始标高自动获取。');
+  }
+
+  /** Parent calls only after the current preview's selected-model sample has succeeded. */
+  setResolvedReference(reference: HardeningReference) {
+    if (this.disposed) return;
+    validateHardeningReference(reference);
+    this.writeReference(reference);
+    this.refresh(); this.refreshOutlines();
+  }
+
+  private writeReference(reference: HardeningReference) {
+    this.field('longitude').value = String(reference.longitude);
+    this.field('latitude').value = String(reference.latitude);
+    this.field('height').value = String(reference.height);
   }
 
   setEnabled(enabled: boolean) {
@@ -258,9 +289,21 @@ export class TemporaryWorksHardeningEditor {
   refresh() {
     if (this.disposed) return;
     this.element('[data-hde-slope]').hidden = !this.field('slope-enabled').checked;
+    this.refreshElevationControls();
     const model = this.options.getModel?.();
     this.element('[data-hde-model]').textContent = model ? `关联摄影：${model.name}` : '未关联摄影；仍可预览水泥场地，遮挡将等待明确关联图层。';
     this.refreshButtons(); this.renderPreview(); this.renderRegions(); this.renderVertices();
+  }
+
+  private refreshElevationControls() {
+    const manual = this.elevationMode() === 'manual';
+    this.element('[data-hde-manual-reference]').hidden = !manual;
+    const height = this.field('height').value;
+    this.element('[data-hde-elevation-hint]').textContent = manual
+      ? '使用当前指定标高；保存后可通过位置调整升降。'
+      : height.trim() && Number.isFinite(Number(height))
+        ? `当前参考标高 ${Number(height).toFixed(3)} m；生成时从所选摄影获取初始标高，之后可通过位置调整升降。`
+        : '初始标高自动取自所选倾斜摄影，框选后可用位置调整升降。';
   }
 
   private refreshButtons() {
@@ -317,6 +360,7 @@ export class TemporaryWorksHardeningEditor {
       }
     }
     this.element('[data-hde-slope]').hidden = !this.field('slope-enabled').checked;
+    this.refreshElevationControls();
     if (!['name', 'clipping', 'accept-height'].includes(input.dataset.hde ?? '')) { this.renderPreview(); this.refreshOutlines(); }
     this.options.onChange?.();
   }
@@ -329,7 +373,11 @@ export class TemporaryWorksHardeningEditor {
       case 'facility': this.startDrawing('polygon', 'facility'); break;
       case 'finish': this.finishDrawing(); break;
       case 'undo':
-        if (this.drawing) { this.drawing.points.pop(); this.updateDrawingOutline(); }
+        if (this.drawing) {
+          this.drawing.points.pop(); this.drawing.hover = undefined;
+          if (!this.drawing.points.length && this.drawing.automaticReference) this.drawing.reference = undefined;
+          this.updateDrawingOutline();
+        }
         break;
       case 'cancel-draw': this.cancelDrawing(); this.setStatus('已取消圈选，原范围保留。'); break;
       case 'cancel': this.cancelDrawing(); this.options.onCancel?.(); break;
@@ -365,22 +413,32 @@ export class TemporaryWorksHardeningEditor {
     const location = Cartographic.fromCartesian(point);
     this.field('longitude').value = CesiumMath.toDegrees(location.longitude).toFixed(9);
     this.field('latitude').value = CesiumMath.toDegrees(location.latitude).toFixed(9);
+    this.field('manual-elevation').checked = true;
     this.invalidateHeightConfirmation(); this.cancelDrawing(); this.refresh(); this.refreshOutlines();
     this.options.onChange?.();
     this.setStatus('已设置平面参考点；场地顶标高仍由你填写，不使用摄影表面高程。');
   }
 
-  private startDrawing(mode: Drawing['mode'], target: DrawTarget) {
-    const reference = this.reference(), slopes = this.slopes();
+  private prepareDrawing(mode: Drawing['mode'], target: DrawTarget): Drawing {
+    const automaticReference = target === 'outer' && this.elevationMode() === 'automatic';
+    const modelId = automaticReference ? this.options.getModel?.()?.id : undefined;
+    if (automaticReference && (!modelId || !this.options.pickInitialReference))
+      throw new Error('请先选择已加载的倾斜摄影再框选；也可在可选设置中手动指定标高。');
+    const reference = automaticReference ? undefined : this.reference(), slopes = this.slopes();
     if (target !== 'outer' && this.boundary.length < 3) throw new Error('请先绘制场地外边界。');
     const facility = target === 'facility' ? this.facilities.find(item => item.id === this.field('facility').value) : undefined;
     if (target === 'facility' && !facility) throw new Error('请先选择需要确认地坪范围的设施。');
     const floorHeight = target === 'facility' ? numberValue(this.field('facility-height').value, '设施地坪顶椭球高') : undefined;
     const floorThickness = target === 'facility' ? numberValue(this.field('facility-thickness').value, '设施地坪厚度') : undefined;
     if (floorThickness !== undefined && floorThickness <= 0) throw new Error('设施地坪厚度须大于零。');
+    return { mode, target, points: [], reference: floorHeight === undefined ? reference : { ...reference!, height: floorHeight },
+      ...(target === 'facility' ? { gradeEastPct: 0, gradeNorthPct: 0 } : slopes), facility, floorHeight, floorThickness,
+      automaticReference, modelId };
+  }
+  private startDrawing(mode: Drawing['mode'], target: DrawTarget) {
+    const drawing = this.prepareDrawing(mode, target);
     this.cancelDrawing();
-    this.drawing = { mode, target, points: [], reference: floorHeight === undefined ? reference : { ...reference, height: floorHeight },
-      ...(target === 'facility' ? { gradeEastPct: 0, gradeNorthPct: 0 } : slopes), facility, floorHeight, floorThickness };
+    this.drawing = drawing;
     try {
       this.finishSession = this.options.beginInteractionSession?.() || undefined;
       this.handler = new ScreenSpaceEventHandler(this.options.viewer.canvas);
@@ -398,19 +456,40 @@ export class TemporaryWorksHardeningEditor {
       }, ScreenSpaceEventType.LEFT_CLICK);
       this.handler.setInputAction((event: { endPosition: Cartesian2 }) => {
         if (!this.drawing) return;
-        const point = this.pick(event.endPosition, false);
-        this.drawing.hover = point; this.updateDrawingOutline();
+        try {
+          const point = this.pick(event.endPosition, false);
+          if (this.drawing) this.drawing.hover = point;
+          this.updateDrawingOutline();
+        } catch (error) { this.failure(error); }
       }, ScreenSpaceEventType.MOUSE_MOVE);
       this.handler.setInputAction(() => {
         try { this.finishDrawing(); } catch (error) { this.failure(error); }
       }, ScreenSpaceEventType.RIGHT_CLICK);
       this.refreshButtons();
-      this.setStatus(mode === 'rectangle' ? '在指定设计平面上选择矩形两个对角点。Esc 取消。' : '依次点选边界，右键或“完成圈选”结束。Esc 取消。');
+      this.setStatus(drawing.automaticReference
+        ? '直接在所选倾斜摄影上点选第一个角点，自动获取初始标高；继续框选范围。Esc 取消。'
+        : mode === 'rectangle' ? '在当前标高平面上选择矩形两个对角点。Esc 取消。' : '依次点选边界，右键或“完成圈选”结束。Esc 取消。');
     } catch (error) { this.cancelDrawing(); throw error; }
   }
   private pick(screen: Cartesian2, announce = true) {
     const drawing = this.drawing;
     if (!drawing) return;
+    if (drawing.automaticReference && this.options.getModel?.()?.id !== drawing.modelId) {
+      this.cancelDrawing();
+      throw new Error('所选倾斜摄影已变化，本次框选已取消，请在当前图层重新框选。');
+    }
+    if (!drawing.reference) {
+      // Hover must not fix the anchor before the user's first click.
+      if (!announce) return;
+      const reference = this.options.pickInitialReference?.(screen);
+      if (!reference) {
+        this.setStatus('未拾取到所选倾斜摄影，请点击已加载的模型表面；也可手动指定标高。', true);
+        return;
+      }
+      validateHardeningReference(reference);
+      drawing.reference = { ...reference };
+      return { x: 0, y: 0 };
+    }
     const ray = this.options.viewer.camera.getPickRay(screen);
     const point = ray && intersectHardeningDesignPlane(ray, drawing.reference, drawing.gradeEastPct, drawing.gradeNorthPct);
     if (!point && announce) this.setStatus('视线与设计平面接近平行或选点过远，请调整为俯视并检查参考点。', true);
@@ -419,13 +498,20 @@ export class TemporaryWorksHardeningEditor {
   private finishDrawing() {
     const drawing = this.drawing;
     if (!drawing) return;
+    if (!drawing.reference) throw new Error('请先在所选倾斜摄影上选择第一个角点。');
+    if (drawing.automaticReference && this.options.getModel?.()?.id !== drawing.modelId) {
+      this.cancelDrawing();
+      throw new Error('所选倾斜摄影已变化，本次框选已取消，请重新框选。');
+    }
     const local = drawing.mode === 'rectangle'
       ? drawing.points.length >= 2 ? hardeningRectangle(drawing.points[0], drawing.points[1]) : []
       : drawing.points;
     if (local.length < 3) throw new Error(drawing.mode === 'rectangle' ? '请选取两个不同的矩形对角点。' : '多边形至少需要三个点。');
-    const ring = local.map(point => hardeningGeoFromLocal(point, drawing.reference));
+    const reference = drawing.reference;
+    const ring = local.map(point => hardeningGeoFromLocal(point, reference));
     if (drawing.target === 'outer') {
       this.boundary = ring;
+      if (drawing.automaticReference) this.writeReference(drawing.reference);
       // Keep user-owned exclusions; geometry validation will explicitly report any now outside the boundary.
     } else if (drawing.target === 'hole') this.holes.push(ring);
     else if (drawing.facility) {
@@ -437,7 +523,9 @@ export class TemporaryWorksHardeningEditor {
     this.invalidVertexFields.clear(); this.invalidVertexValues.clear();
     this.cancelDrawing(); this.invalidateHeightConfirmation(); this.refresh(); this.refreshOutlines();
     this.options.onChange?.();
-    this.setStatus('范围已更新。生成预览时检查边界、孔洞和重叠高差。');
+    this.setStatus(drawing.automaticReference
+      ? '范围已更新，初始标高已自动获取。生成预览后可再调整位置和标高。'
+      : '范围已更新。生成预览时检查边界、孔洞和重叠高差。');
   }
 
   cancelDrawing() {
@@ -461,14 +549,19 @@ export class TemporaryWorksHardeningEditor {
   private updateDrawingOutline() {
     const drawing = this.drawing;
     if (!drawing || this.options.viewer.isDestroyed()) return;
+    if (!drawing.reference) {
+      if (this.drawingOutline) this.drawingOutline.show = false;
+      this.requestRender(); return;
+    }
     let points = [...drawing.points, ...(drawing.hover ? [drawing.hover] : [])];
     if (drawing.mode === 'rectangle' && points.length >= 2) {
       try { points = hardeningRectangle(points[0], points.at(-1)!); } catch { points = points.slice(0, 1); }
     }
     if (points.length > 2) points.push(points[0]);
+    const reference = drawing.reference;
     const positions = points.map(point => {
-      const geo = hardeningGeoFromLocal(point, drawing.reference);
-      return Cartesian3.fromDegrees(geo.longitude, geo.latitude, drawing.reference.height + point.x * drawing.gradeEastPct / 100 + point.y * drawing.gradeNorthPct / 100);
+      const geo = hardeningGeoFromLocal(point, reference);
+      return Cartesian3.fromDegrees(geo.longitude, geo.latitude, reference.height + point.x * drawing.gradeEastPct / 100 + point.y * drawing.gradeNorthPct / 100);
     });
     if (!this.drawingOutline && positions.length >= 2) {
       this.drawingOutline = this.options.viewer.entities.add({ name: '硬化圈选预览',

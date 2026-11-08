@@ -16,7 +16,7 @@ export const temporaryWorksFormHtml = `
       <div class="tw-body">
         <div class="tw-grid">
           <label>临建类型<select id="tw-kind">
-            <option value="road">施工便道 · 自定标高与纵坡</option><option value="hardening">场地硬化</option><option value="camp" selected>项目驻地 / 宣传设施</option><option value="steel">钢筋加工场</option>
+            <option value="road">施工便道</option><option value="hardening">场地硬化</option><option value="camp" selected>项目驻地 / 宣传设施</option><option value="steel">钢筋加工场</option>
           </select></label>
           <label>方案名称<input id="tw-name" type="text" maxlength="80" placeholder="如 1 号便道"/></label>
         </div>
@@ -122,8 +122,15 @@ export const temporaryWorksFormHtml = `
       <div class="tw-actions"><button type="button" id="tw-place-preview">在摄影模型上预览图纸</button><button type="button" id="tw-place-zoom" disabled>定位到图纸</button><button type="button" id="tw-place-hide" disabled>隐藏图纸预览</button></div>
       <small id="tw-overlay-status" class="tw-hint" data-state="idle" role="status">选择图元并填写坐标后，可预览完整便道中心线或场地轮廓。</small>
     </div>
+    <details id="tw-initial-elevation-section">
+      <summary>初始高度（可选设置）</summary>
+      <div class="tw-body">
+        <label>放置高度<select id="tw-elevation-mode"><option value="automatic" selected>自动读取范围内摄影高程</option><option value="manual">使用填写或已保存的高度</option></select></label>
+        <p class="tw-hint">默认无需填写标高，生成时取范围内一个有效摄影高程。保存后可在“位置调整”中升降、平移。摄影缺测时可换范围或切换手动高度。</p>
+      </div>
+    </details>
     <details data-tw-group="glb" open>
-      <summary><span class="tw-step">03</span>模型布置 · 建筑底面基准</summary>
+      <summary><span class="tw-step">03</span>模型位置与尺寸</summary>
       <div class="tw-body">
         <label>布置方式<select id="tw-glb-placement-mode"><option value="cad-auto">按 CAD 闭合轮廓自动布置</option><option value="manual">手动精确坐标与尺寸</option></select></label>
         <p class="tw-hint">请选择驻地或钢筋厂自身的闭合轮廓，勿选整个工地外界；先核对图纸单位、坐标与实测尺寸。生成时沿用已核验的坐标配置，自动计算位置、朝向及长宽，保留原模型高度。矩形轮廓按长宽贴合；异形轮廓寻找完整位于范围内的布置。直接修改以下坐标或尺寸会转为手动模式。</p>
@@ -133,11 +140,11 @@ export const temporaryWorksFormHtml = `
         <div class="tw-grid">
           <label>底面基准经度（°）<input id="tw-glb-lon" type="number" min="-180" max="180" step="any"/></label>
           <label>底面基准纬度（°）<input id="tw-glb-lat" type="number" min="-90" max="90" step="any"/></label>
-          <label>底面椭球高（m）<input id="tw-glb-elevation" type="number" step="any"/></label>
+          <label id="tw-glb-elevation-field" hidden>底面椭球高（m）<input id="tw-glb-elevation" type="number" step="any"/></label>
           <label>平面旋转（°，东→北）<input id="tw-glb-heading" type="number" step="any" value="0"/></label>
         </div>
         <div class="tw-actions"><button id="tw-glb-pick" type="button">拾取摄影底面位置</button><button id="tw-glb-sample-height" type="button">读取当前位置摄影高程</button></div>
-        <p class="tw-hint">自动布置对建筑底面边缘和内部多点采样，以最高有效摄影表面高程安放水平底面。摄影表面含树木等地物，需核验采样高差；刚性建筑不会逐点变形贴地。无摄影时只完成平面适配，须提供实测椭球高才能预览。</p>
+        <p class="tw-hint">生成时自动取建筑占地内一个摄影高程作为初始底面高度，之后可自由升降和平移。初始高度可能取到树木等地物表面，可在预览后调整。</p>
         <label>尺寸调整<select id="tw-glb-scale-mode"><option value="uniform">等比例缩放</option><option value="xyz">高级 · XYZ 独立缩放</option></select></label>
         <div class="tw-grid">
           <label>目标长度 X（m）<input id="tw-glb-length" type="number" min="0" step="any"/></label>
@@ -214,13 +221,13 @@ export const temporaryWorksFormHtml = `
         <p class="tw-hint" data-tw-group="site">另挖深度填 0 时，计量至地基处理顶面。若需挖至处理底面，填写设计处理厚度。</p>
         <div data-tw-group="road" class="tw-subgroup">
           <p class="tw-subtitle">便道横断面</p>
-          <label>起点路面顶椭球高（m）<input id="tw-road-elevation" type="number" step="any" placeholder="输入已核准的场景高程，不能直接混用工程标高"/></label>
+          <label id="tw-road-elevation-field" hidden>起点路面顶椭球高（m）<input id="tw-road-elevation" type="number" step="any" placeholder="可选手动输入场景椭球高"/></label>
           <label>路面总宽（m）<input id="tw-width" type="number" min="0" step="any" placeholder="两侧路面边缘之间的水平距离"/></label>
           <div class="tw-grid" hidden>
             <label>路基边坡 · 高<input id="tw-slope-height" type="number" min="0" step="any" value="1"/></label>
             <label>路基边坡 · 宽<input id="tw-slope-width" type="number" min="0" step="any" value="0"/></label>
           </div>
-          <p class="tw-hint">从设计路面顶向下生成硬化层和处理层，厚度按竖向距离控制。无需全线摄影取高，树冠、水面不会改变道路标高。</p>
+          <p class="tw-hint">自动取沿线一个摄影高程确定初始路面顶，再向下生成硬化层和处理层；保存后可整体升降。</p>
           <div id="tw-road-section-preview"></div>
           <label class="tw-check"><input id="tw-road-grades-enabled" type="checkbox"/>设置分段纵坡</label>
           <p class="tw-hint">关闭时按起点顶标高生成水平便道；开启后按里程连续计算高程，保留原 CAD 弧长。</p>
@@ -241,14 +248,14 @@ export const temporaryWorksFormHtml = `
           </div>
           <p class="tw-hint">沿对应方向升高时取正，两个坡度均为 0 时按水平硬化面计算。</p>
         </div>
-        <label class="tw-check tw-confirm"><input id="tw-confirmed" type="checkbox"/>已核对设计标高、路宽、结构厚度与纵坡</label>
+        <label class="tw-check tw-confirm"><input id="tw-confirmed" type="checkbox"/>已核对路宽、结构厚度与纵坡</label>
       </div>
     </details>
     <details open>
       <summary><span class="tw-step">05</span>预览与状态</summary>
       <div class="tw-body">
         <label hidden>历史采样间距（m）<input id="tw-grid" type="number" min="0" step="any" value="2"/></label>
-        <p data-tw-group="road" class="tw-hint">按用户标高和可选纵坡生成完整便道；摄影遮挡不等于场地接顺，请从侧面核对外围高差。</p>
+        <p data-tw-group="road" class="tw-hint">按初始高度和可选纵坡生成完整便道；预览后检查外围高差，保存后可继续调整位置。</p>
         <label class="tw-check"><input type="checkbox" id="tw-xray"/>透视显示埋入原地面的设计面</label>
         <div id="tw-draft-actions" class="tw-actions" hidden><button type="button" id="tw-draft-drawing" data-tw-group="road">查看完整 CAD 中心线</button><button type="button" id="tw-draft-visibility">隐藏模型预览</button><button type="button" id="tw-discard-draft">移除模型预览</button></div>
         <div id="tw-metrics" class="tw-metrics" aria-live="polite"></div>

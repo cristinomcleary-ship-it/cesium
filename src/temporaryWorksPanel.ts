@@ -7,7 +7,7 @@ import { roadLength, validateRoadGrades, type RoadGradeRange, type RoadReference
 import { cgcs2000ZoneMeridian, parseLongitude } from "./coordinateUtils";
 import { fitPlanningControls, renderPlanningCadPreview, type PlanningCadPreviewInput } from "./temporaryWorksPlacement";
 import { renderRoadSectionPreview } from "./temporaryWorksRoadSectionView";
-import { solveDesignedRoad } from "./temporaryWorksDesignedRoad";
+import { designedRoadHeightAt, solveDesignedRoad } from "./temporaryWorksDesignedRoad";
 import { renderTemporaryWorksSurface } from "./temporaryWorksSurfaceScene";
 import type { TemporaryWorksFootprint } from "./temporaryWorksClipping";
 import { TemporaryWorksHardeningEditor, type HardeningEditorValue } from "./temporaryWorksHardeningEditor";
@@ -20,7 +20,9 @@ import { loadTemporaryWorksLightingPreferences, saveTemporaryWorksLightingPrefer
 import { loadTemporaryWorksGlbManifest, getTemporaryWorksGlbFootprints, type TemporaryWorksGlbConfig, type TemporaryWorksGlbManifest, type TemporaryWorksGlbResourceId } from "./temporaryWorksGlb";
 import { glbFootprintsInsideSite } from "./temporaryWorksGlbSite";
 import { fitTemporaryWorksGlbToBoundary } from "./temporaryWorksGlbAutoFit";
-import { glbGroundSamplePoints, summarizeGlbGroundSamples } from "./temporaryWorksGlbGrounding";
+import { polygonInitialElevationCandidates, roadInitialElevationCandidates, sampleTemporaryWorksInitialElevation, type InitialElevationSample } from "./temporaryWorksInitialElevation";
+import { hardeningLocalFromGeo, hardeningGeoFromLocal } from "./temporaryWorksHardeningEditorGeometry";
+import { pickMachinerySurface } from "./machinerySurfacePicker";
 import { renderTemporaryWorksGlb } from "./temporaryWorksGlbScene";
 import { temporaryWorksFormHtml } from "./temporaryWorksForm";
 import { translateTemporaryWorksPlan } from "./temporaryWorksPosition";
@@ -129,6 +131,8 @@ export interface TemporaryWorksPlan {
   earthworkDisabled?: boolean;
   /** Geometry moved without refreshing the original photography samples. */
   positionAdjusted?: boolean;
+  /** Historical initial placement sample; later position changes do not resample it. */
+  initialElevation?: InitialElevationSample & { station?: number };
   surface?: { version: 1; footprints: TemporaryWorksFootprint[]; clippingEnabled: boolean };
   hardening?: HardeningSavedConfig;
 }
@@ -357,9 +361,16 @@ export class TemporaryWorksPanel {
   private visible(plan: TemporaryWorksPlan) { return (this.overrides.get(plan.id) ?? plan.visible) && (!this.newPlan(plan) || this.upgradeEnabled); }
   private resourceId() { return this.value("glb-resource") as TemporaryWorksGlbResourceId; }
   private resource() { return this.manifest?.assets.find(asset => asset.id === this.resourceId()); }
+  private automaticElevation() { return this.value("elevation-mode") === "automatic"; }
   private mountHardeningEditor() {
     this.hardeningEditor=new TemporaryWorksHardeningEditor({root:this.el("hardening-editor"),viewer:this.options.viewer,
       getModel:()=>this.options.getTilesets().find(m=>m.id===this.value("model")),
+      pickInitialReference:screen=>{
+        const model=this.options.getTilesets().find(m=>m.id===this.value("model"));
+        if(!model)return;
+        const hit=pickMachinerySurface(this.options.viewer,screen,[{kind:"photogrammetry",resource:model.tileset,visible:true}]);
+        return hit?{longitude:hit.longitude,latitude:hit.latitude,height:hit.height}:undefined;
+      },
       beginInteractionSession:()=>this.options.beginInteractionSession?.(),
       onPreview:value=>this.runHardening(value),
       onChange:()=>{this.cancel(false);this.dropPreview();},
@@ -489,41 +500,59 @@ export class TemporaryWorksPanel {
     try {
       await this.composition?.whenIdle();job.signal.throwIfAborted();
       const revision=this.surfaceRevision,generation=this.generation,model=this.options.getTilesets().find(m=>m.id===this.value("model"));
+      const matrix=Matrix4.clone(model?.tileset.modelMatrix??Matrix4.IDENTITY),rootTransform=Matrix4.clone(model?.tileset.root.transform??Matrix4.IDENTITY);
+      const checkCurrent=()=>{
+        if(generation!==this.generation || revision!==this.surfaceRevision || !this.editable() || (model &&
+          (this.options.getTilesets().find(m=>m.id===model.id)?.tileset!==model.tileset || !Matrix4.equals(matrix,model.tileset.modelMatrix) || !Matrix4.equals(rootTransform,model.tileset.root.transform))))
+          throw new Error("相邻设施、摄影定位或项目已变化，请重新生成硬化预览。");
+      };
       if(value.clippingEnabled && !model)throw new Error("请选定需要遮挡的摄影图层，或关闭遮挡后预览场地。");
+      let initialElevation:TemporaryWorksPlan["initialElevation"];
+      if(value.initialElevationMode==="automatic") {
+        if(!model)throw new Error("请先选择倾斜摄影模型以自动放置，或切换手动输入标高。");
+        const reference=value.reference;
+        const candidates=polygonInitialElevationCandidates([{outer:value.boundary.map(p=>hardeningLocalFromGeo(p,reference)),holes:value.holes.map(r=>r.map(p=>hardeningLocalFromGeo(p,reference)))}])
+          .map(p=>hardeningGeoFromLocal(p,reference));
+        initialElevation=await this.readInitialElevation(model,candidates,job,checkCurrent);
+        job.signal.throwIfAborted();checkCurrent();
+        const point=hardeningLocalFromGeo(initialElevation,reference);
+        value={...value,reference:{...reference,height:initialElevation.height-point.x*value.gradeEastPct/100-point.y*value.gradeNorthPct/100}};
+      }
       const old=this.hardeningEditing?this.records.get(this.hardeningEditing):undefined;
       const id=old?.id??newId(),createdAt=old?.createdAt??new Date().toISOString();
       const config:HardeningSavedConfig={...structuredClone(value),version:1,priority:old?.hardening?.priority??Date.now(),
         facilityBindings:bindHardeningFacilities(value,[...this.records.values()],this.manifest)};
       const coords:PlanningCadCoordinates={mode:"geographic",axisOrder:"eastNorth"};
       const plan:TemporaryWorksPlan={id,name:value.name||"硬化场地",kind:"hardening",visible:old?.visible??true,createdAt,
-        modelId:model?.id??"",modelName:model?.name??"未关联摄影",hardening:config,earthworkDisabled:true,
+        modelId:model?.id??"",modelName:model?.name??"未关联摄影",hardening:config,earthworkDisabled:true,initialElevation,
         mesh:{vertices:[],triangles:[]},metrics:{planArea:0,coveredArea:0,excludedArea:0,cutVolume:0,fillVolume:0},
         inputs:{cadName:"场景框选",modelMatrix:model?Matrix4.toArray(model.tileset.modelMatrix):[],modelRootTransform:model?Matrix4.toArray(model.tileset.root.transform):[],
           feature:{id:"hardening-boundary",layer:"硬化范围",sourceType:"POLYGON",closed:true,points:value.boundary.map(p=>({x:p.longitude,y:p.latitude}))},
           coordinates:coords,reference:value.reference,referenceInput:{mode:"geo",first:value.reference.longitude,second:value.reference.latitude},
-          design:{reference:{x:0,y:0},referenceHeight:value.reference.height,finishedOffset:0,surfaceToTreatment:value.thickness,treatmentDepth:0},spacing:0,sampleCount:0,refinementLevels:0,budgetLimited:false}};
+          design:{reference:{x:0,y:0},referenceHeight:value.reference.height,finishedOffset:0,surfaceToTreatment:value.thickness,treatmentDepth:0},spacing:0,sampleCount:initialElevation?.sampleCount??0,refinementLevels:0,budgetLimited:false}};
       const blockers=[...this.records.values()].filter(p=>p.id!==id && this.visible(p) && this.surfaceReady.has(p.id))
         .filter(p=>!p.hardening || p.hardening.priority<config.priority || p.hardening.priority===config.priority && p.id<id)
         .flatMap(p=>p.hardening ? (this.composition?.getCoverage(p.id) ? [this.composition.getCoverage(p.id)!.data] : []) : [p]);
       blockers.sort((a,b)=>Number(!!a.hardening)-Number(!!b.hardening) || (a.hardening?.priority??Date.parse(a.createdAt))-(b.hardening?.priority??Date.parse(b.createdAt)) || (a.id<b.id?-1:a.id>b.id?1:0));
       const prepared=prepareHardeningParameters(plan,blockers,this.manifest,value.acceptedHeightDifference);
       if(prepared.unknownFacilities.length)throw new Error(`请先加载以下设施的有效底面轮廓：${prepared.unknownFacilities.join("、")}`);
-      this.status("正在生成水泥面并检查局部重叠，不进行摄影高程采样…");
+      this.status("正在按初始高度生成硬化面并自动避让相邻设施…");
       const result=await solveHardening(prepared.parameters,{signal:job.signal});job.signal.throwIfAborted();
       const world=toWorldHardeningResult(result,value.reference);
       plan.mesh=world.mesh;plan.surface={version:1,footprints:world.footprints,clippingEnabled:value.clippingEnabled};
       plan.metrics={planArea:result.sourceArea,coveredArea:result.visibleArea,excludedArea:result.excludedArea,cutVolume:0,fillVolume:0};
       if(value.acceptedHeightDifference)config.acceptedDependencies=prepared.dependencyFingerprints;
-      const checkSource=()=>{if(generation!==this.generation || revision!==this.surfaceRevision || !this.editable())throw new Error("相邻设施或项目已变化，请重新生成硬化预览。");
+      const checkSource=()=>{checkCurrent();
         if(!result.canSave)throw new Error("场地与相邻设施存在未确认高差，请调整标高或明确保留高差后重新预览。");};
       candidate=renderTemporaryWorksSurface(this.options.viewer,{id,kind:"hardening",...world.mesh,footprints:world.footprints,sideEdges:world.sideEdges,
         tileset:model?.tileset,clippingEnabled:value.clippingEnabled});
       candidate.show=false;const handle=candidate,abort=()=>handle.destroy();job.signal.addEventListener("abort",abort,{once:true});
       try{await handle.ready;job.signal.throwIfAborted();}finally{job.signal.removeEventListener("abort",abort);}
-      if(generation!==this.generation || revision!==this.surfaceRevision)throw new Error("相邻设施已变化，请重新预览。");
+      checkCurrent();
       if(old)this.handles.get(old.id)?.show && (this.handles.get(old.id)!.show=false);
       handle.show=true;this.preview={record:plan,handle,checkSource,replaceId:old?.id,canSave:result.canSave};candidate=undefined;
       this.registerSurfacePreview(plan,handle,old?.id);this.review(plan,false);handle.zoom();
+      if(initialElevation)this.hardeningEditor?.setResolvedReference(value.reference);
       const conflicts=result.conflicts.map(c=>`${c.name??c.id}：${c.maxDifference===null?"标高待确认":`高差 ${valueText(c.maxDifference)} m`}${c.accepted?"（已明确保留，未接顺）":"（待确认）"}`).join("；");
       this.hardeningEditor?.setStatus(conflicts || `可见硬化 ${valueText(result.visibleArea)} m²，重叠避让 ${valueText(result.excludedArea)} m²。`,!result.canSave);
       this.status(result.canSave?`硬化预览已生成，请从侧面检查后保存。${conflicts}`:`预览存在待确认高差，暂不能保存：${conflicts}`,!result.canSave);
@@ -951,6 +980,10 @@ export class TemporaryWorksPanel {
     this.group("road", isRoad); this.group("site", !isRoad && !isHardening);
     const glb = this.isGlb();
     this.group("glb", glb);
+    this.el("initial-elevation-section").hidden = !glb && !isRoad;
+    this.el("glb-elevation-field").hidden = this.automaticElevation();
+    this.el("road-elevation-field").hidden = this.automaticElevation();
+    this.el("glb-sample-height").hidden = this.automaticElevation();
     this.el("datum-section").hidden = glb || isRoad || isHardening;
     this.el("design-section").hidden = glb || isHardening;
     this.options.root.querySelector<HTMLElement>(".tw-workbench")!.dataset.glb = String(glb);
@@ -996,7 +1029,8 @@ export class TemporaryWorksPanel {
     const k = input.id.slice(3);
     if(["anchor-x","anchor-y","anchor-lon","anchor-lat","rotation","meridian","zone","gk-x","gk-y","gk-lon","gk-lat"].includes(k))this.restoredCoordinates=undefined;
     if (["glb-length","glb-width","glb-height"].includes(k) && this.value("glb-scale-mode") === "uniform") this.scaleGlbDimensions(k.slice(4) as "length"|"width"|"height");
-    if (["glb-lon","glb-lat","glb-elevation","glb-heading","glb-length","glb-width","glb-height"].includes(k)) this.useManualGlbPlacement();
+    if (["glb-lon","glb-lat","glb-heading","glb-length","glb-width","glb-height"].includes(k)) this.useManualGlbPlacement();
+    if (k==="glb-elevation" || k==="road-elevation") this.select("elevation-mode").value="manual";
     if (["width", "anchor-x", "anchor-y", "anchor-lon", "anchor-lat", "rotation", "meridian", "zone", "b-x", "b-y", "b-lon", "b-lat"].includes(k))
       this.clearOverlay();
     if (k.startsWith("gk-") || k === "zone" || k === "meridian") { this.resetProjected(); this.clearOverlay(); }
@@ -1053,6 +1087,7 @@ export class TemporaryWorksPanel {
     }
     const chooseSiteBoundary = k === "kind" && this.isGlb() && !!this.cadFile;
     if (k === "kind") {
+      this.select("elevation-mode").value="automatic";
       this.roadEditing=undefined;this.hardeningEditing=undefined;this.glbEditing=undefined;this.objectBrightnessDraft=undefined;
       this.input("finished").value = "";
       this.select("facility-mode").value = "glb";
@@ -1096,7 +1131,7 @@ export class TemporaryWorksPanel {
     }
     if (k === "ref-mode") { this.input("ref-x").value = ""; this.input("ref-y").value = ""; }
     this.updateFields(); this.crossSection();
-    if (k === "road-grades-enabled") this.gradeStatus();
+    if (k === "road-grades-enabled" || k === "elevation-mode") this.gradeStatus();
     if (chooseSiteBoundary) this.status(`请为${KIND_NAMES[this.kind()]}重新选择场地边界，并核对基准点。`);
     if (this.kind() !== "road" && (k === "layer" || k === "feature") && this.feature()) {
       const boundary = this.feature()!;
@@ -1145,13 +1180,13 @@ export class TemporaryWorksPanel {
         case "position-save": void this.save(); break;
         case "brightness-reset": this.input("brightness").value="100"; this.updateBrightness(false,true); break;
         case "object-brightness-save": this.saveObjectBrightness(); break;
-        case "road-cancel-edit": this.cancel(false); this.dropPreview(); this.roadEditing = undefined; this.updateFields(); break;
+        case "road-cancel-edit": this.cancel(false); this.dropPreview(); this.roadEditing = undefined; this.select("elevation-mode").value="automatic"; this.updateFields(); break;
         case "glb-pick": this.pick("glb"); break;
         case "glb-use-boundary": void this.useGlbBoundary(); break;
         case "glb-sample-height": void this.sampleGlbHeight(); break;
         case "glb-reset-size": this.updateGlbResource(); this.useManualGlbPlacement(); this.cancel(false); this.dropPreview(); break;
         case "glb-clear-logo": this.cancel(false); this.glbLogoReadToken++; this.glbLogo = undefined; this.input("glb-logo").value = ""; this.dropPreview(); break;
-        case "glb-cancel-edit": this.cancel(false); this.glbEditing = undefined; this.objectBrightnessDraft=undefined; this.dropPreview(); this.updateFields(); this.updateBrightness(false,false); break;
+        case "glb-cancel-edit": this.cancel(false); this.glbEditing = undefined; this.objectBrightnessDraft=undefined; this.dropPreview(); this.select("elevation-mode").value="automatic"; this.updateFields(); this.updateBrightness(false,false); break;
         case "close": this.close(); this.options.onRequestClose?.(); break;
         case "pick": this.pick(); break;
         case "pick-a": this.pick("A"); break;
@@ -1376,8 +1411,8 @@ export class TemporaryWorksPanel {
     if (!this.measuredLength) { info.textContent = "请先选取 CAD 中心线。"; return; }
     try {
       const grades = this.getDesignedGrades(), enabled = this.input("road-grades-enabled").checked;
-      const start = this.value("road-elevation"), end = start ? grades.reduce((z,g)=>z+(g.end-g.start)*g.gradePct/100,Number(start)) : NaN;
-      info.textContent = `${enabled ? grades.length+" 个纵坡段覆盖全长" : "全线平坡，草稿纵坡不参与计算"}${Number.isFinite(end) ? `；终点顶椭球高 ${valueText(end)} m` : "；请填写起点路面顶标高"}。`;
+      const start = this.value("road-elevation"), end = !this.automaticElevation() && start ? grades.reduce((z,g)=>z+(g.end-g.start)*g.gradePct/100,Number(start)) : NaN;
+      info.textContent = `${enabled ? grades.length+" 个纵坡段覆盖全长" : "全线平坡，草稿纵坡不参与计算"}${Number.isFinite(end) ? `；终点顶椭球高 ${valueText(end)} m` : this.automaticElevation() ? "；生成时自动读取沿线一个摄影高程，之后可整体升降" : "；请填写起点路面顶标高"}。`;
     } catch (error) {
       info.textContent = error instanceof Error ? error.message : String(error); info.toggleAttribute("data-error", true);
     }
@@ -1409,7 +1444,7 @@ export class TemporaryWorksPanel {
     if (!this.roadFeature || !length) return;
     const enabled = this.input("road-grades-enabled").checked;
     const grades = enabled ? this.getDesignedGrades() : this.gradeDraft().map(g=>({start:Number(g.start),end:Number(g.end),gradePct:Number(g.gradePct)}));
-    if (enabled) {
+    if (enabled && !this.automaticElevation()) {
       const start = this.num("road-elevation","起点路面顶椭球高");
       this.input("road-elevation").value = compactNumber(grades.reduce((h,g)=>h+(g.end-g.start)*g.gradePct/100,start));
     }
@@ -1417,7 +1452,7 @@ export class TemporaryWorksPanel {
     this.reversed = !this.reversed;
     this.setGrades(grades.reverse().map(g => ({start:length - g.end, end:length - g.start, gradePct:-g.gradePct})));
     this.featurePreview(); this.gradeEdited();
-    this.status("已交换起终点；启用的纵坡反序反号，原道路空间标高保持不变。未启用的草稿请重新复核。");
+    this.status(this.automaticElevation()?"已交换起终点和纵坡方向，生成时自动读取初始摄影高程。":"已交换起终点；启用的纵坡反序反号，原道路空间标高保持不变。未启用的草稿请重新复核。");
   }
   private crossSection() {
     const values = ["width", "thickness", "treatment"].map(k => this.value(k) === "" ? NaN : Number(this.value(k)));
@@ -1506,7 +1541,10 @@ export class TemporaryWorksPanel {
           if (target === "glb") {
             this.useManualGlbPlacement();
             this.input("glb-lon").value = String(p.longitude); this.input("glb-lat").value = String(p.latitude);
-            this.stopPick(); void this.sampleGlbHeight(); return;
+            this.stopPick();
+            if(this.automaticElevation())this.status("已选定模型位置，生成时自动读取建筑占地内的初始高度。");
+            else void this.sampleGlbHeight();
+            return;
           }
           if (target !== "reference") {
             const key = target === "projected" ? "gk" : target === "A" ? "anchor" : "b";
@@ -1785,8 +1823,9 @@ export class TemporaryWorksPanel {
   private describeGlbAutoFit(audit: NonNullable<TemporaryWorksGlbConfig["autoFit"]>) {
     const surface = audit.surface;
     const ground = surface.status === "sampled"
-      ? `摄影取高 ${surface.validCount}/${surface.sampleCount} 点有效；表面高差 ${valueText(surface.maximum!-surface.minimum!)} m；采用最高有效高程 ${valueText(surface.maximum!)} m 防止采样点嵌入。摄影表面可能包含地物，水平底面在低处可能悬空，仍须现场核验。`
-      : "未取得摄影高程，仅完成平面适配；须填写实测椭球高，尚未完成摄影落位验收。";
+      ? surface.validCount===1 ? `初始放置采用一个摄影高程 ${valueText(surface.maximum!)} m；尝试 ${surface.sampleCount} 个位置，保存后可自由调整高度。`
+        : `历史摄影取高 ${surface.validCount}/${surface.sampleCount} 点有效；表面高差 ${valueText(surface.maximum!-surface.minimum!)} m；当时采用最高有效高程 ${valueText(surface.maximum!)} m。`
+      : "平面适配完成；高度使用当前填写或保存值。";
     return `${audit.featureLayer} / ${audit.featureId} · ${audit.message} · X/Y 缩放 ${valueText(audit.scale.x)} / ${valueText(audit.scale.y)}，原高度保留；底面覆盖所选轮廓 ${valueText(audit.coverageRatio*100)}%。${ground}`;
   }
   private async applyGlbBoundaryFit(job: AbortController, feature: PlanningCadFeature, coordinates: PlanningCadCoordinates) {
@@ -1807,27 +1846,6 @@ export class TemporaryWorksPanel {
     };
     this.glbAutoFit = audit;
     this.el("glb-fit-status").textContent = this.describeGlbAutoFit(audit);
-    const model = this.options.getTilesets().find(item => item.id === this.value("model"));
-    if (model) {
-      // withPlanningSurface uses an isolated scene containing only the selected photography.
-      // Saved models, the current preview, and clipping are not sampled as ground.
-      const groups = fit.footprints.map(ring => glbGroundSamplePoints([ring]));
-      const points = groups.flat().map(frame.localToGeo);
-      if (points.length > 2048) throw new Error("建筑底面过于复杂，自动摄影取高采样量超限，请核对模型轮廓。");
-      this.status(`正在按建筑底面读取 ${points.length} 个摄影表面高程…`);
-      const heights = await this.readGlbSurface(model,points,job);
-      job.signal.throwIfAborted();
-      let offset = 0;
-      for (const [index,group] of groups.entries()) {
-        try { summarizeGlbGroundSamples(heights.slice(offset,offset+group.length)); }
-        catch (error) { throw new Error(`第 ${index+1} 个建筑底面：${error instanceof Error ? error.message : String(error)}`); }
-        offset += group.length;
-      }
-      const surface = summarizeGlbGroundSamples(heights);
-      audit.surface = surface;
-      this.input("glb-elevation").value = String(surface.maximum);
-      this.el("glb-fit-status").textContent = this.describeGlbAutoFit(audit);
-    }
     job.signal.throwIfAborted();
     return audit;
   }
@@ -1838,6 +1856,7 @@ export class TemporaryWorksPanel {
     await this.runGlb();
   }
   private async sampleGlbHeight() {
+    this.select("elevation-mode").value="manual";
     this.useManualGlbPlacement();
     this.cancel(false); this.dropPreview();
     const job = new AbortController(); this.analysis = job; this.buttons();
@@ -1855,11 +1874,18 @@ export class TemporaryWorksPanel {
   private readGlbSurface(model: Model, points: PlanningLocation[], job: AbortController) {
     return withPlanningSurface(this.options.viewer,model.tileset,{signal:job.signal},sample => sample(points));
   }
+  private readInitialElevation<T extends PlanningLocation>(model:Model,candidates:T[],job:AbortController,checkCurrent:()=>void):Promise<InitialElevationSample<T>> {
+    this.status("正在读取范围内一个摄影高程作为初始高度…");
+    // A single isolated scene contains only the selected photography, even on fallback.
+    return withPlanningSurface(this.options.viewer,model.tileset,{signal:job.signal},sample=>
+      sampleTemporaryWorksInitialElevation(candidates,sample,{signal:job.signal,checkCurrent}));
+  }
   private editGlbPlan(id: string) {
     const plan = this.records.get(id);
     if (!plan?.glb || !this.editable()) return;
     this.cancel(false); this.dropPreview(); this.clearReview();
     this.glbEditing = id; this.glbLogoReadToken++;
+    this.select("elevation-mode").value="manual";
     this.roadEditing=undefined;this.hardeningEditing=undefined;
     this.objectBrightnessDraft=this.lighting.overrides[id];this.restoreBrightnessControls();
     const glb = plan.glb, p = glb.placement;
@@ -1906,13 +1932,28 @@ export class TemporaryWorksPanel {
       const glb: TemporaryWorksGlbConfig = {
         resourceId:this.resourceId(), clippingEnabled:this.resourceId() !== "wall" && this.input("glb-clipping").checked,
         placementMode:automatic ? "cad-auto" : "manual",autoFit:automatic ? this.glbAutoFit : undefined,
-        placement:{longitude:this.num("glb-lon","底面基准经度"),latitude:this.num("glb-lat","底面基准纬度"),height:this.num("glb-elevation","底面椭球高"),
+        placement:{longitude:this.num("glb-lon","底面基准经度"),latitude:this.num("glb-lat","底面基准纬度"),height:this.automaticElevation()?0:this.num("glb-elevation","底面椭球高"),
           headingDeg:this.num("glb-heading","平面旋转角"),scaleMode:this.value("glb-scale-mode") as "uniform"|"xyz",
           dimensions:{length:this.num("glb-length","目标长度"),width:this.num("glb-width","目标宽度"),height:this.num("glb-height","目标高度")}},
         branding:{visible:this.input("glb-brand-visible").checked,text:this.value("glb-brand-text"),logoUrl:this.glbLogo},
       };
       if (glb.clippingEnabled && !model) throw new Error("启用摄影遮挡时，请先加载并选择倾斜摄影模型；独立坐标布置可先关闭摄影遮挡。");
-      const footprints = getTemporaryWorksGlbFootprints(resource,glb.placement);
+      let footprints = getTemporaryWorksGlbFootprints(resource,glb.placement);
+      let initialElevation:TemporaryWorksPlan["initialElevation"];
+      if(this.automaticElevation()) {
+        if(!model)throw new Error("请先选择倾斜摄影模型以自动放置，或在初始高度中切换为手动输入。");
+        // Height zero is used solely for the horizontal footprint transform, never as a placement fallback.
+        const anchor=glb.placement;
+        const candidates=polygonInitialElevationCandidates(footprints.map(part=>({outer:part.outer.map(p=>hardeningLocalFromGeo(p,anchor)),holes:part.holes?.map(r=>r.map(p=>hardeningLocalFromGeo(p,anchor)))})))
+          .map(p=>hardeningGeoFromLocal(p,anchor));
+        initialElevation=await this.readInitialElevation(model,candidates,job,checkSource);
+        job.signal.throwIfAborted();checkSource();
+        glb.placement.height=initialElevation.height;
+        this.input("glb-elevation").value=String(initialElevation.height);
+        if(glb.autoFit){glb.autoFit.surface={status:"sampled",validCount:1,sampleCount:initialElevation.sampleCount,minimum:initialElevation.height,maximum:initialElevation.height};
+          this.el("glb-fit-status").textContent=this.describeGlbAutoFit(glb.autoFit);}
+        footprints=getTemporaryWorksGlbFootprints(resource,glb.placement);
+      }
       if (selectedFeature && !selectedFeature.closed) throw new Error("临建场地请选择 CAD 闭合场界。");
       const feature: PlanningCadFeature = selectedFeature ?? old?.inputs.feature ?? {id:"manual-glb-footprint",layer:"建筑底面",sourceType:"GLB",closed:true,points:footprints[0].outer.map(p=>({x:p.longitude,y:p.latitude}))};
       if (feature.sourceType !== "GLB") {
@@ -1923,10 +1964,10 @@ export class TemporaryWorksPanel {
       const p = glb.placement;
       const record: TemporaryWorksPlan = {
         id:old?.id ?? newId(),name:this.value("name") || resource.name,kind:glb.resourceId === "steel" ? "steel" : "camp",visible:true,createdAt:old?.createdAt ?? new Date().toISOString(),
-        modelId:model?.id ?? "",modelName:model?.name ?? "未关联摄影模型",glb,earthworkDisabled:true,mesh:{vertices:[],triangles:[]},metrics:{planArea:0,coveredArea:0,excludedArea:0,cutVolume:0,fillVolume:0},
+        modelId:model?.id ?? "",modelName:model?.name ?? "未关联摄影模型",glb,initialElevation,earthworkDisabled:true,mesh:{vertices:[],triangles:[]},metrics:{planArea:0,coveredArea:0,excludedArea:0,cutVolume:0,fillVolume:0},
         inputs:{cadName:selectedFeature ? this.cadFile?.name ?? "CAD 场界" : old?.inputs.cadName ?? "底面基准点定位",modelMatrix:Matrix4.toArray(matrix),modelRootTransform:Matrix4.toArray(rootTransform),
           feature,coordinates,reference:{longitude:p.longitude,latitude:p.latitude,height:p.height},referenceInput:{mode:"geo",first:p.longitude,second:p.latitude},
-          design:{reference:{x:0,y:0},referenceHeight:p.height,finishedOffset:0,surfaceToTreatment:0,treatmentDepth:0},facilityMode:"glb",spacing:0,sampleCount:glb.autoFit?.surface.sampleCount ?? 0,refinementLevels:0,budgetLimited:false},
+          design:{reference:{x:0,y:0},referenceHeight:p.height,finishedOffset:0,surfaceToTreatment:0,treatmentDepth:0},facilityMode:"glb",spacing:0,sampleCount:initialElevation?.sampleCount ?? 0,refinementLevels:0,budgetLimited:false},
       };
       this.status(`正在加载「${resource.name}」并关联建筑底面摄影遮挡…`);
       const handle = this.draw(record), discard = () => handle.destroy();
@@ -1953,13 +1994,13 @@ export class TemporaryWorksPanel {
     try {
       const feature = this.feature(), file = this.cadFile, model = this.model();
       if (!feature || !file || feature.closed) throw new Error("请导入 CAD 并选择开放的道路中心线。");
-      if (!this.input("confirmed").checked) throw new Error("请核对设计标高、结构厚度和纵坡后勾选确认。");
+      if (!this.input("confirmed").checked) throw new Error("请核对路宽、结构厚度和纵坡后勾选确认。");
       const coordinates = this.coordinates(), frame = createRoadCoordinateFrame(coordinates, feature.points[0]);
       const points = feature.points.map(frame.cadToLocal);
       if (this.reversed) points.reverse();
       const factors = coordinates.mode === "geographic" ? undefined : feature.stationFactors;
       const stationFactors = this.reversed ? factors?.slice().reverse() : factors;
-      const startHeight = this.num("road-elevation", "起点路面顶椭球高"), gradesEnabled = this.input("road-grades-enabled").checked;
+      const gradesEnabled = this.input("road-grades-enabled").checked, grades=this.getDesignedGrades();
       const parameters = {width:this.num("width","路面宽度"),hardeningDepth:this.num("thickness","硬化厚度"),treatmentDepth:this.num("treatment","处理厚度"),stationFactors};
       const matrix = Matrix4.clone(model.tileset.modelMatrix), rootTransform = Matrix4.clone(model.tileset.root.transform);
       const checkSource = () => {
@@ -1967,8 +2008,17 @@ export class TemporaryWorksPanel {
           !Matrix4.equals(matrix,model.tileset.modelMatrix) || !Matrix4.equals(rootTransform,model.tileset.root.transform))
           throw new Error("项目、权限或摄影定位已变化，请重新预览。");
       };
-      this.status("正在按设计标高生成便道，不进行摄影表面采样…");
-      const result = await solveDesignedRoad(points,parameters,{startHeight,gradesEnabled,grades:this.getDesignedGrades()},{signal:job.signal});
+      let initialElevation:InitialElevationSample<PlanningLocation & {station:number}>|undefined;
+      let startHeight:number;
+      if(this.automaticElevation()) {
+        const candidates=roadInitialElevationCandidates(points,stationFactors).map(p=>({...frame.localToGeo(p),station:p.station}));
+        initialElevation=await this.readInitialElevation(model,candidates,job,checkSource);
+        job.signal.throwIfAborted();checkSource();
+        startHeight=initialElevation.height-designedRoadHeightAt(initialElevation.station,0,grades);
+        this.input("road-elevation").value=String(startHeight);
+      } else startHeight=this.num("road-elevation", "起点路面顶椭球高");
+      this.status("正在按初始高度和纵坡生成完整便道…");
+      const result = await solveDesignedRoad(points,parameters,{startHeight,gradesEnabled,grades},{signal:job.signal});
       job.signal.throwIfAborted(); checkSource();
       const vertices: Vertex[] = [];
       for (let i=0;i<result.vertices.length;i++) {
@@ -1984,7 +2034,7 @@ export class TemporaryWorksPanel {
         formationWidth:result.formationWidth,hardeningBottomWidth:result.hardeningBottomWidth,
         pavementArea:result.pavementArea,coveredPavementArea:result.coveredPavementArea,bendJoin:result.bendJoin};
       const record:TemporaryWorksPlan = {id,name:this.value("name") || "施工便道",kind:"road",visible:old?.visible ?? true,
-        createdAt:old?.createdAt ?? new Date().toISOString(),modelId:model.id,modelName:model.name,earthworkDisabled:true,
+        createdAt:old?.createdAt ?? new Date().toISOString(),modelId:model.id,modelName:model.name,earthworkDisabled:true,initialElevation,
         mesh:{vertices,triangles:result.triangles},metrics:{planArea:result.planArea,coveredArea:result.coveredArea,excludedArea:0,cutVolume:0,fillVolume:0},
         surface:{version:1,clippingEnabled:this.input("road-clipping").checked,footprints:result.footprintsXY.map(f=>({
           outer:f.outer.map(p=>({...frame.localToGeo(p),height:startHeight})),holes:f.holes.map(r=>r.map(p=>({...frame.localToGeo(p),height:startHeight})))
@@ -1992,7 +2042,7 @@ export class TemporaryWorksPanel {
         inputs:{cadName:file.name,feature,coordinates,modelMatrix:Matrix4.toArray(matrix),modelRootTransform:Matrix4.toArray(rootTransform),
           reference:{...reference,height:startHeight},referenceInput:{mode:"geo",first:reference.longitude,second:reference.latitude},
           design:{reference:points[0],referenceHeight:startHeight,finishedOffset:0,surfaceToTreatment:parameters.hardeningDepth,treatmentDepth:parameters.treatmentDepth,centerline:points},
-          width:parameters.width,road,spacing:result.meshSpacing,sampleCount:0,refinementLevels:0,budgetLimited:false,
+          width:parameters.width,road,spacing:result.meshSpacing,sampleCount:initialElevation?.sampleCount??0,refinementLevels:0,budgetLimited:false,
           ...(this.registration?{registration:this.registration}:{}),...(this.projected?.applied?{projectedCheck:this.projected.check}:{})}};
       candidate = this.draw(record); candidate.show = false;
       const handle = candidate, discard = () => handle.destroy();
@@ -2004,7 +2054,7 @@ export class TemporaryWorksPanel {
       this.preview = {record,handle,checkSource,replaceId:old?.id}; candidate = undefined;
       this.registerSurfacePreview(record,handle,old?.id);
       this.review(record,false); handle.zoom();
-      this.status(`便道预览完成：${valueText(result.length)} m，${vertices.length} 个顶点；摄影取高 0 次。请核对高差和遮挡后保存。`);
+      this.status(`便道预览完成：${valueText(result.length)} m，${vertices.length} 个顶点；${initialElevation?`初始高度采用一个摄影高程（尝试 ${initialElevation.sampleCount} 个位置）`:"沿用填写或保存的高度"}。保存后可整体升降、平移。`);
     } catch (error) { if (!job.signal.aborted) this.failure(error); }
     finally { candidate?.destroy(); if (this.analysis===job) this.analysis=undefined; this.buttons(); }
   }
@@ -2013,6 +2063,7 @@ export class TemporaryWorksPanel {
     const plan = this.records.get(id), road = plan?.inputs.road;
     if (!plan || road?.surfaceMode!=="designed" || !this.editable()) return;
     this.cancel(false); this.dropPreview(); this.roadEditing=id; this.glbEditing=undefined; this.hardeningEditing=undefined;
+    this.select("elevation-mode").value="manual";
     this.select("kind").value="road"; this.input("name").value=plan.name;
     this.cadFile=new File([],plan.inputs.cadName); this.cad=[plan.inputs.feature]; this.reversed=road.reversed;
     this.selectedModel=plan.modelId; this.refresh(); this.rebuildFeatures(); this.select("feature").value=plan.inputs.feature.id;
@@ -2056,6 +2107,8 @@ export class TemporaryWorksPanel {
     if(plan.positionAdjusted)host.append(element("p","此方案已整体调整位置，保留原形状和坡度；未重新读取摄影高程，原采样与土方不能作为新位置的计算结果。"));
     const dl = element("dl");
     const row = (label: string, value: string) => dl.append(element("dt", label), element("dd", value));
+    const initial=plan.initialElevation;
+    const elevationEvidence=initial?`初始采用 ${initial.height.toFixed(3)} m，尝试 ${initial.sampleCount} 个位置${initial.station!==undefined?`，桩号 ${stationLabel(initial.station)}`:""}；此为生成时记录${plan.positionAdjusted?"，位置调整后未重采样":""}`:"使用填写或保存的高度，本次未自动取高";
     if(plan.hardening || inputs.road?.surfaceMode==="designed") {
       const r=inputs.road,h=plan.hardening;
       row("高程方式",h?(h.slopeEnabled?"用户指定场地坡面":"用户指定水平场地"):(r!.gradesEnabled?"用户分段纵坡":"全线平坡"));
@@ -2064,7 +2117,7 @@ export class TemporaryWorksPanel {
       row("设计范围面积",`${valueText(m.planArea)} m²`);row("当前显示面积",`${valueText(m.coveredArea)} m²`);
       if(h){row("重叠避让面积",`${valueText(m.excludedArea)} m²`);row("水泥层厚度",`${valueText(h.thickness)} m`);}
       else row("硬化 / 处理层厚度",`${valueText(d.surfaceToTreatment)} / ${valueText(d.treatmentDepth)} m`);
-      row("摄影自动取高","0 次，未按树冠或水面确定标高");row("摄影遮挡",plan.surface?.clippingEnabled?"已请求启用，具体状态见方案列表":"已关闭");
+      row("初始高度来源",elevationEvidence);row("摄影遮挡",plan.surface?.clippingEnabled?"已请求启用，具体状态见方案列表":"已关闭");
       host.append(dl);host.append(element("p","结构从设计顶面向下生成，不计算土方。请侧视核对外围与相邻设施高差；摄影遮挡不能代替接顺设计。"));
       if(h?.acceptedHeightDifference)host.append(element("p","本方案明确保留已复核的交界高差，不能视为已无缝接顺；相邻设施变化后需要重新核对。"));
       if(r)for(const g of r.grades)host.append(element("p",`${stationLabel(g.start)} ～ ${stationLabel(g.end)}：${g.gradePct}%`));
@@ -2079,6 +2132,7 @@ export class TemporaryWorksPanel {
       const p = plan.glb.placement;
       row("三维资源", plan.glb.resourceId === "wall" ? "独立宣传墙" : KIND_NAMES[plan.kind]);
       row("建筑底面基准点", `${p.longitude.toFixed(8)}°，${p.latitude.toFixed(8)}° · 椭球高 ${valueText(p.height)} m`);
+      row("初始高度来源",elevationEvidence);
       row("目标尺寸 · 长×宽×高", `${valueText(p.dimensions.length)} × ${valueText(p.dimensions.width)} × ${valueText(p.dimensions.height)} m`);
       row("平面旋转", `${valueText(p.headingDeg)}°（东→北）`);
       row("缩放方式", p.scaleMode === "uniform" ? "等比例" : "XYZ 独立缩放");
@@ -2302,6 +2356,7 @@ export class TemporaryWorksPanel {
         try{saveTemporaryWorksLightingPreferences(projectId,this.lighting);}catch(error){lightingWarning=` 模型方案已保存，但亮度偏好未能保存：${error instanceof Error?error.message:String(error)}`;}
       }
       this.glbEditing = undefined;this.objectBrightnessDraft=undefined;this.roadEditing=undefined;this.hardeningEditing=undefined;
+      this.select("elevation-mode").value="automatic";
       this.positionEditing=undefined;
       this.records.set(plan.id, plan);
       if(this.previewSurfaceId){this.composition?.remove(this.previewSurfaceId);this.previewSurfaceId=undefined;}

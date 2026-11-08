@@ -15,7 +15,7 @@ const row = (start: string, end: string, gradePct: string) => ({
   },
 });
 
-test('new designed roads require an explicit top height and validate grade drafts only while enabled', () => {
+test('manual designed-road elevation requires a top height and validates grade drafts only while enabled', () => {
   const rows = [row('not-a-number', '4', ''), row('3', '10', 'Infinity')];
   const enabled={checked:false};
   let height='';
@@ -24,7 +24,7 @@ test('new designed roads require an explicit top height and validate grade draft
     measuredLength: 10,
     gradeRows: () => rows,
     input(key:string){assert.equal(key,'road-grades-enabled');return enabled;},
-    value(key:string){assert.equal(key,'road-elevation');return height;},
+    value(key:string){if(key==='elevation-mode')return 'manual';assert.equal(key,'road-elevation');return height;},
     el(key:string){assert.equal(key,'grade-status');return status;},
   });
   const draft=panel.gradeDraft();
