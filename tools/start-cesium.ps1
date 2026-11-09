@@ -4,6 +4,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+# This installation has one selected preview runtime and data origin.
+$currentLauncher = Join-Path $projectRoot 'output/current-version/start.ps1'
+if ($Mode -eq 'Preview' -and (Test-Path -LiteralPath $currentLauncher)) {
+  & $currentLauncher -NoBrowser:$NoBrowser
+  return
+}
 $serviceHost = '127.0.0.1'
 $servicePort = 5173
 $serviceUrl = 'http://127.0.0.1:5173/'
