@@ -20,7 +20,7 @@ function fixture() {
   const panel = Object.assign(Object.create(SceneDisplayPanel.prototype), {
     store, items: [], itemsById: new Map(), selected: new Set(), query: '', editor: undefined, message: '', error: false,
     applying: false, disposed: false, directorySignature: '', appliedSignature: '', contextRevision: 0, removing: new Set(),
-    options: { onApply: () => { applies++; } },
+    options: { onApply: () => { applies++; }, confirmRemoval: () => true },
     find: () => search, render: () => { renders++; }, renderList: () => undefined, renderStatus: () => undefined,
   });
   return { panel, store, renders: () => renders, applies: () => applies };
@@ -85,4 +85,35 @@ test('cancelling a facility removal from the planner retains its model row, hidd
   assert.deepEqual(f.panel.items.map((i:SceneDisplayItem)=>i.id),[steel]);
   assert.equal(Object.hasOwn(f.store.getOverrides(),id),false);
   assert.deepEqual(f.store.getGroups()[0],{...group,members:[steel]});
+});
+
+test('unloading a scene instance preserves its saved preferences and memberships for reloading', async () => {
+  const f = fixture(); const id = 'layer:cad'; let calls = 0;
+  const layer = item({ id, name: '施工图', removalKind: 'unload', remove: () => { calls++; } });
+  f.panel.setContext('project', 'actor', [layer]);
+  f.panel.setVisibility([id], false);
+  const group = f.store.createGroup('图纸', [id]);
+  await f.panel.removeItem(id);
+  assert.equal(calls, 1); assert.equal(f.panel.items.length, 0);
+  assert.equal(f.store.getOverrides()[id], false); assert.deepEqual(f.store.getGroups(), [group]);
+  f.panel.setContext('project', 'actor', [layer]);
+  assert.equal(f.store.isVisible(id), false); assert.deepEqual(f.store.getGroups(), [group]);
+  assert.match(f.panel.message, /移出本次场景/);
+});
+
+test('declining destructive removal never invokes the host or changes the directory', async () => {
+  const f = fixture(); let calls = 0, message = '';
+  f.panel.options.confirmRemoval = (value: string) => { message = value; return false; };
+  f.panel.setContext('project', 'actor', [item({ removalDescription: '删除台账与三维对象，历史记录保留', remove: () => { calls++; } })]);
+  await f.panel.removeItem('machine:one');
+  assert.equal(calls, 0); assert.equal(f.panel.items.length, 1);
+  assert.match(message, /删除台账与三维对象/); assert.match(f.panel.message, /已取消删除/);
+});
+
+test('a professional owner confirmation is reused without a duplicate confirmation', async () => {
+  const f = fixture(); let confirmations = 0, removals = 0;
+  f.panel.options.confirmRemoval = () => { confirmations++; return true; };
+  f.panel.setContext('project', 'actor', [item({ removalConfirmedByHost: true, remove: () => { removals++; return false; } })]);
+  await f.panel.removeItem('machine:one');
+  assert.equal(confirmations, 0); assert.equal(removals, 1); assert.equal(f.panel.items.length, 1);
 });

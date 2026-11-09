@@ -13,6 +13,12 @@ export type SceneDisplayItem = {
   edit?: () => void | Promise<void>;
   /** Persist removal; return false if the user cancels, or reject on failure. */
   remove?: () => void | boolean | Promise<void | boolean>;
+  /** Runtime unloading never deletes the saved original or its display preferences. */
+  removalKind?: "unload" | "detach" | "delete";
+  /** State the affected records separately from ordinary object status. */
+  removalDescription?: string;
+  /** A professional editor may already own its impact confirmation. */
+  removalConfirmedByHost?: boolean;
   /** Removing an attached model keeps its resource row and personal preferences. */
   removalPreservesResource?: boolean;
   /** Cancel a pending load while preserving any saved original and display preferences. */
@@ -21,7 +27,12 @@ export type SceneDisplayItem = {
 export type SceneDisplayPanelOptions = {
   onApply: (overrides: Record<string, boolean>, labelsVisible: boolean) => void;
   onError?: (message: string) => void;
+  confirmRemoval?: (message: string) => boolean;
 };
+export function sceneRemovalKind(item: SceneDisplayItem): "unload" | "detach" | "delete" {
+  return item.removalKind ?? (item.removalPreservesResource ? "detach" : "delete");
+}
+const removalLabel = { unload: "移出场景", detach: "移除模型", delete: "删除" } as const;
 type GroupEditor = { kind: "create" | "rename" | "members"; id?: string; name: string };
 const element = <K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text?: string): HTMLElementTagNameMap[K] => {
   const node = document.createElement(tag); node.className = className; if (text !== undefined) node.textContent = text; return node;
@@ -61,7 +72,7 @@ export class SceneDisplayPanel {
       <div class="sdp-selection" data-role="selection-bar"></div>
       <div class="sdp-group-editor" data-role="group-editor" hidden></div>
       <div class="sdp-scroll" data-role="list"></div>
-      <footer class="sdp-footer"><p>勾选对象可跨类型建组。分组开关批量调整成员显示，解散分组不会删除对象。</p><p>显示开关只调整个人视图；删除会从当前项目移除对应资源。</p><p class="sdp-status" data-role="status" role="status" hidden></p></footer>`;
+      <footer class="sdp-footer"><p>勾选对象可跨类型建组。分组开关批量调整成员显示，解散分组不会删除对象。</p><p>隐藏只调整个人视图；移出场景保留已保存资料，可从资料库重新载入；删除按确认范围更新对象记录。</p><p class="sdp-status" data-role="status" role="status" hidden></p></footer>`;
     host.append(this.root);
     this.root.addEventListener("click", event => {
       const button = (event.target as Element).closest<HTMLButtonElement>("button[data-action]");
@@ -107,6 +118,12 @@ export class SceneDisplayPanel {
   }
 
   get labelsVisible(): boolean { return this.store.labelsVisible; }
+  /** Center shortcuts filter the existing directory; no parallel object list is created. */
+  setSearch(query: string): void {
+    this.query = query;
+    this.find<HTMLInputElement>('[data-role="search"]').value = query;
+    this.renderList();
+  }
   getOverrides(): Record<string, boolean> { return this.store.getOverrides(); }
 
   setContext(projectId: string, actorId: string | undefined, items: readonly SceneDisplayItem[]): void {
@@ -122,7 +139,7 @@ export class SceneDisplayPanel {
       this.query = ""; this.selected.clear(); this.editor = undefined; this.message = ""; this.error = false;
       this.find<HTMLInputElement>('[data-role="search"]').value = "";
     } else this.selected = new Set([...this.selected].filter(id => seen.has(id)));
-    const signature = JSON.stringify([this.store.scopeKey, this.items.map(item => [item.id, item.name, item.category, item.visible, item.visibilityAvailable, item.detail, !!item.locate, !!item.edit, !!item.remove, !!item.cancel, item.removalPreservesResource])]);
+    const signature = JSON.stringify([this.store.scopeKey, this.items.map(item => [item.id, item.name, item.category, item.visible, item.visibilityAvailable, item.detail, !!item.locate, !!item.edit, !!item.remove, !!item.cancel, item.removalPreservesResource, item.removalKind, item.removalDescription, item.removalConfirmedByHost])]);
     if (changed || signature !== this.directorySignature) { this.directorySignature = signature; this.render(); }
     // Pose/status refreshes do not change visibility. Rebuilt hosts may explicitly
     // call reapply(); directory refreshes must not redraw an unchanged scene.
@@ -183,7 +200,7 @@ export class SceneDisplayPanel {
     host.append(element("strong", "", editor.kind === "create" ? "创建显示分组" : editor.kind === "rename" ? "重命名分组" : `调整“${editor.name}”成员`));
     if (editor.kind !== "members") {
       const label = element("label"), input = element("input"); label.append(element("span", "sdp-sr-only", "分组名称")); input.type = "text"; input.maxLength = 60; input.value = editor.name; input.dataset.role = "group-name"; input.placeholder = "例如：10号墩施工布置"; label.append(input); host.append(label);
-    } else host.append(element("p", "", "在下面各分类勾选或取消成员，再保存。未加载的原成员会从本次新名单移除。"));
+    } else host.append(element("p", "", "在下面各分类勾选或取消成员，再保存。暂未载入或不可访问的原成员会保留；不再需要该分组时可解散。"));
     const actions = element("div", "sdp-actions"); actions.append(this.button("save-group", editor.kind === "members" ? "保存成员" : "保存分组"), this.button("cancel-group", "取消")); host.append(actions);
   }
   private renderList(): void {
@@ -231,7 +248,12 @@ export class SceneDisplayPanel {
     const tools = element("div", "sdp-item-tools");
     if (item.locate) { const button = this.button("item-locate", "定位"); button.dataset.itemId = item.id; button.title = visible ? "定位此对象" : "先显示此对象再定位"; button.disabled = !visible || removing; tools.append(button); }
     if (item.edit) { const button = this.button("item-edit", "配置"); button.dataset.itemId = item.id; button.disabled = removing; tools.append(button); }
-    if (item.remove) { const button = this.button("item-remove", removing ? "删除中…" : "删除"); button.dataset.itemId = item.id; button.className = "sdp-item-remove"; button.disabled = removing; button.title = `从当前项目删除${item.name}`; button.setAttribute("aria-label", `删除${item.name}`); tools.append(button); }
+    if (item.remove) {
+      const kind = sceneRemovalKind(item), label = removalLabel[kind];
+      const button = this.button("item-remove", removing ? "处理中…" : label); button.dataset.itemId = item.id; button.className = "sdp-item-remove"; button.disabled = removing;
+      button.title = item.removalDescription || (kind === 'unload' ? '仅移出本次场景，保留资料库记录、文件与显示分组；重新打开平台时仍可自动恢复' : kind === 'detach' ? '移除三维模型，保留资源台账' : `删除${item.name}，操作前确认影响范围`);
+      button.setAttribute("aria-label", `${label}${item.name}`); tools.append(button);
+    }
     if (item.cancel) { const button = this.button('item-cancel', '取消加载'); button.dataset.itemId = item.id; button.title = '停止本次加载，保留已保存的原资料'; tools.append(button); }
     if (tools.children.length) row.append(tools); return row;
   }
@@ -270,31 +292,37 @@ export class SceneDisplayPanel {
   async removeItem(id: string): Promise<void> {
     const item = this.item(id), key = this.removalKey(id);
     if (!item?.remove || this.removing.has(key)) return;
+    const kind = sceneRemovalKind(item), label = removalLabel[kind];
+    if (kind !== 'unload' && !item.removalConfirmedByHost) {
+      const description = item.removalDescription || item.detail || (kind === 'detach' ? '保留资源台账，仅移除三维模型。' : '同步更新对象记录与场景。');
+      const confirm = this.options.confirmRemoval ?? (message => window.confirm(message));
+      if (!confirm(`${label}“${item.name}”？\n${description}`)) { this.setMessage(`已取消${label}。`); return; }
+    }
     const scope = this.store.scopeKey, revision = this.contextRevision;
     const sameContext = () => !this.disposed && this.store.scopeKey === scope && this.contextRevision === revision;
-    this.removing.add(key); this.renderList(); this.setMessage(`正在删除“${item.name}”…`);
+    this.removing.add(key); this.renderList(); this.setMessage(`正在${label}“${item.name}”…`);
     try {
       // The host owns data and renderer teardown. Only update this directory after it succeeds.
       if (await item.remove() === false) {
-        if (sameContext()) this.setMessage("已取消删除。");
+        if (sameContext()) this.setMessage(`已取消${label}。`);
         return;
       }
-      if (item.removalPreservesResource) {
+      if (kind === 'detach') {
         // The host has refreshed the same resource ID with its attachment removed.
         // Do not race that refresh by deleting the now-unplaced resource row.
         if (sameContext()) { this.render(); this.apply(); this.setMessage(`已移除“${item.name}”的三维模型，资源仍可重新配置。`); }
         return;
       }
-      this.store.removeItems([id], scope);
+      if (kind === 'delete') this.store.removeItems([id], scope);
       if (!sameContext()) return;
       this.items = this.items.filter(current => current.id !== id);
       this.itemsById.delete(id);
       this.selected.delete(id);
       this.store.setItems(this.items);
       this.directorySignature = "";
-      this.render(); this.apply(); this.setMessage(`已删除“${item.name}”。`);
+      this.render(); this.apply(); this.setMessage(kind === 'unload' ? `已将“${item.name}”移出本次场景；已保存资料和分组保留，可从资料库重新载入。` : `已删除“${item.name}”。`);
     } catch (error) {
-      if (sameContext()) this.setMessage(`删除“${item.name}”失败：${errorText(error)}`, true);
+      if (sameContext()) this.setMessage(`${label}“${item.name}”失败：${errorText(error)}`, true);
     } finally {
       this.removing.delete(key);
       // Returning to this project during a pending delete must not leave stale busy controls.

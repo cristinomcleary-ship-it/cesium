@@ -24,6 +24,7 @@ import {
   Viewer,
 } from "cesium";
 import "./markupTools.css";
+import { revealPanelControl } from './panelCategories.ts';
 
 export type MarkupKind = "point" | "text" | "label" | "polyline" | "polygon" | "rectangle" | "circle" | "facade" | "volume";
 export type MarkupOverviewItem = Readonly<{
@@ -554,6 +555,27 @@ export class MarkupTools {
   getDisplayItems(): MarkupDisplayItem[] {
     return this.records.map(record => ({ id: record.id, name: record.name, kind: record.kind,
       visible: this.isDisplayed(record), defaultVisible: record.visible }));
+  }
+
+  /** Check before changing workspaces: the normal tab handler cancels drawing. */
+  get hasActiveInteraction(): boolean {
+    return !!(this.drawingKind || this.redrawId || this.textureSelectionPromise || this.pendingTexture);
+  }
+
+  assertCanSelectDisplayObject(id: string): void {
+    if (this.disposed || this.viewer.isDestroyed()) throw new Error('标绘工作台已关闭。');
+    if (this.hasActiveInteraction) throw new Error('请先完成或取消当前标绘及贴图编辑，再选择其他对象。');
+    if (!this.records.some(record => record.id === id)) throw new Error('该标绘已删除，请刷新对象目录。');
+  }
+
+  /** Opens the existing record in the one editor; selection never creates or flies to an object. */
+  selectDisplayObject(id: string): void {
+    this.assertCanSelectDisplayObject(id);
+    this.selectRecord(id);
+    const control = element<HTMLInputElement>('#markupName');
+    revealPanelControl(control);
+    control.focus({ preventScroll: true });
+    control.scrollIntoView({ block: 'nearest' });
   }
 
   /** One displayed object only; retains the normal undo history and persistence rollback. */

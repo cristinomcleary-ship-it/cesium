@@ -54,6 +54,7 @@ export class SceneLibrary {
   private activeImageryId = "";
   private activeVideoId = "";
   private deleting = new Set<string>();
+  private unloading = new Set<string>();
   private deleted = new Set<string>();
   private cleanupPending = new Map<string, { name: string; kind: LibraryKind }>();
   private cameraTimer = 0;
@@ -323,7 +324,7 @@ export class SceneLibrary {
   }
   async openVideoOverlayScheme(id: string, options: { asCopy?: boolean; name?: string } = {}): Promise<void> {
     await this.ready;
-    if (this.restoring.has(id) || this.deleting.has(id)) throw new Error("方案正在打开或删除，请稍候");
+    if (this.restoring.has(id) || this.deleting.has(id) || this.unloading.has(id)) throw new Error("方案正在打开、移出场景或删除，请稍候");
     this.restoring.add(id); this.render();
     try {
       const record = await this.readableRecord(id);
@@ -335,6 +336,7 @@ export class SceneLibrary {
     finally { this.restoring.delete(id); this.render(); this.hooks.layersChanged(); this.saveView(); }
   }
   async restore(id: string) {
+    if (this.unloading.has(id)) return;
     const inFlight = this.hooks.cadLoads?.get(id);
     if (inFlight) { await inFlight.settled; return; }
     let record = this.records.get(id);
@@ -483,6 +485,33 @@ export class SceneLibrary {
 
   markVideo(id: string) { this.activeVideoId = id; this.render(); this.saveView(); }
   markImagery(id: string) { this.activeImageryId = id; this.render(); this.saveView(); }
+  /** Release this session's renderers only. Saved records, files and display preferences remain restorable. */
+  async unload(id: string): Promise<boolean> {
+    const target = this.records.get(id) ?? this.drafts.get(id);
+    if (!target) return false;
+    if (this.hooks.canReadRecord?.(target) === false) throw new Error('当前账号不能操作此资料。');
+    if (this.unloading.has(id) || this.deleting.has(id)) return false;
+    if (this.pending || this.drafts.has(id)) throw new Error('请先完成资料保存，再移出场景。');
+    const loading = this.hooks.cadLoads?.get(id);
+    if (this.restoring.has(id) && !loading) throw new Error('资料正在载入，请稍候再移出场景。');
+    this.unloading.add(id);
+    try {
+      if (loading) { loading.cancel(); await loading.settled; }
+      if (this.hooks.canReadRecord?.(target) === false) throw new Error('账号权限已变化，请重新选择资料。');
+      const item = this.hooks.getImports().find(candidate => candidate.id === id);
+      if (item) this.hooks.removeImport(item);
+      if (this.activeVideoId === id) { this.hooks.clearVideo(); this.activeVideoId = ''; }
+      if (this.activeImageryId === id) {
+        this.hooks.setBasemap('street'); this.hooks.clearImagery?.(); this.activeImageryId = '';
+        const select = document.querySelector<HTMLSelectElement>('#basemap'); if (select) select.value = 'street';
+      }
+      this.failures.delete(id);
+      this.hooks.viewer.scene.requestRender(); this.saveView();
+      return true;
+    } finally {
+      this.unloading.delete(id); this.render(); this.hooks.layersChanged();
+    }
+  }
   /** Roll back only the fresh CAD ID created by the current, failed import. */
   async discardNewCad(id: string): Promise<void> {
     const record = this.records.get(id);
@@ -501,13 +530,13 @@ export class SceneLibrary {
     this.render();
   }
   async delete(id: string, confirm = true): Promise<boolean> {
-    if (this.deleting.has(id)) return false;
+    if (this.deleting.has(id) || this.unloading.has(id)) return false;
     if (this.pending) { this.hooks.notify("请等待当前资料保存完成后再删除",true); return false; }
     const target = this.records.get(id) ?? this.drafts.get(id) ?? this.cleanupPending.get(id);
     if (!target) return true;
     if (this.hooks.canReadRecord?.(target) === false) { this.hooks.notify("当前账号没有此资料的删除权限", true); return false; }
     const { name, kind } = target;
-    if (confirm && !window.confirm("删除“" + name + "”及其本机保存副本？原始导入文件不会被删除。")) return false;
+    if (confirm && !window.confirm("删除资料“" + name + "”？\n将删除资料库记录、平台保存的文件副本及当前场景对象；关联该资料的内容可能无法再打开原件。电脑上最初选择的导入文件不受影响。\n若只需暂时移出画面，请使用场景目录中的“隐藏”或“移出场景”。")) return false;
     const unsaved = this.updates.get(id);
     this.deleting.add(id); this.updates.delete(id); this.pending++; this.render();
     try {
@@ -574,9 +603,10 @@ export class SceneLibrary {
       const title = document.createElement("span"); title.textContent = record ? videoSchemeName(record) : (draft ?? cleanup)!.name; title.title = title.textContent;
       const loading = this.hooks.cadLoads?.get(id);
       const detail = document.createElement("small");
-      detail.textContent = cleanup ? "已删除 · 本地文件清理待完成" : loading?.status ?? (this.restoring.has(id) ? "恢复中…" : this.failures.get(id) ?? (record ? record.kind + " · 已保存" : "等待保存"));
-      const retry = document.createElement("button"); retry.textContent = loading ? "取消加载" : draft ? "重试保存" : this.failures.has(id) ? "重试" : record?.kind === "Imagery" || record?.kind === "Drone Video" ? "使用" : this.hooks.getImports().some(item => item.id === id) ? "定位" : "恢复";
-      retry.disabled = loading ? loading.signal.aborted : this.pending > 0 || this.restoring.has(id) || this.deleting.has(id);
+      const loaded = this.hooks.getImports().some(item => item.id === id) || this.activeVideoId === id || this.activeImageryId === id;
+      detail.textContent = cleanup ? "已删除 · 本地文件清理待完成" : loading?.status ?? (this.restoring.has(id) ? "载入中…" : this.failures.get(id) ?? (record ? record.kind + " · 已保存 · " + (loaded ? "已载入" : "未载入") : "等待保存"));
+      const retry = document.createElement("button"); retry.textContent = loading ? "取消加载" : draft ? "重试保存" : this.failures.has(id) ? "重试" : record?.kind === "Imagery" || record?.kind === "Drone Video" ? "使用" : loaded ? "定位" : "载入场景";
+      retry.disabled = loading ? loading.signal.aborted : this.pending > 0 || this.restoring.has(id) || this.deleting.has(id) || this.unloading.has(id);
       retry.addEventListener("click", () => {
         if (loading) loading.cancel();
         else if (draft) void this.save(draft.id, draft.name, draft.kind, draft.settings, draft.files, draft.copy).then(() => this.restore(id)).catch(e => this.hooks.notify(this.message(e), true));
@@ -584,7 +614,7 @@ export class SceneLibrary {
         else void this.restore(id);
       });
       if (cleanup) retry.hidden = true;
-      const remove = document.createElement("button"); remove.textContent = "删除"; remove.disabled = this.pending > 0 || this.deleting.has(id) || (this.restoring.has(id) && !loading);
+      const remove = document.createElement("button"); remove.textContent = "删除资料"; remove.disabled = this.pending > 0 || this.deleting.has(id) || this.unloading.has(id) || (this.restoring.has(id) && !loading);
       if (cleanup) remove.textContent = "重试删除";
       remove.addEventListener("click", () => void this.delete(id));
       row.append(title, detail, retry, remove);

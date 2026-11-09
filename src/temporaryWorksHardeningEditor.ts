@@ -528,6 +528,8 @@ export class TemporaryWorksHardeningEditor {
       : '范围已更新。生成预览时检查边界、孔洞和重叠高差。');
   }
 
+  get isDrawing(): boolean { return !!this.drawing; }
+
   cancelDrawing() {
     this.drawing = undefined;
     if (this.handler && !this.handler.isDestroyed()) this.handler.destroy();

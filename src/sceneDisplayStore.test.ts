@@ -157,6 +157,17 @@ test("renaming and editing groups preserve stable group identity and persist mem
   assert.deepEqual(restored.getGroups(), store.getGroups());
 });
 
+test('editing currently loaded group members retains unloaded originals until they are explicitly deleted', () => {
+  const store = new SceneDisplayStore(memoryStorage());
+  store.setContext('project', 'actor'); store.setItems(items);
+  const group = store.createGroup('现场', ['machinery:crane', 'personnel:guard']);
+  store.setItems([items[0], items[2]]);
+  store.setGroupMembers(group.id, ['import:survey']);
+  assert.deepEqual(store.getGroups()[0].members, ['import:survey', 'personnel:guard']);
+  store.removeItems(['personnel:guard']);
+  assert.deepEqual(store.getGroups()[0].members, ['import:survey']);
+});
+
 test("invalid JSON and malformed top-level values safely fall back to business defaults", () => {
   for (const saved of ["{", "null", "[]", '"legacy"', "false", "12"]) {
     const storage = memoryStorage([[keyFor("project", "actor"), saved]]);

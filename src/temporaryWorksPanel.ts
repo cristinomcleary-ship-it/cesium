@@ -276,6 +276,7 @@ export class TemporaryWorksPanel {
   private pickHandler?: ScreenSpaceEventHandler;
   private finishPicking?: () => void;
   private busySave = false;
+  private draftChanged = false;
   private upgrading?: string;
   private cadPick?: AbortController;
   private overlayJob?: AbortController;
@@ -373,8 +374,8 @@ export class TemporaryWorksPanel {
       },
       beginInteractionSession:()=>this.options.beginInteractionSession?.(),
       onPreview:value=>this.runHardening(value),
-      onChange:()=>{this.cancel(false);this.dropPreview();},
-      onCancel:()=>{this.cancel(false);this.dropPreview();this.hardeningEditing=undefined;},
+      onChange:()=>{this.draftChanged=true;this.cancel(false);this.dropPreview();},
+      onCancel:()=>{this.cancel(false);this.dropPreview();this.hardeningEditing=undefined;this.draftChanged=false;},
       onError:error=>this.failure(error)});
   }
   private restoreBrightnessControls() {
@@ -560,11 +561,13 @@ export class TemporaryWorksPanel {
     finally{candidate?.destroy();if(this.analysis===job)this.analysis=undefined;this.buttons();}
   }
   private editHardeningPlan(id:string) {
-    const plan=this.records.get(id);if(!plan?.hardening || !this.editable())return;
+    const plan=this.records.get(id);if(!plan?.hardening || !this.editable() || !this.requestLeave())return false;
+    this.draftChanged=false;
     this.cancel(false);this.dropPreview();this.hardeningEditing=id;this.glbEditing=undefined;this.roadEditing=undefined;
     this.select("kind").value="hardening";this.selectedModel=plan.modelId;this.refresh();
     this.hardeningEditor?.setValue(hardeningValueForCurrentFacilities(plan,[...this.records.values()],this.manifest));this.refreshHardeningFacilities();this.updateFields();
     this.status(`正在编辑「${plan.name}」，保存前请重新检查重叠和高差。`);
+    return true;
   }
   private facilityMode() { return this.select("facility-mode").value as FacilityMode; }
   private feature() { return this.cad.find(f => f.id === this.value("feature")); }
@@ -614,14 +617,43 @@ export class TemporaryWorksPanel {
   }
 
   open() { this.active = true; this.refresh(); this.list(); }
-  close() {
+  /** A navigation guard only: declining leaves every draft, handle and active job intact. */
+  requestLeave(): boolean {
+    if (this.disposed) return true;
+    if (this.busySave || this.upgrading || this.pendingDelete?.size) {
+      this.status("临建设施正在保存或删除，请等待操作完成后再切换。", true);
+      return false;
+    }
+    const pending = this.hasPendingChanges || this.analysis || this.cadRead || this.sectionRead ||
+      this.pickHandler || this.cadPick || this.overlayJob || this.hardeningEditor?.isDrawing;
+    if (!pending) return true;
+    return typeof window !== "undefined" && window.confirm("临建规划有尚未保存的编辑、预览或正在进行的操作。确定放弃这些内容并继续？取消可返回继续编辑。");
+  }
+
+  get hasPendingChanges(): boolean {
+    return !!(this.draftChanged || this.preview ||
+      (this.positionEditing && Object.values(this.positionEditing.offset).some(value => value !== 0)) ||
+      (this.glbEditing && this.objectBrightnessDraft !== this.lighting.overrides[this.glbEditing]));
+  }
+
+  close(): boolean {
+    if (!this.requestLeave()) return false;
+    this.discardEditing();
     this.active = false;
+    return true;
+  }
+
+  /** Forced cleanup is reserved for account/project authority changes and destruction. */
+  private discardEditing() {
     this.clearOverlay();
     this.cancel(false);
     this.dropPreview();
     this.clearReview();
     this.hardeningEditor?.cancelDrawing();
-    this.glbEditing=undefined;this.objectBrightnessDraft=undefined;this.updateBrightness(false,false);
+    this.glbEditing=undefined;this.roadEditing=undefined;this.hardeningEditing=undefined;
+    this.objectBrightnessDraft=undefined;this.draftChanged=false;this.updateBrightness(false,false);
+    this.cadRead?.abort();this.cadRead=undefined;this.sectionRead?.abort();this.sectionRead=undefined;
+    this.glbLogoReadToken++;
   }
   destroy() {
     if (this.disposed) return;
@@ -639,14 +671,20 @@ export class TemporaryWorksPanel {
     this.options.root.replaceChildren();
   }
 
-  async setProject(projectId: string | null) {
+  async setProject(projectId: string | null, options: { force?: boolean } = {}): Promise<boolean> {
     const editable = projectId !== null && this.options.canEdit?.() !== false;
     const permissionChanged = editable !== this.editAccess;
-    this.editAccess = editable;
     if (projectId === this.projectId) {
+      if (permissionChanged && !editable) this.discardEditing();
+      this.editAccess = editable;
       if (permissionChanged) { this.list(); this.buttons(); }
-      return;
+      return true;
     }
+    // Authority-driven updates must never retain an old project's editable preview.
+    // User-initiated changes use the guard before the host changes its selection.
+    if (!options.force && !this.requestLeave()) return false;
+    this.editAccess = editable;
+    this.draftChanged = false;
     this.clearOverlay(); this.registration = undefined; this.projected=undefined;
     this.projectId = projectId;
     try { this.upgradeEnabled = !projectId || localStorage.getItem(`cesium-temporary-works-upgrade:${projectId}`) !== "off"; }
@@ -678,10 +716,10 @@ export class TemporaryWorksPanel {
     this.updateGlbResource();
     this.refresh(); this.list(); this.updateFields(); this.featurePreview();
     this.options.onPlansChanged?.();
-    if (!projectId) { this.status("请选择项目后打开临建规划。"); return; }
+    if (!projectId) { this.status("请选择项目后打开临建规划。"); return true; }
     try {
       const plans = await this.options.store.list(projectId);
-      if (this.generation !== token) return;
+      if (this.generation !== token) return true;
       for (const plan of plans) {
         if (this.records.has(plan.id)) continue;
         this.records.set(plan.id, plan);
@@ -693,6 +731,7 @@ export class TemporaryWorksPanel {
       this.list(); this.options.onPlansChanged?.();
     } catch (error) { if (token === this.generation) this.failure(error); }
     this.buttons();
+    return true;
   }
 
   refresh() {
@@ -756,10 +795,20 @@ export class TemporaryWorksPanel {
     this.options.onVisibilityChange?.(id,visible);
   }
   locatePlan(id: string) { this.handles.get(id)?.zoom(); }
-  inspectPlan(id: string) {
+  inspectPlan(id: string): boolean {
     const plan = this.records.get(id);
-    if (!plan) return;
-    this.cancel(false); this.dropPreview(); this.review(plan, true);
+    if (!plan || !this.requestLeave()) return false;
+    this.discardEditing(); this.review(plan, true);
+    return true;
+  }
+  /** Scene selection and the saved-plan list share the same record and editor. */
+  editPlan(id: string): boolean {
+    const plan = this.records.get(id);
+    if (!plan || !this.editable()) return false;
+    if (plan.hardening) return this.editHardeningPlan(id);
+    if (plan.inputs.road?.surfaceMode === "designed") return this.editDesignedRoad(id);
+    if (plan.glb) return this.editGlbPlan(id);
+    return this.inspectPlan(id);
   }
   private draw(plan: TemporaryWorksPlan): MeshHandle {
     if (plan.surface && !plan.hardening) {
@@ -872,7 +921,8 @@ export class TemporaryWorksPanel {
   }
   private startPositionAdjustment(id:string) {
     const source=this.records.get(id);
-    if(!source || !this.editable() || this.busySave || (!this.upgradeEnabled && this.newPlan(source)))return;
+    if(!source || !this.editable() || this.busySave || (!this.upgradeEnabled && this.newPlan(source)) || !this.requestLeave())return;
+    this.draftChanged=false;
     this.cancel(false);this.dropPreview();this.clearReview();this.clearOverlay();
     this.glbEditing=undefined;this.roadEditing=undefined;this.hardeningEditing=undefined;this.objectBrightnessDraft=undefined;
     this.positionEditing={id,source,offset:{east:0,north:0,up:0}};
@@ -1025,6 +1075,7 @@ export class TemporaryWorksPanel {
     if (!input.id.startsWith("tw-") && !input.dataset.gradeField) return;
     if (input.id.startsWith("tw-position-")) return;
     if (["tw-brightness","tw-object-brightness"].includes(input.id)) { this.updateBrightness(input.id==="tw-object-brightness",false); return; }
+    this.draftChanged = true;
     this.cancel(false); this.dropPreview(); this.clearReview();
     const k = input.id.slice(3);
     if(["anchor-x","anchor-y","anchor-lon","anchor-lat","rotation","meridian","zone","gk-x","gk-y","gk-lon","gk-lat"].includes(k))this.restoredCoordinates=undefined;
@@ -1064,6 +1115,7 @@ export class TemporaryWorksPanel {
       this.status((this.upgradeEnabled ? "临建模型、设计便道与场地硬化已启用。" : "新增功能已暂停显示，对应摄影遮挡已撤销。") + (preferenceSaved ? "" : "浏览器未能保存开关状态，刷新前请检查存储权限。"), !preferenceSaved);
       return;
     }
+    if (k !== "xray") this.draftChanged=true;
     if (k === "glb-logo") { void this.readGlbLogo(); return; }
     if (k === "glb-resource") {
       this.glbLogoReadToken++;
@@ -1151,11 +1203,7 @@ export class TemporaryWorksPanel {
       if (action === "standardize") void this.addStandardFacility(id).catch(e => this.failure(e));
       if (action === "inspect") this.inspectPlan(id);
       if (action === "position") this.startPositionAdjustment(id);
-      if (action === "edit") {
-        if (record.hardening) this.editHardeningPlan(id);
-        else if (record.inputs.road?.surfaceMode === "designed") this.editDesignedRoad(id);
-        else this.editGlbPlan(id);
-      }
+      if (action === "edit") this.editPlan(id);
       if (action === "clipping") void this.changeSurfaceClipping(id).catch(error=>this.failure(error));
       if (action === "locate") this.locatePlan(id);
       if (action === "hide") {
@@ -1172,6 +1220,7 @@ export class TemporaryWorksPanel {
       if (b.hasAttribute("data-remove-grade")) {
         b.closest("[data-grade-row]")?.remove(); this.gradeEdited(); return;
       }
+      if (["glb-pick", "glb-use-boundary", "glb-sample-height", "glb-reset-size", "glb-clear-logo", "pick", "pick-a", "pick-b", "cad-a", "cad-b", "control-fit", "gk-cad", "gk-pick", "gk-apply", "gk-reset", "measure-depth"].includes(b.id.slice(3))) this.draftChanged=true;
       switch (b.id.slice(3)) {
         case "position-forward": case "position-back": case "position-left": case "position-right":
         case "position-up": case "position-down": void this.nudgePosition(b.id.slice(12)); break;
@@ -1180,14 +1229,14 @@ export class TemporaryWorksPanel {
         case "position-save": void this.save(); break;
         case "brightness-reset": this.input("brightness").value="100"; this.updateBrightness(false,true); break;
         case "object-brightness-save": this.saveObjectBrightness(); break;
-        case "road-cancel-edit": this.cancel(false); this.dropPreview(); this.roadEditing = undefined; this.select("elevation-mode").value="automatic"; this.updateFields(); break;
+        case "road-cancel-edit": this.draftChanged=false; this.cancel(false); this.dropPreview(); this.roadEditing = undefined; this.select("elevation-mode").value="automatic"; this.updateFields(); break;
         case "glb-pick": this.pick("glb"); break;
         case "glb-use-boundary": void this.useGlbBoundary(); break;
         case "glb-sample-height": void this.sampleGlbHeight(); break;
         case "glb-reset-size": this.updateGlbResource(); this.useManualGlbPlacement(); this.cancel(false); this.dropPreview(); break;
         case "glb-clear-logo": this.cancel(false); this.glbLogoReadToken++; this.glbLogo = undefined; this.input("glb-logo").value = ""; this.dropPreview(); break;
-        case "glb-cancel-edit": this.cancel(false); this.glbEditing = undefined; this.objectBrightnessDraft=undefined; this.dropPreview(); this.select("elevation-mode").value="automatic"; this.updateFields(); this.updateBrightness(false,false); break;
-        case "close": this.close(); this.options.onRequestClose?.(); break;
+        case "glb-cancel-edit": this.draftChanged=false; this.cancel(false); this.glbEditing = undefined; this.objectBrightnessDraft=undefined; this.dropPreview(); this.select("elevation-mode").value="automatic"; this.updateFields(); this.updateBrightness(false,false); break;
+        case "close": if (this.close()) this.options.onRequestClose?.(); break;
         case "pick": this.pick(); break;
         case "pick-a": this.pick("A"); break;
         case "pick-b": this.pick("B"); break;
@@ -1418,6 +1467,7 @@ export class TemporaryWorksPanel {
     }
   }
   private gradeEdited() {
+    this.draftChanged=true;
     this.cancel(false); this.dropPreview(); this.clearReview();
     this.input("confirmed").checked = false; this.gradeStatus();
   }
@@ -1882,7 +1932,8 @@ export class TemporaryWorksPanel {
   }
   private editGlbPlan(id: string) {
     const plan = this.records.get(id);
-    if (!plan?.glb || !this.editable()) return;
+    if (!plan?.glb || !this.editable() || !this.requestLeave()) return false;
+    this.draftChanged=false;
     this.cancel(false); this.dropPreview(); this.clearReview();
     this.glbEditing = id; this.glbLogoReadToken++;
     this.select("elevation-mode").value="manual";
@@ -1905,6 +1956,7 @@ export class TemporaryWorksPanel {
     this.input("glb-brand-text").value = glb.branding?.text ?? ""; this.glbLogo = glb.branding?.logoUrl;
     this.updateFields();
     this.status(`正在编辑「${plan.name}」。生成预览并保存后替换此方案。`);
+    return true;
   }
   private async runGlb() {
     this.cancel(false); this.dropPreview(); this.clearReview(); this.clearOverlay();
@@ -2061,7 +2113,8 @@ export class TemporaryWorksPanel {
 
   private editDesignedRoad(id:string) {
     const plan = this.records.get(id), road = plan?.inputs.road;
-    if (!plan || road?.surfaceMode!=="designed" || !this.editable()) return;
+    if (!plan || road?.surfaceMode!=="designed" || !this.editable() || !this.requestLeave()) return false;
+    this.draftChanged=false;
     this.cancel(false); this.dropPreview(); this.roadEditing=id; this.glbEditing=undefined; this.hardeningEditing=undefined;
     this.select("elevation-mode").value="manual";
     this.select("kind").value="road"; this.input("name").value=plan.name;
@@ -2085,6 +2138,7 @@ export class TemporaryWorksPanel {
     }
     this.input("confirmed").checked=false; this.updateFields(); this.gradeStatus(); this.crossSection();
     this.status(`正在编辑「${plan.name}」，生成预览并保存后才更新记录。`);
+    return true;
   }
 
   private async run() {
@@ -2356,6 +2410,7 @@ export class TemporaryWorksPanel {
         try{saveTemporaryWorksLightingPreferences(projectId,this.lighting);}catch(error){lightingWarning=` 模型方案已保存，但亮度偏好未能保存：${error instanceof Error?error.message:String(error)}`;}
       }
       this.glbEditing = undefined;this.objectBrightnessDraft=undefined;this.roadEditing=undefined;this.hardeningEditing=undefined;
+      this.draftChanged=false;
       this.select("elevation-mode").value="automatic";
       this.positionEditing=undefined;
       this.records.set(plan.id, plan);
@@ -2378,6 +2433,7 @@ export class TemporaryWorksPanel {
     const projectId = this.projectId, record = this.records.get(id);
     if (!record || !projectId || !this.editable()) throw new Error("当前项目无法删除这项临建设施，请核对账号权限。");
     const key = JSON.stringify([projectId, id]);
+    if (this.busySave) throw new Error("临建设施正在保存，请等待完成后再删除。");
     if (this.upgrading === key || this.pendingDelete.has(key) || !window.confirm(`删除「${record.name}」的三维模型及方案记录？`)) return false;
     this.pendingDelete.add(key); this.list();
     try {

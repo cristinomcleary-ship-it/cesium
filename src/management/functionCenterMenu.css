@@ -1,0 +1,17 @@
+@scope (.management-studio) {
+  .mg-function-centers > div {
+    max-height: min(680px, calc(100dvh - var(--header) - 24px));
+    overflow-y: auto;
+  }
+  .mg-function-centers .mg-center-menu-label {
+    padding: 8px 10px 4px;
+    color: var(--muted);
+    font-size: 10px;
+  }
+  .mg-function-centers hr {
+    width: 100%;
+    margin: 5px 0;
+    border: 0;
+    border-top: 1px solid var(--line);
+  }
+}
