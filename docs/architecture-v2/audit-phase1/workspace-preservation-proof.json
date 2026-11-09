@@ -1,0 +1,84 @@
+{
+  "checkedAt": "2026-11-09T09:33:54.6126519+08:00",
+  "originalPath": "F:\\codex\\cesium",
+  "originalBranch": "codex/local-auto-elevation-deployed-20261108",
+  "originalHead": "24f79e0c2a62613417c61f61077949aee147c97e",
+  "originalGitStatusUnchanged": true,
+  "originalStatus": " M tools/start-cesium.ps1\n M tools/start-safety-dashboard.ps1\n M tools/stop-cesium.ps1\n M 停止Cesium.cmd\n M 启动Cesium.cmd\n M 启动安全巡检大屏.cmd\n?? 本机当前版本.txt",
+  "originalStagedFiles": [],
+  "independentWorktree": "F:\\codex\\cesium-platform-management-v2-audit-20261109",
+  "auditSourceCommit": "4a5d7c7cdecc31846201d0cf2e0ba7b8d9fc3acc",
+  "businessTestsExecuted": 0,
+  "protectedFiles": [
+    {
+      "path": "tools/start-cesium.ps1",
+      "beforeSha256": "44148223009790fae5b01f3b4423cc17d477f39f8a7b1ebe70a9d9134419b02b",
+      "afterSha256": "44148223009790fae5b01f3b4423cc17d477f39f8a7b1ebe70a9d9134419b02b",
+      "lengthBefore": 13934,
+      "lengthAfter": 13934,
+      "lastWriteUtcBefore": "2026-11-07T15:13:41.2607065Z",
+      "lastWriteUtcAfter": "2026-11-07T15:13:41.2607065Z",
+      "unchanged": true
+    },
+    {
+      "path": "tools/start-safety-dashboard.ps1",
+      "beforeSha256": "9ddc8c323d79db1ed98d366c4fd5c190b16d9d88fea9417aaf4c7b6255e9e50b",
+      "afterSha256": "9ddc8c323d79db1ed98d366c4fd5c190b16d9d88fea9417aaf4c7b6255e9e50b",
+      "lengthBefore": 5241,
+      "lengthAfter": 5241,
+      "lastWriteUtcBefore": "2026-11-07T15:13:41.262214Z",
+      "lastWriteUtcAfter": "2026-11-07T15:13:41.2622140Z",
+      "unchanged": true
+    },
+    {
+      "path": "tools/stop-cesium.ps1",
+      "beforeSha256": "ded8fe51ff5e36b5c2068b5ba66da697d3d22ca49193efafe2b06f4f81f0131a",
+      "afterSha256": "ded8fe51ff5e36b5c2068b5ba66da697d3d22ca49193efafe2b06f4f81f0131a",
+      "lengthBefore": 10762,
+      "lengthAfter": 10762,
+      "lastWriteUtcBefore": "2026-11-07T15:13:41.262214Z",
+      "lastWriteUtcAfter": "2026-11-07T15:13:41.2622140Z",
+      "unchanged": true
+    },
+    {
+      "path": "停止Cesium.cmd",
+      "beforeSha256": "7e0722053090fe23c4a1bdea28f6c52f96683394c6afb05d9f0f59fe870848dd",
+      "afterSha256": "7e0722053090fe23c4a1bdea28f6c52f96683394c6afb05d9f0f59fe870848dd",
+      "lengthBefore": 369,
+      "lengthAfter": 369,
+      "lastWriteUtcBefore": "2026-11-07T15:13:41.2637141Z",
+      "lastWriteUtcAfter": "2026-11-07T15:13:41.2637141Z",
+      "unchanged": true
+    },
+    {
+      "path": "启动Cesium.cmd",
+      "beforeSha256": "224e6bc78735ea2308fcbb7940883c5db14e3920b6934879f74d4c3a95366613",
+      "afterSha256": "224e6bc78735ea2308fcbb7940883c5db14e3920b6934879f74d4c3a95366613",
+      "lengthBefore": 381,
+      "lengthAfter": 381,
+      "lastWriteUtcBefore": "2026-11-07T15:13:41.2632123Z",
+      "lastWriteUtcAfter": "2026-11-07T15:13:41.2632123Z",
+      "unchanged": true
+    },
+    {
+      "path": "启动安全巡检大屏.cmd",
+      "beforeSha256": "45ddafe1a4664433f6409d99250c7eb30eff5e2dc028802f481d8ec8e8bc3902",
+      "afterSha256": "45ddafe1a4664433f6409d99250c7eb30eff5e2dc028802f481d8ec8e8bc3902",
+      "lengthBefore": 205,
+      "lengthAfter": 205,
+      "lastWriteUtcBefore": "2026-11-07T15:13:41.2637141Z",
+      "lastWriteUtcAfter": "2026-11-07T15:13:41.2637141Z",
+      "unchanged": true
+    },
+    {
+      "path": "本机当前版本.txt",
+      "beforeSha256": "334f5e67f3ecbc92aa9667c990c0a06a01236d6482cfa32ca5a57116188b8ed3",
+      "afterSha256": "334f5e67f3ecbc92aa9667c990c0a06a01236d6482cfa32ca5a57116188b8ed3",
+      "lengthBefore": 952,
+      "lengthAfter": 952,
+      "lastWriteUtcBefore": "2026-11-08T13:06:53.1969328Z",
+      "lastWriteUtcAfter": "2026-11-08T13:06:53.1969328Z",
+      "unchanged": true
+    }
+  ]
+}

@@ -1,0 +1,171 @@
+{
+  "checkedAt": "2026-11-09T01:36:36.520Z",
+  "auditSourceCommit": "4a5d7c7cdecc31846201d0cf2e0ba7b8d9fc3acc",
+  "auditBranch": "codex/platform-management-v2",
+  "scope": "Static documentation audit only; no business tests, build, services, database initialization or deployment executed.",
+  "source": {
+    "trackedFiles": 1090,
+    "inventoryUniquePaths": 1090,
+    "allTrackedFilesRepresented": true,
+    "allSourceFileSizesAndSha256MatchInventory": true,
+    "trackedSourceDiffEmpty": true,
+    "textFiles": 951,
+    "binaryFiles": 139
+  },
+  "attachments": {
+    "repository-file-inventory.tsv": {
+      "records": 1090,
+      "sha256": "27fcf8459a1a8910ffeeefe327b9de08fe9d4d8c8d24b3c8746f6047174fadf6"
+    },
+    "test-inventory.tsv": {
+      "records": 328,
+      "sha256": "72ed803b803403ebd87af86dddbe48fc64ae7519f3aac059a1aa503b153abf49"
+    },
+    "dependency-edges.tsv": {
+      "records": 2484,
+      "sha256": "490917114e4cfa7977c6a26532e8dee1a2b7e1f79ca7934ae61dd3d606149da1"
+    },
+    "entry-control-references.tsv": {
+      "records": 1103,
+      "sha256": "65dc2880aadac755d3d4e1b3c2e3d6aee83fffe88e73d9d91e5c40693995defa"
+    },
+    "event-references.tsv": {
+      "records": 744,
+      "sha256": "9ce82d01ae9492d004f327629d4c642c0b90da23bb4e99cebfdb416a9f280d70"
+    },
+    "storage-references.tsv": {
+      "records": 166,
+      "sha256": "7346566eabdfcc9dc1eb1ba8cbfff8b8a2e63f524d75d48b5a0e131c161bb616"
+    }
+  },
+  "testKindCounts": {
+    "嵌入式回归/自检辅助": 4,
+    "Python unittest": 11,
+    "Node内置test": 184,
+    "诊断/断言脚本（未确认为自动测试用例）": 33,
+    "浏览器/集成脚本": 96
+  },
+  "testPathsUniqueAndTracked": true,
+  "allTestEntriesMarkedNotExecuted": true,
+  "reportMarkdownFiles": [
+    "00-environment-and-preservation.md",
+    "01-entrypoints-engineering.md",
+    "02-ownership-duplicates-dependencies.md",
+    "03-professional-modules.md",
+    "04-data-permissions-management.md",
+    "05-tests-dependencies-deployment.md",
+    "06-risks-design-corrections.md",
+    "README.md"
+  ],
+  "relativeMarkdownLinksChecked": 18,
+  "relativeMarkdownLinksResolve": true,
+  "relativeLinks": [
+    {
+      "from": "00-environment-and-preservation.md",
+      "to": "workspace-preservation-proof.json"
+    },
+    {
+      "from": "05-tests-dependencies-deployment.md",
+      "to": "repository-file-inventory.tsv"
+    },
+    {
+      "from": "05-tests-dependencies-deployment.md",
+      "to": "test-inventory.tsv"
+    },
+    {
+      "from": "README.md",
+      "to": "00-environment-and-preservation.md"
+    },
+    {
+      "from": "README.md",
+      "to": "01-entrypoints-engineering.md"
+    },
+    {
+      "from": "README.md",
+      "to": "02-ownership-duplicates-dependencies.md"
+    },
+    {
+      "from": "README.md",
+      "to": "03-professional-modules.md"
+    },
+    {
+      "from": "README.md",
+      "to": "04-data-permissions-management.md"
+    },
+    {
+      "from": "README.md",
+      "to": "05-tests-dependencies-deployment.md"
+    },
+    {
+      "from": "README.md",
+      "to": "06-risks-design-corrections.md"
+    },
+    {
+      "from": "README.md",
+      "to": "repository-file-inventory.tsv"
+    },
+    {
+      "from": "README.md",
+      "to": "test-inventory.tsv"
+    },
+    {
+      "from": "README.md",
+      "to": "dependency-edges.tsv"
+    },
+    {
+      "from": "README.md",
+      "to": "entry-control-references.tsv"
+    },
+    {
+      "from": "README.md",
+      "to": "event-references.tsv"
+    },
+    {
+      "from": "README.md",
+      "to": "storage-references.tsv"
+    },
+    {
+      "from": "README.md",
+      "to": "workspace-preservation-proof.json"
+    },
+    {
+      "from": "README.md",
+      "to": "audit-validation.json"
+    }
+  ],
+  "untrackedFilesRestrictedToAuditDirectory": true,
+  "originalWorkspace": {
+    "evidenceCheckedAt": "2026-11-09T09:33:54.6126519+08:00",
+    "branch": "codex/local-auto-elevation-deployed-20261108",
+    "head": "24f79e0c2a62613417c61f61077949aee147c97e",
+    "gitStatusUnchanged": true,
+    "protectedFilesUnchanged": 7,
+    "stagedFiles": 0
+  },
+  "artifactSha256ExcludingThisFile": {
+    "00-environment-and-preservation.md": "3b1707e9df2a07adf1201a3da43596136c06db61cc59eed61cd634131a2d32e6",
+    "01-entrypoints-engineering.md": "0c579bd41ced028610321ea8cca744cb51328e0ca4d0405ee9ef84199f35b46c",
+    "02-ownership-duplicates-dependencies.md": "e633590ea433b01b0ca9113dbc332a7431ccb0e7f56144674cf2324a70204c1d",
+    "03-professional-modules.md": "a233359c773f5961d062ae7c6e1dd53de2faedd9b8543f4817f7470d6dd4146f",
+    "04-data-permissions-management.md": "005a95167c4866bf86251f1de684725a45ba171af87697a4f656afd0c935913a",
+    "05-tests-dependencies-deployment.md": "21d2de0e9e309383606fe83852ea089b76ab468de5bc72c29dddd4d0efaf1cdf",
+    "06-risks-design-corrections.md": "259b41bf17e6cff840e3a2c81ffb5828d5630e18af9eb5edef0ba1c455a9dd77",
+    "README.md": "2a97ffb8211593881744ad9780718ea7253ff44e66f2eb9c25b731f0e79a4f0a",
+    "dependency-edges.tsv": "490917114e4cfa7977c6a26532e8dee1a2b7e1f79ca7934ae61dd3d606149da1",
+    "entry-control-references.tsv": "65dc2880aadac755d3d4e1b3c2e3d6aee83fffe88e73d9d91e5c40693995defa",
+    "event-references.tsv": "9ce82d01ae9492d004f327629d4c642c0b90da23bb4e99cebfdb416a9f280d70",
+    "repository-file-inventory.tsv": "27fcf8459a1a8910ffeeefe327b9de08fe9d4d8c8d24b3c8746f6047174fadf6",
+    "storage-references.tsv": "7346566eabdfcc9dc1eb1ba8cbfff8b8a2e63f524d75d48b5a0e131c161bb616",
+    "test-inventory.tsv": "72ed803b803403ebd87af86dddbe48fc64ae7519f3aac059a1aa503b153abf49",
+    "workspace-preservation-proof.json": "301f43c0ad05d89215dc689dc0b6783f75d6df0d2e4bfa65fe4af8edcd26178e"
+  },
+  "businessTestsExecuted": 0,
+  "phase2Started": false,
+  "limitations": [
+    "Source hash and lexical inventory checks do not prove every runtime behavior.",
+    "Source citations were reviewed selectively during semantic and cross-review; this validator checks local Markdown links, not every inline line citation.",
+    "Git push and final original-workspace verification occur after this pre-commit evidence snapshot."
+  ],
+  "allTsvTablesRectangular": true,
+  "formatting": "UTF-8 LF; TSV trailing empty cells are intentional."
+}
