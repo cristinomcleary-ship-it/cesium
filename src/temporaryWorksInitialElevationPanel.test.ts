@@ -87,7 +87,10 @@ test('initial road sampling falls back within a fixed candidate budget and never
   assert.ok(calls <= 2); assert.ok(f.samples.flat().length <= 9); assert.equal(f.field('road-elevation').value, '');
 });
 
-test('a saved position-adjusted road retains its elevation on regeneration without another sample', async () => {
+test('a saved position-adjusted road retains its elevation on regeneration without another sample', async t => {
+  const prior=Object.getOwnPropertyDescriptor(globalThis,'window');
+  Object.defineProperty(globalThis,'window',{configurable:true,value:{confirm:()=>true}});
+  t.after(()=>{if(prior)Object.defineProperty(globalThis,'window',prior);else Reflect.deleteProperty(globalThis,'window');});
   const f = roadFixture(); await f.p.runDesignedRoad();
   assert.deepEqual(f.errors, []);
   const moved = translateTemporaryWorksPlan(f.p.preview.record, { east: 0, north: 0, up: 3 });

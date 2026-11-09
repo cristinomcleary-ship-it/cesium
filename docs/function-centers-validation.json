@@ -1,0 +1,77 @@
+{
+  "baseline": "24f79e0c2a62613417c61f61077949aee147c97e",
+  "branch": "codex/function-centers-object-management-20261109",
+  "validated_at": "2026-11-09T04:04:12.936963+00:00",
+  "node": "v24.22.1",
+  "dependency_install": "npm ci, existing package-lock.json; dependency files unchanged",
+  "build": {
+    "command": "npm run build",
+    "exit_code": 0,
+    "warnings": [
+      "Existing large bundles",
+      "libredwg node:module externalization"
+    ]
+  },
+  "suites": [
+    {
+      "name": "temporary works / CAD / scene display",
+      "passed": 514,
+      "failed": 0
+    },
+    {
+      "name": "navigation / management routes / object selection / monitoring",
+      "passed": 34,
+      "failed": 0
+    },
+    {
+      "name": "library lifecycle / machinery documents",
+      "passed": 27,
+      "failed": 0
+    }
+  ],
+  "total_passed": 575,
+  "browser": {
+    "mode": "isolated real navigation and scene-directory components with explicit in-memory fixtures",
+    "checked": [
+      "six-center layout",
+      "search for road / temporary works",
+      "blocked navigation retains current selection",
+      "accepted navigation switches original tab",
+      "directory unload and reload"
+    ],
+    "webgl2": false,
+    "real_cesium_end_to_end": "blocked by unavailable WebGL2; Viewer initialization RuntimeError"
+  },
+  "deployed_to_user_machine": false,
+  "source_sha256": {
+    "src/foundationPitMonitoring.ts": "1e39c7395af1e12698f7560c4ae75681deeeea83593a33bb49b31e1ce91600f4",
+    "src/functionCenters.css": "c64ea4ead6d7781b5a53aad52695d27660fb2f37a030713c6af1df8cb83d195d",
+    "src/functionCenters.test.ts": "3a7c3f7cabc55aff1a4e4be98fbd03df4a6bd0d69c0b787ca8b22dff23be50fa",
+    "src/functionCenters.ts": "1a2f046de958a962858d13d0e07ed0c4bf43aaf3b2d8f44e30322490adc0e50a",
+    "src/main.ts": "614c0645a0e13630b987628017ebed9fb1330bca1ebbf7fa236eeb25784da1b4",
+    "src/management/functionCenterMenu.css": "2f9c0763b56f50a14b6072701b36c2c3f914c94aabfd175510daa2639443817d",
+    "src/managementStudio.ts": "b79903e4e79b83ead42ee9d891524395553f33246ee88fbb75b0a9726d5b9ae1",
+    "src/managementWorkspace.ts": "1daa99349662771cf1b0fb90f2b813b5878db752c517f68ba41a8f0f2be7a715",
+    "src/markupTools.ts": "58147145f515fab90fc47c49c031716722f9da5d7fd8c73399a289e88c652e5e",
+    "src/objectEditorSelection.test.ts": "0922bde43d160c6236cb0381d647f9e2eea3f79bed19de05f025e60619ca9d01",
+    "src/sandTableFacilities.ts": "819ba394fee2994dba9bf252d9cfa82a796ceb43aea948daf378e69a7e9c2dcb",
+    "src/sandTableProjectControl.ts": "7b67d0c68cfd7cfce613ea94864467511d06b1bd921ef8efa0fbcda8d301772e",
+    "src/sceneDisplayPanel.test.ts": "af68ca8052493567faf9952dbb91002c727cc58b7520ef9abef95b0e8f301af4",
+    "src/sceneDisplayPanel.ts": "fda6338b75199eb7c7171ebe2af78c0067170babe31bc7125a1fa7636ce36811",
+    "src/sceneDisplayStore.test.ts": "67bbe9cfcbd3d1922e9194e1d915c50facae7ad45f2555be2dfc0bd6313790ca",
+    "src/sceneDisplayStore.ts": "91be70b3a29bf058d158fe6d4433db50d8018e6eb1e4f0e8065a6ae0ff2e66a3",
+    "src/sceneLibrary.ts": "b28f5268b57ea2fa1375a761c27afac2031b025b182dc49cce548b0641690fe8",
+    "src/temporaryWorksDesignedPanel.test.ts": "e73a0a7d66fd70b3771c85ce271ad2ae87226b8236c43e970470c245878e3e5e",
+    "src/temporaryWorksGlbPanel.test.ts": "537d3001877a9e653c89fe665e4cd10720d85b1ba2e2b96dbef330a7a6ae05c7",
+    "src/temporaryWorksHardeningEditor.ts": "864cca20f69dd6284ed98cc4ce26d09f991d135365e8faa1ec799de701bd7619",
+    "src/temporaryWorksInitialElevationPanel.test.ts": "d66533d40bbb2d11567b6106c11d0b9a4e6d884b29fb5a6a7f48dc779972b1e7",
+    "src/temporaryWorksNavigation.test.ts": "83c36340efa94be03074d8457461f80ffcd2f4ae97afcf5fc1aa1875bce30f26",
+    "src/temporaryWorksPanel.ts": "5029cb90a5debf15b12666f7d71ed6a845c84ec4f600ec87f7944f99cb0b86a5",
+    "src/workbenchNavigation.test.ts": "dca3429cc5015d29281c10123dd99677a4a241d10f4c0094a9dade79e74f805d",
+    "src/workbenchNavigation.ts": "6f82e09ee311fa4ec7cc7b14f92fe8e44469c67bb494e80ee42b7ca0020fe6b2",
+    "tests/function-center-management.test.mjs": "5d35d16dc8518abc4e0aeeffe30915985040f1d8fc2e581110172d18fdec5ca4",
+    "tests/function-centers-dom.test.mjs": "c04d89d6bb5dc6e5093e5139406488f149c3d022e461e11b6d52ff78805c8089",
+    "tests/scene-library-cad-lifecycle.test.mjs": "87a6dda1b095b3d3cc822ce855fc3c04abfd592d9b9abb699abea9eae45fbd8b",
+    "tools/fixtures/function-centers-ui.html": "14d8d07aa6b1883c10142aa31f77146e7b2f435ff57748e5dcd7e258daba3562"
+  }
+}

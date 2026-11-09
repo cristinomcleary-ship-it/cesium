@@ -125,9 +125,9 @@ const KIND_DEFAULT_COLORS: Record<SandTableFacilityKind, string> = {
 export const sandTableFacilitiesHtml = `
   <div class="sand-table-section sand-facility-module">
     <div class="sand-table-section-heading sand-facility-heading">
-      <strong>施工场布</strong><span id="sandFacilityCount">0 个设施</span>
+      <strong>沙盘场布标绘</strong><span id="sandFacilityCount">0 个设施</span>
     </div>
-    <p class="sand-facility-copy">在地形、倾斜摄影或三维模型上设置围栏、硬化区域、车辆动态路径和临时建筑。</p>
+    <p class="sand-facility-copy">管理沙盘展示用的围栏、区域、车辆路径和建筑标绘。驻地、钢筋加工场、便道与工程硬化方案在“施工管理中心 → 临建规划”编辑。</p>
 
     <div class="sand-facility-toolbar" role="group" aria-label="施工场布绘制工具">
       <button type="button" data-sand-facility-draw="fence"><b>⌁</b><span>电子围栏</span></button>

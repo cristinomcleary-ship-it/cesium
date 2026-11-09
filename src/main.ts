@@ -87,9 +87,13 @@ import { VideoModelOverlay, videoModelOverlayPanelHtml, type SavedVideoOverlaySe
 import type { LibraryRecord } from "./projectLibrary";
 import type { CadCoordinateOptions, CadDisplayMode, ImportRecord, TilesetOptions } from "./types";
 import "./style.css";
+import { installFunctionCenters, type FunctionCenterAction, type FunctionCentersController } from './functionCenters';
+import './functionCenters.css';
+import { prepareWorkbenchLeave } from './workbenchNavigation';
 
 let temporaryWorks: TemporaryWorksPanel | undefined;
 let sceneDisplayPanel: SceneDisplayPanel | undefined;
+let functionCenters: FunctionCentersController | undefined;
 let sceneDisplayReady = false, sceneDisplayFrame = 0;
 let sceneDisplayOverrides: Record<string, boolean> = Object.create(null);
 
@@ -1053,8 +1057,12 @@ function renderLayerDirectory() {
     row.querySelector(".visibility")?.addEventListener("click", () => setImportVisibility(item, !item.visible));
     row.querySelector(".fly")?.addEventListener("click", () => locateImport(item));
     name.addEventListener("click", () => !videoModelOverlay?.active && item.kind === "Model" && item.visible && modelEditor.select(item.id));
+    row.querySelector(".remove")?.setAttribute('title', '移出场景，保留已保存资料');
+    row.querySelector(".remove")?.setAttribute('aria-label', `将${item.name}移出场景`);
     row.querySelector(".remove")?.addEventListener("click", () => {
-      if (projectLibrary?.owns(item.id)) void projectLibrary.delete(item.id);
+      if (projectLibrary?.owns(item.id)) void projectLibrary.unload(item.id)
+        .then(unloaded => { if (!unloaded) toast('移出场景未完成，请等待当前操作结束后重试。', true); })
+        .catch(error => toast(error instanceof Error ? error.message : String(error), true));
       else removeImport(item);
     });
   });
@@ -2631,8 +2639,11 @@ let requestedMachineryRecord: string | undefined;
 let requestedRailDisplayObject: {kind: string; id: string} | undefined;
 document.addEventListener('click', event => {
   const target = (event.target as Element).closest<HTMLElement>('.tab,#openSafetyWorkspace,#openMarkupWorkspace,#openWorkbenchMachinery,[data-machinery-action="edit"]');
-  if (target && target.dataset.tab!=="models" && modelLoadBusy && !modelPlacementSaving)modelLoadController?.abort();
   if (!target || managementWorkspace?.isOpen) return;
+  if (!canLeaveWorkbench(target.dataset.tab)) {
+    requestedMachineryRecord = undefined; requestedRailDisplayObject = undefined;
+    event.preventDefault(); event.stopImmediatePropagation(); return;
+  }
   setWorkbenchDock('editor');
   const machineryEntry = ['machinery', 'rail-safety'].includes(target.dataset.tab || '') || target.id === 'openWorkbenchMachinery' || target.dataset.machineryAction === 'edit';
   const markupDraft = document.querySelector<HTMLButtonElement>('#markupCancelDrawing');
@@ -2655,16 +2666,17 @@ document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => tab.addEve
       if (navigation !== workbenchNavigationGeneration) return;
     } catch (error) { toast(error instanceof Error ? error.message : String(error), true); return; }
   } else if (tab.dataset.tab === 'rail-safety') {
-    const navigation = workbenchNavigationGeneration;
+    const navigation = workbenchNavigationGeneration, requested = requestedRailDisplayObject;
+    requestedRailDisplayObject = undefined;
     try {
       const workspace = await ensureManagementWorkspace();
       if (navigation !== workbenchNavigationGeneration || !await workspace.openWorkbenchRailSafety(() => navigation === workbenchNavigationGeneration)) return;
-      if (requestedRailDisplayObject) { workspace.selectRailDisplayObject(requestedRailDisplayObject.kind, requestedRailDisplayObject.id); requestedRailDisplayObject = undefined; }
+      if (navigation !== workbenchNavigationGeneration) return;
+      if (requested) workspace.selectRailDisplayObject(requested.kind, requested.id);
     } catch (error) { toast(error instanceof Error ? error.message : String(error), true); return; }
   } else if (managementWorkspace && !managementWorkspace.prepareWorkbenchNavigation()) return;
   setWorkbenchDock("editor");
   const previousTab = document.querySelector<HTMLButtonElement>(".tab.active")?.dataset.tab;
-  if (tab.dataset.tab !== "temporary-works" && previousTab === "temporary-works") temporaryWorks?.close();
   const leavingSandTable = previousTab === "sandtable"
     && tab.dataset.tab !== "sandtable";
   if (tab.dataset.tab !== "sandtable") {
@@ -3218,6 +3230,8 @@ async function ensureManagementWorkspace(): Promise<ManagementWorkspace> {
     const sceneWorkspace = await safetyWorkspaceLoading;
     managementWorkspaceLoading ??= import("./managementWorkspace").then(({ ManagementWorkspace }) => {
       managementWorkspace = new ManagementWorkspace(sceneWorkspace, $("#safetyWorkspaceHost"), {
+        canLeaveWorkbench: () => canLeaveWorkbench(),
+        onOpenFunctionCenter: id => functionCenters?.openCenter(id),
         panelHost: $("#workbenchEditorHost"), onDisplayManager: () => setWorkbenchDock("display"),
         onDisplayMount: host => { sceneDisplayPanel?.mount(host ?? $("#workbenchDisplayHost")); scheduleSceneDisplay(); },
         onChange: renderWorkbenchMachinery,
@@ -3293,6 +3307,62 @@ function setWorkbenchDock(mode: 'display' | 'editor'): void {
   document.querySelectorAll<HTMLButtonElement>('[data-dock]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.dock === mode)));
   if (mode === 'display') scheduleSceneDisplay();
 }
+
+function canLeaveWorkbench(target?: string): boolean {
+  return prepareWorkbenchLeave(target, {
+    modelBusy: modelLoadBusy || modelPlacementPending || modelPlacementSaving,
+    markupPicking: markupTools?.hasActiveInteraction ?? false,
+    pitPicking: foundationPitMonitoring.hasActiveInteraction,
+    closeTemporaryWorks: () => temporaryWorks?.close() ?? true,
+    notify: message => toast(message, true),
+  });
+}
+
+/** Directory shortcuts select the original editor only after its navigation succeeds. */
+function openExistingEditor(tab: string): boolean {
+  const navigation = workbenchNavigationGeneration;
+  if (managementWorkspace?.isOpen) {
+    if (!managementWorkspace.openEngineeringTool(tab)) return false;
+  } else document.querySelector<HTMLButtonElement>(`.tab[data-tab="${tab}"]`)?.click();
+  return workbenchNavigationGeneration !== navigation && !managementWorkspace?.isOpen
+    && document.querySelector<HTMLButtonElement>('.tab.active')?.dataset.tab === tab;
+}
+
+async function openCenterAction(action: FunctionCenterAction): Promise<boolean> {
+  if (action === 'display' || action === 'model-objects') {
+    ++workbenchNavigationGeneration;
+    if (managementWorkspace?.isOpen) managementWorkspace.openDisplayManager();
+    else setWorkbenchDock('display');
+    sceneDisplayPanel?.setSearch(action === 'model-objects' ? '工程模型' : '');
+    return true;
+  }
+  if (action === 'library') {
+    if (managementWorkspace && !managementWorkspace.prepareWorkbenchNavigation()) return false;
+    ++workbenchNavigationGeneration;
+    setWorkbenchDock('editor');
+    const library = document.querySelector<HTMLDetailsElement>('.saved-library')!;
+    library.open = true; library.scrollIntoView({ block: 'start' });
+    library.querySelector('summary')?.focus();
+    return true;
+  }
+  if (!canLeaveWorkbench()) return false;
+  if (action === 'subsurface') {
+    if (managementWorkspace && !managementWorkspace.prepareWorkbenchNavigation()) return false;
+    ++workbenchNavigationGeneration;
+    videoModelOverlay?.setPanelActive(false);
+    document.getElementById('subsurfacePanel')!.classList.remove('hidden');
+    return true;
+  }
+  const routes = {
+    plans: ['plan', 'tasks'], tasks: ['field', 'today'], resources: ['resources', 'equipment'],
+    documents: ['documents', 'files'], inspection: ['inspection', 'tasks'],
+  } as const;
+  const route = routes[action];
+  const navigation = ++workbenchNavigationGeneration;
+  const workspace = await ensureManagementWorkspace();
+  if (navigation !== workbenchNavigationGeneration) return false;
+  return workspace.openBusinessModule(route[0], route[1], () => navigation === workbenchNavigationGeneration);
+}
 function scheduleSceneDisplay(): void {
   if (!sceneDisplayReady || sceneDisplayFrame) return;
   sceneDisplayFrame = requestAnimationFrame(() => { sceneDisplayFrame = 0; if (sceneDisplayReady) syncSceneDisplay(); });
@@ -3304,16 +3374,17 @@ function syncSceneDisplay(): void {
   const context = JSON.stringify([state?.projectId, state?.actorId]);
   const localRemoval = (action: {remove: () => void | Promise<void>; detail: string} | undefined) => {
     if (!action || (state && !state.canEdit)) return undefined;
-    return { detail: action.detail, remove: async () => {
+    return { detail: action.detail, removalDescription: action.detail, remove: async () => {
       const current = managementWorkspace?.getWorkbenchMachineryState();
       if (context !== JSON.stringify([current?.projectId, current?.actorId]) || (current && !current.canEdit)) throw new Error('项目或账号权限已变化，请刷新后再删除');
       await action.remove(); syncSceneDisplay();
     } };
   };
   const access = managementWorkspace?.getWorkbenchLayerAccess();
-  temporaryWorks?.setProject(state?.canView && access?.files && state.projectId ? state.projectId : null);
+  void temporaryWorks?.setProject(state?.canView && access?.files && state.projectId ? state.projectId : null, { force: true });
   for (const plan of temporaryWorks?.getDisplayItems() ?? []) {
     items.push({ id: `temporary-works:${plan.id}`, name: plan.name, category: "临建规划", detail: plan.typeName, visible: plan.visible,
+      removalConfirmedByHost: true,
       locate: () => temporaryWorks?.locatePlan(plan.id),
       remove: state?.canEdit && access?.files ? async () => {
         const current = managementWorkspace?.getWorkbenchMachineryState();
@@ -3322,31 +3393,28 @@ function syncSceneDisplay(): void {
         return temporaryWorks?.removePlan(plan.id) ?? false;
       } : undefined,
       edit: () => {
-        if (managementWorkspace?.isOpen) {
-          if (!managementWorkspace.openEngineeringTool("temporary-works")) return;
-        }
-        else document.querySelector<HTMLButtonElement>('.tab[data-tab="temporary-works"]')?.click();
-        temporaryWorks?.inspectPlan(plan.id);
+        if (openExistingEditor('temporary-works')) temporaryWorks?.editPlan(plan.id);
       },
     });
   }
   foundationPitMonitoring.setDisplayContext(JSON.stringify([state?.projectId ?? 'workbench-local', state?.actorId ?? null]));
   const layerTypes = { 'CAD': 'CAD 图纸', '3D Tiles': '实景模型', 'GIS': 'GIS 数据', 'Model': '工程模型', 'Drone Video': '无人机视频' };
   for (const layer of imports.filter(isImportAllowed)) items.push({ id: `layer:${layer.id}`, name: layer.name, category: layerTypes[layer.kind], visible: layer.visible,
+    removalKind: 'unload',
     detail: layer.kind === '3D Tiles' ? modelQualityTrackers.get(layer.id)?.getState().label : undefined,
     locate: () => { locateImport(layer); },
     remove: async () => {
-      if(!isImportAllowed(layer))throw new Error('当前账号无法删除此资源');
-      if(projectLibrary?.owns(layer.id)){if(!await projectLibrary.delete(layer.id,false))throw new Error('删除未完成，请检查资料库提示后重试');}
+      if(!isImportAllowed(layer))throw new Error('当前账号无法访问此资源');
+      if(projectLibrary?.owns(layer.id)){if(!await projectLibrary.unload(layer.id))throw new Error('移出场景未完成，请检查资料库提示后重试');}
       else if(imports.includes(layer))removeImport(layer);
       syncSceneDisplay();
     },
-    edit: layer.kind === 'Model' ? () => { if (managementWorkspace?.isOpen && !managementWorkspace.openEngineeringTool('models')) return; setWorkbenchDock('editor'); document.querySelector<HTMLButtonElement>('.tab[data-tab="models"]')?.click(); modelEditor.select(layer.id); } : undefined });
+    edit: layer.kind === 'Model' ? () => { if (openExistingEditor('models')) modelEditor.select(layer.id); } : undefined });
   if (isLibraryRecordAllowed({ kind: 'CAD' })) for (const load of cadLoads.values()) items.push({
     id: `layer:${load.id}`, name: load.name, category: 'CAD 图纸', visible: load.visible,
     detail: load.status, cancel: load.signal.aborted ? undefined : async () => { cadLoads.get(load.id)?.cancel(); await load.settled; },
   });
-  for (const { record, machinery } of state?.resources ?? []) items.push({ ...managementWorkspace?.getDisplayObjectRemoval('machine', record.id), id: `machine:${record.id}`, name: record.name, category: '施工机械', visible: machinery?.visible !== false, visibilityAvailable: !!machinery,
+  for (const { record, machinery } of state?.resources ?? []) items.push({ ...managementWorkspace?.getDisplayObjectRemoval('machine', record.id), removalDescription: managementWorkspace?.getDisplayObjectRemoval('machine', record.id)?.detail, id: `machine:${record.id}`, name: record.name, category: '施工机械', visible: machinery?.visible !== false, visibilityAvailable: !!machinery,
     detail: `${machinery ? `已布置 · ${{ crane: '吊机', pile: '桩机', excavator: '挖机' }[machinery.assetId]}` : record.machinery ? '配置待检查，请重新保存机械参数' : '尚未布置，请配置并保存位置与尺寸'} · 识别号：${record.equipmentCode || '待补充'}`,
     locate: machinery ? async () => { await managementWorkspace?.locateWorkbenchMachinery(record.id); } : undefined,
     edit: async () => { if (managementWorkspace?.isOpen) { await managementWorkspace.editFieldObject('machine', record.id); return; } requestedMachineryRecord = record.id; document.querySelector<HTMLButtonElement>('.tab[data-tab="machinery"]')?.click(); } });
@@ -3355,8 +3423,8 @@ function syncSceneDisplay(): void {
     locate: async () => { await managementWorkspace?.locateRailDisplayObject(object.id); },
     edit: async () => { if (managementWorkspace?.isOpen) { await managementWorkspace.editFieldObject(object.kind, object.id); return; } requestedRailDisplayObject = { kind: object.kind, id: object.id }; document.querySelector<HTMLButtonElement>('.tab[data-tab="rail-safety"]')?.click(); } });
   for (const object of managementWorkspace?.isOpen && !state?.canView ? [] : markupTools?.getDisplayItems() ?? []) items.push({ ...localRemoval(markupTools?.getDisplayObjectRemoval(object.id)), id: `markup:${object.id}`, name: object.name, category: '标绘对象', visible: object.defaultVisible,
-    edit: () => { if (managementWorkspace?.isOpen && !managementWorkspace.openEngineeringTool('markup')) return; document.querySelector<HTMLButtonElement>('.tab[data-tab="markup"]')?.click(); } });
-  for (const object of managementWorkspace?.isOpen && !state?.canView ? [] : foundationPitMonitoring.getDisplayItems()) items.push({ ...localRemoval(foundationPitMonitoring.getDisplayObjectRemoval(object.id)), id: object.id, name: object.name, category: object.kind === 'model' ? '基坑模型' : object.kind === 'marker' ? '基坑中心提示' : '基坑监测点', visible: object.defaultVisible, edit: () => { if (managementWorkspace?.isOpen && !managementWorkspace.openEngineeringTool('monitoring')) return; document.querySelector<HTMLButtonElement>('.tab[data-tab="monitoring"]')?.click(); } });
+    edit: () => { markupTools?.assertCanSelectDisplayObject(object.id); if (openExistingEditor('markup')) markupTools?.selectDisplayObject(object.id); } });
+  for (const object of managementWorkspace?.isOpen && !state?.canView ? [] : foundationPitMonitoring.getDisplayItems()) items.push({ ...localRemoval(foundationPitMonitoring.getDisplayObjectRemoval(object.id)), id: object.id, name: object.name, category: object.kind === 'model' ? '基坑模型' : object.kind === 'marker' ? '基坑中心提示' : '基坑监测点', visible: object.defaultVisible, edit: () => { foundationPitMonitoring.assertCanSelectDisplayObject(object.id); if (openExistingEditor('monitoring')) foundationPitMonitoring.selectDisplayObject(object.id); } });
   sceneDisplayPanel.setContext(state?.projectId ?? 'workbench-local', state?.actorId, items);
   for (const layer of imports) applyImportDisplay(layer);
   applyPendingCadDisplay();
@@ -3421,6 +3489,7 @@ function applyImportDisplay(layer: ImportRecord): void {
 
 async function openSafetyWorkspace(): Promise<void> {
   try {
+    if (!canLeaveWorkbench()) return;
     const workspace = await ensureManagementWorkspace();
     if (!workspace.prepareWorkbenchNavigation()) return;
     videoModelOverlay?.setPanelActive(false);
@@ -3456,6 +3525,11 @@ document.getElementById('pitMonitoringVisible')?.addEventListener('change', even
 markupTools?.subscribeOverview(scheduleSceneDisplay);
 foundationPitMonitoring.subscribeOverview(scheduleSceneDisplay);
 installWorkbenchCategories();
+functionCenters = installFunctionCenters(document.querySelector<HTMLElement>('.app-header > .tabs')!, {
+  onAction: openCenterAction,
+  onError: error => toast(error instanceof Error ? error.message : String(error), true),
+});
+onPageDispose(() => functionCenters?.dispose());
 onPageDispose(() => { sceneDisplayReady = false; cancelAnimationFrame(sceneDisplayFrame); sceneDisplayFrame = 0; sceneDisplayPanel?.dispose(); });
 scheduleSceneDisplay();
 void projectLibrary.start().then(() => {

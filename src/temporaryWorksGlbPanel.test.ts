@@ -244,7 +244,10 @@ test('manual horizontal GLB placement can initialize its height automatically wi
   assert.equal(plan.inputs.sampleCount,1);
 });
 
-test('reopening a saved raised GLB keeps the saved height without sampling photography again',async()=>{
+test('reopening a saved raised GLB keeps the saved height without sampling photography again',async t=>{
+  const prior=Object.getOwnPropertyDescriptor(globalThis,'window');
+  Object.defineProperty(globalThis,'window',{configurable:true,value:{confirm:()=>true}});
+  t.after(()=>{if(prior)Object.defineProperty(globalThis,'window',prior);else Reflect.deleteProperty(globalThis,'window');});
   const {p,field}=autoFitPanel(true);
   p.feature=()=>undefined;field('glb-placement-mode').value='manual';field('glb-elevation').value='';
   p.readGlbSurface=async(_model:unknown,points:unknown[])=>points.map(()=>12);

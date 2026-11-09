@@ -1,3 +1,5 @@
+import type { FunctionCenterId } from './functionCenters';
+import type { ManagementModule } from './management/forms';
 import { fieldMachineRisk } from './management/fieldSceneState';
 import { VideoDiagnostics } from './management/videoDiagnostics';
 import { Cartesian2, Cartesian3, Color, ConstantPositionProperty, ConstantProperty, Entity, HeadingPitchRange, ScreenSpaceEventHandler, ScreenSpaceEventType, type Viewer } from 'cesium';
@@ -21,6 +23,10 @@ import './managementWorkspace.css';
 import './managementField.css';
 
 export type WorkbenchMachineryOptions = {
+  /** Preserve drafts owned by the shared engineering workbench before navigation. */
+  canLeaveWorkbench?: () => boolean;
+  /** Reveal a center in the existing workbench after its normal exit checks. */
+  onOpenFunctionCenter?: (id: FunctionCenterId) => void;
   onChange?: () => void;
   panelHost?: HTMLElement;
   onDisplayManager?: () => void;
@@ -102,6 +108,7 @@ export class ManagementWorkspace {
       onSnapshot: data => this.acceptSharedSnapshot(data),
       onContextInvalidated: () => { this.data = undefined; this.machineryContextGeneration++; this.machineryStatus = '请通过“现场工作台”登录或核对当前项目权限。'; this.syncMachinery(); },
       onExit: () => { this.exitToWorkbench(); },
+      onOpenFunctionCenter: this.workbench.onOpenFunctionCenter ? id => this.openFunctionCenter(id) : undefined,
       getCameraSnapshot: () => this.cameraSnapshot(),
     });
     this.machinery = new MachineryPanel({ viewer: this.viewer, host, workbenchHost: this.workbench.panelHost,
@@ -449,10 +456,10 @@ export class ManagementWorkspace {
     await this.mutateMachinery('machinery.save', recordId, record.revision, { machinery: { ...machinery, visible } });
   }
 
-  async open(): Promise<void> {
-    if (this.active || !this.prepareWorkbenchNavigation()) return;
+  async open(defaultScene = true): Promise<void> {
+    if (this.active || this.workbench.canLeaveWorkbench?.() === false || !this.prepareWorkbenchNavigation()) return;
     this.workbench.onPanelChange?.(false); this.machinery.setPresentation('management'); this.railSafety.setPresentation('management');
-    this.active = true; this.defaultScenePending = true; this.sceneHostReady = false; this.mode = 'management'; this.ui.setViewMode('management'); this.ui.setVisible(true); this.syncMachinery();
+    this.active = true; this.defaultScenePending = defaultScene; this.sceneHostReady = false; this.mode = 'management'; this.ui.setViewMode('management', false); this.ui.setVisible(true); this.syncMachinery();
     this.safety.attachManagementHost({ videoHost: this.ui.videoHost,
       onContext: context => this.updateContext(context), onSpatialSelected: id => this.spatialSelected(id),
       onIssueSelected: id => { if (!this.syncingSelection && this.data?.collections.issues.some(issue => issue.id === id)) this.ui.showRecord('issues', id); },
@@ -467,11 +474,26 @@ export class ManagementWorkspace {
     this.updateContext(this.safety.getManagementContext());
   }
 
-  private exitToWorkbench(tab?: string): void {
+  /** A direct business shortcut must not be replaced by the automatic initial scene. */
+  async openBusinessModule(module: ManagementModule, tab?: string, isCurrent: () => boolean = () => true): Promise<boolean> {
+    if (this.disposed || !isCurrent()) return false;
+    const navigationRevision = this.ui.getNavigationRevision();
+    if (!this.active) await this.open(false);
+    // Loading the shared scene must not replace a newer tab, project or center choice.
+    if (!this.active || this.disposed || !isCurrent() || navigationRevision !== this.ui.getNavigationRevision()) return false;
+    this.defaultScenePending = false;
+    return this.ui.openBusinessModule(module, tab);
+  }
+
+  private openFunctionCenter(id: FunctionCenterId): void {
+    this.exitToWorkbench(undefined, () => this.workbench.onOpenFunctionCenter?.(id));
+  }
+
+  private exitToWorkbench(tab?: string, afterClose?: () => void): void {
     if (!this.guardNavigation()) return;
     if (this.data?.projectId !== 'safety:project') { this.message('当前项目尚未关联工程资料库，请在当前项目中继续办理业务。', true); return; }
     if (!['models','media','files'].every(p=>this.session?.permissions.some(v=>v===p))) { this.message('当前账户未获完整工程工作台权限，请由授权管理员接入资料。',true); return; }
-    this.safety.spatial.requestClose(()=>{this.close();if(tab)document.querySelector<HTMLButtonElement>(`.tab[data-tab="${tab}"]`)?.click();});
+    this.safety.spatial.requestClose(()=>{this.close();if(tab)document.querySelector<HTMLButtonElement>(`.tab[data-tab="${tab}"]`)?.click();afterClose?.();});
   }
 
   close(): void {
@@ -503,7 +525,7 @@ export class ManagementWorkspace {
     this.refreshAnchors();
     if (!session?.permissions.includes('models')) {
       this.endMeasurement(); this.endAnchorPick(); this.safety.managementPause(); this.mode = 'management';
-      this.workbench.onDisplayMount?.(); this.ui?.setViewMode('management'); this.safety.setManagementSceneVisible(false);
+      this.workbench.onDisplayMount?.(); this.ui?.setViewMode('management', false); this.safety.setManagementSceneVisible(false);
     }
     this.safety.setManagementMediaAccess(!!session?.permissions.includes('media'));
     if (this.ui) this.updateContext(this.safety.getManagementContext());
@@ -719,6 +741,7 @@ export class ManagementWorkspace {
     } finally { this.machineryMutationCount--; }
   }
   private guardNavigation(): boolean {
+    if (this.workbench.canLeaveWorkbench?.() === false) return false;
     if (this.ui && !this.ui.canChangeFieldContext()) return false;
     if (this.railSafety?.hasDraft || this.railSafety?.isPicking || this.railSafety?.isBusy) { if (this.isSceneOpen) this.ui.setScenePanel('object'); this.railSafety.open(); this.message('请先保存或取消邻近营业线管控草稿。'); return false; }
     if (this.machinery?.hasDraft || this.machinery?.isPicking || this.machinery?.isBusy) { if (this.isSceneOpen) this.ui.setScenePanel('object'); this.machinery.open(); this.message('请先保存或取消机械布置草稿。'); return false; }
@@ -732,10 +755,10 @@ export class ManagementWorkspace {
     if (mode === 'scene' && !this.session?.permissions.includes('models')) { this.message('当前账户未获模型访问权限，请在项目成员中配置。',true); return false; }
     if (this.measurement) this.endMeasurement();
     if (this.anchorPicking) this.endAnchorPick();
-    return this.safety.spatial.requestClose(() => { this.applyMode(mode); this.ui.setViewMode(mode); });
+    return this.safety.spatial.requestClose(() => { this.applyMode(mode); this.ui.setViewMode(mode, false); });
   }
   private applyMode(mode: 'management'|'scene'): void {
-    this.mode = mode; this.syncMachinery(); this.workbench.onDisplayMount?.(mode === 'scene' ? this.ui.sceneDisplayHost : undefined); this.ui.setViewMode(mode); this.safety.setManagementSceneVisible(mode === 'scene');
+    this.mode = mode; this.syncMachinery(); this.workbench.onDisplayMount?.(mode === 'scene' ? this.ui.sceneDisplayHost : undefined); this.ui.setViewMode(mode, false); this.safety.setManagementSceneVisible(mode === 'scene');
     if (mode === 'scene' && !this.openedScene && this.safety.debugStats().data && this.safety.getManagementContext().models.length) { this.openedScene = true; this.safety.managementHome(); if (this.selection) this.select(this.selection); }
     if (mode !== 'scene') { this.safety.optimization.close(); this.machinery?.close(); this.railSafety?.close(); }
     for(const entity of this.anchorEntities.values())entity.show=mode==='scene'&&!!this.session?.permissions.includes('models');

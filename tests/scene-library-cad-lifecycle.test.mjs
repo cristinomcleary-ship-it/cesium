@@ -167,6 +167,44 @@ test('cancelling restoration releases only its pending scene resources and keeps
   assert.equal(f.loadCalls(), 2); assert.equal(f.imports.length, 1, 'retry publishes exactly one replacement');
 });
 
+test('unload removes only the current renderer and restores the same saved record without DELETE requests', async () => {
+  const f = fixture(); f.prepareRestore();
+  const restoration = f.owner.restore(f.record.id); await f.loadStarted.promise;
+  f.compile.resolve(); await restoration;
+  const source = f.imports[0].resource;
+  assert.equal(await f.owner.unload(f.record.id), true);
+  assert.equal(f.imports.length, 0); assert.equal(source.isDestroyed(), true);
+  assert.equal(f.owner.records.get(f.record.id), f.record); assert.equal(f.owner.owns(f.record.id), true);
+  assert.equal(f.requests.some(request => request.method === 'DELETE'), false);
+  await f.owner.restore(f.record.id);
+  assert.equal(f.imports.length, 1); assert.equal(f.imports[0].id, f.record.id);
+  assert.equal(f.owner.records.size, 1); assert.notEqual(f.imports[0].resource, source);
+});
+
+test('unload cancels an in-flight CAD owner and prevents competing restoration until cleanup finishes', async () => {
+  const f = fixture(); f.prepareRestore();
+  const restoration = f.owner.restore(f.record.id); const { signal } = await f.loadStarted.promise;
+  const unloading = f.owner.unload(f.record.id);
+  assert.equal(signal.aborted, true);
+  await f.owner.restore(f.record.id);
+  assert.equal(f.loadCalls(), 1);
+  f.compile.resolve(); await restoration; assert.equal(await unloading, true);
+  assert.equal(f.imports.length, 0); assert.equal(f.owner.records.get(f.record.id), f.record);
+  assert.equal(f.requests.some(request => request.method === 'DELETE'), false);
+  await f.owner.restore(f.record.id); assert.equal(f.imports.length, 1);
+});
+
+test('unload refuses a save draft or revoked access without discarding saved records', async () => {
+  const f = fixture(); f.prepareRestore();
+  f.owner.drafts.set(f.record.id, { id: f.record.id });
+  await assert.rejects(f.owner.unload(f.record.id), /完成资料保存/);
+  assert.equal(f.owner.drafts.has(f.record.id), true);
+  f.owner.drafts.delete(f.record.id); f.owner.hooks.canReadRecord = () => false;
+  await assert.rejects(f.owner.unload(f.record.id), /不能操作此资料/);
+  assert.equal(f.owner.records.get(f.record.id), f.record);
+  assert.equal(f.requests.some(request => request.method === 'DELETE'), false);
+});
+
 test('discardNewCad deletes only the specified fresh CAD and leaves other saved records and non-CAD resources intact', async () => {
   const f = fixture(); f.prepareRestore();
   const fresh = { ...f.record, id: 'cad-fresh', name: 'new.dwg' }, model = { ...f.record, id: 'model-existing', kind: 'Model' };

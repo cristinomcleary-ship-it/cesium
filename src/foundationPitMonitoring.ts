@@ -33,6 +33,7 @@ import {
   Viewer,
   type Entity,
 } from "cesium";
+import { revealPanelControl } from './panelCategories.ts';
 
 type EnclosureType = "sheetPile" | "secantPile" | "diaphragmWall";
 type WalerType = "steel" | "concrete" | "combined";
@@ -442,6 +443,42 @@ export class FoundationPitMonitoring {
     return this.displayCatalogue().map(item => ({ ...item, visible: this.displayVisible(item.id, item.defaultVisible) }));
   }
 
+  get hasActiveInteraction(): boolean { return !!this.pickMode; }
+
+  assertCanSelectDisplayObject(id: string): void {
+    if (!this.displayAllowed || this.displayDisposed) throw new Error('当前无法访问基坑监测对象。');
+    if (this.hasActiveInteraction) throw new Error('请先结束当前基坑取点或支撑绘制，再选择其他对象。');
+    if (!this.displayCatalogue().some(item => item.id === id)) throw new Error('该基坑或监测点已删除，请刷新对象目录。');
+  }
+
+  /** Selects saved IDs, including hidden objects, without creating a point or changing the camera. */
+  selectDisplayObject(id: string): void {
+    this.assertCanSelectDisplayObject(id);
+    const point = id.startsWith('pit:point:') ? this.state.points.find(item => item.id === id.slice(10)) : undefined;
+    const monitor = id.startsWith('pit:support:') ? this.state.supportMonitors.find(item => item.id === id.slice(12)) : undefined;
+    const pitId = point?.pitId ?? monitor?.pitId ?? (id.startsWith('pit:model:') ? id.slice(10) : id.startsWith('pit:marker:') ? id.slice(11) : undefined);
+    const pit = this.state.pits.find(item => item.id === pitId);
+    if (pit) this.selectPitForManagement(pit);
+    let control: HTMLElement;
+    if (point) {
+      this.input<HTMLSelectElement>('#pitRecordPoint').value = point.id;
+      this.input<HTMLSelectElement>('#pitTrendPoint').value = point.id;
+      this.syncRecordPointFields();
+      this.renderTrend();
+      this.viewer.selectedEntity = this.dataSource.entities.getById(`foundation-pit-point-${point.id}`);
+      control = this.element('#pitRecordPoint');
+    } else if (monitor) {
+      this.input<HTMLSelectElement>('#pitSupportRecordMonitor').value = monitor.id;
+      this.viewer.selectedEntity = this.dataSource.entities.getById(`foundation-pit-support-monitor-${monitor.id}`);
+      control = this.element('#pitSupportRecordMonitor');
+    } else {
+      control = this.element('#pitName');
+    }
+    revealPanelControl(control);
+    control.focus({ preventScroll: true });
+    control.scrollIntoView({ block: 'nearest' });
+  }
+
   /** Do not offer quick deletion for a pit hierarchy or any point with measurement history. */
   getDisplayObjectRemoval(id: string): { remove: () => void; detail: string } | undefined {
     if (!this.displayAllowed || this.displayDisposed) return;
@@ -715,8 +752,9 @@ export class FoundationPitMonitoring {
   private updateActivePitVisibility() {
     const pit = this.activePit();
     if (!pit) return;
+    const previous = structuredClone(this.state);
     pit.visible = this.input<HTMLInputElement>("#pitModelVisible").checked;
-    this.saveState();
+    if (!this.saveState(previous)) return;
     this.render(pit.id);
     this.loadPitIntoForm(pit);
     this.toast(`基坑“${pit.name}”已${pit.visible ? "显示" : "隐藏"}`);
@@ -730,8 +768,9 @@ export class FoundationPitMonitoring {
     if (action === "select") this.selectPitForManagement(pit);
     if (action === "locate") { this.selectPitForManagement(pit); this.locatePit(pit); }
     if (action === "toggle") {
+      const previous = structuredClone(this.state);
       pit.visible = !pit.visible;
-      this.saveState();
+      if (!this.saveState(previous)) return;
       this.render(pit.id);
       this.loadPitIntoForm(pit);
       this.toast(`基坑“${pit.name}”已${pit.visible ? "显示" : "隐藏"}`);
@@ -882,11 +921,15 @@ export class FoundationPitMonitoring {
     };
   }
 
-  private saveState() {
+  /** Failed writes must not publish in-memory data or success feedback to the scene. */
+  private saveState(previous: MonitoringState): boolean {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
+      return true;
     } catch (error) {
-      this.toast(error instanceof Error ? `监测数据保存失败：${error.message}` : "监测数据保存失败", true);
+      this.state = previous;
+      this.toast(error instanceof Error ? `监测数据保存失败，原数据与输入已保留：${error.message}` : "监测数据保存失败，原数据与输入已保留", true);
+      return false;
     }
   }
 
@@ -1057,10 +1100,11 @@ export class FoundationPitMonitoring {
       supportDepths,
       customSupports: existing?.customSupports || [],
     };
+    const previous = structuredClone(this.state);
     if (existing) Object.assign(existing, pit);
     else this.state.pits.push(pit);
     this.recalculatePitPoints(pit);
-    this.saveState();
+    if (!this.saveState(previous)) return;
     this.render(pit.id);
     this.loadPitIntoForm(pit);
     this.locatePit(pit);
@@ -1254,8 +1298,9 @@ export class FoundationPitMonitoring {
       start,
       end: local,
     };
+    const previous = structuredClone(this.state);
     pit.customSupports.push(support);
-    this.saveState();
+    if (!this.saveState(previous)) return;
     this.stopPicking(false);
     this.element("#pitCustomSupportStatus").textContent = `已绘制“${support.name}”，深度 ${depth.toFixed(2)} m。`;
     this.render(pit.id);
@@ -1302,8 +1347,9 @@ export class FoundationPitMonitoring {
       speedThreshold, cumulativeThreshold, records: [],
     };
     this.updateStoredPointCoordinate(point, pit);
+    const previous = structuredClone(this.state);
     this.state.points.push(point);
-    this.saveState();
+    if (!this.saveState(previous)) return;
     this.input<HTMLInputElement>("#pitPointName").value = "";
     this.render(pit.id, point.id);
     this.locatePoint(point);
@@ -1316,9 +1362,10 @@ export class FoundationPitMonitoring {
     const speed = Number(this.input<HTMLInputElement>("#pitEditSpeedThreshold").value);
     const cumulative = Number(this.input<HTMLInputElement>("#pitEditCumulativeThreshold").value);
     if (![speed, cumulative].every((value) => Number.isFinite(value) && value > 0)) return this.toast("预警值必须大于 0", true);
+    const previous = structuredClone(this.state);
     point.speedThreshold = speed;
     point.cumulativeThreshold = cumulative;
-    this.saveState();
+    if (!this.saveState(previous)) return;
     this.render(undefined, point.id);
     this.toast(`${point.name} 的预警值已更新`);
   }
@@ -1340,10 +1387,11 @@ export class FoundationPitMonitoring {
       id: existing?.id || crypto.randomUUID(), pointId: point.id, timestamp, x, y, z,
       note: this.input<HTMLInputElement>("#pitRecordNote").value.trim(),
     };
+    const previous = structuredClone(this.state);
     if (existing) Object.assign(existing, record);
     else point.records.push(record);
     point.records.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-    this.saveState();
+    if (!this.saveState(previous)) return;
     this.input<HTMLInputElement>("#pitRecordNote").value = "";
     this.input<HTMLInputElement>("#pitRecordTime").value = this.localDateTimeValue(new Date());
     this.render(undefined, point.id);
@@ -1371,8 +1419,9 @@ export class FoundationPitMonitoring {
       id: crypto.randomUUID(), pitId, name, targetType, targetId, depth,
       axialForceThreshold, deformationThreshold, records: [],
     };
+    const previous = structuredClone(this.state);
     this.state.supportMonitors.push(monitor);
-    this.saveState();
+    if (!this.saveState(previous)) return;
     this.input<HTMLInputElement>("#pitSupportMonitorName").value = "";
     this.render(pit.id);
     this.input<HTMLSelectElement>("#pitSupportRecordMonitor").value = monitor.id;
@@ -1394,10 +1443,11 @@ export class FoundationPitMonitoring {
       id: existing?.id || crypto.randomUUID(), timestamp, axialForce, deformation,
       note: this.input<HTMLInputElement>("#pitSupportRecordNote").value.trim(),
     };
+    const previous = structuredClone(this.state);
     if (existing) Object.assign(existing, record);
     else monitor.records.push(record);
     monitor.records.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-    this.saveState();
+    if (!this.saveState(previous)) return;
     this.input<HTMLInputElement>("#pitSupportRecordNote").value = "";
     this.input<HTMLInputElement>("#pitSupportRecordTime").value = this.localDateTimeValue(new Date());
     this.render(monitor.pitId);
@@ -2246,6 +2296,7 @@ export class FoundationPitMonitoring {
       if (indexes.name < 0 && indexes.id < 0) throw new Error("CSV 缺少“监测点”或“监测点编号”列");
       if (indexes.time < 0 || (indexes.x < 0 && indexes.y < 0 && indexes.z < 0)) throw new Error("CSV 需要“监测时间”和至少一个 X/Y/Z 位移列");
       let imported = 0, updated = 0, skipped = 0;
+      const previous = structuredClone(this.state);
       for (const row of rows.slice(1)) {
         if (!row.some((cell) => cell.trim())) continue;
         const cell = (index: number) => index >= 0 ? (row[index] || "").trim() : "";
@@ -2265,7 +2316,7 @@ export class FoundationPitMonitoring {
       }
       this.state.points.forEach((point) => point.records.sort((a, b) => a.timestamp.localeCompare(b.timestamp)));
       if (!imported && !updated) throw new Error(`没有匹配到有效日报${skipped ? `，已跳过 ${skipped} 行` : ""}`);
-      this.saveState();
+      if (!this.saveState(previous)) return;
       this.render();
       this.toast(`CSV 导入完成：新增 ${imported} 条、更新 ${updated} 条${skipped ? `，跳过 ${skipped} 行` : ""}，基坑模型已刷新`);
     } catch (error) {

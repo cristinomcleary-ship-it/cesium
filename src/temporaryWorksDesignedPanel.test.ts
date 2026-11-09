@@ -260,7 +260,10 @@ test('a hardening clipping toggle preserves the currently expanded derived mesh 
   f.composition.destroy();
 });
 
-test('closing model editing restores its saved brightness override without rebuilding the model', () => {
+test('confirmed close restores saved brightness without rebuilding the model', t => {
+  const prior=Object.getOwnPropertyDescriptor(globalThis,'window');
+  Object.defineProperty(globalThis,'window',{configurable:true,value:{confirm:()=>true}});
+  t.after(()=>{if(prior)Object.defineProperty(globalThis,'window',prior);else Reflect.deleteProperty(globalThis,'window');});
   const f = panelFixture(), model = handle(); model.brightness = 175;
   f.p.handles.set('selected', model); f.p.glbEditing = 'selected'; f.p.objectBrightnessDraft = 175;
   f.p.lighting = { schemaVersion: 1, globalPercent: 100, overrides: { selected: 135 } };

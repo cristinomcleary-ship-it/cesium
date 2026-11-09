@@ -65,9 +65,10 @@ export type SandTableProjectControlOptions = {
 export const sandTableProjectControlHtml = `
   <div class="sand-project-control" id="sandProjectControl">
     <div class="sand-project-control__heading">
-      <div><strong>项目管控</strong><small>PROGRESS &amp; RISK CONTROL</small></div>
+      <div><strong>沙盘进度与风险说明</strong><small>PRESENTATION RECORDS</small></div>
       <span id="sandProjectControlStatus" aria-live="polite">业务台账已就绪</span>
     </div>
+    <p class="sand-facility-copy">此处记录沙盘展示信息。正式施工任务、执行记录与问题办理统一在“施工管理中心”的施工任务中管理；两处已有记录按各自编号保留。</p>
     <div class="sand-project-control__tabs" role="tablist" aria-label="项目管控模块">
       <button type="button" class="active" data-project-control-tab="progress" role="tab" aria-selected="true">项目进度</button>
       <button type="button" data-project-control-tab="risk" role="tab" aria-selected="false">风险管控 <b id="sandRiskTabBadge">0</b></button>

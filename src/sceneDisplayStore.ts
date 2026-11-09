@@ -136,7 +136,7 @@ export class SceneDisplayStore {
     if (group.name === title) return; group.name = title; this.persist();
   }
   setGroupMembers(id: string, memberIds: readonly string[]): void {
-    const group = this.group(id), members = this.currentMembers(memberIds);
+    const group = this.group(id), members = [...this.currentMembers(memberIds), ...group.members.filter(member => !this.items.has(member))];
     if (!members.length) throw new Error("分组至少保留一个当前场景对象；不再需要时可解散分组。");
     group.members = members; this.persist();
   }

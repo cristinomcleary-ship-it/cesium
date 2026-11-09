@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>六大功能中心 · 隔离界面验证</title>
+  <style>
+    .fixture-stage{height:100%;display:flex;flex-direction:column;gap:16px;overflow:auto;padding:24px;background:radial-gradient(ellipse at 50% 25%,#16374b 0,#081622 70%)}
+    .fixture-notice{padding:13px 15px;border:1px solid #9c7537;border-radius:8px;background:#302819;color:#ffe2a4;font-size:13px;line-height:1.8}
+    .fixture-notice strong{display:block}.fixture-stage h1{margin:4px 0;color:#e1f1fc;font-size:23px}.fixture-stage p{margin:5px 0;color:#a0bacd;font-size:13px;line-height:1.8}
+    .fixture-check{display:flex;gap:8px;align-items:center;padding:12px;border:1px solid #385b70;border-radius:7px;background:#10283a;font-size:13px;color:#c2d9e7}
+    .fixture-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.fixture-card{min-height:120px;padding:16px;border:1px solid #345a6d;border-radius:10px;background:#0d2433}.fixture-card[data-visible=false]{opacity:.4;border-style:dashed}.fixture-card strong{display:block;color:#c9e9f1}.fixture-card small{display:block;margin-top:10px;color:#8baebf;line-height:1.7}
+    .fixture-buttons{display:flex;flex-wrap:wrap;gap:8px}.fixture-buttons button{padding:9px 12px;border:1px solid #396f87;border-radius:6px;color:#b8e6f0;background:#123346;cursor:pointer}.fixture-buttons button:disabled{opacity:.45;cursor:default}
+    .fixture-status{padding:10px;border-left:3px solid #53d6a9;color:#c4eadd;background:#112c28;font-size:12px;line-height:1.7}
+    #fixtureEditor{padding:20px;overflow:auto}#fixtureEditor h2{margin-top:0;color:#d5ecf5;font-size:18px}#fixtureEditor p{color:#8daec2;line-height:1.9;font-size:13px}
+    @media(max-width:760px){.fixture-stage{padding:12px}.fixture-stage h1{font-size:18px}.fixture-notice,.fixture-stage p{font-size:11px}.fixture-check{font-size:11px}.fixture-cards{grid-template-columns:1fr}.fixture-card{padding:12px;min-height:90px}}
+  </style>
+</head>
+<body>
+<div id="app">
+  <div class="shell workbench-right-dock">
+    <header class="app-header">
+      <div class="brand"><span class="brand-mark">C</span><div><strong>工程数据浏览器</strong><small>隔离界面验证</small></div></div>
+      <nav class="tabs" aria-label="功能菜单">
+        <button class="tab" data-tab="overview" data-label="平台总览" data-menu-icon="◫">平台总览</button>
+        <button class="tab" data-tab="sandtable" data-label="电子沙盘" data-menu-icon="◈">电子沙盘</button>
+        <button class="tab active" data-tab="cad" data-label="CAD 图纸" data-menu-icon="⌁" aria-current="page">CAD 图纸</button>
+        <button class="tab" data-tab="models" data-label="工程模型" data-menu-icon="◆">工程模型</button>
+        <button class="tab" data-tab="temporary-works" data-label="临建规划" data-menu-icon="▧">临建规划</button>
+        <button class="tab" data-tab="machinery" data-label="施工机械" data-menu-icon="⚙">施工机械</button>
+        <button class="tab" data-tab="rail-safety" data-label="邻近营业线管控" data-menu-icon="◇">邻近营业线管控</button>
+        <button class="tab" data-tab="tiles" data-label="倾斜摄影" data-menu-icon="▦">倾斜摄影</button>
+        <button class="tab" data-tab="gis" data-label="GIS 数据" data-menu-icon="◎">GIS 数据</button>
+        <button class="tab" data-tab="videoar" data-label="视频 AR" data-menu-icon="◉">视频 AR</button>
+        <button class="tab" data-tab="markup" data-label="标绘" data-menu-icon="✎">标绘</button>
+        <button class="tab" data-tab="monitoring" data-label="基坑监测" data-menu-icon="▥">基坑监测</button>
+        <button class="tab" data-tab="report" data-label="三维汇报" data-menu-icon="▣">三维汇报</button>
+      </nav>
+      <button id="fixtureField" class="text-button safety-entry-button" type="button">现场工作台</button>
+      <button class="text-button" type="button" disabled title="本页不启动外部服务">AR V2</button>
+      <div class="workspace-mode"><span class="workspace-pulse"></span><span>界面验证</span></div>
+    </header>
+    <aside class="sidebar">
+      <nav class="workbench-dock-tabs" aria-label="右侧工作区"><button type="button" data-fixture-dock="display" aria-pressed="true">场景显示</button><button type="button" data-fixture-dock="editor" aria-pressed="false">参数编辑</button></nav>
+      <div id="workbenchDisplayHost"></div>
+      <div id="workbenchEditorHost" hidden><section id="fixtureEditor"><h2>CAD 图纸</h2><p>此页只验证导航与目录界面，未加载专业编辑器。</p></section></div>
+    </aside>
+    <main class="viewport">
+      <div class="fixture-stage">
+        <div class="fixture-notice"><strong>界面验证，不含三维渲染与正式项目数据</strong>使用真实功能导航和对象目录组件。下方对象为明确虚构的界面样例；无后台请求，不使用正式项目台账。</div>
+        <p id="fixtureWebGL" role="status">正在检查当前浏览器的 WebGL2 能力…</p>
+        <div><h1>六大功能中心</h1><p>左侧选择功能，右侧统一管理对象。当前页不创建 Cesium Viewer，不能作为三维效果或专业业务验收。</p></div>
+        <label class="fixture-check"><input id="fixtureBlockNavigation" type="checkbox">模拟未完成编辑：阻止导航切换，保留当前功能高亮</label>
+        <div id="fixtureStatus" class="fixture-status" role="status">可验证搜索、分类展开、显示分组及移出场景后重新载入。</div>
+        <div id="fixtureCards" class="fixture-cards" aria-label="虚构对象状态"></div>
+        <div class="fixture-buttons"><button id="fixtureReload" type="button" disabled>重新载入验证模型</button><button id="fixtureReset" type="button">重置虚构对象</button><button id="fixtureEmpty" type="button">查看空目录</button><button id="fixtureShowDirectory" type="button">打开对象目录</button></div>
+        <p>“移出场景”只移除当前样例显示，样例原件仍保留；“移除模型”保留样例机械台账。虚构临建设施可用于确认删除提示。</p>
+      </div>
+    </main>
+  </div>
+</div>
+<script type="module">
+  import '/src/style.css';
+  import '/src/functionCenters.css';
+  import { FUNCTION_CENTERS, installFunctionCenters } from '/src/functionCenters.ts';
+  import { SceneDisplayPanel } from '/src/sceneDisplayPanel.ts';
+
+  const $ = selector => document.querySelector(selector);
+  const status = text => { $('#fixtureStatus').textContent = text; };
+  try {
+    const probe = document.createElement('canvas');
+    const gl = probe.getContext('webgl2');
+    $('#fixtureWebGL').textContent = gl ? '当前浏览器 WebGL2：可创建上下文。此页仍不执行三维渲染验收。' : '当前浏览器 WebGL2：不可用。无法在此环境验证 Cesium 三维场景。';
+    gl?.getExtension('WEBGL_lose_context')?.loseContext();
+  } catch (error) { $('#fixtureWebGL').textContent = `当前浏览器 WebGL2：检查失败（${error instanceof Error ? error.message : String(error)}）。此页仅验证普通界面。`; }
+  const originalTabs = [...document.querySelectorAll('.tab')];
+  let modelLoaded = true, machinePlaced = true, facilityPresent = true, empty = false;
+  let latestOverrides = {};
+  const scope = `fixture-function-centers-ui:${crypto.randomUUID()}`;
+  const preferenceKey = `scene-display:v1:${JSON.stringify([scope, 'fixture-only'])}`;
+  const setDock = dock => {
+    $('#workbenchDisplayHost').hidden = dock !== 'display';
+    $('#workbenchEditorHost').hidden = dock !== 'editor';
+    for (const button of document.querySelectorAll('[data-fixture-dock]')) button.setAttribute('aria-pressed', String(button.dataset.fixtureDock === dock));
+  };
+  const canNavigate = () => {
+    if (!$('#fixtureBlockNavigation').checked) return true;
+    status('导航已被模拟的未完成编辑阻止，当前功能与选择保留。'); return false;
+  };
+  const showEditor = title => {
+    setDock('editor'); $('#fixtureEditor').replaceChildren();
+    const heading = document.createElement('h2'); heading.textContent = title;
+    const note = document.createElement('p'); note.textContent = '入口已到达。此隔离页未加载专业编辑器或业务后台；不能据此认定该专业流程已通过验收。';
+    $('#fixtureEditor').append(heading, note);
+    if (title === '已保存资料') {
+      const saved = document.createElement('p'); saved.textContent = '虚构样例原件：验证工程模型.glb（仅文字记录，不含文件）。移出场景后此记录继续保留。'; $('#fixtureEditor').append(saved);
+    }
+    status(`当前入口：${title}。原专业按钮和功能中心均保留单一入口。`);
+  };
+  for (const tab of originalTabs) tab.addEventListener('click', () => {
+    if (!canNavigate()) return;
+    for (const button of originalTabs) { button.classList.remove('active'); button.removeAttribute('aria-current'); }
+    tab.classList.add('active'); tab.setAttribute('aria-current', 'page'); showEditor(tab.dataset.label);
+  });
+  const centers = installFunctionCenters($('.app-header > .tabs'), {
+    onAction(action) {
+      if (!canNavigate()) return false;
+      if (action === 'display' || action === 'model-objects') {
+        setDock('display'); directory.setSearch(action === 'model-objects' ? '工程模型' : '');
+        status(action === 'display' ? '已打开同一对象目录。' : '已在同一对象目录筛选工程模型。');
+      } else {
+        const entry = FUNCTION_CENTERS.flatMap(center => center.entries).find(entry => entry.action === action);
+        showEditor(entry.title);
+      }
+      return true;
+    },
+    onError(error) { status(String(error)); },
+  });
+  const renderCards = () => {
+    const host = $('#fixtureCards'); host.replaceChildren();
+    const records = empty ? [] : [
+      ...(modelLoaded ? [{ id: 'fixture-layer:model', title: '虚构样例 · 工程模型', detail: '验证移出场景与重新载入，原件文字记录保留。' }] : []),
+      { id: 'fixture-machine:one', title: '虚构样例 · 施工机械', detail: machinePlaced ? '已布置模型，可验证移除模型并保留台账。' : '台账保留，尚未布置三维模型。', unavailable: !machinePlaced },
+      ...(facilityPresent ? [{ id: 'fixture-facility:one', title: '虚构样例 · 项目驻地', detail: '可验证删除影响提示，仅操作本页内存对象。' }] : []),
+    ];
+    for (const item of records) {
+      const card = document.createElement('article'); card.className = 'fixture-card'; card.dataset.visible = String(!item.unavailable && latestOverrides[item.id] !== false);
+      const title = document.createElement('strong'); title.textContent = item.title;
+      const detail = document.createElement('small'); detail.textContent = item.detail;
+      card.append(title, detail); host.append(card);
+    }
+    $('#fixtureReload').disabled = modelLoaded;
+  };
+  const directory = new SceneDisplayPanel($('#workbenchDisplayHost'), {
+    onApply(overrides) { latestOverrides = overrides; renderCards(); },
+    onError: status,
+    confirmRemoval: message => confirm(`仅操作本页虚构对象\n\n${message}`),
+  });
+  const selectTab = id => document.querySelector(`.tab[data-tab="${id}"]`).click();
+  const sync = () => {
+    directory.setContext(scope, 'fixture-only', empty ? [] : [
+      ...(modelLoaded ? [{ id: 'fixture-layer:model', name: '虚构样例 · 工程模型', category: '工程模型', visible: true, detail: '界面验证对象，无真实文件。', locate: () => status('虚构模型已选中；此页没有三维相机。'), edit: () => selectTab('models'), removalKind: 'unload', remove: () => { modelLoaded = false; sync(); } }] : []),
+      { id: 'fixture-machine:one', name: '虚构样例 · 施工机械', category: '施工机械', visible: true, visibilityAvailable: machinePlaced, detail: machinePlaced ? '界面验证对象；移除模型后台账保留。' : '样例台账保留，尚未布置。', edit: () => selectTab('machinery'), ...(machinePlaced ? { removalKind: 'detach', removalPreservesResource: true, remove: () => { machinePlaced = false; sync(); } } : {}) },
+      ...(facilityPresent ? [{ id: 'fixture-facility:one', name: '虚构样例 · 项目驻地', category: '临建规划', visible: true, detail: '仅在本页内存存在的验证设施。', edit: () => selectTab('temporary-works'), removalKind: 'delete', removalDescription: '删除本页虚构临建设施记录和状态卡，不操作正式数据。', remove: () => { facilityPresent = false; sync(); } }] : []),
+    ]);
+    renderCards();
+  };
+  for (const button of document.querySelectorAll('[data-fixture-dock]')) button.addEventListener('click', () => { setDock(button.dataset.fixtureDock); if (button.dataset.fixtureDock === 'display') centers.setActiveAction('display'); });
+  $('#fixtureReload').addEventListener('click', () => { modelLoaded = true; empty = false; sync(); status('验证模型已重新载入，同一编号的显示偏好与分组保留。'); });
+  $('#fixtureReset').addEventListener('click', () => { modelLoaded = true; machinePlaced = true; facilityPresent = true; empty = false; sync(); setDock('display'); status('已恢复三条虚构对象；仅个人显示偏好继续保留。'); });
+  $('#fixtureEmpty').addEventListener('click', () => { empty = true; sync(); setDock('display'); });
+  $('#fixtureShowDirectory').addEventListener('click', () => { setDock('display'); directory.setSearch(''); centers.setActiveAction('display'); });
+  $('#fixtureField').addEventListener('click', () => status('此隔离页不启动现场工作台，只验证导航与目录组件。'));
+  window.addEventListener('pagehide', () => { directory.dispose(); centers.dispose(); localStorage.removeItem(preferenceKey); }, { once: true });
+  sync();
+</script>
+</body>
+</html>
