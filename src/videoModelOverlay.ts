@@ -7,6 +7,7 @@ import { createCcCameraRegistrationMatrix, defaultCcCameraRegistration, validate
 import { assertVideoOverlayOccluder, validateVideoOverlayOcclusion, type SavedVideoOverlayOcclusion } from './videoOverlayOcclusion';
 import type { LibraryRecord } from './projectLibrary';
 import type { ImportRecord } from './types';
+import { getModelAppearance } from './modelAppearance';
 import { extractVideoFrames, parseVideoFrameManifest, pickVideoFrameDirectory, verifyVideoFrameSource, type VideoFrameManifest } from './videoFrameExtraction';
 import { parseVideoPosCsv } from './videoFramePos';
 import { VideoOverlayAutosave } from './videoOverlayAutosave';
@@ -19,11 +20,12 @@ import { VideoOverlaySpatialEditor } from './videoOverlaySpatialEditor';
 import { VideoOverlayPlaybackCompositor } from './videoOverlayPlaybackCompositor';
 import { captureVideoOverlayRenderTargets } from './videoOverlayRenderTargets';
 import { prepareNativeVideoCache } from './videoOverlayNativeCache';
-import { VideoOverlayCacheStore, hashVideoOverlayInputs } from './videoOverlayCacheStore';
+import { VideoOverlayCacheStore, hashVideoOverlayInputs, type VideoOverlayCachedMovie } from './videoOverlayCacheStore';
+import { createCachedSpatialProjector } from './videoOverlayCachedAnnotations';
 import { VideoOverlayLifecycle } from './videoOverlayLifecycle';
 import './videoModelOverlay.css';
 
-export const VIDEO_OVERLAY_BUILD = '2026.10.23-R9-cad-interaction';
+export const VIDEO_OVERLAY_BUILD = '2026.11.10-R10-layered-annotations';
 
 export type SavedVideoOverlaySettings = {
   schemeName?: string;
@@ -96,7 +98,7 @@ export const videoModelOverlayPanelHtml = `
     <small id="ccOcclusionInfo">未启用实景遮挡，视频本身不含深度。</small>
   </details>
   <small>按原视频分辨率合成，不自动降低清晰度。编辑时查看暂停画面；点击播放先完整计算并缓存，按源视频的每帧时间播放，不降低帧率。</small>
-  <div class="cc-actions"><button id="ccBuildPreview" type="button">生成完整融合缓存</button><button id="ccClearPreview" type="button">返回融合编辑</button><button id="ccCacheCancel" type="button" disabled>取消缓存</button></div><small id="ccPreviewStatus">缓存使用下方时间区间，保留源视频帧率、分辨率、标注和展示效果。完整生成后再播放；缓存保存在本机，退出后可复用。</small>
+  <div class="cc-actions"><button id="ccBuildPreview" type="button">生成完整融合缓存</button><button id="ccClearPreview" type="button">返回融合编辑</button><button id="ccCacheCancel" type="button" disabled>取消缓存</button></div><small id="ccPreviewStatus">先缓存已对齐的模型／CAD，再直接在缓存画面选对象、加标注。标注可反复修改，底层位置缓存保持；模型位置或展示效果改变后才需重算。</small>
   <div class="cc-actions"><button id="ccStart" class="primary" type="button">进入融合编辑</button><button id="ccStop" type="button">退出 AR 融合</button></div>
   <h3>叠加对象</h3><div id="ccResources"><small>先在 CAD／工程模型中导入并定位对象。</small></div>
   <h3>叠加对象位置微调</h3><label>调整范围<select id="ccTarget"><option value="*">整体工程校正（CAD／模型）</option></select></label>
@@ -118,7 +120,7 @@ export const videoModelOverlayPanelHtml = `
   <div id="ccSpatialEditor"></div>
   <div id="ccPresentationEditor"></div>
   <div class="cc-actions"><button id="ccSave" class="primary" type="button">保存融合方案</button></div><small id="ccSavedState">尚未保存</small>
-  <details><summary>导出融合视频</summary><small id="ccExportRange">载入视频与空三后显示实际可导出范围。</small><small>导出保持源视频每帧时间和原分辨率，不转换帧率。</small><label><input id="ccExportAudio" type="checkbox" checked>保留原视频音轨（支持时）</label><div class="cc-fields"><label>开始（秒，空白为首个定位）<input id="ccExportStart" type="number" min="0" step="0.001"></label><label>结束（秒，空白为末个定位）<input id="ccExportEnd" type="number" min="0" step="0.001"></label></div><div class="cc-actions"><button id="ccExport" type="button">导出融合视频</button><button id="ccExportCancel" type="button" disabled>取消</button></div><small id="ccExportStatus">默认导出完整融合缓存：原分辨率、源视频每帧时间，边编码边写入本机磁盘，容量取决于可用空间。首次生成需要等待；已有有效缓存时直接导出，不重复计算。</small></details>
+  <details><summary>导出融合视频</summary><small id="ccExportRange">载入视频与空三后显示实际可导出范围。</small><small>导出保持源视频每帧时间和原分辨率，不转换帧率。</small><label><input id="ccExportAudio" type="checkbox" checked>保留原视频音轨（支持时）</label><div class="cc-fields"><label>开始（秒，空白为首个定位）<input id="ccExportStart" type="number" min="0" step="0.001"></label><label>结束（秒，空白为末个定位）<input id="ccExportEnd" type="number" min="0" step="0.001"></label></div><div class="cc-actions"><button id="ccExport" type="button">导出融合视频</button><button id="ccExportCancel" type="button" disabled>取消</button></div><small id="ccExportStatus">默认导出完整融合缓存：原分辨率、源视频每帧时间，边编码边写入本机磁盘，容量取决于可用空间。首次生成需要等待；已有底层缓存时，导出只叠加最新标注，不重新计算三维融合。</small></details>
   <div class="cc-actions"><button id="ccDiagnostics" type="button">导出配准诊断</button></div><small>导出相机、时间对应和图层定位参数，不包含视频或模型文件。</small>
 </section>`;
 
@@ -189,7 +191,14 @@ export class VideoModelOverlay {
   private renderReady = false;
   private lensFrame?: { number: number; time: number; ready: boolean };
   private cameraKey = '';
-  private cachedPreview?: { video: HTMLVideoElement; url: string; file: Blob; start: number; end: number; revision: number; signature?: string; signatureRange?: { start: number; end: number } };
+  private cachedPreview?: { video: HTMLVideoElement; url: string; file: Blob; start: number; end: number; revision: number; signature?: string; signatureRange?: { start: number; end: number }; spatialFrames: Record<string, number[]>; displayTime?: number };
+  private cachedAnnotationCanvas?: HTMLCanvasElement;
+  private cachedFrameHandle?: number;
+  private cachedFrameGeneration = 0;
+  private cachedAnnotationKey = '';
+  private cachedAnimationHandle?: number;
+  private cachedPickController?: AbortController;
+  private cachedPickTime?: number;
   private cacheLifecycle?: VideoOverlayLifecycle;
   private readonly cacheSchemeLifecycles = new Map<string, Set<VideoOverlayLifecycle>>();
   private cacheTask?: Promise<void>;
@@ -254,23 +263,31 @@ export class VideoModelOverlay {
     for (const id of ['ccPosFrameRate', 'ccPosFirstTime']) this.bind(id, 'change', () => this.dirty());
     this.presentationEditor = new VideoOverlayPresentationEditor({ root: this.el('ccPresentationEditor'), getTime: () => this.lastFrameTime,
       getDuration: () => this.metadata?.duration ?? 60, onChange: (annotations, effects) => {
-        this.annotations = annotations; this.effects = effects; this.dirty(); this.lastPresentationKey = ''; this.renderFrame(this.lastFrameTime);
+        const effectsChanged = JSON.stringify(effects) !== JSON.stringify(this.effects);
+        this.annotations = annotations; this.effects = effects; this.dirty(effectsChanged); this.lastPresentationKey = '';
+        if (this.cachedPreview) this.drawCachedAnnotations(); else this.renderFrame(this.lastFrameTime);
       } });
     this.spatialBinding = new VideoOverlaySpatialBinding({ viewer: this.viewer, resources: () => this.resources,
       intrinsics: () => this.track?.intrinsics, lens: () => this.track?.distortion });
     this.spatialEditor = new VideoOverlaySpatialEditor({ root: this.el('ccSpatialEditor'),
       getTime: () => this.lastFrameTime, getDuration: () => this.metadata?.duration ?? 60,
-      onBeginPick: () => {
-        if (this.cacheTask || this.cachedPreview || !this.restoreScene) throw new Error('请先进入融合编辑，再暂停到需要标绘的画面；缓存播放时请点击“返回融合编辑”并进入 AR');
+      onEndPick: () => this.releaseCachedPicking(),
+      onBeginPick: async () => {
+        if (this.cacheTask) throw new Error('请等待融合缓存完成后再标绘');
+        if (this.cachedPreview) { await this.prepareCachedPicking(); return; }
+        if (!this.restoreScene) throw new Error('请先生成融合缓存或进入融合编辑，再暂停到需要标绘的画面');
         this.wantedPlaying = false; this.video.pause(); this.updatePlayback();
         if (this.seeking || this.buffering || this.presentedTime === undefined || this.pendingTime !== this.presentedTime) throw new Error('当前画面仍在准备，请等待融合画面完成后再标绘');
         if (!this.track?.sample(this.presentedTime)) throw new Error('当前画面没有有效的相机定位，无法标定结构');
       },
       pick: (targetId, u, v) => {
-        if (!this.restoreScene || this.cachedPreview || this.cacheTask || this.seeking || this.buffering || this.pendingTime !== this.presentedTime) throw new Error('请等待当前融合帧准备完成后再选点');
+        if (this.cachedPreview) {
+          if (this.cachedPickTime !== this.cachedPreview.displayTime || this.cachedPreview.video.seeking || !this.cachedPreview.video.paused || !this.resources) throw new Error('视频帧已切换，请重新开始标绘');
+        } else if (!this.restoreScene || this.cacheTask || this.seeking || this.buffering || this.pendingTime !== this.presentedTime) throw new Error('请等待当前融合帧准备完成后再选点');
         return this.spatialBinding.pick(targetId, u, v);
       },
-      onChange: marks => { this.spatialAnnotations = marks; this.dirty(); this.lastPresentationKey = ''; this.renderFrame(this.lastFrameTime); },
+      onChange: marks => { this.spatialAnnotations = marks; this.dirty(false); this.lastPresentationKey = '';
+        if (this.cachedPreview) { this.releaseCachedPicking(); this.drawCachedAnnotations(); } else this.renderFrame(this.lastFrameTime); },
     });
     this.bind('ccBuildPreview', 'click', () => { void this.prepareCachedPlayback().catch(e => this.fail(e)); });
     this.bind('ccCacheCancel', 'click', () => this.cacheLifecycle?.abort());
@@ -761,7 +778,12 @@ export class VideoModelOverlay {
     const parent = this.viewer.container.parentElement!, controlsHeight = this.controls?.getBoundingClientRect().height ?? 64;
     const rect = containVideoRect(Math.max(1, parent.clientWidth), Math.max(1, parent.clientHeight - controlsHeight - 24), this.metadata?.width ?? this.video.videoWidth, this.metadata?.height ?? this.video.videoHeight);
     if (this.cachedPreview) {
-      Object.assign(this.cachedPreview.video.style, { position: 'absolute', left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+      for (const element of [this.cachedPreview.video, this.cachedAnnotationCanvas, this.editorCanvas, this.spatialCanvas]) {
+        if (!element) continue;
+        Object.assign(element.style, { position: 'absolute', left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+        if (element instanceof HTMLCanvasElement) { element.width = this.metadata!.width; element.height = this.metadata!.height; }
+      }
+      this.cachedAnnotationKey = ''; this.drawCachedAnnotations();
       return; // Cached playback never resizes or allocates the map's render targets.
     }
     for (const e of [this.video, this.container, this.presentation!, this.editorCanvas!, this.spatialCanvas!]) Object.assign(e.style, { position: 'absolute', left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
@@ -848,7 +870,7 @@ export class VideoModelOverlay {
     if (this.lastPresentationKey === presentationKey && !this.buffering && !status?.refining && this.resources?.isPresentationReady()) return;
     const width = this.presentation.width, height = this.presentation.height;
     let annotations: HTMLCanvasElement | undefined;
-    if (this.annotations.some(mark => videoOverlayAnnotationState(mark, this.pendingTime!).visible) || hasSample && this.spatialAnnotations.some(mark => mark.visible && this.pendingTime! >= mark.start && this.pendingTime! < mark.end)) {
+    if (!this.nativeCacheRendering && (this.annotations.some(mark => videoOverlayAnnotationState(mark, this.pendingTime!).visible) || hasSample && this.spatialAnnotations.some(mark => mark.visible && this.pendingTime! >= mark.start && this.pendingTime! < mark.end))) {
       this.annotationFrame ??= document.createElement('canvas'); annotations = this.annotationFrame;
       const key = `${this.pendingTime}/${this.editRevision}/${width}/${height}`;
       if (this.annotationKey !== key) {
@@ -874,7 +896,7 @@ export class VideoModelOverlay {
     if (deferred) this.captureDecodedFrame(deferred.time);
   }
   private sceneFrameNumber() { return (this.viewer.scene as unknown as { frameState: { frameNumber: number } }).frameState.frameNumber; }
-  private installCachedPreview(blob: Blob, start: number, end: number, signature?: string, playbackTime = start, signatureRange = { start, end }) {
+  private installCachedPreview(blob: Blob, start: number, end: number, signature?: string, playbackTime = start, signatureRange = { start, end }, spatialFrames: Record<string, number[]> = {}) {
     this.assertVideoAccess();
     // End the entire 3D session before mounting a player. The disk-backed movie
     // owns no Cesium textures, model copies, camera guards, or source decoder.
@@ -884,16 +906,29 @@ export class VideoModelOverlay {
     this.originalContainerStyle = this.container.style.cssText;
     const video = document.createElement('video'), url = URL.createObjectURL(blob);
     video.className = 'cc-cached-preview'; video.playsInline = true; video.preload = 'auto'; video.src = url;
-    const revision = this.editRevision; this.cachedPreview = { video, url, file: blob, start, end, revision, signature, signatureRange };
+    const revision = this.editRevision; this.cachedPreview = { video, url, file: blob, start, end, revision, signature, signatureRange, spatialFrames };
     const position = Math.max(start, Math.min(end - .001, playbackTime));
     video.currentTime = position - start;
     this.wantedPlaying = false; this.resumeTime = position; this.presentedTime = position; this.lastFrameTime = position;
     this.backdrop = document.createElement('div'); this.backdrop.className = 'cc-video-backdrop cc-cache-backdrop'; this.backdrop.append(video); parent.append(this.backdrop);
     this.badge = document.createElement('div'); this.badge.className = 'cc-video-status'; this.badge.textContent = '完整缓存 · 保留源视频帧时间'; parent.append(this.badge);
-    for (const event of ['timeupdate', 'play', 'pause', 'ended', 'seeked']) video.addEventListener(event, () => this.updatePlayback());
+    this.cachedAnnotationCanvas = document.createElement('canvas'); this.cachedAnnotationCanvas.className = 'cc-cached-annotations'; parent.append(this.cachedAnnotationCanvas);
+    this.editorCanvas = document.createElement('canvas'); this.editorCanvas.className = 'cc-video-editor'; parent.append(this.editorCanvas); this.presentationEditor.mount(this.editorCanvas);
+    this.spatialCanvas = document.createElement('canvas'); this.spatialCanvas.className = 'cc-video-spatial-editor'; parent.append(this.spatialCanvas); this.spatialEditor.mount(this.spatialCanvas);
+    for (const event of ['timeupdate', 'play', 'pause', 'ended', 'seeked', 'loadeddata']) video.addEventListener(event, () => {
+      if (this.cachedPreview?.video !== video) return;
+      this.drawCachedAnnotations(); this.updatePlayback(); this.requestCachedFrame();
+    });
+    video.addEventListener('seeking', () => {
+      ++this.cachedFrameGeneration;
+      if (this.cachedFrameHandle !== undefined) video.cancelVideoFrameCallback?.(this.cachedFrameHandle); this.cachedFrameHandle = undefined;
+      if (this.cachedAnimationHandle !== undefined) cancelAnimationFrame(this.cachedAnimationHandle); this.cachedAnimationHandle = undefined;
+      this.spatialEditor.cancelPicking(); this.releaseCachedPicking();
+    });
+    video.addEventListener('play', () => { this.spatialEditor.cancelPicking(); this.releaseCachedPicking(); });
     video.addEventListener('error', () => { if (this.cachedPreview?.video !== video) return; this.clearCachedPreview(false); this.fail(new Error('融合缓存无法解码，请检查浏览器的视频解码支持')); }, { once: true });
     this.mountControls(parent);
-    this.el('ccPreviewStatus').textContent = '完整融合缓存已就绪，点击播放；退出保留本机缓存，修改画面内容后重新生成。';
+    this.el('ccPreviewStatus').textContent = '融合底层缓存已就绪，可直接选对象加标注；标注修改即时显示，模型位置缓存保留。';
   }
   private playCachedPreview() {
     this.assertVideoAccess();
@@ -904,18 +939,179 @@ export class VideoModelOverlay {
       }
     } catch (error) { this.clearCachedPreview(false); this.fail(error); return; }
     if (!cache.video.paused) cache.video.pause(); else { if (cache.video.ended) cache.video.currentTime = 0; void cache.video.play().catch(e => this.fail(e)); }
-    this.updatePlayback();
+    this.requestCachedFrame(); this.updatePlayback();
   }
   private clearCachedPreview(render = true) {
     const cache = this.cachedPreview; if (!cache) return;
-    const time = cache.start + cache.video.currentTime; this.cachedPreview = undefined;
+    const time = cache.start + cache.video.currentTime;
+    ++this.cachedFrameGeneration; this.cachedAnnotationKey = '';
+    this.releaseCachedPicking();
+    if (this.cachedFrameHandle !== undefined) cache.video.cancelVideoFrameCallback?.(this.cachedFrameHandle); this.cachedFrameHandle = undefined;
+    if (this.cachedAnimationHandle !== undefined) cancelAnimationFrame(this.cachedAnimationHandle); this.cachedAnimationHandle = undefined;
+    this.presentationEditor.unmount(); this.spatialEditor.unmount();
+    for (const canvas of [this.cachedAnnotationCanvas, this.editorCanvas, this.spatialCanvas]) { if (canvas) { canvas.width = 0; canvas.height = 0; canvas.remove(); } }
+    this.cachedAnnotationCanvas = undefined; this.editorCanvas = undefined; this.spatialCanvas = undefined;
+    this.cachedPreview = undefined;
     cache.video.pause(); cache.video.removeAttribute('src'); cache.video.load(); cache.video.remove(); URL.revokeObjectURL(cache.url);
     this.resumeTime = time; this.wantedPlaying = false;
     this.resize?.disconnect(); this.resize = undefined;
     this.backdrop?.remove(); this.backdrop = undefined;
     this.controls?.remove(); this.controls = undefined; this.badge?.remove(); this.badge = undefined;
-    this.el('ccPreviewStatus').textContent = '本机缓存保留。进入编辑后，修改画面内容会生成新的缓存。';
+    this.el('ccPreviewStatus').textContent = '底层缓存仍保留；修改模型位置、相机或展示效果后需生成新缓存。';
     if (render && !this.destroyed) void this.enter().catch(e => this.fail(e));
+  }
+  private captureSpatialFrames(): Record<string, number[]> {
+    const frames: Record<string, number[]> = {};
+    for (const id of this.selected) {
+      const frame = this.resources?.spatialFrame(id);
+      if (frame) frames[id] = Matrix4.toArray(frame);
+    }
+    return frames;
+  }
+  private correctedSample(time: number) {
+    const raw = this.track?.sample(time);
+    const registered = raw && (this.sceneReference ? transformCcCameraSample(raw, this.sceneReference.matrix) : raw);
+    return registered && (this.cameraRegistration.enabled ? transformCcCameraSample(registered, this.cameraCorrection) : registered);
+  }
+  private drawAnnotationLayer(context: CanvasRenderingContext2D, time: number, frames: Record<string, number[]>, width: number, height: number) {
+    const k = this.track?.intrinsics;
+    if (k) {
+      const effects = evaluateVideoOverlayEffects(this.effects, time, [...this.selected], { occluderId: this.occlusion.enabled ? this.occlusion.sourceId : undefined });
+      const projector = createCachedSpatialProjector({ frames, camera: this.correctedSample(time) ?? null, intrinsics: k, lens: this.track?.distortion,
+        targetVisible: id => this.selected.has(id) && id !== (this.occlusion.enabled ? this.occlusion.sourceId : undefined) && effects[id]?.visible !== false });
+      drawSpatialAnnotations(context, this.spatialAnnotations, { width, height, mediaTime: time, ...projector });
+    }
+    drawVideoOverlayAnnotations(context, this.annotations, { width, height, mediaTime: time });
+  }
+  private drawCachedAnnotations(mediaTime?: number) {
+    const cache = this.cachedPreview, canvas = this.cachedAnnotationCanvas;
+    if (!cache || !canvas || cache.video.seeking) return;
+    // Read the displayed frame PTS, not a timer interpolated between frames.
+    if (cache.video.readyState >= 2 && typeof VideoFrame !== 'undefined') {
+      let frame: VideoFrame | undefined;
+      try { frame = new VideoFrame(cache.video); mediaTime = frame.timestamp / 1e6; } catch { /* Older browsers use the player timeline. */ }
+      finally { frame?.close(); }
+    }
+    const time = cache.start + (mediaTime ?? cache.video.currentTime);
+    cache.displayTime = time; this.lastFrameTime = time; this.presentedTime = time;
+    const key = `${this.annotations.length || this.spatialAnnotations.length ? time : 'empty'}/${this.editRevision}/${canvas.width}/${canvas.height}`;
+    if (this.cachedAnnotationKey === key) return;
+    const context = canvas.getContext('2d'); if (!context) return;
+    this.cachedAnnotationKey = key;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    this.drawAnnotationLayer(context, time, cache.spatialFrames, canvas.width, canvas.height);
+  }
+  private requestCachedFrame() {
+    const cache = this.cachedPreview;
+    if (!cache || cache.video.paused || this.cachedFrameHandle !== undefined || this.cachedAnimationHandle !== undefined) return;
+    const generation = this.cachedFrameGeneration;
+    if (cache.video.requestVideoFrameCallback) this.cachedFrameHandle = cache.video.requestVideoFrameCallback((_now, metadata) => {
+      if (this.cachedPreview !== cache || generation !== this.cachedFrameGeneration) return; this.cachedFrameHandle = undefined;
+      this.drawCachedAnnotations(metadata.mediaTime); this.updatePlayback(); this.requestCachedFrame();
+    });
+    else this.cachedAnimationHandle = requestAnimationFrame(() => {
+      if (this.cachedPreview !== cache || generation !== this.cachedFrameGeneration) return; this.cachedAnimationHandle = undefined;
+      this.drawCachedAnnotations(); this.updatePlayback(); this.requestCachedFrame();
+    });
+  }
+  /** Only an authoring click needs the 3D scene. The cached movie stays mounted
+   * and retains every fused frame; playback/projection never loads this scene. */
+  private async prepareCachedPicking() {
+    const cache = this.cachedPreview; if (!cache) return;
+    cache.video.pause(); this.drawCachedAnnotations(); this.updatePlayback();
+    if (cache.video.seeking || cache.video.readyState < 2 || cache.displayTime === undefined) throw new Error('请等待缓存画面加载完成后再选点');
+    if (cache.signature !== this.cacheSignature(cache.signatureRange ?? cache)) throw new Error('模型或融合参数已改变，请先重新生成底层缓存');
+    const time = cache.displayTime, sample = this.correctedSample(time);
+    if (!sample) throw new Error('当前缓存帧没有有效相机定位');
+    this.releaseCachedPicking();
+    const controller = new AbortController(); this.cachedPickController = controller;
+    const check = () => { controller.signal.throwIfAborted(); this.assertVideoAccess(); if (this.cachedPreview !== cache || cache.video.seeking || !cache.video.paused || cache.displayTime !== time) throw new DOMException('选点画面已切换', 'AbortError'); };
+    try {
+      check(); this.enterHooksActive = true; this.options.onEnter?.();
+      this.resourceMatricesBeforeAR.clear();
+      for (const item of this.options.getImports()) {
+        const matrix = (item.resource as unknown as { modelMatrix?: Matrix4 }).modelMatrix;
+        if (matrix) this.resourceMatricesBeforeAR.set(item.id, Matrix4.toArray(matrix));
+      }
+      const resources = await VideoOverlayResources.create({ viewer: this.viewer, imports: this.options.getImports, getRecord: this.options.getRecord, signal: controller.signal });
+      try { check(); } catch (error) { resources.restore(); throw error; }
+      this.resources = resources; this.captureScene();
+      resources.setOcclusion(this.occlusion.enabled ? this.occlusion.sourceId : undefined);
+      resources.applyAdjustments(this.adjustments, this.groupAdjustment); resources.setSelection([...this.selected]); resources.setVisible(true);
+      resources.setTimelineOpacity(evaluateVideoOverlayEffects(this.effects, time, [...this.selected], { occluderId: this.occlusion.enabled ? this.occlusion.sourceId : undefined }));
+      this.installLens();
+      Object.assign(this.container.style, { position: 'absolute', left: cache.video.style.left, top: cache.video.style.top, width: cache.video.style.width, height: cache.video.style.height });
+      this.viewer.resolutionScale = 1; this.viewer.resize();
+      this.viewer.camera.setView({ destination: v3(sample.position), orientation: { direction: v3(sample.direction), up: v3(sample.up) } });
+      this.pendingTime = time;
+      await new Promise<void>((resolve, reject) => {
+        let remove = () => {};
+        const clean = () => { clearTimeout(timer); remove(); controller.signal.removeEventListener('abort', abort); };
+        const abort = () => { clean(); reject(new DOMException('结构选点已取消', 'AbortError')); };
+        const timer = window.setTimeout(() => { clean(); reject(new Error('当前帧结构加载超时；底层缓存仍保留，可重试选点')); }, 45000);
+        remove = this.viewer.scene.postRender.addEventListener(() => {
+          try {
+            check();
+            const status = resources.getOcclusionStatus(); if (status.error) throw new Error(status.error);
+            if (this.occlusion.enabled && !status.ready || !resources.isPresentationReady()) { this.viewer.scene.requestRender(); return; }
+            clean(); resolve();
+          } catch (error) { clean(); reject(error); }
+        });
+        controller.signal.addEventListener('abort', abort, { once: true });
+        if (controller.signal.aborted) abort(); else this.viewer.scene.requestRender();
+      });
+      check();
+      // Recreated frozen CAD and runtime model scales must match the base movie.
+      const frames = this.captureSpatialFrames();
+      for (const [id, expected] of Object.entries(cache.spatialFrames)) {
+        if (!frames[id] || frames[id].some((value, index) => Math.abs(value - expected[index]) > 1e-5)) throw new Error('当前结构定位与缓存不一致，请重新生成底层缓存后标绘');
+      }
+      this.cachedPickTime = time;
+    } catch (error) { if (this.cachedPickController === controller) this.releaseCachedPicking(); throw error; }
+  }
+  private releaseCachedPicking() {
+    if (!this.cachedPickController) return;
+    const controller = this.cachedPickController; this.cachedPickController = undefined; this.cachedPickTime = undefined;
+    const release = (action: () => void) => { try { action(); } catch (error) { this.cleanupReport.errors.push(error instanceof Error ? error.message : String(error)); } };
+    const guard = this.removeProjectionGuard, lens = this.lensStage, resources = this.resources, restore = this.restoreScene, targets = this.releaseRenderTargets;
+    this.removeProjectionGuard = undefined; this.lensStage = undefined; this.resources = undefined; this.restoreScene = undefined; this.releaseRenderTargets = undefined;
+    release(() => controller.abort()); release(() => guard?.());
+    release(() => { if (lens && !this.viewer.isDestroyed()) this.viewer.scene.postProcessStages.remove(lens); });
+    release(() => resources?.restore()); release(() => restore?.());
+    this.container.style.cssText = this.originalContainerStyle;
+    this.pendingTime = undefined; this.lensFrame = undefined;
+    const entered = this.enterHooksActive; this.enterHooksActive = false;
+    release(() => { if (entered) this.options.onExit?.(); });
+    release(() => { if (!this.viewer.isDestroyed()) { this.viewer.resize(); this.viewer.scene.requestRender(); } });
+    release(() => targets?.());
+  }
+  private async downloadAnnotatedCache(base: VideoOverlayCachedMovie, baseKey: string, store: VideoOverlayCacheStore, schemeId: string | undefined, signal: AbortSignal, check: () => void) {
+    if (!this.annotations.length && !this.spatialAnnotations.length) { this.downloadBlob(base.file, base.metadata.fileName ?? 'AR融合视频.webm'); return; }
+    const annotationSignature = JSON.stringify({ annotations: this.annotations, spatialAnnotations: this.spatialAnnotations });
+    const key = await hashVideoOverlayInputs({}, { baseKey, annotationSignature }, signal); check();
+    let annotated = await store.get(key); check();
+    if (!annotated) {
+      const transaction = await store.begin(key, { schemeId: schemeId ?? await hashVideoOverlayInputs({ video: this.files.video }, 'video', signal), signal });
+      try {
+        const canvas = document.createElement('canvas'); canvas.width = base.metadata.width; canvas.height = base.metadata.height;
+        const context = canvas.getContext('2d'); if (!context) throw new Error('浏览器无法创建标注导出画布');
+        const result = await prepareNativeVideoCache({ sourceFile: base.file, range: { start: 0, end: base.metadata.duration }, width: canvas.width, height: canvas.height,
+          includeAudio: base.metadata.audioStatus === 'preserved', signal, target: transaction.handle,
+          getFrame: async (time, frameSignal, source) => {
+            check(); frameSignal.throwIfAborted();
+            context.clearRect(0, 0, canvas.width, canvas.height); context.drawImage(source, 0, 0);
+            this.drawAnnotationLayer(context, base.metadata.start + time, base.metadata.spatialFrames ?? {}, canvas.width, canvas.height);
+            return canvas;
+          },
+          onProgress: progress => { if (!signal.aborted) this.el('ccExportStatus').textContent = `正在叠加最新标注 ${Math.round(progress.progress * 100)}% · 三维融合缓存直接复用`; },
+        });
+        check();
+        if (annotationSignature !== JSON.stringify({ annotations: this.annotations, spatialAnnotations: this.spatialAnnotations })) throw new Error('导出期间标注已变化，请重试');
+        annotated = await transaction.commit({ ...result, start: base.metadata.start, end: base.metadata.start + result.duration, layer: 'annotated', fileName: base.metadata.fileName });
+      } finally { await transaction.abort(); }
+    }
+    check(); this.downloadBlob(annotated.file, annotated.metadata.fileName ?? 'AR融合视频.webm');
+    this.el('ccExportStatus').textContent = '已导出最新标注；底层模型／CAD融合缓存保持。';
   }
   private downloadBlob(blob: Blob, name: string) {
     const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url; link.download = name; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -1016,12 +1212,13 @@ export class VideoModelOverlay {
       const placement = this.restoreScene ? this.resourceMatricesBeforeAR.get(id)
         : model.modelMatrix ? Matrix4.toArray(model.modelMatrix) : undefined;
       return { id, kind: item.kind, version: record?.updatedAt, files: record?.files, settings: record?.settings,
-        matrix: placement ?? record?.settings.matrix, scale: model.scale };
+        matrix: placement ?? record?.settings.matrix, scale: model.scale,
+        appearance: item.kind === 'Model' ? getModelAppearance(item.resource as Parameters<typeof getModelAppearance>[0]) : undefined };
     });
     return JSON.stringify({ algorithm: VIDEO_OVERLAY_BUILD, range, selected: [...this.selected].sort(), timing: this.readTiming(), resources, terrain,
       adjustments: this.adjustments, groupAdjustment: this.groupAdjustment, opacity: this.opacity, sceneReference: this.sceneReference,
       cameraRegistration: this.cameraRegistration, cameraAnchor: this.cameraAnchor, occlusion: this.occlusion,
-      annotations: this.annotations, spatialAnnotations: this.spatialAnnotations, effects: this.effects, includeAudio: this.el<HTMLInputElement>('ccExportAudio').checked,
+      effects: this.effects, includeAudio: this.el<HTMLInputElement>('ccExportAudio').checked,
       width: this.metadata?.width, height: this.metadata?.height });
   }
   private prepareCachedPlayback(download = false, autoplay = false): Promise<void> {
@@ -1094,15 +1291,15 @@ export class VideoModelOverlay {
           });
           check();
           if (signature !== this.cacheSignature(range)) throw new Error('生成期间模型或融合参数已变化，请重新生成缓存');
-          cached = await transaction.commit({ ...result, fileName: `${sourceFile.name.replace(/\.[^.]+$/, '')}-AR融合.webm` });
+          cached = await transaction.commit({ ...result, layer: 'base', spatialFrames: this.captureSpatialFrames(), fileName: `${sourceFile.name.replace(/\.[^.]+$/, '')}-AR融合.webm` });
         } finally { await transaction.abort(); }
       }
       check();
       if (signature !== this.cacheSignature(range)) throw new Error('融合资源已变化，缓存不能继续使用');
       const metadata = cached.metadata;
-      this.installCachedPreview(cached.file, metadata.start, metadata.end, signature, playbackTime, range);
-      this.el('ccPreviewStatus').textContent = `完整缓存已就绪 · ${metadata.frames} 帧 · ${metadata.width}×${metadata.height} · 原视频时间轴 · ${metadata.audioStatus === 'preserved' ? '含音轨' : '无音轨'}。退出后可复用本机缓存。`;
-      if (download) this.downloadBlob(cached.file, metadata.fileName ?? 'AR融合视频.webm');
+      this.installCachedPreview(cached.file, metadata.start, metadata.end, signature, playbackTime, range, metadata.spatialFrames);
+      this.el('ccPreviewStatus').textContent = `完整缓存已就绪 · ${metadata.frames} 帧 · ${metadata.width}×${metadata.height} · 原视频时间轴 · ${metadata.audioStatus === 'preserved' ? '含音轨' : '无音轨'}。可直接添加／修改标注，底层缓存保持；退出后可复用。`;
+      if (download) await this.downloadAnnotatedCache(cached, key, store, savedSchemeId, signal, check);
       if (autoplay) await this.cachedPreview!.video.play().catch(() => { this.options.notify('缓存已完成，点击播放即可观看'); });
       this.updatePlayback();
     }).catch(error => {
@@ -1144,7 +1341,7 @@ export class VideoModelOverlay {
   }
   private updatePlayback() {
     if (!this.controls) return;
-    if (this.cachedPreview) { const cached = this.cachedPreview; this.presentedTime = cached.start + cached.video.currentTime; this.lastFrameTime = this.presentedTime; this.wantedPlaying = !cached.video.paused; }
+    if (this.cachedPreview) { const cached = this.cachedPreview; this.presentedTime = cached.displayTime ?? cached.start + cached.video.currentTime; this.lastFrameTime = this.presentedTime; this.wantedPlaying = !cached.video.paused; }
     this.controls.querySelector('[data-cc-play]')!.textContent = this.wantedPlaying ? '暂停' : this.cachedPreview ? '播放' : this.cacheTask ? '正在准备…' : '缓存后播放';
     this.controls.querySelector('.cc-clock')!.textContent = `${clock(this.presentedTime ?? this.video.currentTime)} / ${clock(this.cachedPreview?.end ?? this.metadata?.duration ?? this.video.duration)}`;
     this.controls.querySelector<HTMLInputElement>('[data-cc-seek]')!.value = String(this.cachedPreview ? this.presentedTime : this.video.currentTime);

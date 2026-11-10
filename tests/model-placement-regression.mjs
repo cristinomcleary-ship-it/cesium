@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
-import { BoundingSphere, Cartesian2, Cartesian3, Matrix4, Ray, ScreenSpaceEventType, Transforms } from "cesium";
+import { BoundingSphere, Cartesian2, Cartesian3, EntityCollection, KeyboardEventModifier, Matrix4, Ray, ScreenSpaceEventType, Transforms } from "cesium";
 
 const directory = await mkdtemp(path.join(process.cwd(), ".model-placement-regression-"));
 try {
@@ -80,7 +80,7 @@ try {
   const canvas = new Surface();
   let pickPosition = target;
   const viewer = {
-    isDestroyed: () => false, canvas,
+    isDestroyed: () => false, canvas, entities: new EntityCollection(),
     scene: { canvas, pickPositionSupported: true, pickPosition: () => pickPosition, globe: { pick: () => undefined }, screenSpaceCameraController: { enableInputs: false }, requestRender() {}, pick: () => undefined },
     camera: { getPickRay: () => undefined, pickEllipsoid: () => undefined, positionCartographic: { longitude: 2, latitude: 0.5, height: 100 } },
   };
@@ -113,7 +113,8 @@ try {
   assert.equal(canvas.listenerCount, 0);
 
   let changed = 0;
-  const editor = new ModelEditor(viewer, () => changed++);
+  let transformChanges = 0;
+  const editor = new ModelEditor(viewer, (_item, _mode, _editing, transformChanged) => { changed++; if (transformChanged) transformChanges++; });
   let editorPickCalls = 0;
   viewer.scene.pick = () => { editorPickCalls++; return undefined; };
   const dragStart = () => editor.handler.getInputAction(ScreenSpaceEventType.LEFT_DOWN)({ position: new Cartesian2(0, 0) });
@@ -121,6 +122,13 @@ try {
   assert.equal(editorPickCalls, 0, "ordinary map navigation with no models must not trigger GPU picking");
   const entity = { modelMatrix: sourceMatrix, boundingSphere: new BoundingSphere(before, 5), isDestroyed: () => false, silhouetteSize: 0 };
   editor.add("a", "test", entity);
+  assert.equal(editor.isEditing, false, "loading/restoring a model never unlocks its position");
+  for (let index = 0; index < 25; index++) dragStart();
+  assert.equal(editorPickCalls, 0, "ordinary map navigation with loaded models also avoids GPU picking");
+  assert.equal(editor.setTransform({ east: 10 }), false, "hidden numeric controls cannot change a non-edited model");
+  assert.equal(editor.beginEditing("a"), true);
+  assert.equal(editor.isEditing, true);
+  assert.equal(transformChanges, 0, "starting editing does not invalidate an AR cache or write the resource");
   assert.equal(editor.setTransform({ east: 10, north: -20, up: 3, heading: 0.4 }), true);
   const centerAfter = Matrix4.multiplyByPoint(entity.modelMatrix, Cartesian3.ZERO, new Cartesian3());
   closePoint(centerAfter, Matrix4.multiplyByPoint(sourceMatrix, new Cartesian3(10, -20, 3), new Cartesian3()));
@@ -135,7 +143,11 @@ try {
   viewer.scene.screenSpaceCameraController.enableInputs = true;
   editor.select(null);
   dragStart();
-  assert.equal(editorPickCalls, 1, "a loaded model remains selectable with one pick");
+  assert.equal(editorPickCalls, 0, "a normal map click cannot start an edit session");
+  assert.equal(editor.getSelected(), null);
+  editor.beginEditing("a");
+  dragStart();
+  assert.equal(editorPickCalls, 1, "an explicitly edited model needs only one pick per drag");
   assert.equal(editor.getSelected().id, "a");
   assert.equal(viewer.scene.screenSpaceCameraController.enableInputs, false);
   editor.handler.getInputAction(ScreenSpaceEventType.MOUSE_MOVE)({ endPosition: new Cartesian2(5, 0) });
@@ -146,17 +158,81 @@ try {
   editor.handler.getInputAction(ScreenSpaceEventType.LEFT_DOWN)({ position: new Cartesian2(0, 0) });
   const resume = editor.suspendInteractions();
   assert.equal(viewer.scene.screenSpaceCameraController.enableInputs, false, "pre-existing camera lock is preserved");
+  assert.equal(editor.isEditing, false);
   resume(); resume();
+  assert.equal(editor.isEditing, true);
+  const changesBeforeRotateMode = transformChanges;
+  editor.setMode("rotate");
+  assert.equal(transformChanges, changesBeforeRotateMode, "changing tool mode does not mutate model data");
+  assert.equal(viewer.entities.values.length, 3, "rotation exposes center, axis and horizontal circle");
+  const pivot = editor.getRotationCenter();
+  closePoint(pivot, Matrix4.multiplyByPoint(sourceMatrix, new Cartesian3(10, -15, 3), new Cartesian3()));
+  closePoint(viewer.entities.values[0].position.getValue(), pivot);
+  const guideIds = viewer.entities.values.map(e => e.id);
+  const headingBeforeDrag = editor.getSelected().heading;
+  dragStart();
+  editor.handler.getInputAction(ScreenSpaceEventType.MOUSE_MOVE)({ endPosition: new Cartesian2(20, 0) });
+  close(editor.getSelected().heading - headingBeforeDrag, -10 * Math.PI / 180);
+  // Shift can start midway through an existing drag without a discontinuity.
+  editor.handler.getInputAction(ScreenSpaceEventType.MOUSE_MOVE, KeyboardEventModifier.SHIFT)({ endPosition: new Cartesian2(40, 0) });
+  close(editor.getSelected().heading - headingBeforeDrag, -11 * Math.PI / 180);
+  editor.handler.getInputAction(ScreenSpaceEventType.MOUSE_MOVE)({ endPosition: new Cartesian2(60, 0) });
+  close(editor.getSelected().heading - headingBeforeDrag, -21 * Math.PI / 180);
+  editor.handler.getInputAction(ScreenSpaceEventType.LEFT_UP, KeyboardEventModifier.SHIFT)();
+  assert.deepEqual(viewer.entities.values.map(e => e.id), guideIds, "heading-only rotation reuses guide entities");
+  closePoint(editor.getRotationCenter(), pivot);
+  closePoint(Matrix4.multiplyByPoint(entity.modelMatrix, Cartesian3.ZERO, new Cartesian3()), pivot);
+  assert.equal(editor.rotateByDegrees(0.1), true);
+  close(editor.getSelected().heading - headingBeforeDrag, -20.9 * Math.PI / 180);
+  const suspendOne = editor.suspendInteractions();
+  const suspendTwo = editor.suspendInteractions();
+  assert.equal(viewer.entities.values.length, 0, "AR/other tools do not render rotation guides");
+  assert.equal(entity.silhouetteSize, 0);
+  assert.equal(editor.rotateByDegrees(1), false, "suspended editing blocks numerical adjustments too");
+  suspendOne(); assert.equal(editor.isEditing, false);
+  suspendTwo(); assert.equal(editor.isEditing, true);
+  assert.equal(viewer.entities.values.length, 3);
+  const staleResume = editor.suspendInteractions();
+  editor.endEditing(); staleResume();
+  assert.equal(editor.isEditing, false, "a stale resume cannot reactivate a finished edit");
+  assert.equal(viewer.entities.values.length, 0);
+  assert.equal(entity.silhouetteSize, 0);
+  editor.beginEditing("a");
   assert.ok(changed > 2);
   assert.equal(editor.relocate("a", matrix, target), true);
   close(editor.getSelected().east, 0);
   editor.remove("a");
   assert.equal(editor.getSelected(), null);
+  assert.equal(viewer.entities.values.length, 0);
+  // A model's authored origin can be far from its geometric center (common in
+  // imported SKP files). Guides must identify the latter editing pivot.
+  const offCenterLocal = new Cartesian3(300, -120, 24);
+  const offCenterWorld = Matrix4.multiplyByPoint(sourceMatrix, offCenterLocal, new Cartesian3());
+  const offsetEntity = { modelMatrix: Matrix4.clone(sourceMatrix), boundingSphere: new BoundingSphere(offCenterWorld, 40), isDestroyed: () => false, silhouetteSize: 0 };
+  editor.add("offset", "off-center SKP", offsetEntity);
+  editor.beginEditing("offset");
+  editor.setTransform({ east: 14, north: -3, up: 9, heading: Math.PI / 2 });
+  const offsetPivot = editor.getRotationCenter();
+  closePoint(Matrix4.multiplyByPoint(offsetEntity.modelMatrix, offCenterLocal, new Cartesian3()), offsetPivot);
+  assert.ok(Cartesian3.distance(Matrix4.getTranslation(offsetEntity.modelMatrix, new Cartesian3()), offsetPivot) > 300,
+    "the visible pivot is not incorrectly inferred from modelMatrix translation");
+  closePoint(viewer.entities.values[0].position.getValue(), offsetPivot);
+  const axis = viewer.entities.values[1].polyline.positions.getValue();
+  const axisDirection = Cartesian3.normalize(Cartesian3.subtract(axis[1], axis[0], new Cartesian3()), new Cartesian3());
+  const expectedAxis = Matrix4.multiplyByPointAsVector(Transforms.eastNorthUpToFixedFrame(offCenterWorld), Cartesian3.UNIT_Z, new Cartesian3());
+  closePoint(axisDirection, expectedAxis);
+  // Clicking a different loaded model cannot silently retarget the session.
+  viewer.scene.pick = () => { editorPickCalls++; return { id: { engineeringModelId: "other" } }; };
+  const offsetBefore = Matrix4.clone(offsetEntity.modelMatrix);
+  dragStart(); editor.handler.getInputAction(ScreenSpaceEventType.MOUSE_MOVE)({ endPosition: new Cartesian2(100, 0) });
+  assert.equal(editor.getSelected().id, "offset");
+  assert.deepEqual(offsetEntity.modelMatrix, offsetBefore);
+  editor.remove("offset");
   const picksBeforeEmptyNavigation = editorPickCalls;
   for (let index = 0; index < 25; index++) dragStart();
   assert.equal(editorPickCalls, picksBeforeEmptyNavigation, "removing the last model restores navigation without GPU picking");
   editor.destroy(); editor.destroy();
   assert.equal(canvas.listenerCount, 0);
   assert.equal(window.listenerCount, 0);
-  console.log("PASS: GLB geometry anchoring; bounded streamed/Blob metadata; offset/scale/rotation; map click/sky/Escape/abort cleanup; zero empty-model GPU picks; loaded-model selection and rotated-view dragging; numeric translation; camera lock ownership and teardown.");
+  console.log("PASS: GLB geometry anchoring; bounded streamed/Blob metadata; offset/scale/rotation; map click/sky/Escape/abort cleanup; explicit edit sessions and zero idle GPU picks; rotated-view dragging; numerical translation; real-pivot guides; Shift precision; nested suspension and stale resume; camera lock ownership and teardown.");
 } finally { await rm(directory, { recursive: true, force: true }); }

@@ -49,6 +49,8 @@ import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader";
 import { loadLocalImagery, type LocalImageryResult } from "./localImagery";
 import { UnavailableMapTileDiscardPolicy } from "./imageryOverzoom";
 import { ModelEditor, type EditMode, type EditableModel } from "./modelEditor";
+import { applyModelAppearance, getModelAppearance } from "./modelAppearance";
+import { ModelAppearancePanel } from "./modelAppearancePanel";
 import { beginPickPlacement, getPlacementPreviewPosition, createAnchoredModelMatrix, fetchGlbPlacementBounds, type ModelPlacementBounds } from "./modelPlacement";
 import { gaussKrugerToWgs84, inferredZoneNumber, parseLongitude, type GaussAxisOrder, type GaussEllipsoid } from "./coordinateUtils";
 import { SubsurfaceTools, subsurfacePanelHtml } from "./subsurfaceTools";
@@ -343,17 +345,18 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       ${subsurfacePanelHtml}
       <div id="modelPlacementPrompt" class="model-placement-prompt" hidden role="status"><span>请在场景中点击模型放置位置，可先移动或缩放视图。Esc 取消。</span><button id="cancelModelPlacement" type="button">取消放置</button></div>
       <div id="modelTools" class="model-tools hidden">
-        <div class="tool-title"><span>模型位置调整</span><small id="editingModelName"></small></div>
+        <div class="tool-title"><span>模型位置调整</span><small id="editingModelName"></small><button id="finishModelEditing" type="button" title="结束调整并锁定位置（Esc）">完成调整</button></div>
         <div class="tool-buttons">
           <button data-edit-mode="horizontal" class="active">↔ 水平拖动</button>
           <button data-edit-mode="vertical">↕ 上下移动</button>
           <button data-edit-mode="rotate">↻ 旋转方向</button>
           <button id="resetModelTransform">重置</button>
         </div>
-        <div class="model-transform-fields"><label>向东（m）<input id="modelEditEast" type="number" step="0.1" value="0"></label><label>向北（m）<input id="modelEditNorth" type="number" step="0.1" value="0"></label><label>升高（m）<input id="modelEditUp" type="number" step="0.1" value="0"></label><label>旋转（°）<input id="modelEditHeading" type="number" step="1" value="0"></label></div>
+        <div class="model-transform-fields"><label>向东（m）<input id="modelEditEast" type="number" step="0.1" value="0"></label><label>向北（m）<input id="modelEditNorth" type="number" step="0.1" value="0"></label><label>升高（m）<input id="modelEditUp" type="number" step="0.1" value="0"></label><label>旋转（°）<input id="modelEditHeading" type="number" step="0.1" value="0"></label></div>
+        <div id="modelRotationControls" class="model-rotation-controls" hidden><button type="button" data-model-rotate="-1">−1°</button><span>中心轴为旋转基准 · 按住 Shift 精调</span><button type="button" data-model-rotate="1">+1°</button></div>
         <div class="tool-buttons model-transform-actions"><button id="applyModelTransform" type="button">应用数值</button><button id="relocateModel" type="button">重新点选位置</button><button id="locateEditingModel" type="button">定位此模型</button></div>
         <div id="modelTransformReadout">东 0.00m · 北 0.00m · 高 0.00m · 旋转 0.00°</div>
-        <div class="tool-hint">按住模型拖动，或输入数值调整；修改自动保存。重新点选位置会建立新的调整起点。</div>
+        <div class="tool-hint">仅当前模型可拖动；修改自动保存。旋转时按住 Shift 缩小为 1/10 步长；完成调整或 Esc 锁定位置。</div>
       </div>
       ${threeDReportStageHtml}
       <div id="toast" role="status"></div>
@@ -722,16 +725,19 @@ videoArFusion.onShowProjectionModels = () => {
   return models.length;
 };
 
-function updateModelTools(item: EditableModel | null, mode: EditMode) {
-  $("#modelTools").classList.toggle("hidden", !item);
+function updateModelTools(item: EditableModel | null, mode: EditMode, editing = false, transformChanged = false) {
+  $("#modelTools").classList.toggle("hidden", !item || !editing || !!videoModelOverlay?.active);
+  $("#modelRotationControls").hidden = mode !== "rotate";
   document.querySelectorAll<HTMLButtonElement>("[data-edit-mode]").forEach((button) => button.classList.toggle("active", button.dataset.editMode === mode));
   if (!item || videoModelOverlay?.active) return;
-  videoArFusion.invalidateProjection("model-transform-changed");
-  projectLibrary?.queueUpdate(item.id, { settings: {
-    matrix: Matrix4.toArray(item.model.modelMatrix), scale: item.model.scale,
-    editor: { baseMatrix: Matrix4.toArray(item.baseMatrix), center: [item.center.x, item.center.y, item.center.z],
-      east: item.east, north: item.north, up: item.up, heading: item.heading },
-  } });
+  if (transformChanged) {
+    videoArFusion.invalidateProjection("model-transform-changed");
+    projectLibrary?.queueUpdate(item.id, { settings: {
+      matrix: Matrix4.toArray(item.model.modelMatrix), scale: item.model.scale,
+      editor: { baseMatrix: Matrix4.toArray(item.baseMatrix), center: [item.center.x, item.center.y, item.center.z],
+        east: item.east, north: item.north, up: item.up, heading: item.heading },
+    } });
+  }
   $("#editingModelName").textContent = item.name;
   for (const [selector, number] of Object.entries({modelEditEast:item.east,modelEditNorth:item.north,modelEditUp:item.up,modelEditHeading:CesiumMath.toDegrees(item.heading)})) {
     const input=$<HTMLInputElement>(`#${selector}`); if(document.activeElement!==input)input.value=String(Number(number.toFixed(4)));
@@ -741,6 +747,19 @@ function updateModelTools(item: EditableModel | null, mode: EditMode) {
 }
 
 const modelEditor = new ModelEditor(viewer, updateModelTools);
+const modelAppearancePanel = new ModelAppearancePanel(document.body, {
+  onChange: (id, settings) => {
+    const item = imports.find(candidate => candidate.id === id && candidate.kind === "Model");
+    if (!item || !isImportAllowed(item) || videoModelOverlay?.active || (item.resource as Model).isDestroyed()) {
+      modelAppearancePanel.close(); throw new Error("模型当前不可编辑，请返回场景后重新选择");
+    }
+    applyModelAppearance(item.resource as Model, settings);
+    projectLibrary?.queueUpdate(id, { settings: { appearance: settings } });
+    viewer.scene.requestRender();
+  },
+  onError: message => toast(message, true),
+});
+onPageDispose(() => { modelEditor.destroy(); modelAppearancePanel.dispose(); });
 let resumeVideoOverlayInteractions: (() => void) | undefined;
 videoModelOverlay = new VideoModelOverlay(viewer, {
   canAccessVideo: () => isLibraryRecordAllowed({ kind: "Drone Video" }),
@@ -751,6 +770,8 @@ videoModelOverlay = new VideoModelOverlay(viewer, {
   },
   notify: toast,
   onEnter: () => {
+    modelEditor.endEditing();
+    modelAppearancePanel.close();
     temporaryWorks?.close();
     for (const plan of temporaryWorks?.getDisplayItems() ?? []) temporaryWorks?.setPlanVisible(plan.id, false);
     videoArFusion.setPanelActive(false);
@@ -1019,6 +1040,29 @@ $("#applyLocalBasemap").addEventListener("click", async () => {
 });
 document.querySelectorAll<HTMLButtonElement>("[data-edit-mode]").forEach((button) => button.addEventListener("click", () => modelEditor.setMode(button.dataset.editMode as EditMode)));
 $("#resetModelTransform").addEventListener("click", () => modelEditor.reset());
+$("#finishModelEditing").addEventListener("click", () => modelEditor.endEditing());
+document.querySelectorAll<HTMLButtonElement>("[data-model-rotate]").forEach(button => button.addEventListener("click", event => {
+  if (modelLoadBusy) return;
+  modelEditor.rotateByDegrees(Number(button.dataset.modelRotate) * (event.shiftKey ? 0.1 : 1));
+}));
+window.addEventListener("keydown", event => {
+  if (event.key !== "Escape" || event.isComposing || modelPlacementPending || modelLoadBusy) return;
+  if (modelEditor.isEditing) modelEditor.endEditing();
+});
+
+function beginModelEditing(item: ImportRecord): void {
+  if (modelLoadBusy || videoModelOverlay?.active || !isImportAllowed(item) || item.kind !== "Model") return;
+  if (!isImportDisplayed(item)) { toast("请先显示模型，再调整位置", true); return; }
+  modelAppearancePanel.close();
+  modelEditor.beginEditing(item.id);
+}
+
+function openModelAppearance(item: ImportRecord): void {
+  if (modelLoadBusy || videoModelOverlay?.active || !isImportAllowed(item) || item.kind !== "Model") return;
+  if (!isImportDisplayed(item)) { toast("请先显示模型，再调整外观", true); return; }
+  modelEditor.endEditing();
+  modelAppearancePanel.open({ id: item.id, name: item.name, settings: getModelAppearance(item.resource as Model) });
+}
 
 function locateImport(item: ImportRecord) {
   videoModelOverlay?.setPanelActive(false);
@@ -1057,7 +1101,14 @@ function renderLayerDirectory() {
     }
     row.querySelector(".visibility")?.addEventListener("click", () => setImportVisibility(item, !item.visible));
     row.querySelector(".fly")?.addEventListener("click", () => locateImport(item));
-    name.addEventListener("click", () => !videoModelOverlay?.active && item.kind === "Model" && item.visible && modelEditor.select(item.id));
+    if (item.kind === "Model") {
+      const actions = document.createElement("div"); actions.className = "layer-model-actions";
+      const edit = document.createElement("button"); edit.type = "button"; edit.textContent = "调整位置";
+      edit.disabled = !item.visible; edit.addEventListener("click", () => beginModelEditing(item));
+      const appearance = document.createElement("button"); appearance.type = "button"; appearance.textContent = "外观";
+      appearance.disabled = !item.visible; appearance.addEventListener("click", () => openModelAppearance(item));
+      actions.append(edit, appearance); row.append(actions);
+    }
     const removeButton = row.querySelector<HTMLButtonElement>(".remove")!;
     removeButton.title = '删除资料及场景对象';
     removeButton.setAttribute('aria-label', `删除资料${item.name}`);
@@ -1104,7 +1155,8 @@ function setImportVisibility(item: ImportRecord, visible: boolean, options: { si
   }
   else if (item.kind === "Model") {
     (item.resource as Model).show = visible;
-    if (!visible) modelEditor.select(null);
+    if (!visible && modelEditor.getSelected()?.id === item.id) modelEditor.endEditing();
+    if (!visible && modelAppearancePanel.activeId === item.id) modelAppearancePanel.close();
   } else {
     (item.resource as { show: boolean }).show = visible;
   }
@@ -1114,6 +1166,7 @@ function setImportVisibility(item: ImportRecord, visible: boolean, options: { si
 }
 
 function removeImport(item: ImportRecord) {
+  if (modelAppearancePanel.activeId === item.id) modelAppearancePanel.close();
   if(modelEditor.getSelected()?.id===item.id && modelPlacementPending)modelLoadController?.abort();
   modelPlacementBounds.delete(item.id);
   subsurfaceTools.detachImport(item);
@@ -2627,8 +2680,8 @@ $("#loadModel").addEventListener("click", async () => {
     modelEditor.add(id, sourceFile.name, model);
     viewer.camera.flyToBoundingSphere(model.boundingSphere, { duration: 1.5 });
     const warnings = Array.isArray(result.warnings) ? result.warnings.filter(item => typeof item === "string").join("；") : "";
-    updateModelLoadUi(`${sourceFile.name} 已放置并保存，可直接平移、升降或旋转调整。${warnings ? ` 转换提示：${warnings}` : ""}`);
-    toast(result.converted ? `${extension.toUpperCase()} 已转换并放置，可继续调整位置` : "模型已加载，可用鼠标调整位置");
+    updateModelLoadUi(`${sourceFile.name} 已放置并保存；需要修改时，请在场景显示中点击“调整位置”。${warnings ? ` 转换提示：${warnings}` : ""}`);
+    toast(result.converted ? `${extension.toUpperCase()} 已转换并放置，位置已锁定` : "模型已加载，点击“调整位置”后可编辑");
   } catch (error) {
     const cancelled = controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError");
     const message = cancelled ? "模型导入或放置已取消，未加入场景资料" : error instanceof Error ? error.message : "模型加载失败";
@@ -2668,6 +2721,7 @@ document.addEventListener('click', event => {
     event.preventDefault(); event.stopImmediatePropagation(); return;
   }
   if (target.dataset.tab !== "videoar") videoModelOverlay?.setPanelActive(false);
+  if (target.dataset.tab !== "models") { modelEditor.endEditing(); modelAppearancePanel.close(); }
   ++workbenchNavigationGeneration;
 }, true);
 
@@ -3423,7 +3477,9 @@ function syncSceneDisplay(): void {
       if (deleted) syncSceneDisplay();
       return deleted;
     },
-    edit: layer.kind === 'Model' ? () => { if (openExistingEditor('models')) modelEditor.select(layer.id); } : undefined });
+    editLabel: layer.kind === 'Model' ? '调整位置' : undefined,
+    appearance: layer.kind === 'Model' ? () => { if (openExistingEditor('models')) openModelAppearance(layer); } : undefined,
+    edit: layer.kind === 'Model' ? () => { if (openExistingEditor('models')) beginModelEditing(layer); } : undefined });
   if (isLibraryRecordAllowed({ kind: 'CAD' })) for (const load of cadLoads.values()) items.push({
     id: `layer:${load.id}`, name: load.name, category: 'CAD 图纸', visible: load.visible,
     detail: load.status, cancel: load.signal.aborted ? undefined : async () => { cadLoads.get(load.id)?.cancel(); await load.settled; },
@@ -3497,7 +3553,8 @@ function applyImportDisplay(layer: ImportRecord): void {
   if (resource.show === visible) return;
   resource.show = visible;
   if (layer.kind === '3D Tiles') { modelQualityTrackers.get(layer.id)?.invalidateView(); videoArFusion.invalidateProjection('display-preference-changed'); }
-  if (!visible && layer.kind === 'Model') modelEditor.select(null);
+  if (!visible && layer.kind === 'Model' && modelEditor.getSelected()?.id === layer.id) modelEditor.endEditing();
+  if (!visible && modelAppearancePanel.activeId === layer.id) modelAppearancePanel.close();
 }
 
 
