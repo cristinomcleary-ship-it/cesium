@@ -39,6 +39,18 @@ test('unchanged directory refreshes update callbacks without rerendering or appl
   f.panel.reapply(); assert.equal(f.applies(), applies + 1, 'hosts retain an explicit renderer-rebuild hook');
 });
 
+test('model appearance actions remain separate from position editing and refresh their labels', async () => {
+  const f = fixture(); let appearances = 0, positions = 0;
+  f.panel.setContext('project', 'actor', [item({ edit: () => { positions++; }, editLabel: '调整位置' })]);
+  const renders = f.renders(), applies = f.applies();
+  f.panel.setContext('project', 'actor', [item({ edit: () => { positions++; }, editLabel: '调整位置', appearance: () => { appearances++; } })]);
+  assert.equal(f.renders(), renders + 1); assert.equal(f.applies(), applies, 'appearance availability does not change scene visibility');
+  await f.panel.action('item-appearance', { dataset: { itemId: 'machine:one' }, disabled: false });
+  assert.equal(appearances, 1); assert.equal(positions, 0, 'changing appearance never activates position editing');
+  await f.panel.action('item-edit', { dataset: { itemId: 'machine:one' }, disabled: false });
+  assert.equal(positions, 1);
+});
+
 test('removing only a model cannot delete the resource row supplied by the removal snapshot', async () => {
   const f = fixture();
   f.panel.setContext('project', 'actor', [item({ removalPreservesResource: true, remove: async () => {

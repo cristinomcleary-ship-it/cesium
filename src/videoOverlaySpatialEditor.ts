@@ -16,7 +16,8 @@ export type VideoOverlaySpatialEditorOptions = {
   getDuration: () => number;
   onChange: (marks: SpatialAnnotation[]) => void;
   pick: (targetId: string, u: number, v: number) => Point;
-  onBeginPick?: () => void;
+  onBeginPick?: () => void | Promise<void>;
+  onEndPick?: () => void;
 };
 const labels: Record<SpatialAnnotationKind, string> = { label: '引线标签', route: '线形走向', area: '区域面' };
 const minimum: Record<SpatialAnnotationKind, number> = { label: 1, route: 2, area: 3 };
@@ -36,6 +37,8 @@ export class VideoOverlaySpatialEditor {
   private target = '';
   private draft?: Draft;
   private disposed = false;
+  private preparation = 0;
+  private preparing = false;
 
   constructor(options: VideoOverlaySpatialEditorOptions) {
     this.options = options;
@@ -95,7 +98,7 @@ export class VideoOverlaySpatialEditor {
             <label>淡出（秒）<input type="number" min="0" max="3600" step="0.05" data-sp-field="fadeOut"></label>
           </div><small>文字偏移只调整排版，不移动结构锚点；尺寸按 1080p 比例适配预览和导出。</small></details>
         </fieldset>
-        <small>采用透视说明样式：标绘绘制在融合画面上层，不参与遮挡裁切。关联对象隐藏或不可用时，标绘同步隐藏；修改后重新生成完整融合缓存。</small>
+        <small>采用透视说明样式：标绘绘制在融合画面上层，不参与遮挡裁切。关联对象隐藏或不可用时，标绘同步隐藏；标绘独立叠加在缓存视频上，增删与修改无需重算模型融合。</small>
         <div data-sp-error role="status" aria-live="polite"></div>
       </details></div>`;
     const signal = this.events.signal;
@@ -106,12 +109,13 @@ export class VideoOverlaySpatialEditor {
     this.render();
   }
 
-  get editing(): boolean { return !!this.draft; }
+  get editing(): boolean { return !!this.draft || this.preparing; }
   get annotations(): SpatialAnnotation[] { return structuredClone(this.marks); }
 
   /** Called before seek, camera edits or cache preparation; completed geometry is untouched. */
   cancelPicking() {
-    if (!this.draft || this.disposed) return;
+    ++this.preparation; this.preparing = false; this.options.onEndPick?.();
+    if (this.disposed) return;
     this.draft = undefined; this.error(''); this.render();
   }
 
@@ -128,7 +132,7 @@ export class VideoOverlaySpatialEditor {
     this.targets = targets.map(value => ({ ...value }));
     if (!this.targets.some(value => value.id === this.target)) this.target = this.targets[0]?.id ?? '';
     if (this.draft && !this.targets.some(value => value.id === this.draft?.target.id)) {
-      this.draft = undefined; this.error('绘制对象已隐藏或移除，本次未完成的绘制已取消。'); this.render(); return;
+      this.cancelPicking(); this.error('绘制对象已隐藏或移除，本次未完成的绘制已取消。'); this.render(); return;
     }
     this.renderTargets(); this.renderBinding(); this.renderDraft();
   }
@@ -152,7 +156,7 @@ export class VideoOverlaySpatialEditor {
       if (context) this.clearCanvas(context, this.canvas);
       if (this.previousStyle) Object.assign(this.canvas.style, this.previousStyle);
     }
-    this.canvas = undefined; this.previousStyle = undefined; this.draft = undefined;
+    this.canvas = undefined; this.previousStyle = undefined; this.draft = undefined; ++this.preparation; this.preparing = false;
     if (!this.disposed) this.render();
   }
 
@@ -183,15 +187,15 @@ export class VideoOverlaySpatialEditor {
   }
   private renderTargets() {
     this.optionsFor(this.query<HTMLSelectElement>('[data-sp-target]'), this.targets.map(value => ({ id: value.id, label: value.name })), this.target, '请先选择参与融合的模型 / CAD');
-    this.query<HTMLSelectElement>('[data-sp-target]').disabled = !!this.draft;
-    this.options.root.querySelectorAll<HTMLButtonElement>('[data-sp-add]').forEach(button => { button.disabled = !this.target || !!this.draft; });
+    this.query<HTMLSelectElement>('[data-sp-target]').disabled = this.editing;
+    this.options.root.querySelectorAll<HTMLButtonElement>('[data-sp-add]').forEach(button => { button.disabled = !this.target || this.editing; });
   }
   private renderList() {
     this.optionsFor(this.query<HTMLSelectElement>('[data-sp-list]'), this.marks.map((value, index) => ({
       id: value.id, label: `${index + 1}. ${value.visible ? '' : '已隐藏 · '}${labels[value.kind]} · ${value.text.replace(/\s+/g, ' ').slice(0, 22) || value.targetName}`,
     })), this.selected, '尚未添加结构标绘');
-    this.query<HTMLSelectElement>('[data-sp-list]').disabled = !!this.draft;
-    for (const key of ['repick', 'copy', 'delete']) this.query<HTMLButtonElement>(`[data-sp-${key}]`).disabled = !this.mark() || !!this.draft;
+    this.query<HTMLSelectElement>('[data-sp-list]').disabled = this.editing;
+    for (const key of ['repick', 'copy', 'delete']) this.query<HTMLButtonElement>(`[data-sp-${key}]`).disabled = !this.mark() || this.editing;
   }
   private renderBinding() {
     const mark = this.mark();
@@ -201,7 +205,7 @@ export class VideoOverlaySpatialEditor {
   }
   private renderFields() {
     const mark = this.mark();
-    this.query<HTMLFieldSetElement>('[data-sp-fields]').disabled = !mark || !!this.draft;
+    this.query<HTMLFieldSetElement>('[data-sp-fields]').disabled = !mark || this.editing;
     for (const input of this.options.root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('[data-sp-field]')) {
       const key = input.dataset.spField as keyof SpatialAnnotation;
       if (input instanceof HTMLInputElement && input.type === 'checkbox') input.checked = !!mark?.[key];
@@ -214,8 +218,8 @@ export class VideoOverlaySpatialEditor {
   }
   private renderDraft() {
     const draft = this.draft;
-    this.query('[data-sp-draft]').hidden = !draft;
-    this.query('[data-sp-progress]').textContent = draft ? `${labels[draft.kind]} · ${draft.target.name}：已选 ${draft.points.length} 点${draft.kind === 'label' ? '，点击结构确定标签锚点' : `，至少需要 ${minimum[draft.kind]} 点`}` : '';
+    this.query('[data-sp-draft]').hidden = !draft && !this.preparing;
+    this.query('[data-sp-progress]').textContent = draft ? `${labels[draft.kind]} · ${draft.target.name}：已选 ${draft.points.length} 点${draft.kind === 'label' ? '，点击结构确定标签锚点' : `，至少需要 ${minimum[draft.kind]} 点`}` : this.preparing ? '正在准备当前缓存帧的结构选点（Esc 取消）…' : '';
     this.query<HTMLButtonElement>('[data-sp-finish]').disabled = !draft || draft.points.length < minimum[draft.kind];
     this.query<HTMLButtonElement>('[data-sp-undo]').disabled = !draft?.points.length;
     if (this.canvas) {
@@ -229,11 +233,16 @@ export class VideoOverlaySpatialEditor {
   }
   private render() { this.renderTargets(); this.renderList(); this.renderFields(); this.renderDraft(); }
 
-  private begin(kind: SpatialAnnotationKind, original?: SpatialAnnotation) {
+  private async begin(kind: SpatialAnnotationKind, original?: SpatialAnnotation) {
     if (!original && this.marks.length >= 500) throw new Error('最多支持 500 条结构标绘，请先删除不需要的标绘。');
     const target = this.targets.find(value => value.id === this.target);
     if (!target) throw new Error('请先选择参与融合的模型或 CAD 对象。');
-    this.options.onBeginPick?.();
+    if (this.preparing) return;
+    const preparation = ++this.preparation;
+    this.preparing = true; this.error(''); this.render();
+    try { const ready = this.options.onBeginPick?.(); if (ready) await ready; }
+    finally { if (preparation === this.preparation) { this.preparing = false; this.render(); } }
+    if (preparation !== this.preparation || this.disposed) return;
     if (!this.canvas || !this.canvas.isConnected) throw new Error('请先进入融合编辑，暂停到目标结构清晰可见的画面，再开始标绘。');
     this.draft = { kind, target: { ...target }, points: [], screen: [], interval: this.interval(), original: original ? structuredClone(original) : undefined };
     this.error(''); this.render();
@@ -256,16 +265,16 @@ export class VideoOverlaySpatialEditor {
     this.marks[this.marks.indexOf(mark)] = next;
     this.error(''); this.renderList(); this.renderBinding(); this.emit();
   }
-  private readonly handleClick = (event: Event) => {
+  private readonly handleClick = async (event: Event) => {
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('button') : null;
     if (!button || !this.options.root.contains(button) || button.disabled) return;
     try {
-      if (button.dataset.spAdd) return this.begin(button.dataset.spAdd as SpatialAnnotationKind);
-      if (button.hasAttribute('data-sp-cancel')) { this.draft = undefined; this.error(''); this.render(); return; }
+      if (button.dataset.spAdd) return await this.begin(button.dataset.spAdd as SpatialAnnotationKind);
+      if (button.hasAttribute('data-sp-cancel')) { this.cancelPicking(); return; }
       if (button.hasAttribute('data-sp-undo')) { this.draft?.points.pop(); this.draft?.screen.pop(); this.error(''); this.renderDraft(); return; }
       if (button.hasAttribute('data-sp-finish')) return this.finish();
       const mark = this.mark(); if (!mark) return;
-      if (button.hasAttribute('data-sp-repick')) return this.begin(mark.kind, mark);
+      if (button.hasAttribute('data-sp-repick')) return await this.begin(mark.kind, mark);
       if (button.hasAttribute('data-sp-delete')) { this.marks = this.marks.filter(value => value.id !== mark.id); this.selected = this.marks[0]?.id ?? ''; }
       else if (button.hasAttribute('data-sp-copy')) { if (this.marks.length >= 500) throw new Error('最多支持 500 条结构标绘。'); const copy = createSpatialAnnotation(mark.kind, { ...structuredClone(mark), id: this.id(), text: `${mark.text}（副本）`.slice(0, 2000), offsetX: Math.min(4000, mark.offsetX + 20) }); this.marks.push(copy); this.selected = copy.id; }
       else if (button.hasAttribute('data-sp-now')) { this.replace(mark, this.interval()); this.renderFields(); return; }
@@ -306,8 +315,9 @@ export class VideoOverlaySpatialEditor {
     } catch (error) { this.error(error instanceof Error ? error.message : String(error)); }
   }
   private readonly keyDown = (event: KeyboardEvent) => {
+    if (!this.editing) return;
+    if (event.key === 'Escape') { this.cancelPicking(); event.preventDefault(); event.stopImmediatePropagation(); return; }
     if (!this.draft) return;
-    if (event.key === 'Escape') { this.draft = undefined; this.error(''); this.render(); event.preventDefault(); event.stopImmediatePropagation(); return; }
     const target = event.target;
     if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement || target instanceof HTMLElement && target.isContentEditable) return;
     if (event.key === 'Enter') {

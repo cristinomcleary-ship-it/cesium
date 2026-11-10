@@ -163,3 +163,28 @@ for (const blocked of ['movie', 'manifest']) {
     assert.equal(await (await reopened.get(key(12)))!.file.text(), 'keep bytes');
   });
 }
+
+
+test('annotation exports retain their base movie and frozen spatial frames across reloads', async () => {
+  const { root, store } = await setup();
+  const frames = { model: [1,0,0,0, 0,1,0,0, 0,0,1,0, 120,30,5,1] };
+  const base = await store.begin(key(20), { schemeId: 'layered' }); await write(base.handle, 'base pixels');
+  await base.commit({ ...metadata, layer: 'base', spatialFrames: frames });
+  for (let id = 21; id < 25; id++) {
+    const job = await store.begin(key(id), { schemeId: 'layered' }); await write(job.handle, 'annotation export');
+    await job.commit({ ...metadata, layer: 'annotated' });
+  }
+  const reopened = await VideoOverlayCacheStore.open({ root: root as unknown as FileSystemDirectoryHandle });
+  assert.deepEqual((await reopened.get(key(20)))!.metadata.spatialFrames, frames);
+  assert.equal(await (await reopened.get(key(20)))!.file.text(), 'base pixels');
+  assert.equal(await reopened.get(key(21)), undefined);
+  assert.ok(await reopened.get(key(23))); assert.ok(await reopened.get(key(24)));
+  await reopened.removeScheme('layered'); assert.equal(await reopened.get(key(20)), undefined);
+});
+
+test('invalid spatial frame metadata cannot publish a misleading annotation cache', async () => {
+  const { store } = await setup();
+  const job = await store.begin(key(25)); await write(job.handle, 'pixels');
+  await assert.rejects(job.commit({ ...metadata, layer: 'base', spatialFrames: { broken: [1,2] } }), /无效/);
+  assert.equal(await store.get(key(25)), undefined); await job.abort();
+});

@@ -3,6 +3,9 @@ export type VideoOverlayCacheMetadata = {
   width: number; height: number; frames: number; duration: number;
   start: number; end: number; mimeType: string; audioStatus: string;
   frameRate?: number; fileName?: string;
+  /** Base movies never contain annotation pixels. */
+  layer?: 'base' | 'annotated';
+  spatialFrames?: Record<string, number[]>;
 };
 export type VideoOverlayCachedMovie = { file: File; metadata: VideoOverlayCacheMetadata };
 export type VideoOverlayCacheTransaction = {
@@ -108,7 +111,12 @@ function validMetadata(value: unknown): value is VideoOverlayCacheMetadata {
     && Number.isFinite(m.start) && m.start >= 0 && Number.isFinite(m.end) && m.end > m.start
     && Math.abs(m.end - m.start - m.duration) < .01
     && ['video/webm', 'video/mp4'].includes(m.mimeType) && typeof m.audioStatus === 'string'
-    && (m.frameRate === undefined || Number.isFinite(m.frameRate) && m.frameRate > 0);
+    && (m.frameRate === undefined || Number.isFinite(m.frameRate) && m.frameRate > 0)
+    && (m.layer === undefined || m.layer === 'base' || m.layer === 'annotated')
+    && (m.spatialFrames === undefined || !!m.spatialFrames && typeof m.spatialFrames === 'object' && !Array.isArray(m.spatialFrames)
+      && Object.entries(m.spatialFrames).length <= 2000
+      && Object.entries(m.spatialFrames).every(([id, frame]) => id.length > 0 && id.length <= 240 && Array.isArray(frame)
+        && frame.length === 16 && frame.every(Number.isFinite)));
 }
 
 /** OPFS stores bytes; a small, atomically closed manifest publishes a completed generation. */
@@ -136,7 +144,7 @@ export class VideoOverlayCacheStore {
     let file: File;
     try { file = await (await this.directory.getFileHandle(`${cacheKey(key)}.json`)).getFile(); }
     catch (error) { if (isNotFound(error)) return undefined; throw storageError(error); }
-    if (file.size > 65536) return undefined;
+    if (file.size > 2 * 1024 * 1024) return undefined;
     let m: CacheManifest;
     try { m = JSON.parse(await file.text()); } catch { return undefined; }
     if (m?.version !== 1 || m.key !== key || !new RegExp(`^${key}-[a-f0-9-]+\\.movie$`).test(m.file)
@@ -204,7 +212,7 @@ export class VideoOverlayCacheStore {
           { type: metadata.mimeType, lastModified: file.lastModified }), metadata: manifest.metadata };
         // A cleanup error must not turn an already published movie into a failed recording.
         if (previous && previous.file !== fileName) await this.removeFile(previous.file).catch(error => console.warn('[AR cache] Old generation cleanup failed', error));
-        await this.prune(manifest.schemeId, key).catch(error => console.warn('[AR cache] Cache retention cleanup failed', error));
+        await this.prune(manifest.schemeId, key, metadata.layer).catch(error => console.warn('[AR cache] Cache retention cleanup failed', error));
         return committed;
       } catch (error) {
         await writer?.abort().catch(() => {});
@@ -238,8 +246,8 @@ export class VideoOverlayCacheStore {
     return result;
   }
 
-  private async prune(schemeId: string, currentKey: string): Promise<void> {
-    const candidates = (await this.manifests()).filter(m => m.schemeId === schemeId && m.key !== currentKey)
+  private async prune(schemeId: string, currentKey: string, layer?: VideoOverlayCacheMetadata['layer']): Promise<void> {
+    const candidates = (await this.manifests()).filter(m => m.schemeId === schemeId && m.key !== currentKey && m.metadata.layer === layer)
       .sort((a, b) => b.createdAt - a.createdAt || a.key.localeCompare(b.key));
     for (const candidate of candidates.slice(this.versionsPerScheme - 1)) await this.remove(candidate.key);
   }

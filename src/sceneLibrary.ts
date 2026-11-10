@@ -10,6 +10,7 @@ import { loadCadPrimitiveCollection } from "./cadPrimitiveLoader";
 import { clampCadToScene, getCadBoundingSphere, getCadModelSamplingExclusions, loadCadImport, useSampledCadHeights } from "./dxfLoader";
 import { loadLocalImagery, type LocalImageryResult } from "./localImagery";
 import type { ModelEditor } from "./modelEditor";
+import { applyModelAppearance } from "./modelAppearance";
 import type { ImportRecord } from "./types";
 import { LibraryRequestError, libraryRequest, jsonRequest, type LibraryRecord, type LibrarySettings, type LibraryKind, type LibraryFile, type LibraryListing, type SceneView } from "./projectLibrary";
 
@@ -374,6 +375,7 @@ export class SceneLibrary {
         const model = await Model.fromGltfAsync({ url, modelMatrix: s.matrix ? Matrix4.fromArray(s.matrix) : Matrix4.clone(Matrix4.IDENTITY), scale: s.scale ?? 1, minimumPixelSize: 0, id: { engineeringModelId: id } });
         h.viewer.scene.primitives.add(model); cleanup = () => { h.viewer.scene.primitives.remove(model); };
         await h.waitForModelReady(model, 30_000);
+        applyModelAppearance(model, s.appearance);
         h.addImport(record.name, "Model", model, id); h.modelEditor.add(id, record.name, model, s.editor);
         model.show = record.visible;
       } else if (record.kind === "CAD") {
