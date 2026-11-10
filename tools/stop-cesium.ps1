@@ -2,6 +2,11 @@
 param()
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+$currentStop = Join-Path $projectRoot 'output/current-version/stop.ps1'
+if (Test-Path -LiteralPath $currentStop) {
+  & $currentStop @PSBoundParameters
+  return
+}
 $statePath = Join-Path $projectRoot 'output/local-service/service.json'
 $servicePort = 5173
 # Import only read-only process inspection commands without propagating WhatIf

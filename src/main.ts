@@ -798,6 +798,7 @@ projectLibrary = new SceneLibrary({
   clearVideo: () => { videoModelOverlay!.clear(); videoArFusion.clear(); },
   shouldSaveView: () => !videoModelOverlay?.active,
   canReadRecord: isLibraryRecordAllowed,
+  prepareRecordDeletion: id => sceneDisplayPanel?.prepareItemDeletion(`layer:${id}`),
   libraryChanged: () => { renderVideoOverlaySchemes(); scheduleSceneDisplay(); },
   layersChanged: renderLayers,
 });
@@ -1057,13 +1058,14 @@ function renderLayerDirectory() {
     row.querySelector(".visibility")?.addEventListener("click", () => setImportVisibility(item, !item.visible));
     row.querySelector(".fly")?.addEventListener("click", () => locateImport(item));
     name.addEventListener("click", () => !videoModelOverlay?.active && item.kind === "Model" && item.visible && modelEditor.select(item.id));
-    row.querySelector(".remove")?.setAttribute('title', '移出场景，保留已保存资料');
-    row.querySelector(".remove")?.setAttribute('aria-label', `将${item.name}移出场景`);
-    row.querySelector(".remove")?.addEventListener("click", () => {
-      if (projectLibrary?.owns(item.id)) void projectLibrary.unload(item.id)
-        .then(unloaded => { if (!unloaded) toast('移出场景未完成，请等待当前操作结束后重试。', true); })
-        .catch(error => toast(error instanceof Error ? error.message : String(error), true));
-      else removeImport(item);
+    const removeButton = row.querySelector<HTMLButtonElement>(".remove")!;
+    removeButton.title = '删除资料及场景对象';
+    removeButton.setAttribute('aria-label', `删除资料${item.name}`);
+    removeButton.addEventListener("click", async () => {
+      removeButton.disabled = true;
+      try { await deleteImportedResource(item); }
+      catch (error) { toast(error instanceof Error ? error.message : String(error), true); }
+      finally { removeButton.disabled = false; }
     });
   });
   for (const load of pending) {
@@ -1074,6 +1076,18 @@ function renderLayerDirectory() {
     cancel.addEventListener('click', () => cadLoads.get(load.id)?.cancel());
     row.append(badge, name, cancel); root.append(row);
   }
+}
+
+/** User deletion must commit the saved record deletion before releasing its scene object. */
+async function deleteImportedResource(item: ImportRecord): Promise<boolean> {
+  if (!isImportAllowed(item)) throw new Error('当前账号无法访问此资源');
+  if (projectLibrary?.owns(item.id)) return projectLibrary.delete(item.id);
+  if (!imports.includes(item)) return true;
+  if (!window.confirm(`删除场景对象“${item.name}”？\n此对象尚无已保存资料；电脑上最初选择的导入文件不受影响。`)) return false;
+  const finishDeletion = sceneDisplayPanel?.prepareItemDeletion(`layer:${item.id}`);
+  removeImport(item);
+  finishDeletion?.();
+  return true;
 }
 
 function setImportVisibility(item: ImportRecord, visible: boolean, options: { silent?: boolean; deferRender?: boolean } = {}) {
@@ -3400,14 +3414,14 @@ function syncSceneDisplay(): void {
   foundationPitMonitoring.setDisplayContext(JSON.stringify([state?.projectId ?? 'workbench-local', state?.actorId ?? null]));
   const layerTypes = { 'CAD': 'CAD 图纸', '3D Tiles': '实景模型', 'GIS': 'GIS 数据', 'Model': '工程模型', 'Drone Video': '无人机视频' };
   for (const layer of imports.filter(isImportAllowed)) items.push({ id: `layer:${layer.id}`, name: layer.name, category: layerTypes[layer.kind], visible: layer.visible,
-    removalKind: 'unload',
+    removalKind: 'delete', removalConfirmedByHost: true,
+    removalDescription: '删除已保存资料、平台文件副本和场景对象；电脑上的原始文件不受影响。',
     detail: layer.kind === '3D Tiles' ? modelQualityTrackers.get(layer.id)?.getState().label : undefined,
     locate: () => { locateImport(layer); },
     remove: async () => {
-      if(!isImportAllowed(layer))throw new Error('当前账号无法访问此资源');
-      if(projectLibrary?.owns(layer.id)){if(!await projectLibrary.unload(layer.id))throw new Error('移出场景未完成，请检查资料库提示后重试');}
-      else if(imports.includes(layer))removeImport(layer);
-      syncSceneDisplay();
+      const deleted = await deleteImportedResource(layer);
+      if (deleted) syncSceneDisplay();
+      return deleted;
     },
     edit: layer.kind === 'Model' ? () => { if (openExistingEditor('models')) modelEditor.select(layer.id); } : undefined });
   if (isLibraryRecordAllowed({ kind: 'CAD' })) for (const load of cadLoads.values()) items.push({

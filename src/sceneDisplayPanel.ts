@@ -126,6 +126,20 @@ export class SceneDisplayPanel {
   }
   getOverrides(): Record<string, boolean> { return this.store.getOverrides(); }
 
+  /** Owners outside this panel capture the scope before starting an async delete. */
+  prepareItemDeletion(id: string): () => void {
+    const scope = this.store.scopeKey, revision = this.contextRevision;
+    return () => {
+      if (!scope) return;
+      this.store.removeItems([id], scope);
+      if (this.disposed || this.store.scopeKey !== scope || this.contextRevision !== revision) return;
+      this.items = this.items.filter(item => item.id !== id);
+      this.itemsById.delete(id); this.selected.delete(id);
+      this.store.setItems(this.items); this.directorySignature = "";
+      this.render(); this.apply();
+    };
+  }
+
   setContext(projectId: string, actorId: string | undefined, items: readonly SceneDisplayItem[]): void {
     if (this.disposed) return;
     const changed = this.store.setContext(projectId, actorId);

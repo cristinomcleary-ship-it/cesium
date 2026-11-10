@@ -374,3 +374,52 @@ test('startup reconciles already deleted video caches and exposes failed cleanup
   assert.equal(f.owner.cleanupPending.get('old-video').kind, 'Drone Video');
   assert.match(f.owner.error, /cache occupied/);
 });
+
+test('all library resource kinds notify captured display cleanup only after durable deletion', async () => {
+  for (const kind of ['Model', 'CAD', '3D Tiles', 'GIS', 'Imagery', 'Drone Video']) {
+    const f = fixture(); f.prepareRestore(); f.owner.records.set(f.record.id, { ...f.record, kind });
+    let prepared = 0, completed = 0;
+    f.owner.hooks.prepareRecordDeletion = id => {
+      prepared++; assert.equal(id, f.record.id); assert.equal(f.owner.records.has(id), true);
+      return () => { completed++; assert.equal(f.owner.deleted.has(id), true); assert.equal(f.owner.records.has(id), false); };
+    };
+    assert.equal(await f.owner.delete(f.record.id), true, kind);
+    assert.equal(prepared, 1, kind); assert.equal(completed, 1, kind);
+  }
+});
+
+test('cancelled, unauthorized and failed library deletes retain display preferences', async () => {
+  for (const failure of ['cancel', 'permission', 'network', 'server']) {
+    const f = fixture(); f.prepareRestore(); let completed = 0;
+    f.owner.hooks.prepareRecordDeletion = () => () => { completed++; };
+    if (failure === 'cancel') globalThis.window.confirm = () => false;
+    if (failure === 'permission') f.owner.hooks.canReadRecord = () => false;
+    if (failure === 'network') globalThis.fetch = async () => { throw new Error('offline'); };
+    if (failure === 'server') globalThis.fetch = async () => Response.json({ error: 'storage unavailable' }, { status: 503 });
+    assert.equal(await f.owner.delete(f.record.id), false, failure);
+    assert.equal(completed, 0, failure); assert.equal(f.owner.records.has(f.record.id), true, failure);
+  }
+});
+
+test('tombstoned library deletion clears display records even when physical cleanup must retry', async () => {
+  const f = fixture(); f.prepareRestore(); let completed = 0;
+  f.owner.hooks.prepareRecordDeletion = () => () => { completed++; };
+  globalThis.fetch = async () => Response.json({ error: 'file busy', code: 'FILE_DELETE_PENDING', deleted: true }, { status: 503 });
+  assert.equal(await f.owner.delete(f.record.id, false), false);
+  assert.equal(completed, 1); assert.equal(f.owner.records.has(f.record.id), false);
+  assert.equal(f.owner.cleanupPending.has(f.record.id), true);
+});
+
+test('display cleanup is captured before async deletion and temporary unload never prepares it', async () => {
+  const deleteGate = deferred(), f = fixture({ deleteGate }); f.prepareRestore();
+  let currentScope = 'project-a/actor-a', captured = '', completed = '';
+  f.owner.hooks.prepareRecordDeletion = () => {
+    const scope = currentScope; captured = scope;
+    return () => { completed = scope; };
+  };
+  assert.equal(await f.owner.unload(f.record.id), true); assert.equal(captured, '');
+  const deletion = f.owner.delete(f.record.id, false); await f.deleteStarted.promise;
+  assert.equal(captured, currentScope); assert.equal(completed, '');
+  currentScope = 'project-b/actor-b'; deleteGate.resolve();
+  assert.equal(await deletion, true); assert.equal(completed, 'project-a/actor-a');
+});

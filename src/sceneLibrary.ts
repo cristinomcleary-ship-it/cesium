@@ -32,6 +32,8 @@ type Hooks = {
   layersChanged: () => void;
   canReadRecord?: (record: Pick<LibraryRecord, "kind">) => boolean;
   libraryChanged?: () => void;
+  /** Capture the initiating display scope; invoke only after durable deletion. */
+  prepareRecordDeletion?: (id: string) => (() => void) | undefined;
 };
 type Draft = { id: string; name: string; kind: LibraryKind; settings: LibrarySettings; files: Record<string, { name: string; blob: Blob }>; copy?: { type: "tiles"; path: string } | { type: "model"; url: string } };
 export type VideoOverlaySaveProgress = { phase: "uploading" | "committing"; loaded: number; total: number };
@@ -536,7 +538,8 @@ export class SceneLibrary {
     if (!target) return true;
     if (this.hooks.canReadRecord?.(target) === false) { this.hooks.notify("当前账号没有此资料的删除权限", true); return false; }
     const { name, kind } = target;
-    if (confirm && !window.confirm("删除资料“" + name + "”？\n将删除资料库记录、平台保存的文件副本及当前场景对象；关联该资料的内容可能无法再打开原件。电脑上最初选择的导入文件不受影响。\n若只需暂时移出画面，请使用场景目录中的“隐藏”或“移出场景”。")) return false;
+    if (confirm && !window.confirm("删除资料“" + name + "”？\n将删除资料库记录、平台保存的文件副本及当前场景对象；关联该资料的内容可能无法再打开原件。电脑上最初选择的导入文件不受影响。\n若只需暂时移出画面，请使用场景目录中的“隐藏”。")) return false;
+    const completeDisplayDeletion = this.hooks.prepareRecordDeletion?.(id);
     const unsaved = this.updates.get(id);
     this.deleting.add(id); this.updates.delete(id); this.pending++; this.render();
     try {
@@ -564,6 +567,12 @@ export class SceneLibrary {
     }
     finally {
       this.deleting.delete(id); this.pending--;
+      // Library buttons and video-scheme controls bypass SceneDisplayPanel.removeItem.
+      // A durable tombstone also counts when only file/cache cleanup needs a retry.
+      if (this.deleted.has(id)) {
+        try { completeDisplayDeletion?.(); }
+        catch (error) { this.hooks.notify("资料已删除，但显示分组清理未完成：" + this.message(error), true); }
+      }
       if (this.updates.has(id) && !this.updateTimer) this.updateTimer = window.setTimeout(() => { this.updateTimer = 0; void this.flush(); }, 120);
       this.render();
       this.hooks.layersChanged();

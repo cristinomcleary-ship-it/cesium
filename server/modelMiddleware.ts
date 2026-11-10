@@ -315,9 +315,11 @@ function runConverter(converter: ReadyConverter, args: string[], cwd: string, si
   });
 }
 
-export function createModelMiddleware(projectRoot: string) {
+export function createModelMiddleware(projectRoot: string, options: { converterRoot?: string } = {}) {
   const cacheRoot = resolve(projectRoot, ".model-cache");
-  const configPath = resolve(projectRoot, "model-converters.json");
+  // A launcher may keep writable data separate from the installed converters.
+  const converterRoot = resolve(options.converterRoot ?? projectRoot);
+  const configPath = resolve(converterRoot, "model-converters.json");
   mkdirSync(cacheRoot, { recursive: true });
   let conversionBusy = false;
 
@@ -325,7 +327,7 @@ export function createModelMiddleware(projectRoot: string) {
     const requestUrl = new URL(request.url ?? "/", "http://localhost");
     if (requestUrl.pathname === "/__models/status") {
       const loaded = loadConfig(configPath);
-      const inspections = Object.fromEntries(FORMATS.map((format) => [format, inspectConverter(format, loaded, projectRoot)])) as Record<ConverterFormat, ConverterInspection>;
+      const inspections = Object.fromEntries(FORMATS.map((format) => [format, inspectConverter(format, loaded, converterRoot)])) as Record<ConverterFormat, ConverterInspection>;
       return sendJson(response, 200, {
         native: ["glb"],
         converters: Object.fromEntries(FORMATS.map((format) => [format, inspections[format].available])),
@@ -347,7 +349,7 @@ export function createModelMiddleware(projectRoot: string) {
       let converter: ReadyConverter | undefined;
       let ownsConversionSlot = false;
       if (extension !== "glb") {
-        const inspection = inspectConverter(extension as ConverterFormat, loadConfig(configPath), projectRoot);
+        const inspection = inspectConverter(extension as ConverterFormat, loadConfig(configPath), converterRoot);
         if (!inspection.available || !inspection.converter) {
           return sendJson(response, 422, {
             ok: false,

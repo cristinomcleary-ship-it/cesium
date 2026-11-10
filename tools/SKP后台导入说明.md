@@ -38,6 +38,22 @@ SKP 不是浏览器能够直接读取的格式。后台转换使用 SketchUp 官
 
 已有配置如果指向**本项目**的 `tools\sketchup-to-glb.cmd`，更新后会自动使用新的后台实现。其他旧桌面启动脚本会显示“已停用”，不会悄悄打开 SketchUp。
 
+## 本机运行目录排查
+
+本机启动入口是 `F:\codex\cesium\output\current-version\server.mjs`，原端口为 `5289`；源码和转换配置位于 `F:\codex\cesium`，服务工作目录（cwd）是 `F:\codex\cesium\output\current-version\workspace`。排查前先核对监听进程的 Node 路径、启动参数及运行包装，并查看 `http://127.0.0.1:5289/__acceptance/identity` 或入口旁的 `server-identity.json`，确认正在修复的确实是当前服务。
+
+运行包装设置 `CESIUM_MODEL_CONVERTER_ROOT=F:\codex\cesium`，仅用于查找源码安装中的 `model-converters.json` 和转换工具；模型转换缓存仍保留在服务 cwd 下，不应为修复 SDK 改动原端口、数据目录或已有模型。
+
+`model-converters.json` 中的 `skp.sdkDirectory` 优先于 `CESIUM_SKETCHUP_SDK_DIR`。先确认服务实际读取的配置，再核实服务进程继承的环境变量；当前终端的环境变量不能证明已运行服务继承了相同值。运行身份中的 `modelConverterRoot` 与 `sketchupSdkEnvironment` 可用于核对这两个值。修改环境后应通过原入口重启服务，并检查 `/__models/status`。
+
+使用启动平台的同一 Node，对实际生效的 SDK 目录执行加载检查。本机现有命令如下（路径改变时同步替换）：
+
+```powershell
+& 'F:\Node.js\node.exe' 'F:\codex\cesium\tools\sketchup-headless.mjs' --check --sdk 'C:\Program Files\Common Files\Autodesk Shared\Components\2026\1.8.0'
+```
+
+如果 SDK 检查成功，导入仍返回 `ACCEPTANCE_CONVERSION_DISABLED`，继续检查本机启动包装是否在原导入中间件之前拦截导入接口。历史验收包装曾包含此拦截；该错误不能通过重复安装 SDK 解决。解除相应拦截后，还需以真实 SKP 验证后台转换、地图点选放置、平移旋转及保存刷新，确认全程没有启动 SketchUp 窗口。
+
 ## 日常操作
 
 - 导入后点选模型放置位置；SKP 模型的底部中心与落点对齐。

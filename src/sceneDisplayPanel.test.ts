@@ -117,3 +117,39 @@ test('a professional owner confirmation is reused without a duplicate confirmati
   await f.panel.removeItem('machine:one');
   assert.equal(confirmations, 0); assert.equal(removals, 1); assert.equal(f.panel.items.length, 1);
 });
+
+test('external persisted deletion clears only the deleted member and survives reloading preferences', () => {
+  const f = fixture(), id = 'layer:model', other = 'layer:cad';
+  const rows = [item({ id }), item({ id: other })];
+  f.panel.setContext('project', 'actor', rows);
+  f.panel.setVisibility([id, other], false);
+  f.store.createGroup('资料', [id, other]);
+  const completed = f.panel.prepareItemDeletion(id);
+  assert.equal(f.panel.items.length, 2, 'preparing a delete does not remove anything');
+  completed();
+  assert.deepEqual(f.panel.items.map((row: SceneDisplayItem) => row.id), [other]);
+  assert.deepEqual(f.store.getOverrides(), { [other]: false });
+  assert.deepEqual(f.store.getGroups()[0].members, [other]);
+  f.panel.setContext('different', 'actor', []);
+  f.panel.setContext('project', 'actor', [rows[1]]);
+  assert.deepEqual(f.store.getOverrides(), { [other]: false });
+  assert.deepEqual(f.store.getGroups()[0].members, [other], 'no deleted member remains as temporarily unavailable');
+});
+
+for (const next of [{ project: 'another-project', actor: 'actor' }, { project: 'project', actor: 'another-actor' }]) {
+  test(`external deletion captures its initial scope across ${next.project}/${next.actor}`, () => {
+    const f = fixture(), id = 'layer:model';
+    f.panel.setContext('project', 'actor', [item({ id })]);
+    f.panel.setVisibility([id], false); f.store.createGroup('原分组', [id]);
+    const completed = f.panel.prepareItemDeletion(id);
+    f.panel.setContext(next.project, next.actor, [item({ id, name: '当前项目资料' })]);
+    f.panel.setVisibility([id], false); const group = f.store.createGroup('当前分组', [id]);
+    const renders = f.renders(), applies = f.applies();
+    completed();
+    assert.equal(f.panel.items[0].name, '当前项目资料');
+    assert.deepEqual(f.store.getOverrides(), { [id]: false }); assert.deepEqual(f.store.getGroups(), [group]);
+    assert.equal(f.renders(), renders); assert.equal(f.applies(), applies);
+    f.panel.setContext('project', 'actor', []);
+    assert.deepEqual(f.store.getOverrides(), {}); assert.deepEqual(f.store.getGroups()[0].members, []);
+  });
+}

@@ -1,6 +1,15 @@
 param([ValidateRange(1024,65535)][int]$Port = 5173, [switch]$NoBrowser)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
+$currentLauncher = Join-Path $projectRoot 'output/current-version/start.ps1'
+if (Test-Path -LiteralPath $currentLauncher) {
+  if ($PSBoundParameters.ContainsKey('Port') -and $Port -ne 5289) { throw 'The selected local version uses port 5289.' }
+  & $currentLauncher -NoBrowser
+  $dashboardUrl = 'http://127.0.0.1:5289/?screen=safety'
+  Write-Host $dashboardUrl
+  if (-not $NoBrowser) { Start-Process $dashboardUrl }
+  return
+}
 $dashboardUrl = "http://127.0.0.1:$Port/?screen=safety"
 function Test-DashboardSessionResponse([int]$Status, [string]$ContentType, [string]$Content) {
   if ($ContentType -notmatch '^application/json(?:;|$)') { return $false }

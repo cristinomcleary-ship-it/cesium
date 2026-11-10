@@ -1,0 +1,115 @@
+{
+  "version": "v1.2.1",
+  "date": "2026-11-10",
+  "branch": "codex/backup-v1.2.1-20261110",
+  "sourceBaseline": "c697c0d0443af779329275a898383f68c4ab96a8",
+  "backupType": "Application source and runtime launcher reference; private site data excluded",
+  "nodeVersion": "24.21.0",
+  "verifiedBuildIndexSha256": "e566fdc4414e978097420db4926eade52de75ee7e8ca52b489efdf8fc8353ffd",
+  "validation": {
+    "displayAndStore": 21,
+    "libraryLifecycle": 25,
+    "persistenceHttp": 7,
+    "liveBrowser": 23,
+    "restartBrowser": 2,
+    "typescript": true,
+    "build": true
+  },
+  "includedChangedFiles": [
+    {
+      "file": "server/modelMiddleware.ts",
+      "sha256": "2ec9ea8aea0ac96efad2b18c5550cc868da9d68770bc049bcbed9510c0c6fe14"
+    },
+    {
+      "file": "src/main.ts",
+      "sha256": "19c037efed50487bb1dee980bd77cf41dcf9bb3976c5c88397d24e9fe203e34c"
+    },
+    {
+      "file": "src/sceneDisplayPanel.test.ts",
+      "sha256": "7ec2d6bd01d3fd7cdc332eac1b84ce67447429c25d23fc48bd3bf93132962f47"
+    },
+    {
+      "file": "src/sceneDisplayPanel.ts",
+      "sha256": "c04f73495394987b270a9fbdee793dd6899d3f8bd1ee8be631d2465345e9ce59"
+    },
+    {
+      "file": "src/sceneLibrary.ts",
+      "sha256": "80cc752b581f44dc2955ac2b17309e1b1645f75229e3708a282a23df3c47150a"
+    },
+    {
+      "file": "tests/model-middleware-headless.test.mjs",
+      "sha256": "95e2108d7e43e89766b0a0249f2f743a8a97d6e7171e39aa15653f6ed1485bcf"
+    },
+    {
+      "file": "tests/scene-library-cad-lifecycle.test.mjs",
+      "sha256": "def059322d2bbeccbb4705270e6110dc12d7d9e9b6cc309ebff0a6a3dccf6b7a"
+    },
+    {
+      "file": "tools/SKP后台导入说明.md",
+      "sha256": "7dacbd37041ce13f895c922adb5150f093d338a2d9a32429eda7fb43aa5afb39"
+    },
+    {
+      "file": "tools/start-cesium.ps1",
+      "sha256": "44148223009790fae5b01f3b4423cc17d477f39f8a7b1ebe70a9d9134419b02b"
+    },
+    {
+      "file": "tools/start-safety-dashboard.ps1",
+      "sha256": "9ddc8c323d79db1ed98d366c4fd5c190b16d9d88fea9417aaf4c7b6255e9e50b"
+    },
+    {
+      "file": "tools/stop-cesium.ps1",
+      "sha256": "ded8fe51ff5e36b5c2068b5ba66da697d3d22ca49193efafe2b06f4f81f0131a"
+    },
+    {
+      "file": "vite.config.ts",
+      "sha256": "645dcb1e69b45ccfa784ecc85c6f5e6224dc547d4ff31a6190e2b6e99c849c6b"
+    },
+    {
+      "file": "停止Cesium.cmd",
+      "sha256": "7e0722053090fe23c4a1bdea28f6c52f96683394c6afb05d9f0f59fe870848dd"
+    },
+    {
+      "file": "启动Cesium.cmd",
+      "sha256": "224e6bc78735ea2308fcbb7940883c5db14e3920b6934879f74d4c3a95366613"
+    },
+    {
+      "file": "启动安全巡检大屏.cmd",
+      "sha256": "45ddafe1a4664433f6409d99250c7eb30eff5e2dc028802f481d8ec8e8bc3902"
+    },
+    {
+      "file": "tests/library-removal-persistence.test.mjs",
+      "sha256": "a5fb856328abac347072827a2ae4e9c2766cb2f50f167e24e61f339a9dd1addf"
+    },
+    {
+      "file": "docs/releases/v1.2.1.md",
+      "sha256": "3796fcb27a5fa47e9a6570dc4f7b9fc39da6e00541098eb7d23de08038eee3bf"
+    },
+    {
+      "file": "docs/releases/v1.2.1-runtime/README.md",
+      "sha256": "78b992aa2b3d1c21c439e3d437af5b2d34d8eac6416bf706957d1b6290c528f1"
+    },
+    {
+      "file": "docs/releases/v1.2.1-runtime/server.mjs",
+      "sha256": "b3c7cb4ffcef5fc3ebb7b5d219e1f7559f8fb50389bffd1d266592c75a9b4df5"
+    },
+    {
+      "file": "docs/releases/v1.2.1-runtime/start.ps1",
+      "sha256": "770b170118f7ab56c24cce08ba448e312c9b0e84de299d80ad49f50050b052bd"
+    },
+    {
+      "file": "docs/releases/v1.2.1-runtime/stop.ps1",
+      "sha256": "2698e95235abee7107f97acbbb42dddcc91034eece8213ad2da70ea3c9e9706e"
+    }
+  ],
+  "privateLocalExclusions": [
+    "project-data/",
+    "output/",
+    "node_modules/",
+    "dist/",
+    ".local-backups/",
+    "model-converters.json",
+    ".env*",
+    "tools/sketchup-sdk/",
+    "public/models/temporary-works/"
+  ]
+}

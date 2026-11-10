@@ -534,8 +534,8 @@ const localTilesPlugin = {
 
 const engineeringModelsPlugin = {
   name: "engineering-models",
-  configureServer(server: { middlewares: { use: (handler: ReturnType<typeof createModelMiddleware>) => void } }) { server.middlewares.use(createModelMiddleware(process.cwd())); },
-  configurePreviewServer(server: { middlewares: { use: (handler: ReturnType<typeof createModelMiddleware>) => void } }) { server.middlewares.use(createModelMiddleware(process.cwd())); },
+  configureServer(server: { middlewares: { use: (handler: ReturnType<typeof createModelMiddleware>) => void } }) { server.middlewares.use(createModelMiddleware(process.cwd(), { converterRoot: process.env.CESIUM_MODEL_CONVERTER_ROOT })); },
+  configurePreviewServer(server: { middlewares: { use: (handler: ReturnType<typeof createModelMiddleware>) => void } }) { server.middlewares.use(createModelMiddleware(process.cwd(), { converterRoot: process.env.CESIUM_MODEL_CONVERTER_ROOT })); },
 };
 
 const localImageryPlugin = {
