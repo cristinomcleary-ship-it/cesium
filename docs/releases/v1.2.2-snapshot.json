@@ -1,0 +1,72 @@
+{
+  "version": "v1.2.2",
+  "date": "2026-11-11",
+  "branch": "codex/backup-v1.2.2-20261111",
+  "applicationSourceCommit": "84300b4dedccc3f0116f03332c3ada914da95485",
+  "sourcePullRequest": 13,
+  "backupType": "Application source plus deployment notes and actual runtime wrapper references; private site data excluded",
+  "deployedOn": "2026-11-10",
+  "nodeVersion": "24.21.0",
+  "verifiedBuildIndexSha256": "53a2d2f0eaa1249c473416f7e699466eca31210cfb031cddfa605e88e7b170d7",
+  "productSourceModified": false,
+  "validation": {
+    "automated": {
+      "tests": 1570,
+      "passed": 1568,
+      "failed": 0,
+      "skipped": 2
+    },
+    "modelBrowser": {
+      "synthetic": 7,
+      "actualSkpConverted": 7
+    },
+    "arBrowser": {
+      "enhanced": 10,
+      "actualProject": 5,
+      "actualClipSeconds": [
+        9,
+        9.6
+      ],
+      "fullVideoFrameAccuracyVerified": false
+    },
+    "postArPlatform": 11,
+    "liveProductionBrowser": 8,
+    "desktopColdStart": true,
+    "desktopReuse": true
+  },
+  "newFiles": [
+    {
+      "file": "docs/releases/v1.2.2.md",
+      "sha256": "54e9b282dc09663edbdd605c90dd18c3089968f74a525484591680417412ad0b"
+    },
+    {
+      "file": "docs/releases/v1.2.2-runtime/README.md",
+      "sha256": "5c5f93f14cb70317b1f5d50a94839688278991591e65c2e7489ddae493299daf"
+    },
+    {
+      "file": "docs/releases/v1.2.2-runtime/server.mjs",
+      "sha256": "65bef9d64ea8db0933322de88061f8bb5312e4115e9212fde4d8306d930fde4a"
+    },
+    {
+      "file": "docs/releases/v1.2.2-runtime/start.ps1",
+      "sha256": "72a93acbebc34b66a252c2cd480f50f18153c9bed27d10ec29edda55b856263a"
+    },
+    {
+      "file": "docs/releases/v1.2.2-runtime/stop.ps1",
+      "sha256": "45735658355de3644a64f2eb2ea441d4b31f5301caa0f030f057be66227419a4"
+    }
+  ],
+  "privateLocalExclusions": [
+    "project-data/",
+    "output/",
+    "node_modules/",
+    "dist/",
+    ".local-backups/",
+    "model-converters.json",
+    ".env*",
+    "SDK DLLs",
+    "public/models/temporary-works/",
+    "browser IndexedDB/OPFS",
+    "site acceptance captures and raw reports"
+  ]
+}
