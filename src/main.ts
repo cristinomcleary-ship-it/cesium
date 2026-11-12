@@ -54,6 +54,7 @@ import { ModelAppearancePanel } from "./modelAppearancePanel";
 import { beginPickPlacement, getPlacementPreviewPosition, createAnchoredModelMatrix, fetchGlbPlacementBounds, type ModelPlacementBounds } from "./modelPlacement";
 import { gaussKrugerToWgs84, inferredZoneNumber, parseLongitude, type GaussAxisOrder, type GaussEllipsoid } from "./coordinateUtils";
 import { SubsurfaceTools, subsurfacePanelHtml } from "./subsurfaceTools";
+import { SurfaceEditController } from "./surfaceEditController";
 import { FoundationPitMonitoring, foundationPitMonitoringPanelHtml } from "./foundationPitMonitoring";
 import { ThreeDReport, threeDReportPanelHtml, threeDReportStageHtml } from "./threeDReport";
 import { MarkupTools, markupPanelHtml } from "./markupTools";
@@ -94,6 +95,7 @@ import './functionCenters.css';
 import { prepareWorkbenchLeave } from './workbenchNavigation';
 
 let temporaryWorks: TemporaryWorksPanel | undefined;
+let surfaceEdits: SurfaceEditController | undefined;
 let sceneDisplayPanel: SceneDisplayPanel | undefined;
 let functionCenters: FunctionCentersController | undefined;
 let sceneDisplayReady = false, sceneDisplayFrame = 0;
@@ -343,6 +345,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         <p class="hint">文件只在当前页面本地读取，不上传。关闭或刷新页面后需重新选择。</p>
       </div>
       ${subsurfacePanelHtml}
+      <div id="surfaceEditPanel" class="surface-edit-panel hidden"></div>
       <div id="modelPlacementPrompt" class="model-placement-prompt" hidden role="status"><span>请在场景中点击模型放置位置，可先移动或缩放视图。Esc 取消。</span><button id="cancelModelPlacement" type="button">取消放置</button></div>
       <div id="modelTools" class="model-tools hidden">
         <div class="tool-title"><span>模型位置调整</span><small id="editingModelName"></small><button id="finishModelEditing" type="button" title="结束调整并锁定位置（Esc）">完成调整</button></div>
@@ -709,7 +712,9 @@ function toast(message: string, error = false) {
   window.setTimeout(() => { element.className = ""; }, 3600);
 }
 
-const videoArFusion = new VideoArFusion(viewer, toast, setStatus);
+const videoArFusion = new VideoArFusion(viewer, toast, setStatus, {
+  suspendExternalSceneEffects: () => surfaceEdits?.suspendExternalSceneEffects(),
+});
 videoArFusion.onGetProjectionModels = () => imports.filter(item => item.kind === "3D Tiles").map(item => {
   const tileset = item.resource as Cesium3DTileset;
   return { id: item.id, name: item.name, visible: item.visible, runtimeVisible: tileset.show,
@@ -762,6 +767,7 @@ const modelAppearancePanel = new ModelAppearancePanel(document.body, {
 onPageDispose(() => { modelEditor.destroy(); modelAppearancePanel.dispose(); });
 let resumeVideoOverlayInteractions: (() => void) | undefined;
 videoModelOverlay = new VideoModelOverlay(viewer, {
+  suspendExternalSceneEffects: () => surfaceEdits?.suspendExternalSceneEffects(),
   canAccessVideo: () => isLibraryRecordAllowed({ kind: "Drone Video" }),
   getImports: () => imports.filter(isImportAllowed),
   getRecord: id => {
@@ -1051,6 +1057,7 @@ window.addEventListener("keydown", event => {
 });
 
 function beginModelEditing(item: ImportRecord): void {
+  surfaceEdits?.close();
   if (modelLoadBusy || videoModelOverlay?.active || !isImportAllowed(item) || item.kind !== "Model") return;
   if (!isImportDisplayed(item)) { toast("请先显示模型，再调整位置", true); return; }
   modelAppearancePanel.close();
@@ -1563,6 +1570,55 @@ temporaryWorks = new TemporaryWorksPanel({
   toast,
 });
 onPageDispose(() => temporaryWorks?.destroy());
+
+try {
+  surfaceEdits = new SurfaceEditController({
+    viewer, root: $("#surfaceEditPanel"),
+    getContext: () => {
+      const state = managementWorkspace?.getWorkbenchMachineryState();
+      return state?.canView && managementWorkspace?.getWorkbenchLayerAccess().files && state.projectId
+        ? JSON.stringify([state.projectId, state.actorId ?? null]) : null;
+    },
+    getTargets: () => imports.flatMap(item => {
+      if (item.kind !== "3D Tiles" || !isImportDisplayed(item)) return [];
+      const tileset = item.resource as Cesium3DTileset;
+      return !tileset.isDestroyed() && tileset.show ? [{ id: item.id, name: item.name, tileset }] : [];
+    }),
+    canEdit: () => Boolean(managementWorkspace?.getWorkbenchMachineryState().canEdit && managementWorkspace.getWorkbenchLayerAccess().files),
+    beginInteractionSession: () => {
+      if (document.body.classList.contains('workbench-machinery-open')) throw new Error('请先完成或关闭施工机械编辑，再绘制地表范围。');
+      const drawing = document.querySelector<HTMLButtonElement>("#markupCancelDrawing");
+      if (drawing && !drawing.disabled) throw new Error("请先完成或取消当前标绘，再绘制地表编辑范围。");
+      viewer.camera.cancelFlight(); temporaryWorks?.close();
+      const restores: Array<() => void> = [];
+      const restore = () => {
+        for (const resume of restores.splice(0).reverse()) {
+          try { resume(); } catch (error) { console.warn('[Surface edit] Unable to restore an interaction owner', error); }
+        }
+      };
+      try {
+        restores.push(modelEditor.suspendInteractions());
+        restores.push(subsurfaceTools.suspendInteractions());
+        restores.push(foundationPitMonitoring.suspendInteractions());
+        const markup = markupTools?.suspendInteractions(); if (markup) restores.push(markup);
+      } catch (error) { restore(); throw error; }
+      return restore;
+    },
+    onChanged: scheduleSceneDisplay,
+    onVisibilityChange: (id, visible) => sceneDisplayPanel?.setVisibility([`surface-edit:${id}`], visible),
+    toast,
+  });
+  const entry = document.createElement('button'); entry.type = 'button'; entry.id = 'openSurfaceEdit'; entry.textContent = '地表编辑';
+  entry.title = '地表开挖、土体补面与局部压平';
+  document.querySelector('.map-controls')?.insertBefore(entry, $("#openSubsurfacePanel"));
+  entry.addEventListener('click', () => {
+    videoModelOverlay?.setPanelActive(false); videoArFusion.setPanelActive(false);
+    $("#subsurfacePanel").classList.add('hidden'); surfaceEdits?.open();
+  });
+  document.querySelector('.tabs')?.addEventListener('click', () => surfaceEdits?.close());
+  $("#openSubsurfacePanel").addEventListener('click', () => surfaceEdits?.close());
+  onPageDispose(() => { surfaceEdits?.destroy(); entry.remove(); });
+} catch (error) { console.error('[Surface edit] Initialization failed without modifying the existing scene', error); }
 
 try {
   sandTableFacilities = new SandTableFacilities(viewer, {
@@ -3350,6 +3406,7 @@ function setWorkbenchMachineryPanelOpen(open: boolean): void {
   if (resumeWorkbenchMachineryInteractions) return;
   const cancelMarkup = document.querySelector<HTMLButtonElement>('#markupCancelDrawing');
   if (cancelMarkup && !cancelMarkup.disabled) throw new Error('请先完成或取消当前标绘，再打开施工机械。');
+  surfaceEdits?.close();
   digitalTwinOverview.close(); electronicSandTable?.stopTour();
   sandTablePresentation?.deactivate(); sandTableFacilities?.deactivate();
   videoModelOverlay?.setPanelActive(false);
@@ -3377,13 +3434,15 @@ function setWorkbenchDock(mode: 'display' | 'editor'): void {
 }
 
 function canLeaveWorkbench(target?: string): boolean {
-  return prepareWorkbenchLeave(target, {
+  const allowed = prepareWorkbenchLeave(target, {
     modelBusy: modelLoadBusy || modelPlacementPending || modelPlacementSaving,
     markupPicking: markupTools?.hasActiveInteraction ?? false,
     pitPicking: foundationPitMonitoring.hasActiveInteraction,
     closeTemporaryWorks: () => temporaryWorks?.close() ?? true,
     notify: message => toast(message, true),
   });
+  if (allowed) surfaceEdits?.close();
+  return allowed;
 }
 
 /** Directory shortcuts select the original editor only after its navigation succeeds. */
@@ -3432,7 +3491,12 @@ async function openCenterAction(action: FunctionCenterAction): Promise<boolean> 
   return workspace.openBusinessModule(route[0], route[1], () => navigation === workbenchNavigationGeneration);
 }
 function scheduleSceneDisplay(): void {
-  if (!sceneDisplayReady || sceneDisplayFrame) return;
+  if (!sceneDisplayReady) return;
+  // Release the old project's new effects immediately, before the display-list rAF.
+  const state = managementWorkspace?.getWorkbenchMachineryState();
+  const files = managementWorkspace?.getWorkbenchLayerAccess().files;
+  surfaceEdits?.setContext(state?.canView && files && state.projectId ? JSON.stringify([state.projectId, state.actorId ?? null]) : null, Boolean(state?.canEdit && files));
+  if (sceneDisplayFrame) return;
   sceneDisplayFrame = requestAnimationFrame(() => { sceneDisplayFrame = 0; if (sceneDisplayReady) syncSceneDisplay(); });
 }
 function syncSceneDisplay(): void {
@@ -3449,6 +3513,19 @@ function syncSceneDisplay(): void {
     } };
   };
   const access = managementWorkspace?.getWorkbenchLayerAccess();
+  surfaceEdits?.setContext(state?.canView && access?.files && state.projectId ? JSON.stringify([state.projectId, state.actorId ?? null]) : null, Boolean(state?.canEdit && access?.files));
+  for (const plan of surfaceEdits?.getDisplayItems() ?? []) {
+    items.push({ id: `surface-edit:${plan.id}`, name: plan.name, category: "地表编辑", detail: plan.typeName, visible: plan.visible,
+      locate: () => surfaceEdits?.locatePlan(plan.id), edit: () => surfaceEdits?.editPlan(plan.id),
+      removalConfirmedByHost: true,
+      remove: state?.canEdit && access?.files ? async () => {
+        const current = managementWorkspace?.getWorkbenchMachineryState();
+        if (context !== JSON.stringify([current?.projectId, current?.actorId]) || !current?.canEdit || !managementWorkspace?.getWorkbenchLayerAccess().files)
+          throw new Error('项目或账号权限已变化，请重新选择地表方案。');
+        return surfaceEdits?.removePlan(plan.id) ?? false;
+      } : undefined,
+    });
+  }
   void temporaryWorks?.setProject(state?.canView && access?.files && state.projectId ? state.projectId : null, { force: true });
   for (const plan of temporaryWorks?.getDisplayItems() ?? []) {
     items.push({ id: `temporary-works:${plan.id}`, name: plan.name, category: "临建规划", detail: plan.typeName, visible: plan.visible,
@@ -3501,6 +3578,7 @@ function syncSceneDisplay(): void {
 }
 function applySceneDisplay(overrides: Record<string,boolean>, labelsVisible: boolean): void {
   sceneDisplayOverrides = overrides;
+  for (const plan of surfaceEdits?.getDisplayItems() ?? []) surfaceEdits?.setPlanVisible(plan.id, overrides[`surface-edit:${plan.id}`] ?? plan.visible);
   applyPendingCadDisplay();
   for (const plan of temporaryWorks?.getDisplayItems() ?? []) {
     temporaryWorks?.setPlanVisible(plan.id, !videoModelOverlay?.active && (overrides[`temporary-works:${plan.id}`] ?? plan.visible));

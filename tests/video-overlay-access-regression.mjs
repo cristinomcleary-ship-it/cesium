@@ -4,19 +4,23 @@ import { pathToFileURL } from 'node:url';
 import { resolve, sep } from 'node:path';
 import { build } from 'esbuild';
 import ts from 'typescript';
-import { BoundingSphere, Cartesian3, Event, GroundPolylinePrimitive, JulianDate, Matrix4, Primitive, PrimitiveCollection, Transforms } from 'cesium';
+import { BoundingSphere, Cartesian3, EllipsoidTerrainProvider, Event, GroundPolylinePrimitive, JulianDate, Matrix4, Primitive, PrimitiveCollection, Transforms } from 'cesium';
 
 // Exercise the production host callbacks and AR resource owner together, without WebGL.
 const workspace = resolve(process.cwd());
 const directory = await mkdtemp(`${workspace}/.video-overlay-access-test-`);
 assert.ok(resolve(directory).startsWith(workspace + sep), 'temporary fixture stays within this workspace');
 const oldDocument = globalThis.document, oldFetch = globalThis.fetch;
+const originalPrimitiveUpdate = Primitive.prototype.update;
 try {
+  // Run the production scheduler's update wrappers while replacing only GPU
+  // compilation. Assigning _ready without update() never starts its queue job.
+  Primitive.prototype.update = function () { this._ready = true; };
   await build({ stdin: { contents: 'export { VideoModelOverlay } from "./src/videoModelOverlay.ts"; export { VideoOverlayResources } from "./src/videoOverlayResources.ts";', resolveDir: process.cwd(), loader: 'ts' },
     outfile: `${directory}/fixture.mjs`, bundle: true, platform: 'node', format: 'esm', packages: 'external', loader: { '.css': 'empty' } });
   const { VideoModelOverlay, VideoOverlayResources } = await import(pathToFileURL(`${directory}/fixture.mjs`).href);
   const source = ts.createSourceFile('main.ts', await readFile('src/main.ts', 'utf8'), ts.ScriptTarget.Latest, true);
-  const names = ['isLibraryRecordAllowed', 'isImportAllowed', 'isImportDisplayed', 'applyImportDisplay', 'applySceneDisplay', 'renderWorkbenchMachinery'];
+  const names = ['isLibraryRecordAllowed', 'isImportAllowed', 'isImportDisplayed', 'applyImportDisplay', 'applyPendingCadDisplay', 'applySceneDisplay', 'renderWorkbenchMachinery'];
   const declarations = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text));
   assert.equal(declarations.length, names.length);
   let overlayOptions;
@@ -26,7 +30,7 @@ try {
   }
   visit(source);
   const property = name => overlayOptions.properties.find(node => node.name?.getText(source) === name).initializer.getText(source);
-  const hostCode = ts.transpileModule(`${declarations.map(node => node.getText(source)).join('\n')}\nreturn { ${names.join(',')}, getImports: ${property('getImports')}, canAccessVideo: ${property('canAccessVideo')}, onExit: ${property('onExit')} };`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const hostCode = ts.transpileModule(`${declarations.map(node => node.getText(source)).join('\n')}\nreturn { ${names.join(',')}, getImports: ${property('getImports')}, canAccessVideo: ${property('canAccessVideo')}, onExit: ${property('onExit')}, suspendExternalSceneEffects: ${property('suspendExternalSceneEffects')} };`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   let permissions = { models: true, files: true, media: true }, scheduled = 0;
   const imports = [], nodes = new Map();
   class Element {
@@ -40,29 +44,37 @@ try {
   globalThis.document = { createElement: () => new Element(), createTextNode: text => text, getElementById: id => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); }, querySelector: () => null };
   const container = new Element(); container.parentElement = new Element();
   const postRender = new Event();
-  const compile = primitive => {
-    if (primitive instanceof PrimitiveCollection) { if (primitive.show) for (let i = 0; i < primitive.length; i++) compile(primitive.get(i)); }
-    else if (primitive instanceof Primitive) primitive._ready = true;
-  };
   let renderQueued = false;
-  const viewer = { container, clock: { currentTime: JulianDate.now() }, scene: { primitives: new PrimitiveCollection(), postRender, requestRender() {
+  const viewer = { container, terrainProvider: new EllipsoidTerrainProvider(), clock: { currentTime: JulianDate.now() }, scene: { primitives: new PrimitiveCollection(), postRender, requestRender() {
     if (renderQueued || !postRender.numberOfListeners) return;
     renderQueued = true;
-    queueMicrotask(() => { renderQueued = false; compile(viewer.scene.primitives); postRender.raiseEvent(); });
+    queueMicrotask(() => { renderQueued = false; viewer.scene.primitives.update({}); postRender.raiseEvent(); });
   } }, isDestroyed: () => false, resize() {} };
   const blankCompositor = () => ({ clearOverlay: () => true, dispose() {} });
   const owner = Object.assign(Object.create(VideoModelOverlay.prototype), {
     viewer, selected: new Set(), selectionInitialized: false, destroyed: false, epoch: 0,
     occlusion: { enabled: false, sourceId: '' },
     presentationEditor: { unmount() {}, setValue() {}, destroy() {} }, annotations: [],
+    spatialEditor: { unmount() {}, setValue() {}, destroy() {} }, spatialAnnotations: [],
     video: { pause() {}, removeAttribute() {}, load() {} }, updateTargets() {},
   });
-  const host = new Function('managementWorkspace', 'imports', 'videoModelOverlay', 'viewer', 'scheduleSceneDisplay', 'modelEditor', 'projectLibrary', 'sceneDisplayPanel', 'document', `
+  const cadLoads = new Map();
+  let surfaceSuspensions = 0, surfaceRequestedVisible = true;
+  const surfaceEdits = {
+    getDisplayItems: () => [{ id: 'fixture-surface', visible: true }],
+    setPlanVisible(id, visible) { assert.equal(id, 'fixture-surface'); surfaceRequestedVisible = visible; },
+    suspendExternalSceneEffects() {
+      surfaceSuspensions++;
+      let released = false;
+      return () => { if (!released) { released = true; surfaceSuspensions--; } };
+    },
+  };
+  const host = new Function('managementWorkspace', 'imports', 'videoModelOverlay', 'viewer', 'scheduleSceneDisplay', 'modelEditor', 'projectLibrary', 'sceneDisplayPanel', 'document', 'surfaceEdits', 'cadLoads', `
     let sceneDisplayOverrides = {}, resumeVideoOverlayInteractions;
-    const markupTools = undefined, foundationPitMonitoring = { setDisplayVisibility() {} }, modelQualityTrackers = new Map(), videoArFusion = { invalidateProjection() {} };
+    const markupTools = undefined, temporaryWorks = undefined, foundationPitMonitoring = { setDisplayVisibility() {} }, modelQualityTrackers = new Map(), videoArFusion = { invalidateProjection() {} }, modelAppearancePanel = { close() {} };
     ${hostCode}`)(
-    { getWorkbenchLayerAccess: () => permissions, setWorkbenchDisplayVisibility() {} }, imports, owner, viewer, () => scheduled++, { select() {} }, { saveView() {}, render() {} }, { labelsVisible: true }, globalThis.document);
-  owner.options = { getImports: host.getImports, getRecord: () => undefined, onExit: host.onExit, canAccessVideo: host.canAccessVideo };
+    { getWorkbenchLayerAccess: () => permissions, setWorkbenchDisplayVisibility() {} }, imports, owner, viewer, () => scheduled++, { select() {}, getSelected: () => undefined, endEditing() {} }, { saveView() {}, render() {} }, { labelsVisible: true }, globalThis.document, surfaceEdits, cadLoads);
+  owner.options = { getImports: host.getImports, getRecord: () => undefined, onExit: host.onExit, canAccessVideo: host.canAccessVideo, suspendExternalSceneEffects: host.suspendExternalSceneEffects };
   const anchor = Cartesian3.fromDegrees(120, 30, 25), base = Transforms.eastNorthUpToFixedFrame(anchor);
   const model = { id: 'restricted-model', name: 'Private model', kind: 'Model', visible: true, resource: { show: false, modelMatrix: Matrix4.clone(base), boundingSphere: new BoundingSphere(anchor, 20), isDestroyed: () => false } };
   const cadLeaf = { show: true, modelMatrix: Matrix4.clone(Matrix4.IDENTITY), isDestroyed: () => false, destroy() {} };
@@ -85,6 +97,7 @@ try {
   owner.setPanelActive(false);
   assert.equal(model.resource.show, false);
   assert.equal(cad.resource.show, false, 'exit reapplies saved map visibility');
+  assert.deepEqual(owner.cleanupReport.errors, [], 'the fixture supplies every production exit dependency without masking cleanup errors');
 
   permissions.models = true; model.resource.show = true;
   owner.selected = new Set([model.id, cad.id]);
@@ -152,7 +165,7 @@ try {
 
   // Ground-clamped CAD has a separate temporary renderer: revoke that copy too.
   const root = new PrimitiveCollection();
-  root.add(Object.assign(Object.create(GroundPolylinePrimitive.prototype), { show: true, isDestroyed: () => false, destroy() {} }));
+  root.add(Object.assign(Object.create(GroundPolylinePrimitive.prototype), { show: true, update() {}, isDestroyed: () => false, destroy() {} }));
   const ground = { id: 'ground-cad', name: 'Private ground CAD', kind: 'CAD', representation: 'primitive', visible: true, resource: root };
   imports.push(ground); viewer.scene.primitives.add(root);
   const saved = { settings: { displayMode: 'terrain', coordinates: { mode: 'local', longitude: 120, latitude: 30, altitude: 25, referenceX: 0, referenceY: 0, rotation: 0, scale: 1 } }, files: { data: { url: '/fixture.cadimport' } } };
@@ -211,9 +224,20 @@ try {
   const mediaGate = owner.options.canAccessVideo; delete owner.options.canAccessVideo;
   assert.doesNotThrow(() => owner.assertVideoAccess(), 'standalone fixtures without a permission hook keep their prior behavior');
   owner.options.canAccessVideo = mediaGate;
+  permissions.media = true;
+  host.applySceneDisplay({ 'surface-edit:fixture-surface': false }, true);
+  owner.setPanelActive(true); owner.setPanelActive(true);
+  assert.equal(surfaceSuspensions, 1, 'the production host hook acquires one shared map-effects lease for the AR panel');
+  assert.equal(surfaceRequestedVisible, false, 'opening AR preserves the saved hidden surface preference');
+  owner.enterHooksActive = true;
+  owner.setPanelActive(false); owner.setPanelActive(false);
+  assert.equal(surfaceSuspensions, 0, 'leaving AR releases the new map-effects lease exactly once');
+  assert.equal(surfaceRequestedVisible, false, 'the production exit callback reapplies current hidden surface preferences before release');
+  assert.deepEqual(owner.cleanupReport.errors, [], 'surface isolation does not introduce exit cleanup errors');
   viewer.scene.primitives.destroy(); cadResource.destroy();
   console.log('PASS: AR resource/media permissions, paused-pixel invalidation, cached-video/POS guards, saved selections, CAD copies, and exit restoration');
 } finally {
+  Primitive.prototype.update = originalPrimitiveUpdate;
   globalThis.document = oldDocument; globalThis.fetch = oldFetch;
   await rm(directory, { recursive: true, force: true });
 }
