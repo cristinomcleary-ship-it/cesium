@@ -55,7 +55,17 @@ function gltfFixture() {
 const fixtureGltf = gltfFixture();
 const fixtureTiles = {asset:{version:'1.1'},geometricError:100,root:{transform:Array.from(Transforms.eastNorthUpToFixedFrame(Cartesian3.fromDegrees(site.longitude,site.latitude,0))),boundingVolume:{box:[0,0,10.5,50,0,0,0,50,0,0,0,10.5]},geometricError:0,refine:'ADD',content:{uri:'slope.gltf'}}};
 async function check(id, run) { if(accessOnly && !['author-three-machines-and-independent-fixtures','management-access-revocation-cannot-be-overridden','refresh-and-real-account-isolate-personal-preferences'].includes(id))return; activeCheck={id,status:'running'}; report.checks.push(activeCheck); console.log('RUN',id); activeCheck.evidence=await run(); activeCheck.status='passed'; console.log('PASS',id); await writeFile(resolve(output,'report.json'),JSON.stringify(report,null,2)); }
-async function ready(){await page.waitForFunction(()=>window.__managementWorkspace?.ui?.getSnapshot()?.projectId,undefined,{timeout:60000});}
+async function ready(){await page.waitForFunction(()=>window.__managementWorkspace?.ui?.getSnapshot()?.projectId,undefined,{timeout:60000});await page.locator('[data-dock="editor"]').click();await page.locator('#workbenchEditorHost').waitFor({state:'visible'});}
+async function openWorkbenchTab(name) {
+  const nav = page.locator('.function-centers');
+  await nav.waitFor({ state: 'attached' });
+  if (!(await nav.isVisible())) await page.locator('.function-centers-toggle').click();
+  const button = page.locator(`.tab[data-tab="${name}"]`);
+  const group = page.locator('details.function-center').filter({ has: button });
+  if (await group.count() && await group.getAttribute('open') === null) await group.locator(':scope > summary').click();
+  await button.click();
+}
+
 async function snapshot(){return page.evaluate(()=>window.__managementWorkspace.ui.getSnapshot());}
 async function sceneSnapshot(){return page.evaluate(()=>window.__managementWorkspace.railSafety.scene.getSnapshot());}
 async function bounded(promise, timeout, label){let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(`${label} timed out after ${timeout}ms`)),timeout);})]);}finally{clearTimeout(timer);}}
@@ -76,7 +86,7 @@ async function login(username) {
 }
 async function fixtures() {
   for (const machine of machines) {
-    await command('resource.create', { name: machine.name, kind: 'equipment', quantity: 1, unit: '台' }, { id: machine.id });
+    await command('resource.create', { name: machine.name, equipmentCode: machine.id, kind: 'equipment', quantity: 1, unit: '台' }, { id: machine.id });
     const manifest = JSON.parse(await readFile('public/machinery/' + machine.assetId + '/manifest.json', 'utf8'));
     await command('machinery.save', { machinery: { schemaVersion: 1, assetId: machine.assetId, assetVersion: manifest.version, proportional: true,
       parameters: Object.fromEntries(manifest.config.parameters.map(p => [p.key, p.unit === '°' ? p.original : p.original * machine.scale])),
@@ -88,7 +98,7 @@ async function fixtures() {
   await login('display-owner');
 }
 async function addTiles(){
-  await page.locator('.tab[data-tab="tiles"]').click();await page.locator('#tilesUrl').fill(origin+'/__display-fixture/tileset.json');await page.locator('#loadTiles').click();
+  await openWorkbenchTab('tiles');await page.locator('#operation-tiles-network > summary').click();await page.locator('#tilesUrl').fill(origin+'/__display-fixture/tileset.json');await page.locator('#loadTiles').click();
   await page.waitForFunction(()=>window.__managementWorkspace.safety.options.getImports().some(m=>m.name==='tileset.json'));
   const result=await page.evaluate(async()=>{const w=window.__managementWorkspace,C=await import('/__display-fixture/cesium.ts');const item=w.safety.options.getImports().find(i=>i.name==='tileset.json');window.__displayAcceptanceTiles=item.resource;window.__displayTileFailures=[];item.resource.tileFailed.addEventListener(e=>window.__displayTileFailures.push(e));w.viewer.scene.globe.depthTestAgainstTerrain=true;return{id:item.id,groundPolylines:C.GroundPolylinePrimitive.isSupported(w.viewer.scene),groundPolygons:C.GroundPrimitive.isSupported(w.viewer.scene)};});fixtureLayerId='layer:'+result.id;return result;
 }
@@ -96,7 +106,7 @@ async function frame(close=false){await page.evaluate(async ({site,close})=>{con
 async function save(){const responsePromise=page.waitForResponse(r=>{if(!r.url().endsWith('/__management/commands'))return false;try{return r.request().postDataJSON()?.type==='railSafety.save';}catch{return false;}});await action('save').click();const response=await responsePromise;assert.equal(response.status(),200,await response.text());await page.waitForFunction(()=>!window.__managementWorkspace.railSafety.hasDraft);await settled();}
 async function addPolygon(points,target="responsibility"){for(const [index,point] of points.entries()){await action(target==='workArea'?'add-work-vertex':'add-vertex').click();for(const[key,value]of Object.entries(point))await rp().locator(`[data-polygon="${target}"][data-vertex-index="${index}"][data-coordinate="${key}"]`).fill(String(value));}}
 async function openPanel() {
-  await page.locator('.tab[data-tab="rail-safety"]').click();
+  await openWorkbenchTab('rail-safety');
   await rp().waitFor({ state: 'visible' }); await settled();
 }
 async function range(control, value) {
@@ -139,7 +149,7 @@ async function demoObservation() {
   return page.evaluate(() => {
     const w = window.__managementWorkspace, state = w.railSafety.scene.getSnapshot().fallDemo;
     const source = Array.from({ length: w.viewer.dataSources.length }, (_, i) => w.viewer.dataSources.get(i)).find(s => s.name === '机械倾覆运动演示（只读副本）');
-    const model = source?.entities.values.find(e => e.model), time = w.viewer.clock.currentTime;
+    const model = source?.entities.values.find(e => e.model), time = w.viewer.clock.currentTime, matrix = model?.computeModelMatrix(time);
     const primitives = [], seen = new Set();
     function visit(item) {
       if (!item || seen.has(item)) return; seen.add(item);
@@ -148,13 +158,13 @@ async function demoObservation() {
       if (Array.isArray(item._primitives)) item._primitives.forEach(visit);
     }
     visit(w.viewer.scene.primitives);
-    return { state, model: model ? { id: model.id, matrix: Array.from(model.computeModelMatrix(time)), uri: model.model.uri.getValue(time) } : null, primitives };
+    return { state, model: model ? { id: model.id, matrix: matrix ? Array.from(matrix) : null, uri: model.model.uri.getValue(time) } : null, primitives };
   });
 }
 async function waitDemoReady() {
   await page.waitForFunction(() => { const s = window.__managementWorkspace.railSafety.scene.getSnapshot().fallDemo; return s?.active && !s.loading && s.modelCreated && !s.error; }, undefined, { timeout: 60000 });
   await settled();
-  for (let i = 0; i < 30; i++) { const value = await demoObservation(); if (value.primitives.some(p => p.ready)) return value; await rendered(); }
+  for (let i = 0; i < 30; i++) { const value = await demoObservation(); if (value.model?.matrix && value.primitives.some(p => p.ready)) return value; await rendered(); }
   throw new Error('The demonstration Entity exists but no matching ready Cesium Model primitive was observed');
 }
 async function frameDemo() {
@@ -178,7 +188,7 @@ async function createGroup(name, ids) {
 }
 async function chooseSafety(kind,id) { await openPanel(); await action('tab-'+kind).click(); await rp().locator('[data-role="selection"]').selectOption(id); await settled(); }
 async function railDisplay(name,value) {
-  await dock('editor'); await rp().locator('[data-display-tab="limits"]').click();
+  await dock('editor'); await action('section-display').click(); await rp().locator('[data-display-tab="limits"]').click();
   const control=rp().locator(`[data-display="limits.${name}"]`);
   if(name==='representation') { await control.selectOption(value); await settled(); } else await range(control,value);
 }
@@ -215,14 +225,14 @@ async function unchanged(baseline) {
 }
 async function runCases() {
   await check('author-three-machines-and-independent-fixtures',async()=>{
-    await page.locator('.tab[data-tab="markup"]').click();
+    await openWorkbenchTab('markup');
     const markupFixture={type:'FeatureCollection',features:[['label','验收标绘标签',local(-5,14,13)],['text','验收文字正文',local(-2,18,13)]].map(([kind,name,p])=>({type:'Feature',properties:{name,markupKind:kind,heightMode:'picked'},geometry:{type:'Point',coordinates:[p.longitude,p.latitude,p.height]}}))};
     await page.locator('#markupImportFile').setInputFiles({name:'scene-display-fixture.geojson',mimeType:'application/geo+json',buffer:Buffer.from(JSON.stringify(markupFixture))});
     await page.waitForFunction(()=>Array.from({length:window.__managementWorkspace.viewer.dataSources.length},(_,i)=>window.__managementWorkspace.viewer.dataSources.get(i)).find(s=>s.name==='全局标绘')?.entities.values.length===2);
     const markups=(await observations()).markups;labelId=markups.find(m=>m.name==='验收标绘标签').id;textId=markups.find(m=>m.name==='验收文字正文').id;
     await openPanel();await action('tab-guard').click();await action('new').click();await field('name').fill('右侧显示验收防护员');
     for(const[k,v]of Object.entries(station))await field('station.'+k).fill(String(v));await addPolygon(polygon(-33,-18,1,20));
-    await field('work-area-enabled').check();await addPolygon(polygon(-26,-10,-10,10),'workArea');await field('workArea.deviceId').fill('display-device-01');await field('workArea.staleAfterSeconds').fill('3600');await rp().locator(`[data-reference="resource"][value="${resourceId}"]`).check();await save();
+    await field('work-area-enabled').check();await addPolygon(polygon(-26,-10,-10,10),'workArea');await rp().locator('details.rs-locator-advanced > summary').click();await field('workArea.deviceId').fill('display-device-01');await field('workArea.staleAfterSeconds').fill('3600');await rp().locator(`[data-reference="resource"][value="${resourceId}"]`).check();await save();
     guardId=(await snapshot()).collections.railSafety.find(r=>r.definition.kind==='guard').id;
     await action('tab-limit').click();await action('new').click();await field('name').fill('斜底安全限界');const ring=[[13,-25],[17,-25],[17,25],[13,25]].map(([e,n])=>local(e,n,12+.12*e+.06*n));await addPolygon(ring);await save();limitId=(await snapshot()).collections.railSafety.find(r=>r.definition.kind==='limit').id;
     await action('tab-machine').click();await rp().locator('[data-role="selection"]').selectOption(resourceId);await rp().locator(`[data-reference="limit"][value="${limitId}"]`).check();await save();
@@ -282,12 +292,12 @@ async function runCases() {
   await check('display-editor-switch-preserves-unsaved-drafts',async()=>{
     await chooseSafety('guard',guardId);const oldName=await field('name').inputValue();await field('name').fill(oldName+' 未保存');await dock('display');await dock('editor');assert.equal(await field('name').inputValue(),oldName+' 未保存');assert(await page.evaluate(()=>window.__managementWorkspace.railSafety.hasDraft));
     await action('cancel').click();if(await action('confirm').isVisible())await action('confirm').click();await settled();assert.equal(await field('name').inputValue(),oldName);
-    await dock('display');await sa('view-categories').click();await row('machine:'+resourceId).locator('[data-action="item-edit"]').click();const mp=page.locator('.machinery-panel');await mp.waitFor({state:'visible'});const height=mp.locator('[data-placement="height"]'),before=await height.inputValue();await height.fill(String(Number(before)+1));await dock('display');await dock('editor');assert.equal(await height.inputValue(),String(Number(before)+1));assert(await page.evaluate(()=>window.__managementWorkspace.machinery.hasDraft));await mp.locator('[data-action="cancel"]').click();await page.waitForFunction(()=>!window.__managementWorkspace.machinery.hasDraft);await settled();
+    await dock('display');await sa('view-categories').click();await row('machine:'+resourceId).locator('[data-action="item-edit"]').click();const mp=page.locator('.machinery-panel');await mp.waitFor({state:'visible'});await page.waitForFunction(()=>{const p=window.__managementWorkspace.machinery;return p.asset?.id==='crane'&&!p.loading&&!p.busy;});const height=mp.locator('[data-placement="height"]'),before=await height.inputValue();await height.fill(String(Number(before)+1));await dock('display');await dock('editor');assert.equal(await height.inputValue(),String(Number(before)+1));assert(await page.evaluate(()=>window.__managementWorkspace.machinery.hasDraft));await mp.locator('[data-action="cancel"]').click();await page.waitForFunction(()=>!window.__managementWorkspace.machinery.hasDraft);await settled();
     assert.equal(report.requests.length,baseline.commands);return{railDraftPreserved:true,machineDraftPreserved:true,businessWrites:0};
   });
   await check('existing-work-area-and-fall-demo-remain-operable',async()=>{
     await chooseSafety('guard',guardId);await frame();await simulate(-18,0);const inside=await expectPosition('inside');await simulate(-5,0);await expectPosition('outside');
-    await chooseSafety('machine',resourceId);const pose=await machinePose();await action('fall-start').click();const demo=await waitDemoReady();await range(rp().locator('[data-fall="angle"]'),30);assert.equal((await demoObservation()).state.angle,30);await action('fall-stop').click();await settled();assert.deepEqual(await machinePose(),pose);assert.equal(report.requests.length,baseline.commands);return{inside,demoReady:demo.primitives.some(p=>p.ready),sourcePartCount:demo.state.sourcePartCount,originalPoseUnchanged:true};
+    await chooseSafety('machine',resourceId);const pose=await machinePose();await action('section-analysis').click();await action('fall-start').click();const demo=await waitDemoReady();await range(rp().locator('[data-fall="angle"]'),30);assert.equal((await demoObservation()).state.angle,30);await action('fall-stop').click();await settled();assert.deepEqual(await machinePose(),pose);assert.equal(report.requests.length,baseline.commands);return{inside,demoReady:demo.primitives.some(p=>p.ready),sourcePartCount:demo.state.sourcePartCount,originalPoseUnchanged:true};
   });
   if(accessOnly){await chooseSafety('limit',limitId);await railDisplay('representation','both');await railDisplay('wallHeight',8);crossGroupId=await createGroup('隔离权限复验组合',['machine:'+resourceId,`rail:limit:${limitId}`,'machine:'+machines[2].id]);}
   await check('management-access-revocation-cannot-be-overridden',async()=>{
@@ -297,7 +307,7 @@ async function runCases() {
     await login('display-no-models');await page.evaluate(()=>window.__managementWorkspace.refreshMachineryContext());
     await page.waitForFunction(()=>window.__managementWorkspace.session?.displayName==='隔离无模型权限查看者');
     assert.equal(await row(fixtureLayerId).count(),0);await sa('show-all').evaluate(el=>el.click());assert.equal(await page.evaluate(()=>window.__displayAcceptanceTiles.show),false);
-    await login('display-owner');await page.evaluate(()=>window.__managementWorkspace.refreshMachineryContext());await page.waitForFunction(()=>window.__managementWorkspace.session?.displayName==='隔离显示验收管理员');await page.locator('[data-mg-action="exit"]').filter({visible:true}).first().click();await dock('display');await sa('view-categories').click();assert.equal(await row(fixtureLayerId).count(),1);assert.equal(await page.evaluate(()=>window.__displayAcceptanceTiles.show),true);
+    await login('display-owner');await page.evaluate(()=>window.__managementWorkspace.refreshMachineryContext());await page.waitForFunction(()=>window.__managementWorkspace.session?.displayName==='隔离显示验收管理员');const centerMenu=page.locator('details.mg-function-centers').filter({visible:true}).first();if(await centerMenu.getAttribute('open')===null)await centerMenu.locator(':scope > summary').click();await page.locator('[data-mg-action="exit"]').filter({visible:true}).first().click();await dock('display');await sa('view-categories').click();assert.equal(await row(fixtureLayerId).count(),1);assert.equal(await page.evaluate(()=>window.__displayAcceptanceTiles.show),true);
     return{sameLoadedTileset:true,logoutHides:true,noModelsAccountCatalogAbsent:true,showAllCannotRevive:true,showAllDispatchedWhileWorkbenchInaccessible:true,ownerRestored:true};
   });
   await check('refresh-and-real-account-isolate-personal-preferences',async()=>{
@@ -314,6 +324,6 @@ try{
  const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');const options=process.env.BROWSER_LAUNCH_OPTIONS?(await import(pathToFileURL(resolve(process.env.BROWSER_LAUNCH_OPTIONS)).href)).default:{headless:true,executablePath:process.env.BROWSER_EXECUTABLE||undefined};
  server=await createServer({server:{host:'127.0.0.1',port,strictPort:true,hmr:false,watch:null},plugins:[{name:'isolated-display-fixture',configResolved(config){config.server.watch=null;},resolveId(id){if(id==='/__display-fixture/cesium.ts')return '\0display-fixture-cesium';},load(id){if(id==='\0display-fixture-cesium')return 'export * from "cesium";';},configureServer(s){s.middlewares.use((req,res,next)=>{let value;if(req.url==='/__display-fixture/tileset.json')value=fixtureTiles;else if(req.url==='/__display-fixture/slope.gltf')value=fixtureGltf;else return next();res.setHeader('Content-Type','application/json');res.end(JSON.stringify(value));});}}]});await server.listen();const address=server.httpServer.address();origin=`http://127.0.0.1:${address.port}`;report.origin=origin;console.log('Isolated scene-display acceptance server:',origin,'data:',dataDir);
  browser=await chromium.launch(options);report.browserVersion=browser.version();context=await browser.newContext({viewport:{width:1920,height:1080}});await context.route('**/__basemap/**',r=>r.fulfill({status:200,contentType:'image/png',body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg==','base64')}));page=await context.newPage();page.setDefaultTimeout(30000);page.on('pageerror',e=>report.pageErrors.push({check:activeCheck?.id,message:e.message}));page.on('console',e=>{if(e.type()!=='error')return;const value={check:activeCheck?.id,message:e.text().slice(0,700),url:e.location().url};if(activeCheck?.id==='management-access-revocation-cannot-be-overridden'&&value.url.startsWith(origin+'/__management/')&&/status of 401/.test(value.message))report.expectedAuthErrors.push(value);else report.consoleErrors.push(value);});page.on('response',async r=>{if(r.status()>=400)console.log('HTTP_ERROR',r.status(),r.url(),(await r.text().catch(()=>'' )).slice(0,800));});page.on('requestfailed',r=>console.log('REQUEST_FAILED',r.url(),r.failure()));page.on('request',r=>{if(r.url().endsWith('/__management/commands')){try{report.requests.push({type:r.postDataJSON().type});}catch{}}});
- await page.goto(origin+'/',{waitUntil:'domcontentloaded',timeout:60000});await ready();await fixtures();await page.reload({waitUntil:'domcontentloaded'});await ready();await page.locator('#basemap').selectOption('none');await runCases();report.result='passed';
+ await page.goto(origin+'/',{waitUntil:'domcontentloaded',timeout:60000});await ready();report.renderer = await page.evaluate(() => { const gl=window.__managementWorkspace.viewer.scene.context._gl;const ext=gl.getExtension('WEBGL_debug_renderer_info');return ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER); });await fixtures();await page.reload({waitUntil:'domcontentloaded'});await ready();await page.locator('#basemap').selectOption('none');await runCases();report.result='passed';
 }catch(error){report.result='failed';report.failure=String(error.stack||error);if(activeCheck?.status==='running'){activeCheck.status='failed';activeCheck.error=report.failure;}process.exitCode=1;console.error(error);await writeFile(resolve(output,'report.json'),JSON.stringify(report,null,2));if(page){await screenshot('failure',{failure:true}).catch(e=>{report.failureScreenshotError=String(e);});report.failureVisibleText=(await bounded(page.locator('body').innerText({timeout:5000}),6000,'Failure page text').catch(()=>'' )).slice(-10000);}}
 finally{report.finishedAt=new Date().toISOString();await writeFile(resolve(output,'report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));await context?.close();await browser?.close();await server?.close();}

@@ -62,6 +62,17 @@ async function check(id, run) {
 async function ready() {
   await page.waitForFunction(() => window.__managementWorkspace?.ui?.getSnapshot()?.projectId,
     undefined, { timeout: 60000 });
+  await page.locator('[data-dock="editor"]').click();
+  await page.locator('#workbenchEditorHost').waitFor({ state: 'visible' });
+}
+async function openWorkbenchTab(name) {
+  const nav = page.locator('.function-centers');
+  await nav.waitFor({ state: 'attached' });
+  if (!(await nav.isVisible())) await page.locator('.function-centers-toggle').click();
+  const button = page.locator(`.tab[data-tab="${name}"]`);
+  const group = page.locator('details.function-center').filter({ has: button });
+  if (await group.count() && await group.getAttribute('open') === null) await group.locator(':scope > summary').click();
+  await button.click();
 }
 async function snapshot() { return page.evaluate(() => window.__managementWorkspace.ui.getSnapshot()); }
 async function sceneSnapshot() { return page.evaluate(() => window.__managementWorkspace.railSafety.scene.getSnapshot()); }
@@ -96,7 +107,7 @@ async function command(type, payload, extra = {}) {
 async function fixtures() {
   for (const [index, assetId] of Object.keys(resourceIds).entries()) {
     const id = resourceIds[assetId];
-    const resource = await command('resource.create', { name: { crane: '吊机 01', pile: '桩机 02', excavator: '挖机 03' }[assetId], kind: 'equipment', quantity: 1, unit: '台' }, { id });
+    const resource = await command('resource.create', { name: { crane: '吊机 01', pile: '桩机 02', excavator: '挖机 03' }[assetId], equipmentCode: id, kind: 'equipment', quantity: 1, unit: '台' }, { id });
     assert.equal(resource.status, 200, JSON.stringify(resource.body));
     const manifest = JSON.parse(await readFile(resolve('public/machinery', assetId, 'manifest.json'), 'utf8'));
     const scale = assetId === 'excavator' ? 1 : 4;
@@ -155,7 +166,7 @@ async function runCases() {
     await page.mouse.click(pixel.x, pixel.y); await page.waitForTimeout(90);
   }
   await check('root-entry', async () => {
-    await page.locator('.tab[data-tab="rail-safety"]').click(); await rp().waitFor({ state: 'visible' }); await settled();
+    await openWorkbenchTab('rail-safety'); await rp().waitFor({ state: 'visible' }); await settled();
     await page.evaluate(() => { window.__railSafetyOriginalViewer = window.__managementWorkspace.viewer; });
     assert.equal(await page.locator('.management-studio:visible').count(), 0);
     assert.equal(new URL(page.url()).pathname, '/');
@@ -231,7 +242,7 @@ async function runCases() {
       return ids.map(id => { const color = source.entities.getById(id).polygon.material.getValue().color; return [color.red, color.green, color.blue, color.alpha]; });
     }, intersections);
     assert(colors.every(color => color[0] > .9 && color[1] < .4 && color[2] < .5));
-    await rp().locator('[data-role="results"]').scrollIntoViewIfNeeded(); await screenshot('01-overview-potential-intrusion');
+    await action('section-risk').click(); await rp().locator('[data-role="results"]').scrollIntoViewIfNeeded(); await screenshot('01-overview-potential-intrusion'); await action('section-configuration').click();
     return { result, redIntersectionEntities: intersections, actualEntityColors: colors };
   });
   await check('boundary-contact', async () => {
@@ -253,7 +264,7 @@ async function runCases() {
     const result = await machineResult(); assert.equal(result.status, 'touching', JSON.stringify(result));
     assert.equal(result.limits[0].distanceMeters, 0);
     assert((await sceneSnapshot()).entityIds.includes(`rail-safety:machine:${resourceIds.crane}:contact:${limit.id}`), 'Contact has a red scene outline');
-    await rp().locator('[data-role="results"]').scrollIntoViewIfNeeded(); await screenshot('06-boundary-contact');
+    await action('section-risk').click(); await rp().locator('[data-role="results"]').scrollIntoViewIfNeeded(); await screenshot('06-boundary-contact'); await action('section-configuration').click();
     await rp().locator(`[data-reference="limit"][value="${limit.id}"]`).uncheck();
     await rp().locator(`[data-reference="limit"][value="${nearLimitId}"]`).check();
     await rp().locator(`[data-reference="limit"][value="${farLimitId}"]`).check(); await saveSafety();
@@ -262,12 +273,12 @@ async function runCases() {
   });
   await check('hidden-layer', async () => {
     const before = await machineResult();
-    await rp().locator('[data-layer="limits"]').uncheck(); await settled();
+    await page.locator('[data-dock="display"]').click(); await page.locator('.scene-display-panel [data-action="view-categories"]').click(); await page.locator('.scene-display-panel [data-action="category-hide"][data-category="铁路安全限界"]').click(); await settled();
     const hidden = await sceneSnapshot();
-    assert.equal(hidden.layers.limits, false); assert(!hidden.entityIds.includes(`rail-safety:limit:${nearLimitId}:area`));
+    const limitVisibility = await page.evaluate(() => window.__managementWorkspace.railSafety.scene.getDisplayObjects().filter(item => item.kind === 'limit').map(item => ({ id: item.id, visible: item.visible }))); assert(limitVisibility.length >= 2); assert(limitVisibility.every(item => item.visible === false)); assert(!hidden.entityIds.includes(`rail-safety:limit:${nearLimitId}:area`));
     assert.deepEqual(await machineResult(), before);
-    await rp().locator('[data-layer="limits"]').check(); await settled();
-    return { hiddenLimitNotRendered: true, resultUnchanged: true, selectedLimits: before.limits.map(limit => limit.id) };
+    await page.locator('.scene-display-panel [data-action="category-show"][data-category="铁路安全限界"]').click(); await settled(); await page.locator('[data-dock="editor"]').click(); await action('section-configuration').click();
+    return { visibilityControl: 'Scene display / railway safety limits category (replaces retired layer checkbox)', limitVisibility, hiddenLimitNotRendered: true, resultUnchanged: true, selectedLimits: before.limits.map(limit => limit.id) };
   });
   await check('pose-preview-cancel', async () => {
     const baseline = await machineResult();
@@ -298,12 +309,12 @@ async function runCases() {
     assert.deepEqual(restored.limits, baseline.limits);
     assert.deepEqual((await snapshot()).collections.resources.find(record => record.id === resourceIds.crane).machinery, saved);
     await machinery.locator('[data-action="close"]').click();
-    await page.locator('.tab[data-tab="rail-safety"]').click(); await rp().waitFor({ state: 'visible' });
+    await openWorkbenchTab('rail-safety'); await rp().waitFor({ state: 'visible' });
     return { before: baseline, preview, restored, resourceNotSaved: true, animationFramesDuringPreview };
   });
   await check('draft-navigation', async () => {
     await choose('guard', guardId); await field('name').fill('未保存的人员姓名');
-    await page.locator('.tab[data-tab="cad"]').click();
+    await openWorkbenchTab('cad');
     assert.equal(await rp().isVisible(), true); assert.equal(await field('name').inputValue(), '未保存的人员姓名');
     assert.equal((await snapshot()).collections.railSafety.find(record => record.id === guardId).name, '张师傅 · 东侧防护');
     await action('cancel').click(); await action('confirm').click(); await settled();
@@ -314,11 +325,11 @@ async function runCases() {
   await check('save-reload', async () => {
     await page.reload({ waitUntil: 'domcontentloaded' }); await ready();
     await page.locator('#basemap').selectOption('none'); await frame();
-    await page.locator('.tab[data-tab="rail-safety"]').click(); await rp().waitFor({ state: 'visible' }); await settled();
+    await openWorkbenchTab('rail-safety'); await rp().waitFor({ state: 'visible' }); await settled();
     assert.deepEqual((await snapshot()).collections.railSafety, savedRecords);
     await choose('machine', resourceIds.crane); assert.equal((await machineResult()).status, 'overlap');
     await page.evaluate(() => { window.__railSafetyOriginalViewer = window.__managementWorkspace.viewer; });
-    await rp().locator('[data-role="results"]').scrollIntoViewIfNeeded(); await screenshot('05-persisted-configuration');
+    await action('section-risk').click(); await rp().locator('[data-role="results"]').scrollIntoViewIfNeeded(); await screenshot('05-persisted-configuration'); await action('section-configuration').click();
     return { retainedRecordIds: savedRecords.map(record => record.id), result: await machineResult() };
   });
   await check('concurrent-drawing', async () => {
@@ -356,7 +367,7 @@ async function runCases() {
     const logout = await context.request.delete(origin + '/__management/session', { headers: { 'X-Cesium-Library': '1' } }); assert.equal(logout.status(), 200);
     const login = await context.request.post(origin + '/__management/session', { headers: { 'X-Cesium-Library': '1' }, data: { username: 'rail-reader', password } }); assert.equal(login.status(), 200);
     await page.reload({ waitUntil: 'domcontentloaded' }); await ready();
-    await page.locator('.tab[data-tab="rail-safety"]').click(); await rp().waitFor({ state: 'visible' }); await settled();
+    await openWorkbenchTab('rail-safety'); await rp().waitFor({ state: 'visible' }); await settled();
     await choose('guard', guardId);
     assert.equal(await field('name').isDisabled(), true); assert.equal(await action('new').isDisabled(), true);
     assert.equal(await action('save').isDisabled(), true); assert.equal(await action('remove').isDisabled(), true);
@@ -390,17 +401,22 @@ try {
   const options = process.env.BROWSER_LAUNCH_OPTIONS
     ? (await import(pathToFileURL(resolve(process.env.BROWSER_LAUNCH_OPTIONS)).href)).default
     : { headless: true, executablePath: process.env.BROWSER_EXECUTABLE || undefined };
-  server = await createServer({ server: { host: '127.0.0.1', port: 0, hmr: false, watch: null } }); await server.listen();
+  server = await createServer({ server: { host: '127.0.0.1', port: Number(process.env.RAIL_SAFETY_VERIFY_PORT || 5196), strictPort: true, hmr: false, watch: null } }); await server.listen();
   const address = server.httpServer.address(); assert(address && typeof address !== 'string');
   origin = `http://127.0.0.1:${address.port}`; report.origin = origin;
   browser = await chromium.launch(options);
   context = await browser.newContext({ viewport: { width: 1600, height: 1000 },
     ...(process.env.RAIL_SAFETY_RECORD_VIDEO === '1' ? { recordVideo: { dir: output, size: { width: 1600, height: 1000 } } } : {}) });
+  // The isolated server has no favicon fixture; avoid the browser's unrelated default /favicon.ico request.
+  await context.route('**/favicon.ico', route => route.fulfill({ status: 204 }));
   page = await context.newPage(); video = page.video(); page.setDefaultTimeout(30000);
   page.on('worker', worker => report.workerUrls.push(worker.url()));
   page.on('pageerror', error => report.pageErrors.push({ check: activeCheck?.id, message: error.message }));
-  page.on('console', event => { if (event.type() === 'error') report.consoleErrors.push({ check: activeCheck?.id, message: event.text().slice(0, 600) }); });
+  page.on('console', event => { if (event.type() === 'error') report.consoleErrors.push({ check: activeCheck?.id, message: event.text().slice(0, 600), url: event.location().url }); });
+  page.on('response', response => { if (response.status() >= 400) console.log('HTTP_ERROR', response.status(), response.url()); });
   await page.goto(origin + '/', { waitUntil: 'domcontentloaded', timeout: 60000 }); await ready();
+  report.browserVersion=browser.version();
+  report.renderer = await page.evaluate(() => { const gl=window.__managementWorkspace.viewer.scene.context._gl;const ext=gl.getExtension('WEBGL_debug_renderer_info');return ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER); });
   await fixtures(); await page.reload({ waitUntil: 'domcontentloaded' }); await ready();
   await page.locator('#basemap').selectOption('none'); await frame();
   await runCases(); report.result = 'passed';

@@ -30,7 +30,8 @@ const server = createServer((request, response) => {
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 let browser;
-const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8l0AAAAASUVORK5CYII=', 'base64');
+// A valid browser-generated RGBA PNG; upload checks must reach native decoding.
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4AWJiYGD4DwAAAP//cGajQwAAAAZJREFUAwABDgEC81VxbAAAAABJRU5ErkJggg==', 'base64');
 try {
   browser = await chromium.launch({ headless: true, executablePath: process.env.BROWSER_EXECUTABLE || '/usr/bin/chromium', args: ['--no-sandbox', '--disable-dev-shm-usage'] });
   const page = await browser.newPage({ viewport: { width: 900, height: 850 } });

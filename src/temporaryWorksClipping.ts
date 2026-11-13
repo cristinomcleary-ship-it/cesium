@@ -1,3 +1,5 @@
+import { markOwnedFragmentClipping } from './ownedClippingPolygons';
+import { releaseBorrowedClippingPolygons } from './borrowedClippingPolygons';
 import {
   Cartesian3, ClippingPolygon, ClippingPolygonCollection, Ellipsoid,
   type Cesium3DTileset, type Viewer,
@@ -307,6 +309,7 @@ export class TemporaryWorksClippingManager {
       if (tileset.isDestroyed() || tileset.clippingPolygons !== attached.collection || attached.collection.isDestroyed()) {
         // Foreign replacement normally already destroys our previous collection through Cesium's setter.
         // If a host detached it without using the setter, release only our abandoned object.
+        if (!tileset.isDestroyed() && releaseBorrowedClippingPolygons(tileset, attached.collection) > 0) changed = true;
         if (!attached.collection.isDestroyed()) attached.collection.destroy();
         this.attachments.delete(tileset);
       }
@@ -330,8 +333,9 @@ export class TemporaryWorksClippingManager {
       }
       const polygons = active.flatMap(e => e.polygons);
       if (!attached || attached.polygons.length !== polygons.length || attached.polygons.some((p, i) => p !== polygons[i])) {
-        const collection = new ClippingPolygonCollection({ polygons, inverse: false, enabled: true, quality: 2 });
+        const collection = markOwnedFragmentClipping(new ClippingPolygonCollection({ polygons, inverse: false, enabled: true, quality: 2 }));
         // Setter destroys only our old owned collection. Never expose an empty owned collection mid-frame.
+        if (attached) releaseBorrowedClippingPolygons(tileset, attached.collection);
         tileset.clippingPolygons = collection;
         this.attachments.set(tileset, { collection, polygons });
         changed = true;
@@ -349,6 +353,7 @@ export class TemporaryWorksClippingManager {
 
   private detach(tileset: Cesium3DTileset, attached: Attachment): void {
     if (!tileset.isDestroyed() && tileset.clippingPolygons === attached.collection && !attached.collection.isDestroyed()) {
+      releaseBorrowedClippingPolygons(tileset, attached.collection);
       attached.collection.enabled = false;
       // Undefined is supported by Cesium's runtime setter; upstream d.ts marks the property non-optional.
       (tileset as unknown as { clippingPolygons: ClippingPolygonCollection | undefined }).clippingPolygons = undefined;
