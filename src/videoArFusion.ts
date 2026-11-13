@@ -55,8 +55,10 @@ import { buildProjectiveGrid } from "./videoArProjection";
 import { cameraPixelToEnuDirection, cameraDirectionToEnu, type CameraIntrinsics, type LensDistortion, type CameraAttitude } from "./videoArCamera";
 import { buildRaySurfaceGrid } from "./videoArSurface";
 import { VIDEO_AR_VERTEX_SHADER, VIDEO_AR_FRAGMENT_SHADER } from "./videoArShaders";
+import { VideoOverlaySceneIsolation } from "./videoOverlaySceneIsolation";
 
 type Notify = (message: string, error?: boolean) => void;
+type VideoArFusionOptions = { suspendExternalSceneEffects?: () => void | (() => void) };
 
 type Attitude = {
   heading: number;
@@ -814,6 +816,9 @@ function base64ToBlob(base64: string, mimeType: string) {
 }
 
 export class VideoArFusion {
+  private sceneIsolation?: VideoOverlaySceneIsolation;
+  private releasePanelSceneEffects?: () => void;
+  private releasePickingSceneEffects?: () => void;
   private readonly dataSource = new CustomDataSource("video-ar-fusion");
   private readonly dataSourceReady: Promise<CustomDataSource>;
   private readonly abortController = new AbortController();
@@ -1118,6 +1123,10 @@ export class VideoArFusion {
   }
 
   private exportDiagnostics() {
+    return this.withSceneEffectsIsolation(() => this.exportIsolatedDiagnostics());
+  }
+
+  private exportIsolatedDiagnostics() {
     this.pause();
     const images: Record<string, string> = {};
     try {
@@ -1322,6 +1331,7 @@ export class VideoArFusion {
     private readonly viewer: Viewer,
     private readonly notify: Notify,
     private readonly setApplicationStatus: (message: string) => void,
+    private readonly options: VideoArFusionOptions = {},
   ) {
     this.canvasA = this.element<HTMLCanvasElement>("#videoArCanvasA");
     this.canvasB = this.element<HTMLCanvasElement>("#videoArCanvasB");
@@ -1407,7 +1417,7 @@ export class VideoArFusion {
       }, CAMERA_RESUME_DELAY_MS);
     });
     this.controlPointPicker = new VideoArControlPointPicker(viewer, this.element<HTMLElement>("#videoArControlPointHost"), {
-      getFrame: () => {
+      getFrame: () => this.withSceneEffectsIsolation(() => {
         if (this.replaySelectionPending) return undefined;
         if (!this.controlPointPicking) {
           this.pause();
@@ -1420,9 +1430,9 @@ export class VideoArFusion {
           : (this.currentBitmapFrame?.mediaTimeMs ?? this.playbackMs) / 1000;
         if (Math.abs(time - this.calibrationFrame.frameTime) > 0.05) return undefined;
         return { ...this.calibrationFrame, image: this.videoObjectUrl ? this.video : this.textureCanvas, context: this.getDiagnostics(false) };
-      },
-      onStart: () => { this.pause(); this.controlPointPicking = true; this.cancelPendingProjectionUpdates(); this.applyVisibility(); },
-      onEnd: () => { this.controlPointPicking = false; this.applyVisibility(); },
+      }),
+      onStart: () => this.beginControlPointPicking(),
+      onEnd: () => this.endControlPointPicking(),
       onRecord: session => this.recordCalibrationSession(session),
       onApply: result => {
         const alreadyCalibrated = !this.independentDjiPoseProjection || this.element<HTMLInputElement>("#videoArEnableCalibration").checked;
@@ -1470,6 +1480,17 @@ export class VideoArFusion {
   }
 
   setPanelActive(active: boolean) {
+    if (active) this.ensurePanelSceneIsolation();
+    let completed = false;
+    try {
+      this.applyPanelActive(active);
+      completed = true;
+    } finally {
+      if (!active || !completed) this.releasePanelIsolation();
+    }
+  }
+
+  private applyPanelActive(active: boolean) {
     this.panelActive = active;
     this.dataSource.show = active;
     if (!active) this.controlPointPicker?.cancel();
@@ -1496,6 +1517,14 @@ export class VideoArFusion {
   }
 
   clear() {
+    try { this.clearScene(); }
+    finally {
+      this.releasePickingIsolation();
+      this.releasePanelIsolation();
+    }
+  }
+
+  private clearScene() {
     this.setModelPreviewActive(false);
     this.calibrationSessions = [];
     this.effectiveCamera = undefined;
@@ -1592,6 +1621,46 @@ export class VideoArFusion {
     const element = document.querySelector<T>(selector);
     if (!element) throw new Error(`视频 AR 界面缺少元素：${selector}`);
     return element;
+  }
+
+  private externalSceneIsolation() {
+    return this.sceneIsolation ??= new VideoOverlaySceneIsolation(
+      () => this.options?.suspendExternalSceneEffects?.(),
+      error => console.warn("[Video AR] Unable to restore external scene effects", error),
+    );
+  }
+
+  private withSceneEffectsIsolation<T>(operation: () => T): T {
+    if (!this.options?.suspendExternalSceneEffects) return operation();
+    const release = this.externalSceneIsolation().acquire();
+    try { return operation(); } finally { release(); }
+  }
+
+  private ensurePanelSceneIsolation() {
+    if (this.options?.suspendExternalSceneEffects) this.releasePanelSceneEffects ??= this.externalSceneIsolation().acquire();
+  }
+
+  private releasePanelIsolation() {
+    const release = this.releasePanelSceneEffects;
+    this.releasePanelSceneEffects = undefined;
+    release?.();
+  }
+
+  private releasePickingIsolation() {
+    const release = this.releasePickingSceneEffects;
+    this.releasePickingSceneEffects = undefined;
+    release?.();
+  }
+
+  private beginControlPointPicking() {
+    if (this.options?.suspendExternalSceneEffects) this.releasePickingSceneEffects ??= this.externalSceneIsolation().acquire();
+    try { this.pause(); this.controlPointPicking = true; this.cancelPendingProjectionUpdates(); this.applyVisibility(); }
+    catch (error) { this.releasePickingIsolation(); throw error; }
+  }
+
+  private endControlPointPicking() {
+    try { this.controlPointPicking = false; this.applyVisibility(); }
+    finally { this.releasePickingIsolation(); }
   }
 
   private bindUi() {
@@ -2906,7 +2975,14 @@ export class VideoArFusion {
     return low;
   }
 
-  private updateSceneGeometry(
+  private updateSceneGeometry(...args: Parameters<VideoArFusion["updateIsolatedSceneGeometry"]>) {
+    // Dormant media callbacks may still resolve camera metadata. They must not
+    // cancel a map editing task; activation recomputes geometry under its lease.
+    if (this.panelActive) this.ensurePanelSceneIsolation();
+    return this.updateIsolatedSceneGeometry(...args);
+  }
+
+  private updateIsolatedSceneGeometry(
     state: LiveState,
     allowProjection = true,
     projectionBlockReason = "",

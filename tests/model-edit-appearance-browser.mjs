@@ -62,7 +62,8 @@ async function modelState() {
     }
     if (!model) throw new Error('Synthetic model is not loaded');
     const guides = viewer.entities.values.filter(entity => entity.label?.text?.getValue(viewer.clock.currentTime)?.includes('旋转中心'));
-    return { matrix: C.Matrix4.toArray(model.modelMatrix), color: [model.color.red,model.color.green,model.color.blue,model.color.alpha],
+    const color = model.color ?? C.Color.WHITE;
+    return { matrix: C.Matrix4.toArray(model.modelMatrix), color: [color.red,color.green,color.blue,color.alpha],
       blend: model.colorBlendMode, lighting: [model.imageBasedLighting.imageBasedLightingFactor.x,model.imageBasedLighting.imageBasedLightingFactor.y],
       lightColor: model.lightColor ? [model.lightColor.x,model.lightColor.y,model.lightColor.z] : null,
       show: model.show, silhouette: model.silhouetteSize, guideCount: guides.length,
@@ -94,7 +95,9 @@ async function dragModel(shift=false) {
   if(shift)await page.keyboard.up('Shift');
 }
 async function openModelTab() {
-  await page.locator('.function-centers-toggle').click();
+  await page.locator('[data-dock="editor"]').click();
+  const toggle = page.locator('.function-centers-toggle');
+  if (await toggle.isVisible()) await toggle.click();
   const button=page.locator('.tab[data-tab="models"]');
   if(!await button.isVisible())await page.locator('.function-center').filter({has:button}).locator('summary').click();
   await button.click();
@@ -133,8 +136,12 @@ try {
   context=await browser.newContext({viewport:{width:1500,height:1000}});page=await context.newPage();page.setDefaultTimeout(30000);
   page.on('pageerror',error=>report.pageErrors.push(error.message));
   await page.goto(origin,{waitUntil:'domcontentloaded',timeout:60000});await ready();
+  report.browserVersion = browser.version();
+  report.renderer = await page.evaluate(() => { const gl=window.__managementWorkspace.viewer.scene.context._gl;const ext=gl.getExtension('WEBGL_debug_renderer_info');return ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER); });
   await openModelTab();
   await page.locator('#modelFile').setInputFiles({name:modelName,mimeType:'model/gltf-binary',buffer:syntheticModel()});
+  const positionCategory = page.locator('details').filter({ has: page.locator('#modelPlacement') });
+  if (await positionCategory.getAttribute('open') === null) await positionCategory.locator(':scope > summary').click();
   await page.locator('#modelPlacement').selectOption('customGeo');
   await page.locator('#modelHeight').fill('10');await page.locator('#loadModel').click();
   await page.waitForFunction(()=>document.querySelector('#modelLoadStatus')?.textContent?.includes('已放置并保存'),undefined,{timeout:60000});
@@ -172,7 +179,7 @@ try {
     await page.locator('[data-appearance="brightness"]').fill('125');await page.locator('[data-appearance="brightness"]').dispatchEvent('change');
     await savedAppearance({colorMode:'replace',color:'#e02b40',lighting:'bright',brightness:1.25});
     const after=await modelState();assert.deepEqual(after.matrix,before.matrix);assert.ok(Math.abs(after.color[0]-224/255)<1e-8);
-    assert.ok(Math.abs(after.color[1]-43/255)<1e-8);assert.ok(after.lighting[0]>1);
+    assert.ok(Math.abs(after.color[1]-43/255)<1e-8);assert.ok(after.lighting.every(value=>value>=0&&value<=1));assert.deepEqual(after.lightColor,[1.6875,1.6875,1.6875]);
     await frameAndPick();await screenshot('model-appearance');return {color:after.color,lighting:after.lighting,matrixUnchanged:true};
   });
   await check('reload-restores-appearance-and-keeps-locked',async()=>{

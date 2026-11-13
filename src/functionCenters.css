@@ -44,3 +44,6 @@
   .function-centers-close{display:block;width:30px;height:30px;padding:0;border:0;background:transparent;color:#a4c8dc;font-size:25px;cursor:pointer}
 }
 @media(max-width:760px){.with-function-centers>.function-centers{top:54px}.with-function-centers>.app-header{grid-template-columns:minmax(56px,1fr) auto auto auto;gap:8px}.with-function-centers .app-header>.brand{min-width:0;padding-inline:8px}.with-function-centers .app-header>.brand>div{display:none}.with-function-centers .function-centers-toggle{padding:7px 8px;font-size:11px}.with-function-centers .app-header>.text-button{font-size:10px}.function-centers .tab,.function-centers .function-center-action{min-height:42px;font-size:12px}}
+
+/* Full-screen workspaces hide the editor chrome, including its relocated navigation. */
+body:is(.management-studio-open,.safety-workspace-open) .shell>.function-centers{display:none!important}

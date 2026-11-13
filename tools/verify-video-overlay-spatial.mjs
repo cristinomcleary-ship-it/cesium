@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /** Real Cesium picking/projection, persistence and native-cache acceptance on synthetic geometry/media.
  * START_VITE=1 by default; PLAYWRIGHT_MODULE, BROWSER_EXECUTABLE and OUTPUT_DIR are optional.
+ * FFMPEG_VIDEO_ENCODER selects an installed H.264 encoder (default: libx264).
  */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -16,7 +17,7 @@ const output = process.env.OUTPUT_DIR || work;
 await mkdir(output, { recursive: true });
 const videoPath = path.join(work, 'spatial-15fps.mp4'), xmlPath = path.join(work, 'spatial-camera.xml');
 const ffmpeg = process.env.FFMPEG_EXECUTABLE || 'ffmpeg', ffprobe = process.env.FFPROBE_EXECUTABLE || 'ffprobe';
-execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x283050:s=640x360:r=15:d=2.2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', videoPath]);
+execFileSync(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x283050:s=640x360:r=15:d=2.2', '-c:v', process.env.FFMPEG_VIDEO_ENCODER || 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', videoPath]);
 const photo = (index, longitude) => `<Photo><Id>${index}</Id><ImagePath>frame_${index}.jpg</ImagePath><Component>1</Component><Pose><Center><x>${longitude}</x><y>30</y><z>80</z></Center><Rotation><Yaw>0</Yaw><Pitch>-90</Pitch><Roll>0</Roll></Rotation></Pose></Photo>`;
 await writeFile(xmlPath, `<?xml version="1.0"?><BlocksExchange version="3.2"><SpatialReferenceSystems><SRS><Id>0</Id><Name>WGS84</Name><Definition>EPSG:4979</Definition></SRS></SpatialReferenceSystems><Block><SRSId>0</SRSId><Photogroups><Photogroup><Name>Spatial annotations</Name><CameraModelType>Perspective</CameraModelType><CameraOrientation>XRightYDown</CameraOrientation><ImageDimensions><Width>640</Width><Height>360</Height></ImageDimensions><FocalLengthPixels>500</FocalLengthPixels><PrincipalPoint><x>319.5</x><y>179.5</y></PrincipalPoint><AspectRatio>1</AspectRatio><Skew>0</Skew>${[120,120.00006218,120.00012436].map((longitude,index)=>photo(index,longitude)).join('')}</Photogroup></Photogroups></Block></BlocksExchange>`);
 const baseUrl = process.env.BASE_URL || 'http://127.0.0.1:5193';

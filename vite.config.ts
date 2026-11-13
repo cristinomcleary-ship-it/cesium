@@ -1,3 +1,4 @@
+import { cesiumOwnedClippingShaderPlugin } from "./server/cesiumOwnedClippingShader";
 import { managementPlugin } from "./server/managementStore";
 import { modelOptimizationPlugin } from "./server/modelOptimization";
 import { safetyEventPlugin } from "./server/safetyEventStore";
@@ -561,6 +562,7 @@ export default defineConfig({
     },
   },
   plugins: [
+    cesiumOwnedClippingShaderPlugin(),
     managementPlugin(),
     safetySpatialPlugin(),
     modelOptimizationPlugin(),

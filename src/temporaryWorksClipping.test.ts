@@ -1,3 +1,4 @@
+import { OWNED_FRAGMENT_CLIPPING } from './ownedClippingPolygons.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -36,6 +37,7 @@ test('overlapping buildings use a union collection; removing one keeps all other
   try {
     assert.equal(f.manager.upsert({ id: 'camp', tileset: f.tileset, footprints: footprint() }).state, 'active');
     const first = f.tileset.clippingPolygons;
+    assert.equal((first as unknown as Record<string, unknown>)[OWNED_FRAGMENT_CLIPPING], true);
     f.manager.upsert({ id: 'steel', tileset: f.tileset, footprints: footprint(121.0005) });
     assert.equal(first.isDestroyed(), true);
     assert.equal(f.tileset.clippingPolygons.length, 2);
@@ -353,4 +355,52 @@ test('tileset unloading and disposal release listener and collection without tou
   assert.equal(owned.isDestroyed(), true); assert.equal(f.manager.getStatus('A')!.state, 'blocked');
   f.manager.dispose(); assert.equal(f.postUpdate.numberOfListeners, 0);
   assert.throws(() => f.manager.upsert({ id: 'A', tileset: f.tileset, footprints: footprint() }), /已关闭/);
+});
+
+
+test('external detach or destroyed owned collection releases content borrowers before reattachment', () => {
+  for (const mode of ['setter', 'destroy'] as const) {
+    const f = fixture();
+    try {
+      f.manager.upsert({ id: 'camp', tileset: f.tileset, footprints: footprint() });
+      const previous = f.tileset.clippingPolygons;
+      const model = { _clippingPolygons: previous as ClippingPolygonCollection | undefined, _clippingPolygonsState: 1, resets: 0, resetDrawCommands() { this.resets++; } };
+      const root = { content: { _model: model }, children: [], _clippingPolygonsState: 1, clippingPolygonsDirty: false };
+      (f.tileset as unknown as { _root: unknown })._root = root;
+      if (mode === 'setter') (f.tileset as unknown as { clippingPolygons: unknown }).clippingPolygons = undefined;
+      else previous.destroy();
+      const rendersBeforeCleanup = f.renders();
+      f.manager.synchronize();
+      assert.ok(f.renders() > rendersBeforeCleanup, 'released command aliases must request a frame even without a replacement');
+      assert.equal(model._clippingPolygons, undefined); assert.equal(model.resets, 1);
+      assert.equal(root.clippingPolygonsDirty, true); assert.equal(root._clippingPolygonsState, 0);
+      if (mode === 'setter') assert.notEqual(f.tileset.clippingPolygons, previous);
+    } finally {
+      (f.tileset as unknown as { _root: unknown })._root = undefined;
+      // A directly destroyed foreign-set collection cannot be destroyed twice by Cesium's setter.
+      if (f.tileset.clippingPolygons?.isDestroyed()) (f.tileset as unknown as { _clippingPolygons: unknown })._clippingPolygons = undefined;
+      f.close();
+    }
+  }
+});
+
+
+test('foreign collection without an owned borrower is not reset or rendered by cleanup', () => {
+  const f = fixture();
+  const foreign = new ClippingPolygonCollection({ polygons: buildTemporaryWorksClipPolygons(footprint(122)) });
+  try {
+    f.manager.upsert({ id: 'camp', tileset: f.tileset, footprints: footprint() });
+    f.tileset.clippingPolygons = foreign;
+    const model = { _clippingPolygons: foreign, resets: 0, resetDrawCommands() { this.resets++; } };
+    const root = { content: { _model: model }, children: [], _clippingPolygonsState: 1, clippingPolygonsDirty: false };
+    (f.tileset as unknown as { _root: unknown })._root = root;
+    const before = f.renders();
+    f.manager.synchronize();
+    assert.equal(f.renders(), before); assert.equal(model.resets, 0);
+    assert.equal(model._clippingPolygons, foreign); assert.equal(f.tileset.clippingPolygons, foreign);
+    assert.equal(root.clippingPolygonsDirty, false); assert.equal(foreign.isDestroyed(), false);
+  } finally {
+    (f.tileset as unknown as { _root: unknown })._root = undefined;
+    f.close();
+  }
 });

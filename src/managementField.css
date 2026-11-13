@@ -270,7 +270,8 @@ body.safety-workspace-open.management-studio-open:has(.safety-dashboard-v5) .ces
   .brand,:scope[data-view=scene] .brand { width:225px; min-width:225px; padding:0; font-size:18px; letter-spacing:2px; }
   .brand-name small { font-size:10px; letter-spacing:2px; }
   .brand-mark { background:linear-gradient(135deg,#73e6c1,#37ad99); color:#10342c; }
-  .header-context,:scope[data-view=scene] .header-context { display:none; }
+  /* Scene has its own project selector; management pages still need the header selector. */
+  :scope[data-view=scene] .header-context { display:none; }
   #mg-nav,:scope[data-view=scene] #mg-nav { display:none; }
   .mg-field-primary,:scope[data-view=scene] .mg-field-primary { display:flex!important; align-items:stretch; height:100%; gap:10px; flex:0 0 auto; }
   .mg-field-primary .nav-item { width:auto; height:100%; min-height:0; padding:0 17px; margin:0; border-radius:0; font-size:13px; color:var(--muted); border-bottom:3px solid transparent; background:transparent; box-shadow:none; }

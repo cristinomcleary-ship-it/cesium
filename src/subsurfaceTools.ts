@@ -22,6 +22,7 @@ import {
 import type { ImportRecord } from "./types";
 import type { CadPolylineFeature } from "./cadPrimitiveLoader";
 import { recoverDestroyedClippingReferences } from "./destroyedClippingRecovery";
+import { isSurfaceEditGlobeClipping } from "./surfaceEditScene";
 
 export const subsurfacePanelHtml = `
   <div id="subsurfacePanel" class="subsurface-panel hidden">
@@ -330,6 +331,9 @@ export class SubsurfaceTools {
     };
     const collection = globe.clippingPolygons ?? globe._clippingPolygons;
     if (!collection) return;
+    // New, explicitly owned terrain edits keep their own lifetime and are restored
+    // independently. The legacy disabled-terrain path remains unchanged otherwise.
+    if (isSurfaceEditGlobeClipping(collection)) return;
     if (collection.isDestroyed()) globe._clippingPolygons = undefined;
     else collection.enabled = false;
     this.excavationClipTargets.delete(globe);
