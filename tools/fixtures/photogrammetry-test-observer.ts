@@ -19,7 +19,7 @@ export function findFixturePhotography(viewer: Viewer, sourceUrl: string): Cesiu
 export function fixturePrimitiveDiagnostics(viewer: Viewer) {
   return Array.from({ length: viewer.scene.primitives.length }, (_, index) => {
     const primitive = viewer.scene.primitives.get(index);
-    return { constructor: primitive?.constructor?.name, url: primitive?.resource?.url ?? null,
+    return { constructor: primitive?.constructor?.name, url: primitive?.resource?.url ?? null, show: primitive?.show ?? null,
       hasRoot: !!primitive?.root, hasMatrix: !!primitive?.modelMatrix,
       tilesLoaded: primitive?.tilesLoaded ?? null, contentReady: primitive?.root?.contentReady ?? null,
       destroyed: typeof primitive?.isDestroyed === 'function' ? primitive.isDestroyed() : null };

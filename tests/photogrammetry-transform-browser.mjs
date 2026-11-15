@@ -77,16 +77,22 @@ async function ready() {
     viewer.scene.renderError.addEventListener((_scene, error) => window.__photogrammetryAcceptanceErrors.push(String(error.stack || error)));
   });
 }
-async function tilesReady() {
-  await page.waitForFunction(async url => {
-    const { findFixturePhotography } = await import('/tools/fixtures/photogrammetry-test-observer.ts');
-    const viewer = window.__managementWorkspace?.viewer;
-    if (!viewer) return false;
-    const tiles = findFixturePhotography(viewer, url);
-    if (tiles?.tilesLoaded && tiles.root.contentReady) return true;
-    viewer.scene.requestRender(); return false;
-  }, origin + sourcePath, { timeout: 60000 });
+async function waitPhotography(requireContent) {
+  // waitForFunction tests predicate truthiness before resolving its return
+  // value; an async predicate would return a truthy Promise even when false.
+  // Load this read-only observer first, then poll a strictly synchronous test.
+  const observer = await page.evaluateHandle(() => import('/tools/fixtures/photogrammetry-test-observer.ts'));
+  try {
+    await page.waitForFunction(({ observer, url, requireContent }) => {
+      const viewer = window.__managementWorkspace?.viewer;
+      if (!viewer) return false;
+      const tiles = observer.findFixturePhotography(viewer, url);
+      if (tiles && (!requireContent || tiles.tilesLoaded && tiles.root.contentReady)) return true;
+      viewer.scene.requestRender(); return false;
+    }, { observer, url: origin + sourcePath, requireContent }, { timeout: 60000 });
+  } finally { await observer.dispose(); }
 }
+const tilesReady = () => waitPhotography(true);
 async function frames(count = 4) {
   await page.evaluate(async count => {
     const { renderFixtureFrames } = await import('/tools/fixtures/render-fixture-frames.ts');
@@ -174,10 +180,7 @@ async function captureSceneErrors() {
 }
 async function reload() {
   await captureSceneErrors(); await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }); await ready();
-  await page.waitForFunction(async url => {
-    const { findFixturePhotography } = await import('/tools/fixtures/photogrammetry-test-observer.ts');
-    return !!findFixturePhotography(window.__managementWorkspace.viewer, url);
-  }, origin + sourcePath, { timeout: 60000 });
+  await waitPhotography(false);
   await framePhotography(); await tilesReady(); await frames();
 }
 async function nativeDiagnostics(name) {
