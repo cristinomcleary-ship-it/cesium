@@ -102,7 +102,7 @@ git diff --check
 
 Python 合成测试使用已有兼容环境，或独立候选测试虚拟环境按 `tools/ci/python-requirements.txt` 安装；这不是实际推理/CUDA环境安装器。设置 `PYTHON_EXECUTABLE` 指向该环境的解释器，再运行 `npm run test:python`。Linux跳过的Windows行为须在本机重新核查，不直接沿用历史跳过记录。
 
-Windows 无文件 symlink 创建权限时，只有两个独立文件链接测试允许在创建阶段遇到 `EPERM/EACCES/ENOTSUP` 后明确记录环境跳过。普通路径、HTTP权限、旧日志脱敏和目录 junction 检查必须继续执行，失败仍需处理；有权限的 CI 必须实际执行文件链接边界。不要为通过测试提升权限或改机器策略。跳过不算该机对应边界验证通过，但可以继续执行其他验收项，反馈中保留跳过原因。
+Windows 无文件 symlink 创建权限时，仅接受测试本身在创建文件链接夹具阶段明确标出的环境跳过；按实际测试名与原因逐项记录，不固定跳过数量、不手动屏蔽测试。本轮新增临建资源逃逸测试也使用同一受限夹具。普通路径、HTTP权限、旧日志脱敏和目录 junction 检查必须继续执行，失败仍需处理；有权限的 CI 必须实际执行文件链接边界。不要为通过测试提升权限或改机器策略。跳过不算该机对应边界验证通过，但可以继续执行其他验收项，反馈中保留跳过原因。
 
 浏览器/媒体测试按脚本设置 `PLAYWRIGHT_MODULE`、`BROWSER_EXECUTABLE`、`FFMPEG_EXECUTABLE`、`FFPROBE_EXECUTABLE`：
 

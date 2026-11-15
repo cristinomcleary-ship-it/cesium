@@ -2,7 +2,7 @@ import test from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request } from 'node:http';
-import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer as createViteServer, preview } from 'vite';
@@ -10,8 +10,11 @@ import { createTemporaryWorksAssetsMiddleware, temporaryWorksAssetsPlugin } from
 import { createFileSymlinkFixture } from '../tests/helpers/fileSymlinkFixture.ts';
 
 async function fixture(t: TestContext) {
-  const root = await mkdtemp(join(tmpdir(), 'cesium-temporary-assets-test-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const createdRoot = await mkdtemp(join(tmpdir(), 'cesium-temporary-assets-test-'));
+  t.after(() => rm(createdRoot, { recursive: true, force: true }));
+  // Windows TEMP can use an 8.3 alias. Vite resolves requested files to their
+  // canonical path, so its strict allowlist must use that same synthetic root.
+  const root = await realpath(createdRoot);
   const bundle = join(root, 'original-bundle'), app = join(root, 'candidate');
   await mkdir(bundle); await mkdir(join(app, 'public'), { recursive: true }); await mkdir(join(app, 'dist'));
   const html = '<!doctype html><html><body>synthetic candidate</body></html>';
@@ -170,7 +173,9 @@ for (const mode of ['dev', 'preview'] as const) {
               // Configured mounts are authoritative; never mix with stale dist.
               assert.equal((await get('camp.glb')).status, 404);
             }
-            assert.match(await (await fetch(`${origin}${base}`)).text(), /synthetic candidate/);
+            const home = await fetch(`${origin}${base}`);
+            assert.equal(home.status, 200);
+            assert.match(await home.text(), /synthetic candidate/);
           } finally {
             if ('close' in server) await server.close();
             else { server.httpServer.closeAllConnections(); await new Promise<void>(resolve => server.httpServer.close(() => resolve())); }
