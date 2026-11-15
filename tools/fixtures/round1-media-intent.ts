@@ -1,5 +1,6 @@
 import { Cartesian3, ClippingPlane, ClippingPlaneCollection } from 'cesium';
 import { CadLoadRegistry } from '../../src/cadLoadRegistry';
+import { releaseBorrowedClippingPlanes } from '../../src/borrowedClippingPolygons';
 import type { ModelEditor } from '../../src/modelEditor';
 import { SceneEffectsCoordinator } from '../../src/sceneEffectsCoordinator';
 import { SceneLibrary } from '../../src/sceneLibrary';
@@ -19,6 +20,24 @@ const messages: { message: string; error: boolean }[] = [];
 const imports: ImportRecord[] = [];
 let library: SceneLibrary, overlay: VideoModelOverlay, subsurface: SubsurfaceTools;
 let foreign: ClippingPlaneCollection | undefined;
+let foreignCleanup: { aliasesBefore: number; releasedAliases: number; remainingAliases: number; detached: boolean; destroyed: boolean } | undefined;
+type BorrowedContent = { _model?: { _clippingPlanes?: object }; innerContents?: readonly BorrowedContent[] };
+type BorrowedTile = { content?: BorrowedContent; children?: readonly BorrowedTile[] };
+const countBorrowers = (collection: object) => {
+  const pending: BorrowedTile[] = [syntheticSurfaceAssets().tiles.root as unknown as BorrowedTile];
+  const tiles = new Set<BorrowedTile>(), contents = new Set<BorrowedContent>(), models = new Set<object>();
+  while (pending.length) {
+    const tile = pending.pop()!; if (tiles.has(tile)) continue; tiles.add(tile);
+    for (const child of tile.children ?? []) pending.push(child);
+    const children = tile.content ? [tile.content] : [];
+    while (children.length) {
+      const content = children.pop()!; if (contents.has(content)) continue; contents.add(content);
+      for (const child of content.innerContents ?? []) children.push(child);
+      if (content._model?._clippingPlanes === collection) models.add(content._model);
+    }
+  }
+  return models.size;
+};
 const change = (id: string, value: string | boolean, event = 'change') => {
   const element = document.getElementById(id) as HTMLInputElement;
   if (typeof value === 'boolean') element.checked = value; else element.value = value;
@@ -41,6 +60,8 @@ const state = () => ({
   sectionOffset: (document.getElementById('sectionOffset') as HTMLInputElement).value,
   foreignBound: api.ready && !!foreign && syntheticSurfaceAssets().tiles.clippingPlanes === foreign,
   foreignDestroyed: foreign?.isDestroyed() ?? null,
+  foreignBorrowers: api.ready && foreign ? countBorrowers(foreign) : 0,
+  foreignCleanup: foreignCleanup ?? null,
   libraryActiveVideo: library?.activeVideoRecordId ?? null, libraryBusy: library?.busy ?? true,
   messages: [...messages], renderErrors: surfaceFixture.errors(),
 });
@@ -58,14 +79,26 @@ const api = {
   async addForeignClip() {
     if (coordinator.leaseCount) throw new Error('Must release AR before foreign-owner scenario');
     change('sectionEnabled', false); subsurface.refreshClipping();
+    foreignCleanup = undefined;
     foreign = new ClippingPlaneCollection({ planes: [new ClippingPlane(Cartesian3.UNIT_X, 3)] });
     syntheticSurfaceAssets().tiles.clippingPlanes = foreign; await renderFrames(4); return state();
   },
   async removeForeignClip() {
-    const tiles = syntheticSurfaceAssets().tiles;
-    if (tiles.clippingPlanes === foreign) (tiles as { clippingPlanes?: ClippingPlaneCollection }).clippingPlanes = undefined;
-    if (foreign && !foreign.isDestroyed()) foreign.destroy();
-    foreign = undefined; await renderFrames(4); return state();
+    const tiles = syntheticSurfaceAssets().tiles, owned = foreign;
+    if (!owned || tiles.clippingPlanes !== owned) throw new Error('Fixture no longer owns its foreign clipping collection');
+    // This fixture is the foreign owner. Cesium 1.144 destroys the collection
+    // in the public tileset setter, but loaded tile-model commands can still
+    // capture its texture. Use the same exact-alias release as SubsurfaceTools
+    // before the setter; the AR rejection itself must never perform this cleanup.
+    const aliasesBefore = countBorrowers(owned), releasedAliases = releaseBorrowedClippingPlanes(tiles, owned);
+    owned.enabled = false;
+    (tiles as { clippingPlanes?: ClippingPlaneCollection }).clippingPlanes = undefined;
+    if (!owned.isDestroyed()) owned.destroy();
+    foreign = undefined;
+    await renderFrames(4);
+    foreignCleanup = { aliasesBefore, releasedAliases, remainingAliases: countBorrowers(owned),
+      detached: tiles.clippingPlanes !== owned, destroyed: owned.isDestroyed() };
+    return state();
   },
   async settle() { await renderFrames(5); return state(); },
 };

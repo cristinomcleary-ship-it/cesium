@@ -158,14 +158,23 @@ try {
   await check('unknown-clipping-owner-remains-protected-with-no-leaked-lease', async () => {
     await page.locator('#ccVideoFile').setInputFiles({ name: 'foreign-owner.mp4', mimeType: 'video/mp4', buffer: videoBytes });
     const before = await invoke('addForeignClip'); assert.equal(before.foreignBound, true);
+    assert.ok(before.foreignBorrowers > 0, 'Foreign clipping must be borrowed by at least one loaded tile model');
     await page.locator('#ccOcclusionSource').selectOption('synthetic-photography');
     // A rejected native checkbox change resets checked=false, so click rather
     // than Playwright.check() (which requires the checkbox to remain checked).
     await page.locator('#ccOcclusionEnabled').click();
     const after = await invoke('settle'); assert.equal(after.occlusion, false); assert.equal(after.leases, 0);
     assert.equal(after.foreignBound, true); assert.equal(after.foreignDestroyed, false);
+    assert.ok(after.foreignBorrowers > 0, 'AR rejection must preserve the foreign owner and its loaded aliases');
     assert.ok(after.messages.slice(before.messages.length).some(item => item.error && /剖切或开挖/.test(item.message)));
-    await invoke('removeForeignClip'); return { rejected: true, foreignOwnerPreserved: true, leases: after.leases };
+    const cleaned = await invoke('removeForeignClip');
+    assert.equal(cleaned.sourceClipping, null); assert.equal(cleaned.foreignBound, false);
+    assert.equal(cleaned.foreignCleanup?.detached, true); assert.equal(cleaned.foreignCleanup?.destroyed, true);
+    assert.ok(cleaned.foreignCleanup.releasedAliases > 0, 'Cleanup must exercise an actual loaded tile-model borrower');
+    assert.equal(cleaned.foreignCleanup.releasedAliases, cleaned.foreignCleanup.aliasesBefore);
+    assert.equal(cleaned.foreignCleanup.remainingAliases, 0, 'No loaded model may retain the destroyed texture owner after rendering');
+    assert.equal(cleaned.leases, 0); assert.deepEqual(cleaned.renderErrors, []);
+    return { rejected: true, foreignOwnerPreserved: true, leases: after.leases, cleanup: cleaned.foreignCleanup };
   });
   const final = await invoke('state'); assert.deepEqual(final.renderErrors, []);
   assert.deepEqual(report.pageErrors, []); assert.deepEqual(report.consoleErrors, []);

@@ -7,6 +7,7 @@ import { buildSurfaceEditGeometry } from '../../src/surfaceEditGeometry';
 import { SurfaceEditScene, type SurfaceEditHandle } from '../../src/surfaceEditScene';
 import type { SurfaceEditPlan } from '../../src/surfaceEditTypes';
 import { getTemporaryWorksClippingManager } from '../../src/temporaryWorksGlbScene';
+import { renderFixtureFrames } from './render-fixture-frames';
 
 // Entirely synthetic 3D Tiles/GLB data. No user project, SDK, credentials or remote
 // imagery is loaded, and no product persistence routes are called by this fixture.
@@ -62,11 +63,7 @@ function glb(parts: { points: number[][]; indices: number[]; color: number[] }[]
   let at = 28 + jsonLength; for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.length; }
   return blobUrl(new Blob([bytes], { type: 'model/gltf-binary' }));
 }
-const renderFrames = (count = 4) => new Promise<void>((resolve, reject) => {
-  let frames = 0; const timer = setTimeout(() => { stop(); reject(new Error('Synthetic scene frame timeout: ' + errors.join('\n'))); }, 20_000);
-  const stop = viewer.scene.postRender.addEventListener(() => { if (++frames >= count) { clearTimeout(timer); stop(); resolve(); } });
-  viewer.scene.requestRender();
-});
+const renderFrames = (count = 4) => renderFixtureFrames(viewer.scene, count, () => errors);
 const waitUntil = async (test: () => boolean) => { const started = performance.now(); while (!test()) {
   if (performance.now() - started > 45_000) throw new Error('Synthetic geometry did not become ready'); await renderFrames(1);
 } };
