@@ -57,9 +57,17 @@ export function loadTemporaryWorksGlbManifest(): Promise<TemporaryWorksGlbManife
     // The private package can change independently of the application build. Its hashes
     // must be re-read on each page load before constructing versioned model URLs.
     manifestPromise = fetch(`${base}models/temporary-works/manifest.json`, {cache:'no-store'}).then(async response => {
-      if (!response.ok) throw new Error(`临建资源清单加载失败（HTTP ${response.status}）。`);
-      const result = await response.json() as TemporaryWorksGlbManifest;
-      if (result.schemaVersion !== 1 || !Array.isArray(result.assets)) throw new Error('不支持的临建资源清单版本。');
+      if (!response.ok) throw new Error(`临建资源清单加载失败（HTTP ${response.status}），请检查当前服务是否已连接原有临建资源包。`);
+      const content = await response.text();
+      // A source-only deployment can return the SPA document for an absent private
+      // manifest. Do not report the HTML parser error as a damaged saved scheme.
+      // Keep accepting valid JSON without a MIME type for existing local servers.
+      if (/^text\/html(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '') || /^\s*</.test(content))
+        throw new Error('临建资源清单请求返回了网页，当前服务未正确提供临建模型资源。请连接原有临建资源包后重试生成。');
+      let result: TemporaryWorksGlbManifest;
+      try { result = JSON.parse(content) as TemporaryWorksGlbManifest; }
+      catch { throw new Error('临建资源清单不是有效的 JSON，请核对原有临建资源包的完整性后重试。'); }
+      if (!result || result.schemaVersion !== 1 || !Array.isArray(result.assets)) throw new Error('不支持的临建资源清单版本。');
       result.assets.forEach(validateTemporaryWorksGlbResource);
       if (new Set(result.assets.map(a => a.id)).size !== result.assets.length) throw new Error('临建资源标识重复。');
       return result;

@@ -14,6 +14,7 @@ import { createModelMiddleware } from "./server/modelMiddleware";
 import { createLocalImageryMiddleware } from "./server/localImageryMiddleware";
 import { createLocalTilesMiddleware } from "./server/localTilesMiddleware";
 import { createRenderDiagnosticsMiddleware } from "./server/renderDiagnostics";
+import { temporaryWorksAssetsPlugin } from "./server/temporaryWorksAssetsMiddleware";
 
 type BoundingVolume = { sphere?: number[]; box?: number[]; region?: number[] };
 type TileNode = {
@@ -490,6 +491,7 @@ export default defineConfig({
     localImageryPlugin,
     engineeringModelsPlugin,
     localTilesPlugin,
+    temporaryWorksAssetsPlugin(),
     viteStaticCopy({
       targets: [
         { src: "node_modules/cesium/Build/Cesium/Workers", dest: "cesiumStatic" },
