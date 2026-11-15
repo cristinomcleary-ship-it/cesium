@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { createLocalTilesMiddleware } from './localTilesMiddleware.ts';
 import { setManagementActor } from './management/actorContext.ts';
+import { createFileSymlinkFixture } from '../tests/helpers/fileSymlinkFixture.ts';
 
 async function fixture(aggregate = false) {
   const work = await mkdtemp(join(tmpdir(), 'cesium-local-tiles-test-')), root = join(work, 'tiles');
@@ -44,18 +45,35 @@ test('local tiles retain normal mount/GET and add private HEAD and explicit meth
   } finally { await f.close(); }
 });
 
-test('local tile paths reject malformed URI, parent escapes, outside file/directory symlinks and mounted-root replacement', async () => {
+test('local tile paths reject malformed URI and parent escapes without requiring symlink privileges', async () => {
   const f = await fixture();
   try {
-    await symlink(join(f.work, 'private.txt'), join(f.root, 'escape.b3dm'));
-    await symlink(f.work, join(f.root, 'escape-directory'), 'dir');
-    await symlink(join(f.root, 'tile.b3dm'), join(f.root, 'inside.b3dm'));
-    assert.equal((await f.call(f.prefix + 'inside.b3dm')).status, 200, 'contained links preserve valid imports');
-    for (const suffix of ['escape.b3dm', 'escape-directory/private.txt', '%2e%2e%2fprivate.txt', '%2e%2e%5cprivate.txt', '%00', 'C%3Aprivate.txt', 'missing.b3dm'])
+    for (const suffix of ['%2e%2e%2fprivate.txt', '%2e%2e%5cprivate.txt', '%00', 'C%3Aprivate.txt', 'missing.b3dm'])
       assert.equal((await f.call(f.prefix + suffix)).status, 404, suffix);
     assert.equal((await f.call(f.prefix + '%zz')).status, 400);
-    await rename(f.root, join(f.work, 'renamed-synthetic-root')); await symlink(f.work, f.root, 'dir');
+  } finally { await f.close(); }
+});
+
+test('local tiles reject escaping directory links and replaced mounts, including Windows junctions', async () => {
+  const f = await fixture();
+  try {
+    const type = process.platform === 'win32' ? 'junction' : 'dir';
+    await symlink(f.work, join(f.root, 'escape-directory'), type);
+    assert.equal((await f.call(f.prefix + 'escape-directory/private.txt')).status, 404);
+    await rename(f.root, join(f.work, 'renamed-synthetic-root')); await symlink(f.work, f.root, type);
     assert.equal((await f.call(f.url)).status, 404);
+  } finally { await f.close(); }
+});
+
+test('local tiles reject escaping file symlinks and preserve contained file symlinks', async t => {
+  const f = await fixture();
+  try {
+    if (!await createFileSymlinkFixture(t, join(f.work, 'private.txt'), join(f.root, 'escape.b3dm'))) return;
+    // The same directory has demonstrated file-link capability; a subsequent
+    // creation failure is unexpected and must fail rather than skip the test.
+    await symlink(join(f.root, 'tile.b3dm'), join(f.root, 'inside.b3dm'), 'file');
+    assert.equal((await f.call(f.prefix + 'inside.b3dm')).status, 200, 'contained links preserve valid imports');
+    assert.equal((await f.call(f.prefix + 'escape.b3dm')).status, 404);
   } finally { await f.close(); }
 });
 

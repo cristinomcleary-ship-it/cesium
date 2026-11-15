@@ -1,6 +1,7 @@
 import { Cartesian3, ClippingPolygonCollection, Matrix4 } from 'cesium';
 import { SubsurfaceTools, subsurfacePanelHtml } from '../../src/subsurfaceTools';
 import { SceneEffectsCoordinator } from '../../src/sceneEffectsCoordinator';
+import { isSurfaceEditGlobeClipping } from '../../src/surfaceEditScene';
 import { getTemporaryWorksClippingManager } from '../../src/temporaryWorksGlbScene';
 import { assertVideoOverlayOccluder, VideoOverlayOcclusion } from '../../src/videoOverlayOcclusion';
 import type { ImportRecord } from '../../src/types';
@@ -22,6 +23,13 @@ const releases = new Map<string, () => void>();
 const messages: { message: string; error: boolean }[] = [];
 let imports: ImportRecord[] = [], occluder: VideoOverlayOcclusion | undefined;
 let disposed = false, lastReleasedCollections: { destroyed: boolean }[] = [];
+// Capture at creation, not at disposal: replacing the owned terrain collection
+// with another disabled collection must not satisfy the lifetime assertion.
+let surfaceTerrain: ClippingPolygonCollection | undefined;
+const terrainOwnership = () => ({ captured: !!surfaceTerrain,
+  owned: !!surfaceTerrain && isSurfaceEditGlobeClipping(surfaceTerrain),
+  sameAsBound: !!surfaceTerrain && !viewer.isDestroyed() && viewer.scene.globe.clippingPolygons === surfaceTerrain,
+  destroyed: surfaceTerrain?.isDestroyed() ?? null });
 const input = (id: string) => document.getElementById(id) as HTMLInputElement;
 const change = (id: string, value: boolean | string, event = 'change') => {
   const element = input(id);
@@ -60,7 +68,7 @@ const state = () => {
       frontAlpha: viewer.scene.globe.translucency.frontFaceAlpha, backAlpha: viewer.scene.globe.translucency.backFaceAlpha },
     shaderPresent: !tiles.isDestroyed() && !!tiles.customShader,
     occluder: occluder?.getStatus() ?? null, releasedCollections: lastReleasedCollections,
-    messages: [...messages], renderErrors: surfaceFixture.errors(), disposed };
+    messages: [...messages], renderErrors: surfaceFixture.errors(), disposed, terrainOwnership: terrainOwnership() };
 };
 async function legacy(mode: 'section' | 'pit' | 'none') {
   const synthetic = subsurface as unknown as SyntheticSubsurface;
@@ -81,6 +89,8 @@ const api = {
   ready: false, failure: '', state, legacy, gpu: () => surfaceFixture.gpu(),
   async setupContributions() {
     await surfaceFixture.create('excavation', 'round1-surface', 0);
+    surfaceTerrain = viewer.scene.globe.clippingPolygons;
+    if (!surfaceTerrain || !isSurfaceEditGlobeClipping(surfaceTerrain)) throw new Error('Missing owned surface terrain collection');
     await surfaceFixture.legacy(true); await renderFrames(6); return state();
   },
   async groundMode(enabled: boolean) {
@@ -129,7 +139,12 @@ const api = {
     syntheticSurfaceAssets().renderer.destroy(); getTemporaryWorksClippingManager(viewer).dispose();
     disposed = true; await renderFrames(4); return state();
   },
-  destroyViewer() { if (!viewer.isDestroyed()) surfaceFixture.destroy(); return { destroyed: viewer.isDestroyed(), errors: surfaceFixture.errors() }; },
+  destroyViewer() {
+    if (!viewer.isDestroyed()) surfaceFixture.destroy();
+    // The retained reference remains observable after Viewer/Globe destruction;
+    // do not read scene.globe or collection contents after they are destroyed.
+    return { destroyed: viewer.isDestroyed(), errors: surfaceFixture.errors(), terrainDestroyed: surfaceTerrain?.isDestroyed() ?? null };
+  },
 };
 Object.assign(window, { __round1SceneLifecycle: api });
 void (async () => {

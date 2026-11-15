@@ -2,6 +2,8 @@
 
 本任务针对 `codex/platform-round1-v1.2.2`，开发基线为 `1ab7cc2a86fde718ff8393f9ece50f3e476a0eff`。已核验的**产品代码候选 SHA 为 `83f2a59adbc61dc41e7a59072104d91c61ee48e4`**，不使用移动分支的最新 HEAD 代替。包含本任务书的后续交付提交仅涉及部署文档和测试夹具；请使用 GPT 最终交付消息指定的完整 SHA，并核对产品文件与上述候选一致。验证记录见 [第一轮开发验证](docs/releases/round1-development-validation-2026-11-15.md)。
 
+收到 `01e8aab5261fc6e1502926db11e8fc945fc61f0e` 的本机候选反馈后，修正了浏览器销毁断言和无文件 symlink 权限的测试组织。此次仅修改测试及说明，产品资源保留策略不变。继续验收步骤和边界见 [本机验收反馈修订](docs/releases/round1-acceptance-followup-2026-11-15.md)，必须使用 GPT 本次新交付的完整 SHA，不能用旧 6/7 结果代替新第七项验证。
+
 ## 1. 分工与现场保护
 
 GPT 工作模式负责产品实现、测试、GitHub 提交和缺陷修复；本机 Codex 负责只读核验、依赖/环境准备、部署、真实素材验证、日志采集与反馈。不要自行修改产品源码、减少断言、放宽预算、升级 Cesium、重构或开启第二轮功能开发。
@@ -13,6 +15,8 @@ GPT 工作模式负责产品实现、测试、GitHub 提交和缺陷修复；本
 ## 2. 先核验实际运行身份
 
 历史地址 `http://127.0.0.1:5289/` 只是线索。先从实际地址和监听端口定位 PID，核对进程启动时间、命令行、工作目录、启动包装、实际源码与 dist 路径。
+
+若该端口没有监听，只能核验磁盘上的源码、构建和启动包装；记录“正式服务当前未运行”，不能使用历史 PID 或旧版本记录代替在线 HTTP 身份证明。
 
 在该进程使用的源码目录记录：
 
@@ -46,6 +50,17 @@ $env:CESIUM_SAFETY_DATA_DIR = Join-Path $PWD "output\round1-candidate\safety"
 
 这些目录由测试或服务创建，不填入生产库。真实素材只读引用，修改/保存/删除操作在合成或已有独立测试项目中完成。
 
+`TEMP`/`TMP` 应放在候选源码树外；机械遥测 CLI 会正确拒绝把私有配置写入源码目录。可在同一独立候选 PowerShell 进程创建专用合成临时目录，例如：
+
+```powershell
+$round1TestTemp = Join-Path $env:LOCALAPPDATA ("Temp\cesium-round1-test-" + [guid]::NewGuid().ToString("N"))
+[System.IO.Directory]::CreateDirectory($round1TestTemp) | Out-Null
+$env:TEMP = $round1TestTemp
+$env:TMP = $round1TestTemp
+```
+
+核对该目录确实位于候选源码树外，不修改机器级变量，不向其中复制正式资料。
+
 新增 `CESIUM_COOKIE_SECURE=true` 仅用于实际 HTTPS 部署；本地 HTTP 保持未设置或 false。服务不信任任意 `X-Forwarded-Proto` 来决定 Secure。登录和注销应使用同一配置。不要为了测试改机器级环境或正式包装。
 
 私有缓存与摄影挂载仍通过受控接口访问；直接静态读取私有根应拒绝。诊断上报需要登录及 read 权限，读取最新诊断需要 admin；记录经过脱敏并有大小、频率和保留上限。附件保持原单文件上限，新增全局并发/内存预算超限时返回可重试错误；不要提高限额掩盖失败。
@@ -68,6 +83,8 @@ git diff --check
 
 Python 合成测试使用已有兼容环境，或独立候选测试虚拟环境按 `tools/ci/python-requirements.txt` 安装；这不是实际推理/CUDA环境安装器。设置 `PYTHON_EXECUTABLE` 指向该环境的解释器，再运行 `npm run test:python`。Linux跳过的Windows行为须在本机重新核查，不直接沿用历史跳过记录。
 
+Windows 无文件 symlink 创建权限时，只有两个独立文件链接测试允许在创建阶段遇到 `EPERM/EACCES/ENOTSUP` 后明确记录环境跳过。普通路径、HTTP权限、旧日志脱敏和目录 junction 检查必须继续执行，失败仍需处理；有权限的 CI 必须实际执行文件链接边界。不要为通过测试提升权限或改机器策略。跳过不算该机对应边界验证通过，但可以继续执行其他验收项，反馈中保留跳过原因。
+
 浏览器/媒体测试按脚本设置 `PLAYWRIGHT_MODULE`、`BROWSER_EXECUTABLE`、`FFMPEG_EXECUTABLE`、`FFPROBE_EXECUTABLE`：
 
 ```powershell
@@ -81,6 +98,10 @@ node tools/verify-video-overlay-spatial.mjs
 新场景专项及已有地表脚本可通过 `BROWSER_LAUNCH_OPTIONS` 使用指定浏览器启动配置。保存实际 renderer；SwiftShader/llvmpipe 只能记为软件渲染。`verify-video-overlay-spatial.mjs` 当前固定 SwiftShader，不能靠指定浏览器路径将其算作真实硬件 AR 验收。浏览器启动受限应记录 blocked，不算通过。
 
 新场景专项硬件验收时同时设置 `$env:ROUND1_REQUIRE_HARDWARE = "1"`，避免将默认软件 WebGL 当成现场显卡结果；`ROUND1_BROWSER_OUT` 可指定报告目录。该开关仍以浏览器报告的 renderer 判断，必须与本机 GPU/驱动信息对照。
+
+新第七项要求保留首次创建的同一自有 Globe 裁剪集合，工具销毁后禁用但仍未销毁，Viewer 销毁后该集合才销毁，再次销毁仍安全。取得完整 7/7 及 `retainedTerrainDestroyed: true` 证据后再继续真实素材矩阵；不要直接解绑/销毁生产集合来满足旧 `null` 断言。地表脚本报告新增 `consoleErrorLocations`、`httpErrors` 和 `requestFailures`，用于定位此前未注明 URL 的 404；不能把它直接判为无害或已解决。
+
+若本机 FFmpeg 没有 `libx264`，先用 `ffmpeg -encoders` 核对已有编码器；可通过脚本已有的 `FFMPEG_VIDEO_ENCODER` 参数指定确认可用的 `libopenh264`。该软件渲染脚本仍不能计作真实硬件 AR 验收。
 
 候选服务在确认空闲的独立端口上启动，例如：
 

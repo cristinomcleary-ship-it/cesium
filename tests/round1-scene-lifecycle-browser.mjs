@@ -69,6 +69,7 @@ try {
   const baseline = await invoke('state'); await capture('synthetic-original');
   await check('new-surface-and-temporary-contributions-share-real-tiles', async () => {
     const state = await invoke('setupContributions'); restoredContributions(state);
+    assert.deepEqual(state.terrainOwnership, { captured: true, owned: true, sameAsBound: true, destroyed: false });
     assert.deepEqual(state.renderErrors, []); await capture('managed-contributions');
     return { photographyPolygons: state.surface.photographyClips, primitiveCount: state.primitiveCount };
   });
@@ -128,14 +129,23 @@ try {
     assert.deepEqual(cleared.renderErrors, []); return { deletedModelRemainsDestroyed: true, removedSurfaceMeshCount: 0 };
   });
   await check('tileset-removal-and-owner-disposal-under-active-lease-are-idempotent', async () => {
+    const before = await invoke('state');
+    assert.deepEqual(before.terrainOwnership, { captured: true, owned: true, sameAsBound: true, destroyed: false });
+    assert.ok(before.globe.polygons.length > 0, 'the last terrain geometry stays non-empty until Viewer owns its final destruction');
     await invoke('legacy', 'section'); await invoke('acquire', 'teardown'); await invoke('beginOcclusion');
     const deleted = await invoke('deleteImport', 'synthetic-photography'); assert.equal(deleted.tiles.destroyed, true);
     const disposed = await invoke('disposeOwners'); assert.equal(disposed.leases, 0); assert.equal(disposed.disposed, true);
-    assert.equal(disposed.globe.planes, null); assert.equal(disposed.globe.polygons, null);
+    assert.equal(disposed.globe.planes, null);
+    assert.deepEqual(disposed.terrainOwnership, { captured: true, owned: true, sameAsBound: true, destroyed: false });
+    assert.deepEqual(disposed.globe.polygons, { ...before.globe.polygons, enabled: false },
+      'the exact owned Globe collection stays disabled and intact for loaded terrain LOD borrowers');
     assert.equal(disposed.surfacePrimitives.length, 0); assert.deepEqual(disposed.ground, baseline.ground);
     assert.deepEqual(disposed.renderErrors, []);
     const final = await invoke('destroyViewer'); assert.equal(final.destroyed, true); assert.deepEqual(final.errors, []);
-    return { deletedTilesetRemainsDestroyed: true, lateReleasesSafe: true, viewerDestroyed: final.destroyed };
+    assert.equal(final.terrainDestroyed, true, 'Viewer destruction must release the retained terrain collection');
+    assert.deepEqual(await invoke('destroyViewer'), final, 'repeated Viewer destruction remains safe');
+    return { deletedTilesetRemainsDestroyed: true, lateReleasesSafe: true, terrainRetainedUntilViewerDestroy: true,
+      retainedTerrainDestroyed: final.terrainDestroyed, viewerDestroyed: final.destroyed };
   });
   assert.deepEqual(report.pageErrors, []); assert.deepEqual(report.consoleErrors, []);
   report.passed = true; report.execution = 'completed';

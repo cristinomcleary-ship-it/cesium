@@ -84,6 +84,8 @@ test('prepared surfaces never clip until enabled; toggles pair photography, terr
     handle.setEnabled(true); assert.equal(f.globe.clippingPolygons, terrain); assert.equal(terrain.enabled, true);
     f.renderer.destroy(); assert.equal(terrain.enabled, false); assert.equal(terrain.isDestroyed(), false);
     assert.equal(f.meshes[0].destroyed, 1); assert.equal(f.postUpdate.numberOfListeners, 0);
+    assert.equal(f.globe.clippingPolygons, terrain, 'Globe keeps the exact owned collection until its own teardown');
+    f.globe.destroy(); assert.equal(terrain.isDestroyed(), true, 'the real Globe/provider chain finally destroys the retained collection');
   } finally { f.close(); }
 });
 
