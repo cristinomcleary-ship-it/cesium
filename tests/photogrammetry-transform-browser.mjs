@@ -387,14 +387,26 @@ try {
   });
   await check('failed-confirmation-preserves-original-record-and-all-source-bytes', async () => {
     const before = await savedPhoto(); await openEditor(); await input('north').fill('16');
-    let attempts = 0;
+    const preview = (await sceneState()).matrix;
+    let attempts = 0, verificationReads = 0;
     const url = origin + '/__library/records/' + photoId;
-    const rejectSave = route => route.request().method() === 'PATCH'
-      ? (attempts++, route.fulfill({ status: 503, json: { error: 'synthetic-save-denied' } })) : route.fallback();
+    const rejectSave = route => {
+      if (route.request().method() === 'PATCH') {
+        attempts++; return route.fulfill({ status: 503, json: { error: 'synthetic-save-denied' } });
+      }
+      if (route.request().method() === 'GET') verificationReads++;
+      return route.fallback();
+    };
     await page.route(url, rejectSave);
     try {
-      await action('save').click(); await input('status').filter({ hasText: 'synthetic-save-denied' }).waitFor({ state: 'visible' });
-      assert.equal(attempts, 1); assert.equal(await panel().isVisible(), true);
+      // A 5xx response may follow a durable write: the real save protocol reads
+      // back once and reports "unconfirmed" instead of replaying its PATCH.
+      await action('save').click(); await input('status').filter({ hasText: '保存失败：摄影位置保存未确认' }).waitFor({ state: 'visible' });
+      assert.match(await input('status').innerText(), /未自动重发保存/);
+      assert.equal(attempts, 1); assert.equal(verificationReads, 1); assert.equal(await panel().isVisible(), true);
+      assert.equal(await panel().getAttribute('aria-busy'), 'false');
+      assert.equal(await action('save').isEnabled(), true); assert.equal(await action('cancel').isEnabled(), true);
+      assert.deepEqual((await sceneState()).matrix, preview);
       assert.deepEqual((await savedPhoto()).settings, before.settings);
       await action('cancel').click(); await panel().waitFor({ state: 'hidden' }); assert.deepEqual((await sceneState()).matrix, initialMatrix);
     } finally { await page.unroute(url, rejectSave); }
@@ -407,7 +419,7 @@ try {
     assert.ok(report.sourceRequests.every(request => ['GET', 'HEAD'].includes(request.method)));
     assert.deepEqual(report.sourceHttpErrors, []); assert.equal((await sceneState()).cameraInputs, true);
     await screenshot('restored-original');
-    return { rejectedSaveAttempts: attempts, previousSettingsPreserved: true, sourceHashes: after, noSourceWrites: true };
+    return { rejectedSaveAttempts: attempts, verificationReads, failureRetainsPreview: true, previousSettingsPreserved: true, sourceHashes: after, noSourceWrites: true };
   });
   await captureSceneErrors(); assert.deepEqual(report.pageErrors, []); assert.deepEqual(report.renderErrors, []);
   report.passed = true; report.execution = 'completed';
