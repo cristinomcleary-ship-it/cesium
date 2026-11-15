@@ -317,6 +317,11 @@ export class ManagementWorkspace {
   /** Match the existing scene resource gate; personal display overrides cannot grant access. */
   getWorkbenchLayerAccess() { return this.safety.getManagementResourceAccess(); }
 
+  /** Match the existing library PATCH authorization; preview never grants write access. */
+  canEditSceneLibraryModels() {
+    return !!this.session?.permissions.includes('admin') && this.getWorkbenchLayerAccess().models;
+  }
+
   getWorkbenchDisplayObjects() {
     const placed = new Set(this.getWorkbenchMachineryState().records.map(record => record.id));
     return this.railSafety.getDisplayObjects().filter(object => object.kind !== 'envelope' || placed.has(object.id));

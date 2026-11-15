@@ -25,6 +25,7 @@ import { recoverDestroyedClippingReferences } from "./destroyedClippingRecovery"
 import { isSurfaceEditGlobeClipping } from "./surfaceEditScene";
 import { getTemporaryWorksClippingManager } from "./temporaryWorksGlbScene";
 import { releaseBorrowedClippingPlanes, releaseBorrowedClippingPolygons } from "./borrowedClippingPolygons";
+import { tilesetClippingFrame } from "./tilesetClippingFrame";
 
 export const subsurfacePanelHtml = `
   <div id="subsurfacePanel" class="subsurface-panel hidden">
@@ -798,11 +799,7 @@ export class SubsurfaceTools {
     if (item.kind === "Model") {
       origin = (item.resource as Model).modelMatrix;
     } else {
-      const tileset = item.resource as Cesium3DTileset;
-      const rootTransform = tileset.root.transform;
-      origin = Matrix4.equals(rootTransform, Matrix4.IDENTITY)
-        ? Transforms.eastNorthUpToFixedFrame(tileset.boundingSphere.center)
-        : Matrix4.multiply(tileset.modelMatrix, rootTransform, new Matrix4());
+      origin = tilesetClippingFrame(item.resource as Cesium3DTileset);
     }
     const inverse = Matrix4.inverse(origin, new Matrix4());
     return Matrix4.multiply(inverse, worldFrame, new Matrix4());

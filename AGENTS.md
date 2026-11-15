@@ -4,10 +4,12 @@
 
 ## 当前专项分工（2026-11-15）
 
+- 用户已确认第一轮完成并授权下一步。本轮以唯一交付 `9c8b1b4fb273914904f0528e6ee9400cbc8be330` 为继承基线，独立分支 `codex/photogrammetry-transform-v1.2.2`，范围见 [第二轮摄影位置设计](docs/design/photogrammetry-transform-round2.md)。不得移动第一轮或历史审查基线分支。
+
 - 第一轮以用户指定 `1ab7cc2a86fde718ff8393f9ece50f3e476a0eff` 为准确开发依据，使用独立分支 `codex/platform-round1-v1.2.2`；不把历史标签、备份提交或其他最新分支替代该依据。
 - GPT 工作模式负责产品代码、测试、回归、GitHub 提交与部署任务书；本机 Codex 只负责环境核验、部署、真实模型/GPU 验证和日志反馈。产品缺陷返回 GPT 修复，本机 Codex 不自行重构或扩大开发。
 - 本机实际运行版本须依据进程、工作目录、构建身份、原访问地址和数据根核验，不能只根据远端分支推定。
-- 本轮范围见 [第一轮设计](docs/design/platform-round1.md)。任何未来开发候选都不能仅因提交 GitHub 而取代已验收基线。
+- 第一轮范围见 [第一轮设计](docs/design/platform-round1.md)，第二轮使用本节新增的摄影位置设计。任何未来开发候选都不能仅因提交 GitHub 而取代已验收基线。
 
 ## 首要约束：保护已实现功能
 

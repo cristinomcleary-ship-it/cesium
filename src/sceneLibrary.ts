@@ -11,6 +11,7 @@ import { clampCadToScene, getCadBoundingSphere, getCadModelSamplingExclusions, l
 import { loadLocalImagery, type LocalImageryResult } from "./localImagery";
 import type { ModelEditor } from "./modelEditor";
 import { applyModelAppearance } from "./modelAppearance";
+import { validatePhotogrammetryTransform, type PhotogrammetryTransform } from "./photogrammetryTransform";
 import type { ImportRecord } from "./types";
 import { LibraryRequestError, libraryRequest, jsonRequest, type LibraryRecord, type LibrarySettings, type LibraryKind, type LibraryFile, type LibraryListing, type SceneView } from "./projectLibrary";
 
@@ -32,8 +33,12 @@ type Hooks = {
   clearVideo: () => void;
   layersChanged: () => void;
   canReadRecord?: (record: Pick<LibraryRecord, "kind">) => boolean;
+  /** Explicit edit grant; the server remains the final authorization boundary. */
+  canEditPhotogrammetry?: (record: LibraryRecord) => boolean;
   /** The current project/account/access identity; a late restore cannot enter a new context. */
   getContextKey?: () => string;
+  /** Photography also tracks edit-grant changes without invalidating unrelated restores. */
+  getPhotogrammetryContextKey?: () => string;
   libraryChanged?: () => void;
   /** Capture the initiating display scope; invoke only after durable deletion. */
   prepareRecordDeletion?: (id: string) => (() => void) | undefined;
@@ -54,6 +59,7 @@ export class SceneLibrary {
   private updates = new Map<string, { visible?: boolean; settings?: LibrarySettings }>();
   private updateTimer = 0;
   private flushTail: Promise<void> = Promise.resolve();
+  private photogrammetryCommits = new Set<string>();
   private pending = 0;
   private starting = true;
   private error = "";
@@ -79,7 +85,7 @@ export class SceneLibrary {
   private catalogueLoaded?: () => void;
   constructor(private hooks: Hooks) {
     window.addEventListener("beforeunload", event => {
-      if (this.pending || this.updates.size || this.drafts.size) { event.preventDefault(); event.returnValue = ""; }
+      if (this.pending || this.updates.size || this.drafts.size || this.photogrammetryCommits.size) { event.preventDefault(); event.returnValue = ""; }
     });
     window.addEventListener("pagehide", () => { void this.flush(true); });
     hooks.viewer.camera.moveEnd.addEventListener(() => this.saveView());
@@ -130,7 +136,7 @@ export class SceneLibrary {
     }
     this.render(); return this.listVideoOverlaySchemes();
   }
-  get busy() { return this.starting || this.pending > 0 || this.restoring.size > 0 || Boolean(this.hooks.cadLoads?.values().length); }
+  get busy() { return this.starting || this.pending > 0 || this.restoring.size > 0 || Boolean(this.photogrammetryCommits?.size) || Boolean(this.hooks.cadLoads?.values().length); }
   start() {
     this.catalogueReady = new Promise(resolve => { this.catalogueLoaded = resolve; });
     this.ready = this.initialize();
@@ -283,6 +289,79 @@ export class SceneLibrary {
     this.flushTail = this.flushTail.catch(() => undefined).then(() => this.writeUpdates(keepalive));
     return this.flushTail;
   }
+  /** A confirmed photography edit is one awaited PATCH, never a background retry.
+   * Earlier queued edits settle first; a failed explicit save stays in the editor
+   * and cannot unexpectedly write after its preview has been cancelled. */
+  async commitPhotogrammetryTransform(id: string, matrix: number[], editor: PhotogrammetryTransform): Promise<void> {
+    if (!Array.isArray(matrix) || matrix.length !== 16 || matrix.some(value => !Number.isFinite(value)))
+      throw new Error('摄影位置矩阵必须包含 16 个有限数值。');
+    const savedMatrix = [...matrix];
+    const savedEditor = validatePhotogrammetryTransform(editor, Matrix4.fromArray(savedMatrix));
+    if (this.photogrammetryCommits.has(id)) throw new Error('摄影位置正在保存，请稍候。');
+    const contextKey = this.hooks.getPhotogrammetryContextKey ?? this.hooks.getContextKey;
+    const context = contextKey?.();
+    const source = this.hooks.getImports().find(item => item.id === id && item.kind === '3D Tiles')?.resource;
+    const checkCurrent = () => {
+      const record = this.records.get(id);
+      const item = this.hooks.getImports().find(candidate => candidate.id === id && candidate.kind === '3D Tiles');
+      if (context !== contextKey?.()) throw new DOMException('项目或账号或编辑权限已变化，未应用旧位置保存结果；请重新加载核验原资料。', 'AbortError');
+      if (!record || record.kind !== '3D Tiles' || this.deleted.has(id) || this.deleting.has(id)
+        || this.unloading.has(id) || this.restoring.has(id) || !source || item?.resource !== source
+        || (source as { isDestroyed?: () => boolean }).isDestroyed?.())
+        throw new DOMException('摄影已卸载、删除或重新加载，未应用旧位置保存结果。', 'AbortError');
+      if (this.hooks.canReadRecord?.(record) === false || this.hooks.canEditPhotogrammetry?.(record) !== true)
+        throw new Error('当前账号没有摄影位置编辑权限。');
+    };
+    checkCurrent();
+    this.photogrammetryCommits.add(id);
+    try { this.render(); } catch (error) { this.photogrammetryCommits.delete(id); throw error; }
+    const task = this.flushTail.catch(() => undefined).then(async () => {
+      checkCurrent();
+      await this.writeUpdates();
+      checkCurrent();
+      if (this.updates.has(id)) throw new Error(this.failures.get(id) || '摄影已有更改尚未保存，请先重试原更改。');
+      const matchesSaved = (record: LibraryRecord) => {
+        if (record?.id !== id || record.kind !== '3D Tiles' || !Array.isArray(record.settings?.matrix)
+          || record.settings.matrix.length !== 16 || record.settings.matrix.some((value, index) => value !== savedMatrix[index]))
+          throw new Error('摄影位置保存响应不完整，请重新读取资料核验。');
+        const confirmed = validatePhotogrammetryTransform(record.settings.photogrammetryEditor, Matrix4.fromArray(record.settings.matrix));
+        if (JSON.stringify(confirmed) !== JSON.stringify(savedEditor)) throw new Error('摄影位置编辑参数未完整保存，请重新读取资料核验。');
+      };
+      const path = '/records/' + encodeURIComponent(id);
+      let record: LibraryRecord;
+      try {
+        record = await libraryRequest<LibraryRecord>(path, { ...jsonRequest('PATCH', {
+          settings: { matrix: savedMatrix, photogrammetryEditor: savedEditor },
+        }), signal: AbortSignal.timeout(15_000) });
+        checkCurrent(); matchesSaved(record);
+      } catch (error) {
+        checkCurrent();
+        // A rejected request is final; a lost/invalid response may follow an
+        // already durable write. Read back once, without replaying the PATCH.
+        if (error instanceof LibraryRequestError && error.status >= 400 && error.status < 500) throw error;
+        try {
+          record = await libraryRequest<LibraryRecord>(path, { signal: AbortSignal.timeout(15_000) });
+          checkCurrent(); matchesSaved(record);
+        } catch (verificationError) {
+          checkCurrent();
+          throw new Error('摄影位置保存未确认，请重新加载核验或明确重试；未自动重发保存。' + this.message(verificationError), { cause: error });
+        }
+      }
+      // A successful server write may finish after the user switches contexts.
+      // Never replay that old response into another map or revive a deleted ID.
+      checkCurrent();
+      this.records.set(id, record); this.failures.delete(id);
+    });
+    // Later ordinary updates remain serialized, but do not inherit this explicit
+    // save's rejection or get its transform inserted into their retry queue.
+    this.flushTail = task.catch(() => undefined);
+    try { await task; }
+    catch (error) {
+      try { checkCurrent(); this.failures.set(id, '摄影位置保存未确认：' + this.message(error)); }
+      catch { /* Do not attach an old save error to a replacement or denied record. */ }
+      throw error;
+    } finally { this.photogrammetryCommits.delete(id); this.render(); }
+  }
   private async writeUpdates(keepalive = false) {
     const batch = [...this.updates]; this.updates.clear();
     for (const [id, patch] of batch) {
@@ -396,7 +475,7 @@ export class SceneLibrary {
     finally { this.restoring.delete(id); this.render(); this.hooks.layersChanged(); this.saveView(); }
   }
   async restore(id: string) {
-    if (this.unloading.has(id)) return;
+    if (this.unloading.has(id) || this.photogrammetryCommits?.has(id)) return;
     const inFlight = this.hooks.cadLoads?.get(id);
     if (inFlight) { await inFlight.settled; return; }
     let record = this.records.get(id);
@@ -585,7 +664,7 @@ export class SceneLibrary {
     const target = this.records.get(id) ?? this.drafts.get(id);
     if (!target) return false;
     if (this.hooks.canReadRecord?.(target) === false) throw new Error('当前账号不能操作此资料。');
-    if (this.unloading.has(id) || this.deleting.has(id)) return false;
+    if (this.unloading.has(id) || this.deleting.has(id) || this.photogrammetryCommits?.has(id)) return false;
     if (this.pending || this.drafts.has(id)) throw new Error('请先完成资料保存，再移出场景。');
     const loading = this.hooks.cadLoads?.get(id);
     const context = this.hooks.getContextKey?.();
@@ -626,7 +705,7 @@ export class SceneLibrary {
     this.render();
   }
   async delete(id: string, confirm = true): Promise<boolean> {
-    if (this.deleting.has(id) || this.unloading.has(id)) return false;
+    if (this.deleting.has(id) || this.unloading.has(id) || this.photogrammetryCommits?.has(id)) return false;
     if (this.pending) { this.hooks.notify("请等待当前资料保存完成后再删除",true); return false; }
     const target = this.records.get(id) ?? this.drafts.get(id) ?? this.cleanupPending.get(id);
     if (!target) return true;
@@ -698,7 +777,7 @@ export class SceneLibrary {
     if (!status || !list) return;
     const upload = [...this.saveProgress.values()].find(progress => progress.phase === "uploading");
     const saving = upload ? `录像正在后台保存${upload.total ? ` · ${Math.floor(upload.loaded / upload.total * 100)}%` : ""}；可切换模块，请保留浏览器页面` : "正在保存，请稍候…";
-    status.textContent = this.error || (this.starting ? "正在恢复上次资料…" : this.pending ? saving : this.failures.size ? "已保存到本机 · " + this.failures.size + " 项需展开重试" : this.updates.size ? saving : "已保存到本机 · 关闭后自动恢复");
+    status.textContent = this.error || (this.starting ? "正在恢复上次资料…" : this.pending || this.photogrammetryCommits?.size ? saving : this.failures.size ? "已保存到本机 · " + this.failures.size + " 项需展开重试" : this.updates.size ? saving : "已保存到本机 · 关闭后自动恢复");
     status.classList.toggle("error-text", Boolean(this.error || this.failures.size));
     list.replaceChildren();
     for (const id of new Set([...this.records.keys(), ...this.drafts.keys(), ...this.cleanupPending.keys()])) {
@@ -712,7 +791,7 @@ export class SceneLibrary {
       const loaded = this.hooks.getImports().some(item => item.id === id) || this.activeVideoId === id || this.activeImageryId === id;
       detail.textContent = cleanup ? "已删除 · 本地文件清理待完成" : loading?.status ?? (this.restoring.has(id) ? "载入中…" : this.failures.get(id) ?? (record ? record.kind + " · 已保存 · " + (loaded ? "已载入" : "未载入") : "等待保存"));
       const retry = document.createElement("button"); retry.textContent = loading ? "取消加载" : draft ? "重试保存" : this.failures.has(id) ? "重试" : record?.kind === "Imagery" || record?.kind === "Drone Video" ? "使用" : loaded ? "定位" : "载入场景";
-      retry.disabled = loading ? loading.signal.aborted : this.pending > 0 || this.restoring.has(id) || this.deleting.has(id) || this.unloading.has(id);
+      retry.disabled = loading ? loading.signal.aborted : this.pending > 0 || this.restoring.has(id) || this.deleting.has(id) || this.unloading.has(id) || Boolean(this.photogrammetryCommits?.has(id));
       retry.addEventListener("click", () => {
         if (loading) loading.cancel();
         else if (draft) void this.save(draft.id, draft.name, draft.kind, draft.settings, draft.files, draft.copy).then(() => this.restore(id)).catch(e => this.hooks.notify(this.message(e), true));
@@ -720,7 +799,7 @@ export class SceneLibrary {
         else void this.restore(id);
       });
       if (cleanup) retry.hidden = true;
-      const remove = document.createElement("button"); remove.textContent = "删除资料"; remove.disabled = this.pending > 0 || this.deleting.has(id) || this.unloading.has(id) || (this.restoring.has(id) && !loading);
+      const remove = document.createElement("button"); remove.textContent = "删除资料"; remove.disabled = this.pending > 0 || this.deleting.has(id) || this.unloading.has(id) || Boolean(this.photogrammetryCommits?.has(id)) || (this.restoring.has(id) && !loading);
       if (cleanup) remove.textContent = "重试删除";
       remove.addEventListener("click", () => void this.delete(id));
       row.append(title, detail, retry, remove);

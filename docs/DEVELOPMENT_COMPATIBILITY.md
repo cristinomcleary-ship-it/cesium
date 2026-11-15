@@ -2,6 +2,8 @@
 
 生效日期：2026-11-11。
 
+2026-11-15 用户确认第一轮完成并授权下一步。第二轮继承唯一交付提交 `9c8b1b4fb273914904f0528e6ee9400cbc8be330`，采用独立分支 `codex/photogrammetry-transform-v1.2.2`，范围见 [摄影位置调整设计](design/photogrammetry-transform-round2.md)。本机进程及构建身份仍由 Codex 核验；本条不修改历史审查基线，也不免除任何旧功能保护。
+
 2026-11-15 第一轮专项使用用户明确指定的 `1ab7cc2a86fde718ff8393f9ece50f3e476a0eff` 作为代码依据，详见 [第一轮设计](design/platform-round1.md)。这不代表已确认用户电脑正在运行该提交。GPT 负责产品开发与 GitHub 交付，本机 Codex 负责部署与真实验证，产品修复反馈 GPT；旧任务书中允许本机自行改代码的条款由本次分工替代。
 
 ## 1. 基线及保护范围

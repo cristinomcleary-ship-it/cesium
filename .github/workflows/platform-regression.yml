@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - codex/platform-round1-v1.2.2
+      - codex/photogrammetry-transform-v1.2.2
   workflow_dispatch:
 
 permissions:
@@ -122,3 +123,37 @@ jobs:
 
 # CI browser coverage uses generated assets and software WebGL only. SDK, private
 # engineering assets and actual GPU remain local gates; no data artifacts upload.
+
+  photogrammetry-browser:
+    name: Chromium / photography position and AR
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Install isolated browser test runtime
+        run: |
+          npm install --prefix "$RUNNER_TEMP/cesium-photo-browser" --no-audit --no-fund playwright@1.62.1
+          node "$RUNNER_TEMP/cesium-photo-browser/node_modules/playwright/cli.js" install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          echo "PLAYWRIGHT_MODULE=$RUNNER_TEMP/cesium-photo-browser/node_modules/playwright" >> "$GITHUB_ENV"
+          node -e 'const { chromium } = require(process.argv[1]); console.log("BROWSER_EXECUTABLE=" + chromium.executablePath())' "$RUNNER_TEMP/cesium-photo-browser/node_modules/playwright" >> "$GITHUB_ENV"
+      - name: Native photography editor and AR matrix regression
+        run: node tests/photogrammetry-transform-browser.mjs
+      - name: Print synthetic photography evidence
+        if: always()
+        run: |
+          node --input-type=module <<'JS'
+          import { existsSync, readFileSync } from 'node:fs';
+          const file = 'output/photogrammetry-transform-browser/report.json';
+          if (!existsSync(file)) { console.log(JSON.stringify({ file, execution: 'not-run' })); }
+          else { console.log(readFileSync(file, 'utf8')); }
+          JS
+      - run: git diff --exit-code

@@ -16,6 +16,7 @@ before(async () => {
       export const Cesium3DTileset={fromUrl:(...a)=>globalThis.__libraryRace.tiles(...a)};
       export const Model={fromGltfAsync:(...a)=>globalThis.__libraryRace.model(...a)};
       export const Matrix4={IDENTITY:[],clone:v=>v,fromArray:v=>v};
+      export class Matrix3 {} export const Transforms={};
       export const Color={fromCssColorString:()=>({withAlpha:()=>({})})};
       export const GeoJsonDataSource={load:(...a)=>globalThis.__libraryRace.gis(...a)};
       export const CzmlDataSource=GeoJsonDataSource,KmlDataSource=GeoJsonDataSource;
