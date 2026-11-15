@@ -1,6 +1,6 @@
 # 本机 Codex 任务书：第一轮基础整改与 AR 场景切换
 
-本任务针对 `codex/platform-round1-v1.2.2`，开发基线为 `1ab7cc2a86fde718ff8393f9ece50f3e476a0eff`。已核验的**产品代码候选 SHA 为 `83f2a59adbc61dc41e7a59072104d91c61ee48e4`**，不使用移动分支的最新 HEAD 代替。包含本任务书的后续交付提交仅增加部署和验证文档；如 GPT 交付消息指定该完整文档提交 SHA，可核对产品文件与上述候选一致后使用。验证记录见 [第一轮开发验证](docs/releases/round1-development-validation-2026-11-15.md)。
+本任务针对 `codex/platform-round1-v1.2.2`，开发基线为 `1ab7cc2a86fde718ff8393f9ece50f3e476a0eff`。已核验的**产品代码候选 SHA 为 `83f2a59adbc61dc41e7a59072104d91c61ee48e4`**，不使用移动分支的最新 HEAD 代替。包含本任务书的后续交付提交仅涉及部署文档和测试夹具；请使用 GPT 最终交付消息指定的完整 SHA，并核对产品文件与上述候选一致。验证记录见 [第一轮开发验证](docs/releases/round1-development-validation-2026-11-15.md)。
 
 ## 1. 分工与现场保护
 

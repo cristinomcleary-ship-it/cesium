@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer as createViteServer } from "vite";
@@ -94,8 +94,10 @@ test("HTTP cookies remain usable by default and explicit trusted configuration s
   }
 });
 
-test("real Vite static files cannot expose private caches, including encoded paths and authenticated owners", async () => {
-  const root = mkdtempSync(join(tmpdir(), "cesium-private-static-"));
+test("real Vite static files cannot expose private caches, including encoded paths and authenticated owners", async t => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "cesium-private-static-"));
+  const root = realpathSync.native(temporaryRoot);
+  t.diagnostic(JSON.stringify({ temporaryPathCanonicalized: temporaryRoot !== root, temporaryPathHasTilde: temporaryRoot.includes("~"), canonicalPathHasTilde: root.includes("~") }));
   const cwd = process.cwd();
   const data = join(root, "project-data");
   const privateRoots = [".model-cache", ".cad-cache", ".local-imagery-cache", ".render-errors", ".basemap-cache", "private-assets", "private-asset-audit", "docs/temporary-works-upgrade/private", "tools/sketchup-sdk", "tools/NavisworksBridge/bin", "video_ar_backend/.venv", "video_ar_backend/data", "video_ar_backend/tools/COLMAP", "video_ar_backend/tools/FFmpeg", "ar_v2/.venv"];
@@ -122,7 +124,7 @@ test("real Vite static files cannot expose private caches, including encoded pat
         assert.equal(response.status, 403, path); assert.equal((await response.json() as { code: string }).code, "RAW_STORAGE_FORBIDDEN");
       }
     }
-    const publicFile = await fetch(base + "/public-fixture.txt"); assert.equal(publicFile.status, 200); assert.equal(await publicFile.text(), "PUBLIC_SYNTHETIC_ASSET");
+    const publicFile = await fetch(base + "/public-fixture.txt"), publicBody = await publicFile.text(); assert.equal(publicFile.status, 200, publicBody); assert.equal(publicBody, "PUBLIC_SYNTHETIC_ASSET");
     const publicModel = await fetch(base + "/models/fixture.glb"); assert.equal(publicModel.status, 200); assert.equal(await publicModel.text(), "PUBLIC_SYNTHETIC_MODEL");
   } finally { process.chdir(cwd); await server.close(); rmSync(root, { recursive: true, force: true }); }
 });
