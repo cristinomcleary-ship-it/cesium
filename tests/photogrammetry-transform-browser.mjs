@@ -78,15 +78,14 @@ async function ready() {
   });
 }
 async function tilesReady() {
-  await page.waitForFunction(async () => {
-    const C = await import('/node_modules/.vite/deps/cesium.js'), viewer = window.__managementWorkspace?.viewer;
+  await page.waitForFunction(async url => {
+    const { findFixturePhotography } = await import('/tools/fixtures/photogrammetry-test-observer.ts');
+    const viewer = window.__managementWorkspace?.viewer;
     if (!viewer) return false;
-    for (let i = 0; i < viewer.scene.primitives.length; i++) {
-      const object = viewer.scene.primitives.get(i);
-      if (object instanceof C.Cesium3DTileset && !object.isDestroyed() && object.tilesLoaded) return true;
-    }
+    const tiles = findFixturePhotography(viewer, url);
+    if (tiles?.tilesLoaded && tiles.root.contentReady) return true;
     viewer.scene.requestRender(); return false;
-  }, undefined, { timeout: 60000 });
+  }, origin + sourcePath, { timeout: 60000 });
 }
 async function frames(count = 4) {
   await page.evaluate(async count => {
@@ -95,17 +94,16 @@ async function frames(count = 4) {
   }, count);
 }
 async function sceneState() {
-  return page.evaluate(async () => {
+  return page.evaluate(async url => {
     const C = await import('/node_modules/.vite/deps/cesium.js'), viewer = window.__managementWorkspace.viewer;
-    const tiles = Array.from({ length: viewer.scene.primitives.length }, (_, i) => viewer.scene.primitives.get(i))
-      .find(object => object instanceof C.Cesium3DTileset && !object.isDestroyed());
-    if (!tiles) throw new Error('Synthetic photography is not loaded');
+    const { requireFixturePhotography } = await import('/tools/fixtures/photogrammetry-test-observer.ts');
+    const tiles = requireFixturePhotography(viewer, url);
     return { matrix: C.Matrix4.toArray(tiles.modelMatrix), show: tiles.show,
       center: C.Cartesian3.pack(tiles.boundingSphere.center, []), radius: tiles.boundingSphere.radius,
       renderErrors: [...window.__photogrammetryAcceptanceErrors], cameraInputs: viewer.scene.screenSpaceCameraController.enableInputs,
       guideCount: viewer.entities.values.filter(entity => entity.label?.text?.getValue(viewer.clock.currentTime) === '摄影旋转中心').length,
       cursor: viewer.scene.canvas.style.cursor, requestRenderMode: viewer.scene.requestRenderMode };
-  });
+  }, origin + sourcePath);
 }
 async function records() {
   const response = await context.request.get(origin + '/__library/records');
@@ -140,21 +138,21 @@ async function expandContaining(selector) {
   }
 }
 async function framePhotography() {
-  await page.evaluate(async () => {
+  await page.evaluate(async url => {
     const C = await import('/node_modules/.vite/deps/cesium.js'), viewer = window.__managementWorkspace.viewer;
-    const tiles = Array.from({ length: viewer.scene.primitives.length }, (_, i) => viewer.scene.primitives.get(i))
-      .find(object => object instanceof C.Cesium3DTileset && !object.isDestroyed());
+    const { requireFixturePhotography } = await import('/tools/fixtures/photogrammetry-test-observer.ts');
+    const tiles = requireFixturePhotography(viewer, url);
     viewer.camera.cancelFlight();
     viewer.camera.lookAt(tiles.boundingSphere.center, new C.HeadingPitchRange(0, -Math.PI / 2, 330));
     viewer.camera.lookAtTransform(C.Matrix4.IDENTITY); viewer.scene.requestRender();
-  });
+  }, origin + sourcePath);
   await frames();
 }
 async function mapProbe(dx, dy) {
-  return page.evaluate(async ({ dx, dy }) => {
+  return page.evaluate(async ({ dx, dy, url }) => {
     const C = await import('/node_modules/.vite/deps/cesium.js'), viewer = window.__managementWorkspace.viewer;
-    const tiles = Array.from({ length: viewer.scene.primitives.length }, (_, i) => viewer.scene.primitives.get(i))
-      .find(object => object instanceof C.Cesium3DTileset && !object.isDestroyed());
+    const { requireFixturePhotography } = await import('/tools/fixtures/photogrammetry-test-observer.ts');
+    const tiles = requireFixturePhotography(viewer, url);
     const rect = viewer.canvas.getBoundingClientRect();
     const screen = new C.Cartesian2(viewer.canvas.clientWidth / 2 + dx, viewer.canvas.clientHeight / 2 + dy);
     const hit = viewer.scene.pick(screen), world = viewer.scene.pickPosition(screen);
@@ -164,7 +162,7 @@ async function mapProbe(dx, dy) {
     if (document.elementFromPoint(x, y) !== viewer.canvas) throw new Error('A workbench panel covers the synthetic map pick');
     const frame = C.Transforms.eastNorthUpToFixedFrame(tiles.boundingSphere.center);
     return { x, y, world: C.Cartesian3.pack(world, []), frame: C.Matrix4.toArray(frame) };
-  }, { dx, dy });
+  }, { dx, dy, url: origin + sourcePath });
 }
 async function saveEditor() {
   await action('save').click(); await panel().waitFor({ state: 'hidden', timeout: 30000 }); await frames();
@@ -175,7 +173,12 @@ async function captureSceneErrors() {
   report.renderErrors.push(...await page.evaluate(() => window.__photogrammetryAcceptanceErrors ?? []).catch(() => []));
 }
 async function reload() {
-  await captureSceneErrors(); await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }); await ready(); await tilesReady(); await frames();
+  await captureSceneErrors(); await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }); await ready();
+  await page.waitForFunction(async url => {
+    const { findFixturePhotography } = await import('/tools/fixtures/photogrammetry-test-observer.ts');
+    return !!findFixturePhotography(window.__managementWorkspace.viewer, url);
+  }, origin + sourcePath, { timeout: 60000 });
+  await framePhotography(); await tilesReady(); await frames();
 }
 async function nativeDiagnostics(name) {
   await expandContaining('#ccDiagnostics');
@@ -235,7 +238,8 @@ try {
     photoId = (await records()).find(record => record.kind === '3D Tiles' && record.settings.url?.includes('/__photogrammetry_test_source__/'))?.id;
     if (!photoId) await page.waitForTimeout(100);
   }
-  assert.ok(photoId, 'Native import did not persist the synthetic Tiles record'); await tilesReady(); await framePhotography();
+  assert.ok(photoId, 'Native import did not persist the synthetic Tiles record'); await framePhotography(); await tilesReady(); await frames();
+  assert.ok(report.sourceRequests.some(request => request.path === sourcePrefix + 'photography.glb' && request.method === 'GET'), 'The renderer never requested the synthetic GLB');
   initialMatrix = (await sceneState()).matrix; report.initialMatrix = initialMatrix;
   phase = 'assertions';
 
@@ -405,7 +409,14 @@ try {
   report.error = error.stack || String(error); report.failedPhase = phase;
   const blocked = !initialized && (/BLOCKED:|Target page, context or browser has been closed|browserType.launch|Failed to create WebGL|WebGL.*not supported|Operation not permitted/i.test(report.error));
   report.execution = blocked ? 'blocked' : 'failed'; process.exitCode = blocked ? 2 : 1; console.error(report.error);
-  if (page) { await screenshot('failure').catch(() => {}); report.visibleText = (await page.locator('body').innerText().catch(() => '')).slice(-9000); }
+  if (page) {
+    await screenshot('failure').catch(() => {}); report.visibleText = (await page.locator('body').innerText().catch(() => '')).slice(-9000);
+    report.primitiveDiagnostics = await page.evaluate(async () => {
+      const { fixturePrimitiveDiagnostics } = await import('/tools/fixtures/photogrammetry-test-observer.ts');
+      const viewer = window.__managementWorkspace?.viewer;
+      return viewer ? fixturePrimitiveDiagnostics(viewer) : [];
+    }).catch(() => []);
+  }
 } finally {
   report.finishedAt = new Date().toISOString();
   await writeFile(join(output, 'report.json'), JSON.stringify(report, null, 2) + '\n');
