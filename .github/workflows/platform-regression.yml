@@ -1,0 +1,75 @@
+name: Platform regression
+
+on:
+  pull_request:
+  push:
+    branches:
+      - codex/platform-round1-v1.2.2
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-regression-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: Node 24 / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      CESIUM_DATA_DIR: ${{ github.workspace }}/output/ci/library
+      CESIUM_MANAGEMENT_DATA_DIR: ${{ github.workspace }}/output/ci/management
+      CESIUM_SAFETY_DATA_DIR: ${{ github.workspace }}/output/ci/safety
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            tools/temporary-works-assets/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm ci --prefix tools/temporary-works-assets --no-audit --no-fund
+      - run: npm test
+      - run: npm run test:cpu
+      - run: npm run test:tools
+      - run: npm run build
+      - run: git diff --exit-code
+
+  python:
+    name: Python 3.12 / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      PYTHON_EXECUTABLE: python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: tools/ci/python-requirements.txt
+      - run: python -m pip install -r tools/ci/python-requirements.txt
+      - run: npm run test:python
+
+# Browser, SDK, private engineering assets and actual GPU checks remain separate
+# local acceptance gates. No workflow uploads runtime data or site/model artifacts.

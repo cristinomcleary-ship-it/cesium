@@ -6,12 +6,14 @@ import { safetySpatialPlugin } from "./server/safetySpatialStore";
 import { defineConfig } from "vite";
 import { createProjectLibrary } from "./server/projectLibrary";
 import { viteStaticCopy } from "vite-plugin-static-copy";
-import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { mkdir as mkdirAsync, open as openAsync, stat as statAsync, writeFile as writeFileAsync } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createModelMiddleware } from "./server/modelMiddleware";
 import { createLocalImageryMiddleware } from "./server/localImageryMiddleware";
+import { createLocalTilesMiddleware } from "./server/localTilesMiddleware";
+import { createRenderDiagnosticsMiddleware } from "./server/renderDiagnostics";
 
 type BoundingVolume = { sphere?: number[]; box?: number[]; region?: number[] };
 type TileNode = {
@@ -37,9 +39,6 @@ type TilesetCandidate = {
   contentExtensions: Set<string>;
   nodeCount: number;
 };
-
-type Mount = { root: string; entry: string; aggregate?: TilesetDocument };
-const localMounts = new Map<string, Mount>();
 
 function json(response: ServerResponse, status: number, payload: unknown) {
   response.statusCode = status;
@@ -336,65 +335,11 @@ function findTileset(inputPath: string): TilesetResult | { error: string } {
   return { error: `没有找到有效的 3D Tiles 入口 JSON（检测到：${detected}）。如果这是 OSGB 或 3MX，请在 ContextCapture 中重新生产为 Cesium 3D Tiles。` };
 }
 
-function contentType(filePath: string): string {
-  const types: Record<string, string> = { ".json": "application/json", ".b3dm": "application/octet-stream", ".i3dm": "application/octet-stream", ".pnts": "application/octet-stream", ".cmpt": "application/octet-stream", ".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".ktx2": "image/ktx2" };
-  return types[extname(filePath).toLowerCase()] ?? "application/octet-stream";
-}
-
-function localTilesMiddleware(request: IncomingMessage, response: ServerResponse, next: () => void) {
-  const requestUrl = new URL(request.url ?? "/", "http://localhost");
-  if (requestUrl.pathname === "/__local_tiles/mount" && request.method === "POST") {
-    let body = "";
-    request.on("data", (chunk) => { body += chunk; if (body.length > 16_384) request.destroy(); });
-    request.on("end", () => {
-      try {
-        const path = (JSON.parse(body) as { path?: string }).path?.trim();
-        if (!path) return json(response, 400, { ok: false, error: "未提供目录路径" });
-        const found = findTileset(path);
-        if ("error" in found) return json(response, 400, { ok: false, error: found.error });
-        const id = Math.random().toString(36).slice(2, 10);
-        localMounts.set(id, { root: found.root, entry: found.entry, aggregate: found.aggregate });
-        const entryRelative = encodeRelativePath(found.root, found.entry);
-        const relativeUrl = `/__local_tiles/files/${id}/${entryRelative}`;
-        return json(response, 200, {
-          ok: true,
-          entry: found.entry,
-          // Authenticated model subresources retain the page origin and its session.
-          url: relativeUrl,
-          candidateCount: found.candidateCount,
-          topLevelCount: found.topLevelCount,
-          aggregate: Boolean(found.aggregate),
-        });
-      } catch (error) { return json(response, 500, { ok: false, error: error instanceof Error ? error.message : "目录检测失败" }); }
-    });
-    return;
-  }
-
-  const match = requestUrl.pathname.match(/^\/__local_tiles\/files\/([^/]+)\/(.+)$/);
-  if (!match) return next();
-  const mount = localMounts.get(match[1]);
-  if (!mount) return json(response, 404, { error: "目录挂载已失效，请重新加载" });
-  if (decodeURIComponent(match[2]) === "__aggregate__.json" && mount.aggregate) {
-    return json(response, 200, mount.aggregate);
-  }
-  const requested = resolve(mount.root, decodeURIComponent(match[2]));
-  const relativePath = relative(mount.root, requested);
-  if (relativePath.startsWith("..") || isAbsolute(relativePath) || !existsSync(requested) || !statSync(requested).isFile()) return json(response, 404, { error: "文件不存在" });
-  const fileStats = statSync(requested);
-  response.statusCode = 200;
-  response.setHeader("Access-Control-Allow-Origin", "*");
-  response.setHeader("Content-Type", contentType(requested));
-  response.setHeader("Content-Length", fileStats.size);
-  response.setHeader("Last-Modified", fileStats.mtime.toUTCString());
-  response.setHeader("Cache-Control", "private, no-store");
-  response.setHeader("Vary", "Cookie");
-  createReadStream(requested).pipe(response);
-}
+const localTilesMiddleware = createLocalTilesMiddleware(findTileset);
+const renderDiagnosticsMiddleware = createRenderDiagnosticsMiddleware({ root: resolve(process.cwd(), ".render-errors") });
 
 const basemapCacheRoot = resolve(process.cwd(), ".basemap-cache");
-const renderErrorRoot = resolve(process.cwd(), ".render-errors");
 mkdirSync(basemapCacheRoot, { recursive: true });
-mkdirSync(renderErrorRoot, { recursive: true });
 const pendingBasemapTiles = new Map<string, Promise<{ content: Buffer; contentType: string }>>();
 const basemapWaiters: Array<() => void> = [];
 let activeBasemapRequests = 0;
@@ -458,34 +403,7 @@ async function cachedBasemapContentType(cacheFile: string): Promise<string> {
 
 async function basemapAndDiagnosticsMiddleware(request: IncomingMessage, response: ServerResponse, next: () => void) {
   const requestUrl = new URL(request.url ?? "/", "http://localhost");
-  if (requestUrl.pathname === "/__diagnostics/render-error" && request.method === "POST") {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    request.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size <= 1024 * 1024) chunks.push(chunk);
-    });
-    request.on("end", () => {
-      try {
-        const raw = Buffer.concat(chunks).toString("utf8");
-        const parsed = JSON.parse(raw) as unknown;
-        const content = `${JSON.stringify(parsed, null, 2)}\n`;
-        writeFileSync(join(renderErrorRoot, "latest.json"), content, "utf8");
-        writeFileSync(join(renderErrorRoot, `${Date.now()}.json`), content, "utf8");
-        return json(response, 200, { ok: true });
-      } catch (error) {
-        return json(response, 400, { ok: false, error: error instanceof Error ? error.message : "诊断记录无效" });
-      }
-    });
-    return;
-  }
-  if (requestUrl.pathname === "/__diagnostics/render-error/latest" && request.method === "GET") {
-    const latest = join(renderErrorRoot, "latest.json");
-    if (!existsSync(latest)) return json(response, 404, { ok: false, error: "暂无渲染异常记录" });
-    response.statusCode = 200;
-    response.setHeader("Content-Type", "application/json; charset=utf-8");
-    return createReadStream(latest).pipe(response);
-  }
+  if (/^\/__diagnostics(?:\/|$)/.test(requestUrl.pathname)) return renderDiagnosticsMiddleware(request, response, next);
 
   const tile = requestUrl.pathname.match(/^\/__basemap\/(esri|osm)\/(\d+)\/(\d+)\/(\d+)$/);
   if (!tile) return next();
