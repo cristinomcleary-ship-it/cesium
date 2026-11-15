@@ -67,7 +67,7 @@ export class PhotogrammetryEditor {
         <label class="photo-field-full">椭球高（米）<input data-photogrammetry="pivotHeight" type="number" step="any"></label>
       </div><button type="button" data-photo-action="pick-pivot">在地图上选择旋转中心</button></fieldset>
       <button type="button" data-photo-action="reset">预览恢复原始位置</button>
-      <p class="photo-editor-note">原始位置指首次位置编辑前的位置，包含加载时的经纬度和高程校正。恢复原位也需确认保存。提交新位置后，关联地表方案需重新核对、重建。</p>
+      <p class="photo-editor-note">原始位置指首次位置编辑前的位置，包含加载时的经纬度和高程校正。恢复原位也需确认保存。提交新位置后，关联地表方案需重新核对、重建；采用旧成果定位的 AR 方案可能无法直接恢复，需要重新校准。原方案和文件仍保留。</p>
       <p data-photogrammetry="status" class="photo-editor-status" role="status" aria-live="polite"></p>
       <footer><button type="button" data-photo-action="cancel">取消调整</button><button type="button" class="photo-editor-save" data-photo-action="save">确认保存</button></footer>`;
     parent.append(this.root);

@@ -69,6 +69,8 @@ Python使用已有兼容环境或按tools/ci/python-requirements.txt准备合成
 
 原工程模型位置/外观、资料权限、AR启停与缓存、开挖/剖切恢复、临建生成/保存/刷新、便道及硬化按影响范围回归。新功能通过不能代替旧功能验收。
 
+AR验收边界：摄影新位置不会自动重算原视频轨迹或相机校准。当前已加载CC方案可重新读取成果定位；从资料库恢复含旧关联矩阵的CC方案时，现有校验会拒绝恢复，并清空失败的当前会话，原资料库方案和文件保留。此时需按新定位重新建立或校准方案，不能把“旧方案直接恢复成功”列为已交付能力。先在测试项目验证新定位，不随意改变已验收的正式融合位置。
+
 浏览器变量沿用PLAYWRIGHT_MODULE、BROWSER_EXECUTABLE、FFMPEG_EXECUTABLE、FFPROBE_EXECUTABLE；新增脚本支持PHOTOGRAMMETRY_BROWSER_OUT和MEDIA_BROWSER_ENCODER。
 
     node tests/photogrammetry-transform-browser.mjs
