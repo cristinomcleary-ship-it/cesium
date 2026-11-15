@@ -1,8 +1,8 @@
 # 本机 Codex 任务书：第一轮基础整改与 AR 场景切换
 
-本任务针对 `codex/platform-round1-v1.2.2`，开发基线为 `1ab7cc2a86fde718ff8393f9ece50f3e476a0eff`。已核验的**产品代码候选 SHA 为 `83f2a59adbc61dc41e7a59072104d91c61ee48e4`**，不使用移动分支的最新 HEAD 代替。包含本任务书的后续交付提交仅涉及部署文档和测试夹具；请使用 GPT 最终交付消息指定的完整 SHA，并核对产品文件与上述候选一致。验证记录见 [第一轮开发验证](docs/releases/round1-development-validation-2026-11-15.md)。
+本任务针对 `codex/platform-round1-v1.2.2`，开发及性能比较基线仍为 `1ab7cc2a86fde718ff8393f9ece50f3e476a0eff`。**本次交付包含产品修复**：实景遮挡开关重新取得场景暂停资源，以及手动选择视频及时作废旧方案的在途恢复。使用 GPT 本次最终交付消息给出的完整 SHA，不用移动分支或旧产品提交代替；详情及本轮实测边界见 [AR 与媒体复验修复](docs/releases/round1-ar-media-followup-2026-11-15.md)。
 
-收到 `01e8aab5261fc6e1502926db11e8fc945fc61f0e` 的本机候选反馈后，修正了浏览器销毁断言和无文件 symlink 权限的测试组织。此次仅修改测试及说明，产品资源保留策略不变。继续验收步骤和边界见 [本机验收反馈修订](docs/releases/round1-acceptance-followup-2026-11-15.md)，必须使用 GPT 本次新交付的完整 SHA，不能用旧 6/7 结果代替新第七项验证。
+最新本机报告的测试候选为 `b9f88cba03e34cb1e02709eead294a663ac17b75`，桌面实际仍运行 `01e8aab5261fc6e1502926db11e8fc945fc61f0e`，两者均含本次待修复的问题。桌面版本仍待完成验收，不能因已经启动而当作新验收基线。本次没有操作用户电脑或切换正式服务。此前 [第一轮开发验证](docs/releases/round1-development-validation-2026-11-15.md) 与 [首次反馈修订](docs/releases/round1-acceptance-followup-2026-11-15.md) 是历史记录，不能替代本次准确 SHA 的验证。
 
 ## 1. 分工与现场保护
 
@@ -14,7 +14,7 @@ GPT 工作模式负责产品实现、测试、GitHub 提交和缺陷修复；本
 
 ## 2. 先核验实际运行身份
 
-历史地址 `http://127.0.0.1:5289/` 只是线索。先从实际地址和监听端口定位 PID，核对进程启动时间、命令行、工作目录、启动包装、实际源码与 dist 路径。
+最新本机反馈已在 `http://127.0.0.1:5289/` 核验运行版本为 `01e8aab5261fc6e1502926db11e8fc945fc61f0e`，首页构建 SHA256 为 `1690582471e2cc78e1f8eb48384e5de93bd39377e8bd5133f674a94750516024`。这是该次本机报告的证据；重新部署前仍须从实际地址和监听端口定位 PID，核对进程启动时间、命令行、工作目录、启动包装、实际源码与 dist 路径。
 
 若该端口没有监听，只能核验磁盘上的源码、构建和启动包装；记录“正式服务当前未运行”，不能使用历史 PID 或旧版本记录代替在线 HTTP 身份证明。
 
@@ -92,6 +92,7 @@ node tests/surface-edit-panel-browser.mjs
 node tests/surface-edit-browser.mjs
 node tests/model-edit-appearance-browser.mjs
 node tests/round1-scene-lifecycle-browser.mjs
+node tests/round1-media-intent-browser.mjs
 node tools/verify-video-overlay-spatial.mjs
 ```
 
@@ -99,7 +100,9 @@ node tools/verify-video-overlay-spatial.mjs
 
 新场景专项硬件验收时同时设置 `$env:ROUND1_REQUIRE_HARDWARE = "1"`，避免将默认软件 WebGL 当成现场显卡结果；`ROUND1_BROWSER_OUT` 可指定报告目录。该开关仍以浏览器报告的 renderer 判断，必须与本机 GPU/驱动信息对照。
 
-新第七项要求保留首次创建的同一自有 Globe 裁剪集合，工具销毁后禁用但仍未销毁，Viewer 销毁后该集合才销毁，再次销毁仍安全。取得完整 7/7 及 `retainedTerrainDestroyed: true` 证据后再继续真实素材矩阵；不要直接解绑/销毁生产集合来满足旧 `null` 断言。地表脚本报告新增 `consoleErrorLocations`、`httpErrors` 和 `requestFailures`，用于定位此前未注明 URL 的 404；不能把它直接判为无害或已解决。
+新增媒体专项使用合成 MP4/XML、真实资料库与 CC 原面板。它通过原“使用”按钮和文件输入重现延迟 HTTP 请求，在旧响应放行前后导出原生配准诊断，连续验证三次，并验证真实旧剖切下的遮挡开关、进入/退出和未知 owner 拒绝，共 6 项。`ROUND1_MEDIA_BROWSER_OUT` 可指定输出目录；该脚本的编码器变量为 `MEDIA_BROWSER_ENCODER`（默认 `libx264`，可选本机已有的 `libopenh264`），与旧视频脚本的 `FFMPEG_VIDEO_ENCODER` 分开。硬件配置继续使用 `BROWSER_LAUNCH_OPTIONS` 和 `ROUND1_REQUIRE_HARDWARE=1`。此专项不包含旧 `VideoArFusion` 的原生面板，该面板的手动选择、附属文件和自动保存仍须另行实际验证。脚本启动受限返回 2、断言失败返回 1；blocked 不能计为通过。
+
+新第七项要求保留首次创建的同一自有 Globe 裁剪集合，工具销毁后禁用但仍未销毁，Viewer 销毁后该集合才销毁，再次销毁仍安全。最新本机报告已在旧候选取得两次完整 7/7 及 `retainedTerrainDestroyed: true`；新交付仍需回归，不能沿用旧结果。地表报告的 404 已由本机定位到 `/favicon.ico`，本轮没有修改旧页面图标；继续保存 `consoleErrorLocations`、`httpErrors` 和 `requestFailures`，不把图标结果代替模型/纹理请求验证。
 
 若本机 FFmpeg 没有 `libx264`，先用 `ffmpeg -encoders` 核对已有编码器；可通过脚本已有的 `FFMPEG_VIDEO_ENCODER` 参数指定确认可用的 `libopenh264`。该软件渲染脚本仍不能计作真实硬件 AR 验收。
 
@@ -116,6 +119,8 @@ node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 5290 --strict
 | 场景 | 必查结果 |
 | --- | --- |
 | 旧剖切→CC AR→退出 | AR能正常接管；退出恢复当前剖切位置、偏移和开关；无被销毁集合错误 |
+| CC面板选视频/XML→勾选实景遮挡 | 选文件后仍可启用已知裁剪源遮挡；成功后暂停旧效果，退出恢复；重复勾选与换源无残留 |
+| 未知外部裁剪→勾选实景遮挡 | 仍明确拒绝，不销毁/修改未知集合；只释放本次新取得的暂停资源 |
 | 旧开挖→另一套AR→退出 | 原开挖参数保留，暂停时旧辅助图形/地下效果不干扰；退出重新建立有效效果 |
 | 旧开挖/剖切与临建、便道、新地表同目标 | 已知 owner 可暂停交接；关闭旧效果后受管贡献自动恢复；未知外部 owner不被销毁 |
 | 嵌套缓存/拾取与AR退出 | 仍有租约时不提前恢复；最后释放才恢复；异常、取消与重复退出无残留 |
@@ -123,6 +128,7 @@ node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 5290 --strict
 | AR休眠但保存遮挡开启，普通图层刷新 | 正在绘制/生成的地表任务不被取消，缺失摄影源也不能误暂停 |
 | 未保存操作→尝试关闭→选择留在页面 | 管理、安全、机械与地图继续可用；实际离页才清理 |
 | 慢影像A→快影像B、视频方案连续选择 | 最后有效选择生效，旧候选释放，不覆盖较新结果 |
+| 旧视频方案读取中→手动选择新视频 | 两套AR分别测试；旧GET完成后原生诊断、方案名与文件输入仍属于新选择；旧请求不能清空新输入 |
 | 模型加载中撤权/删除/换项目 | 不提交过期资源，隐藏候选不闪现；恢复权限后可重新加载 |
 | 贴图保存中连续应用属性 | 最新有效表单生效，失败有反馈，不静默丢弃第二次修改 |
 | 登录限速、文件访问和上传预算 | 多个时间窗口均限流；受控模型访问正常；静态私有路径拒绝；断开释放上传预算 |

@@ -70,6 +70,8 @@ export class SceneLibrary {
   private saveProgress = new Map<string, VideoOverlaySaveProgress>();
   private schemeRefreshGeneration = 0;
   private readonly restoreSequences = { imagery: 0, video: 0 };
+  // Unlike restore sequences, a save completion is not a new input choice.
+  private videoSelectionIntent = 0;
   private videoRestoreTail: Promise<void> = Promise.resolve();
   ready: Promise<void> = Promise.resolve();
   /** The catalogue is available before potentially slow GPU restoration finishes. */
@@ -92,6 +94,17 @@ export class SceneLibrary {
   }
   /** A late background restore must not move a camera the user has already taken over. */
   markSceneInteraction(): void { this.startupViewAllowed = false; }
+  /** Manual source intent wins immediately, including while a saved file is still downloading.
+   * Do not clear the current decoder, active record or saved data here. */
+  invalidatePendingVideoRestore(): () => boolean {
+    ++this.restoreSequences.video; ++this.videoSelectionIntent;
+    return this.captureVideoSelectionGuard();
+  }
+  /** Capture before an upload: completing an older save must not select it over newer input. */
+  captureVideoSelectionGuard(): () => boolean {
+    const context = this.hooks.getContextKey?.(), intent = this.videoSelectionIntent;
+    return () => context === this.hooks.getContextKey?.() && intent === this.videoSelectionIntent;
+  }
   get activeVideoRecordId(): string { return this.activeVideoId; }
   get activeImageryRecordId(): string { return this.activeImageryId; }
   owns(id: string): boolean { return this.records.has(id) || this.drafts.has(id) || this.cleanupPending.has(id); }
@@ -124,6 +137,7 @@ export class SceneLibrary {
     return this.ready;
   }
   private async initialize() {
+    const startupVideoCurrent = this.captureVideoSelectionGuard();
     this.render();
     try {
       const listing = await libraryRequest<LibraryListing>("/records");
@@ -146,6 +160,7 @@ export class SceneLibrary {
       for (const record of [...listing.records].sort((a, b) => priority(a.kind) - priority(b.kind))) {
         if (record.kind === "Imagery" && record.id !== selectedImagery) continue;
         if (record.kind === "Drone Video" && record.id !== selectedVideo) continue;
+        if (record.kind === "Drone Video" && !startupVideoCurrent()) continue;
         await this.restore(record.id);
       }
       if (listing.view) {
@@ -166,6 +181,7 @@ export class SceneLibrary {
   private message(error: unknown) { return error instanceof Error ? error.message : String(error); }
   private beginRestore(kind: LibraryKind): RestoreRequest {
     const slot = kind === 'Imagery' ? 'imagery' : kind === 'Drone Video' ? 'video' : undefined;
+    if (slot === 'video') ++this.videoSelectionIntent;
     return { context: this.hooks.getContextKey?.(), slot, sequence: slot ? ++this.restoreSequences[slot] : 0 };
   }
   private restoreIsCurrent(request: RestoreRequest): boolean {
@@ -363,9 +379,11 @@ export class SceneLibrary {
     await this.commitVideo(record, request, checkCurrent => this.hooks.restoreVideo(files, settings, options.asCopy ? undefined : record.id, checkCurrent));
   }
   async openVideoOverlayScheme(id: string, options: { asCopy?: boolean; name?: string } = {}): Promise<void> {
-    await this.ready;
     if (this.restoring.has(id) || this.deleting.has(id) || this.unloading.has(id)) throw new Error("方案正在打开、移出场景或删除，请稍候");
     const request = this.beginRestore('Drone Video');
+    await this.ready;
+    if (!this.restoreIsCurrent(request)) throw new DOMException('资料选择或项目已变化，已丢弃旧加载结果', 'AbortError');
+    if (this.restoring.has(id) || this.deleting.has(id) || this.unloading.has(id)) throw new Error("方案正在打开、移出场景或删除，请稍候");
     this.restoring.add(id); this.render();
     try {
       const record = await this.readableRecord(id);

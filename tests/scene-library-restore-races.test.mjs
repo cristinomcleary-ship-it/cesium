@@ -1,10 +1,12 @@
 import test, { before, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
+import ts from 'typescript';
 
 // Exercise the production library with controlled network/GPU boundaries. The
 // bundle remains in memory; no browser, credentials, or stored project is used.
-let SceneLibrary;
+let SceneLibrary, replaySavedCallback, openOverlayFromToolbar, overlaySavedCallback;
 const originals = { window: globalThis.window, document: globalThis.document, fetch: globalThis.fetch, __libraryRace: globalThis.__libraryRace };
 const owners = [];
 before(async () => {
@@ -30,6 +32,22 @@ before(async () => {
       builder.onLoad({ filter: /.*/, namespace: 'race' }, args => ({ contents: modules[args.path] }));
     } }] });
   ({ SceneLibrary } = await import('data:text/javascript;base64,' + Buffer.from(result.outputFiles[0].text).toString('base64')));
+  const source = ts.createSourceFile('main.ts', await readFile('src/main.ts', 'utf8'), ts.ScriptTarget.Latest, true);
+  const assignment = source.statements.find(node => ts.isExpressionStatement(node)
+    && ts.isBinaryExpression(node.expression) && node.expression.left.getText(source) === 'videoArFusion.onReplayLoaded');
+  assert.ok(assignment, 'exercise the actual host save callback');
+  const callback = ts.transpileModule(`return ${assignment.expression.right.getText(source)};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  replaySavedCallback = library => new Function('projectLibrary', callback)(library);
+  const open = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'openVideoOverlayScheme');
+  assert.ok(open);
+  const openCode = ts.transpileModule(`let videoSchemeActionBusy = false; ${open.getText(source)}; return openVideoOverlayScheme;`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  openOverlayFromToolbar = (library, overlay, document) => new Function('projectLibrary', 'videoModelOverlay', 'document', 'renderVideoOverlaySchemes', 'toast', openCode)(library, overlay, document, () => {}, () => {});
+  const ccSource = ts.createSourceFile('videoModelOverlay.ts', await readFile('src/videoModelOverlay.ts', 'utf8'), ts.ScriptTarget.Latest, true);
+  const ccClass = ccSource.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === 'VideoModelOverlay');
+  const autosave = ccClass.members.find(node => node.name?.getText(ccSource) === 'autosave');
+  const saved = autosave.initializer.arguments[0].properties.find(node => node.name?.getText(ccSource) === 'onSaved');
+  const savedCode = ts.transpileModule(`return ${saved.initializer.getText(ccSource)};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  overlaySavedCallback = owner => new Function(savedCode).call(owner);
 });
 afterEach(() => {
   for (const owner of owners.splice(0)) { clearTimeout(owner.cameraTimer); clearTimeout(owner.updateTimer); }
@@ -53,10 +71,14 @@ function fixture() {
   globalThis.document = { querySelector: () => null };
   globalThis.fetch = async (url, options = {}) => {
     const path = String(url), method = options.method ?? 'GET'; state.requests.push({ path, method });
-    if (path === '/__library/records') return Response.json({ records: [...state.serverRecords.values()], problems: [] });
+    if (path === '/__library/records') { if (state.catalogueGate) await state.catalogueGate.promise; return Response.json({ records: [...state.serverRecords.values()], problems: [] }); }
     if (path.startsWith('/__library/records/')) {
       const id = decodeURIComponent(path.slice('/__library/records/'.length));
       if (method === 'DELETE') { state.serverRecords.delete(id); return Response.json({ ok: true }); }
+      if (method === 'PUT') {
+        if (state.saveGate) await state.saveGate.promise;
+        const record = JSON.parse(options.body); state.serverRecords.set(id, record); return Response.json(record);
+      }
       const record = state.serverRecords.get(id);
       return record ? Response.json(record) : Response.json({ error: 'deleted' }, { status: 404 });
     }
@@ -82,7 +104,7 @@ function fixture() {
     },
     clearVideo() { state.videoEvents.push('clear'); state.videoSource = ''; },
   });
-  library.render = () => {}; library.starting = false; owners.push(library);
+  library.render = () => {}; library.captureView = () => ({ activeVideoId: library.activeVideoRecordId }); library.starting = false; owners.push(library);
   const add = (id, kind, settings = {}, files = {}) => {
     const record = { version: 1, id, name: id, kind, settings, files, visible: true, createdAt: '2026-11-15', updatedAt: '2026-11-15' };
     library.records.set(id, record); state.serverRecords.set(id, record); return record;
@@ -116,6 +138,129 @@ test('a later CC scheme open supersedes a slow ordinary library video restore', 
   const a = f.library.restore('A'); await drain(); await f.library.openVideoOverlayScheme('B'); gate.resolve(); await a;
   assert.deepEqual(f.state.videoEvents, ['B']); assert.equal(f.state.videoSource, 'B'); assert.equal(f.library.activeVideoRecordId, 'B');
 });
+
+for (const entry of ['legacy-use', 'cc-use', 'cc-open', 'cc-copy']) {
+  test(`a manual video choice supersedes ${entry} while its file GET is pending, without autosave or context changes`, async () => {
+    const f = fixture(), gate = deferred(); f.state.fileGates.set('/slow.mp4', gate);
+    const settings = entry === 'legacy-use' ? {} : { mode: 'cc-overlay', selectedIds: [] };
+    f.add('slow', 'Drone Video', { video: settings }, { video: { name: 'slow.mp4', url: '/slow.mp4' } });
+    f.state.videoSource = 'previous'; f.library.activeVideoId = 'previous';
+    const pending = entry.endsWith('use') ? f.library.restore('slow') : f.library.openVideoOverlayScheme('slow', { asCopy: entry === 'cc-copy' });
+    const settled = pending.then(() => undefined, error => error);
+    await drain();
+    assert.ok(f.state.requests.some(request => request.path === '/slow.mp4'));
+    assert.deepEqual(f.state.videoEvents, [], 'the old request has not reached restoreReplay yet');
+    // Same callback wired to both production controllers. Manual source selection
+    // precedes decoder work; it does not require the user to save the new video.
+    f.library.invalidatePendingVideoRestore();
+    ++f.state.videoGeneration; f.state.videoSource = 'manual-newer.mp4';
+    gate.resolve(); const error = await settled;
+    if (!entry.endsWith('use')) assert.equal(error?.name, 'AbortError');
+    assert.equal(f.state.context, 'A/actor-A'); assert.equal(f.state.allowed, true);
+    assert.deepEqual(f.state.videoEvents, [], 'no obsolete decoder activation or global clear');
+    assert.equal(f.state.videoSource, 'manual-newer.mp4');
+    assert.equal(f.library.activeVideoRecordId, 'previous', 'cancelling pending reads does not rewrite saved view identity');
+    assert.equal(f.library.records.has('slow'), true); assert.equal(f.library.failures.has('slow'), false);
+    await f.library.restore('slow');
+    assert.deepEqual(f.state.videoEvents, ['slow'], 'a subsequent explicit restore still works');
+    assert.equal(f.library.activeVideoRecordId, 'slow');
+  });
+}
+
+test('manual input also cancels already activated saved video work without clearing the new owner', async () => {
+  const f = fixture(), gate = deferred(); f.add('A', 'Drone Video', { video: {} }); f.control.video = () => gate.promise;
+  const pending = f.library.restore('A'); await drain();
+  assert.deepEqual(f.state.videoEvents, ['A']);
+  f.library.invalidatePendingVideoRestore(); ++f.state.videoGeneration; f.state.videoSource = 'manual-newer.mp4';
+  gate.resolve(); await pending;
+  assert.deepEqual(f.state.videoEvents, ['A']); assert.equal(f.state.videoSource, 'manual-newer.mp4');
+  assert.equal(f.library.activeVideoRecordId, ''); assert.equal(f.library.failures.has('A'), false);
+});
+
+for (const takeover of ['manual-input', 'library-selection', 'context']) {
+  test(`a completed older autosave cannot mark itself active after ${takeover}`, async () => {
+    const f = fixture(), gate = deferred(), fileGate = deferred(); f.state.saveGate = gate;
+    let inputCurrent = true;
+    const saving = replaySavedCallback(f.library)({ name: 'old manual A', files: {}, settings: { controls: {} } }, () => inputCurrent);
+    await drain(); assert.ok(f.state.requests.some(request => request.method === 'PUT'));
+    let restoring;
+    if (takeover === 'manual-input') { f.library.invalidatePendingVideoRestore(); inputCurrent = false; f.state.videoSource = 'manual B'; }
+    else if (takeover === 'context') f.state.context = 'project-B/actor-B';
+    else {
+      f.add('B', 'Drone Video', { video: {} }, { video: { name: 'B.mp4', url: '/B.mp4' } }); f.state.fileGates.set('/B.mp4', fileGate);
+      restoring = f.library.restore('B'); await drain();
+    }
+    const isCurrent = f.library.captureVideoSelectionGuard(); gate.resolve();
+    assert.equal(await saving, false);
+    assert.equal(isCurrent(), true, 'late save must not increment the video selection sequence');
+    assert.equal(f.library.activeVideoRecordId, '');
+    assert.equal([...f.library.records.values()].some(record => record.name === 'old manual A'), true, 'completed saved data remains available');
+    if (restoring) { fileGate.resolve(); await restoring; assert.equal(f.library.activeVideoRecordId, 'B'); assert.equal(f.state.videoSource, 'B'); }
+    else if (takeover === 'manual-input') assert.equal(f.state.videoSource, 'manual B');
+  });
+}
+
+test('an unchanged manual replay save still becomes the active record', async () => {
+  const f = fixture();
+  const isCurrent = f.library.invalidatePendingVideoRestore();
+  assert.equal(await replaySavedCallback(f.library)({ name: 'current manual', files: {}, settings: {} }, () => true), true);
+  assert.equal(f.library.records.get(f.library.activeVideoRecordId)?.name, 'current manual');
+  assert.equal(isCurrent(), true, 'a successful save is not a new selection and must not cancel readiness');
+});
+
+test('startup catalogue restoration does not replace a manual source selected while the catalogue is pending', async () => {
+  const f = fixture(), gate = deferred(); f.state.catalogueGate = gate; f.add('A', 'Drone Video', { video: {} });
+  const startup = f.library.start(); f.library.invalidatePendingVideoRestore(); f.state.videoSource = 'manual-newer.mp4';
+  gate.resolve(); await startup;
+  assert.deepEqual(f.state.videoEvents, []); assert.equal(f.state.videoSource, 'manual-newer.mp4'); assert.equal(f.library.records.has('A'), true);
+  assert.equal(f.library.error, '');
+});
+
+test('opening a saved scheme before startup finishes reserves the user choice over automatic restoration', async () => {
+  const f = fixture(), gate = deferred(); f.state.catalogueGate = gate;
+  f.add('A', 'Drone Video', { video: {} }); f.add('B', 'Drone Video', { video: { mode: 'cc-overlay', selectedIds: [] } });
+  const startup = f.library.start(), opening = f.library.openVideoOverlayScheme('B');
+  gate.resolve(); await Promise.all([startup, opening]);
+  assert.deepEqual(f.state.videoEvents, ['B']); assert.equal(f.library.activeVideoRecordId, 'B'); assert.equal(f.library.error, '');
+});
+
+test('manual input during a saved-scheme wait for startup cancels the older opening', async () => {
+  const f = fixture(), gate = deferred(); f.library.ready = gate.promise;
+  f.add('A', 'Drone Video', { video: { mode: 'cc-overlay', selectedIds: [] } });
+  const opening = f.library.openVideoOverlayScheme('A'), rejected = assert.rejects(opening, { name: 'AbortError' });
+  f.library.invalidatePendingVideoRestore(); f.state.videoSource = 'manual-newer.mp4'; gate.resolve(); await rejected;
+  assert.deepEqual(f.state.videoEvents, []); assert.equal(f.state.videoSource, 'manual-newer.mp4');
+});
+
+for (const takeover of [true, false]) {
+  test(`CC toolbar preflush ${takeover ? 'cancels for newer manual intent' : 'accepts its own completed autosave without self-cancellation'}`, async () => {
+    const f = fixture(), gate = deferred(); f.add('B', 'Drone Video', { video: { mode: 'cc-overlay', selectedIds: [] } });
+    const open = openOverlayFromToolbar(f.library, { setPanelActive() {}, flushPendingSave: () => gate.promise }, { querySelector: selector => selector === '#ccSchemeList' ? { value: 'B' } : null });
+    const opening = open(false); await drain();
+    if (takeover) f.library.invalidatePendingVideoRestore(); else f.library.markVideo('current A');
+    gate.resolve(); await opening;
+    assert.deepEqual(f.state.videoEvents, takeover ? [] : ['B']);
+  });
+}
+
+for (const superseded of [true, false]) {
+  test(`CC completed and queued saves ${superseded ? 'cannot reclaim selection after library takeover' : 'still select and update the unchanged current source'}`, async () => {
+    const f = fixture(), gate = deferred(), current = f.library.invalidatePendingVideoRestore();
+    const owner = { sessionGeneration: 4, persistedRevision: -1, editRevision: 2, replaySelectionCurrent: current, el: () => ({}), onSaved: id => f.library.markVideo(id) };
+    const completed = overlaySavedCallback(owner);
+    let pending;
+    if (superseded) {
+      f.add('B', 'Drone Video', { video: {} }, { video: { name: 'B.mp4', url: '/B.mp4' } }); f.state.fileGates.set('/B.mp4', gate);
+      pending = f.library.restore('B'); await drain();
+    }
+    const before = f.library.captureVideoSelectionGuard();
+    f.add('A', 'Drone Video', { video: {} });
+    completed({ session: '4', id: 'A', revision: 1 }); completed({ session: '4', id: 'A', revision: 2 });
+    assert.equal(before(), true); assert.equal(owner.savedId, 'A'); assert.equal(owner.persistedRevision, 2);
+    assert.equal(f.library.activeVideoRecordId, superseded ? '' : 'A');
+    if (pending) { gate.resolve(); await pending; assert.equal(f.library.activeVideoRecordId, 'B'); }
+  });
+}
 
 test('shared decoder activation is serialized and a stale activation cannot outlive the latest one', async () => {
   const f = fixture(), gate = deferred(); f.add('A', 'Drone Video', { video: {} }); f.add('B', 'Drone Video', { video: {} });

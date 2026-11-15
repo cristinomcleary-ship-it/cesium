@@ -721,6 +721,7 @@ function toast(message: string, error = false) {
 const sceneEffectsCoordinator = new SceneEffectsCoordinator();
 const videoArFusion = new VideoArFusion(viewer, toast, setStatus, {
   suspendExternalSceneEffects: () => sceneEffectsCoordinator.acquire(),
+  onReplayInputChanged: () => projectLibrary?.invalidatePendingVideoRestore(),
 });
 videoArFusion.onGetProjectionModels = () => imports.filter(item => item.kind === "3D Tiles").map(item => {
   const tileset = item.resource as Cesium3DTileset;
@@ -775,6 +776,8 @@ onPageDispose(() => { modelEditor.destroy(); modelAppearancePanel.dispose(); });
 let resumeVideoOverlayInteractions: (() => void) | undefined;
 videoModelOverlay = new VideoModelOverlay(viewer, {
   suspendExternalSceneEffects: () => sceneEffectsCoordinator.acquire(),
+  onReplayInputChanged: () => projectLibrary?.invalidatePendingVideoRestore(),
+  captureReplaySelectionGuard: () => projectLibrary?.captureVideoSelectionGuard() ?? (() => true),
   canAccessVideo: () => isLibraryRecordAllowed({ kind: "Drone Video" }),
   getImports: () => imports.filter(isImportAllowed),
   getRecord: id => {
@@ -893,9 +896,11 @@ async function openVideoOverlayScheme(copy: boolean): Promise<void> {
   const id = document.querySelector<HTMLSelectElement>("#ccSchemeList")?.value;
   if (!id || videoSchemeActionBusy) return;
   videoSchemeActionBusy = true; renderVideoOverlaySchemes();
+  const isCurrentSelection = projectLibrary!.captureVideoSelectionGuard();
   try {
     videoModelOverlay?.setPanelActive(false);
     await videoModelOverlay?.flushPendingSave();
+    if (!isCurrentSelection()) throw new DOMException('资料选择或项目已变化，已取消打开旧方案', 'AbortError');
     const scheme = projectLibrary!.listVideoOverlaySchemes().find(item => item.id === id);
     await projectLibrary!.openVideoOverlayScheme(id, copy ? { asCopy: true, name: `${(scheme?.name ?? "融合方案").slice(0, 490)} · 副本` } : {});
     document.querySelector<HTMLButtonElement>('.tab[data-tab="videoar"]')?.click();
@@ -928,12 +933,18 @@ document.getElementById("ccSchemeRefresh")?.addEventListener("click", () => {
     .finally(() => { videoSchemeActionBusy = false; renderVideoOverlaySchemes(); });
 });
 videoArFusion.onReplaySettingsChanged = (controls, sessions, requireSaved) => projectLibrary?.updateVideoControls(controls, sessions, requireSaved);
-videoArFusion.onReplayLoaded = async snapshot => {
+videoArFusion.onReplayLoaded = async (snapshot, isCurrentInput) => {
+  const isCurrentSelection = projectLibrary!.captureVideoSelectionGuard();
   await projectLibrary!.ready;
+  if (!isCurrentInput() || !isCurrentSelection()) return false;
   const files = Object.fromEntries(Object.entries(snapshot.files).map(([slot, file]) => [slot, { name: file.name, blob: file }]));
   const saved = await projectLibrary!.save(crypto.randomUUID(), snapshot.name, "Drone Video",
     { video: snapshot.settings as unknown as Record<string, unknown> }, files);
+  // The persisted record remains available; only the still-current input may
+  // become active or invalidate a pending library selection.
+  if (!isCurrentInput() || !isCurrentSelection()) return false;
   projectLibrary!.markVideo(saved.id);
+  return true;
 };
 function showCustomBasemapPanel() {
   const config = savedCustomBasemap();

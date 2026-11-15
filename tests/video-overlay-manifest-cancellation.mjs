@@ -28,7 +28,7 @@ try {
     const elements = new Map();
     return Object.assign(Object.create(VideoModelOverlay.prototype), {
       options: { canAccessVideo: () => true }, files: { video: new File(['video'], 'flight.mp4') },
-      inputGeneration: 0, epoch: 0, sessionGeneration: 0, manifestImportGeneration: 0, destroyed: false, commits: 0,
+      inputGeneration: 0, replayInputIntent: 0, epoch: 0, sessionGeneration: 0, manifestImportGeneration: 0, destroyed: false, commits: 0,
       el(id) { if (!elements.has(id)) elements.set(id, { value: '', disabled: false, textContent: '' }); return elements.get(id); },
       number() { return 1; }, dirty() {}, downloadBlob() {},
       leave() { this.commits++; this.extraction?.abort(); this.epoch++; },
@@ -74,7 +74,22 @@ try {
       assert.equal(controller.signal.aborted, false, 'successful import transfers the owner immediately before its intentional exit');
     }
   }
-  console.log('PASS: delayed manifest read, cancelled fingerprint validation, extraction cancellation and successful owner transfer');
+  {
+    const ar = owner(), encoded = deferred(), entered = deferred();
+    let intents = 0, selection = 'previous';
+    ar.options.onReplayInputChanged = () => { intents++; selection = 'manual extraction'; };
+    globalThis.__manifestTest.extract = async () => { entered.resolve(); await encoded.promise; return { manifest, output: { kind: 'directory' } }; };
+    globalThis.__manifestTest.verify = async () => {};
+    const extracting = ar.extractFrames(false);
+    await entered.promise;
+    assert.equal(intents, 1, 'extraction owns intent at the original user action');
+    selection = 'newer saved scheme still fetching';
+    encoded.resolve(); await extracting;
+    assert.equal(ar.commits, 1); assert.deepEqual(ar.manifest, manifest);
+    assert.equal(intents, 1, 'late generated manifest completion is not a new manual selection');
+    assert.equal(selection, 'newer saved scheme still fetching');
+  }
+  console.log('PASS: delayed manifest read, cancelled fingerprint validation, extraction cancellation, successful owner transfer and original extraction intent ordering');
 } finally {
   globalThis.__manifestTest = previousHooks;
   await rm(directory, { recursive: true, force: true });
