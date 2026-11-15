@@ -23,6 +23,7 @@ import { SafetySceneEffects } from "./safetySceneEffects";
 import { SafetyStore, deriveSafetyView } from "./safetyStore";
 import type { SafetyDataAdapter, SafetyDataset, SafetyDevice, SafetyMedia, SafetySelection, SafetyState, SafetyPage } from "./safetyTypes";
 import type { ImportRecord } from "./types";
+import { disposeOnPageLeave } from './pageDisposal';
 import "./safetyWorkspace.css";
 
 export type SafetyWorkspaceOptions = {
@@ -173,7 +174,7 @@ export class SafetyWorkspace {
     document.body.append(this.mediaDialog);
     this.mediaDialog.addEventListener("click", event => { if (event.target === this.mediaDialog) this.mediaDialog.close(); }, { signal: this.events.signal });
     document.addEventListener("visibilitychange", this.pageWasHidden, { signal: this.events.signal });
-    window.addEventListener("beforeunload", () => this.dispose(), { once: true, signal: this.events.signal });
+    disposeOnPageLeave(() => this.dispose(), this.events.signal);
     const video = document.querySelector<HTMLVideoElement>("#videoArSourceVideo");
     if (video) {
       this.video = video;

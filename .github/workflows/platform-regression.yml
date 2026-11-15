@@ -1,0 +1,124 @@
+name: Platform regression
+
+on:
+  pull_request:
+  push:
+    branches:
+      - codex/platform-round1-v1.2.2
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-regression-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: Node 24 / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      CESIUM_DATA_DIR: ${{ github.workspace }}/output/ci/library
+      CESIUM_MANAGEMENT_DATA_DIR: ${{ github.workspace }}/output/ci/management
+      CESIUM_SAFETY_DATA_DIR: ${{ github.workspace }}/output/ci/safety
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            tools/temporary-works-assets/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm ci --prefix tools/temporary-works-assets --no-audit --no-fund
+      - run: npm test
+      - run: npm run test:cpu
+      - run: npm run test:tools
+      - run: npm run build
+      - run: git diff --exit-code
+
+  python:
+    name: Python 3.12 / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      PYTHON_EXECUTABLE: python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: tools/ci/python-requirements.txt
+      - run: python -m pip install -r tools/ci/python-requirements.txt
+      - run: npm run test:python
+
+  browser:
+    name: Chromium / synthetic AR lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Install isolated browser test runtime
+        run: |
+          npm install --prefix "$RUNNER_TEMP/cesium-browser" --no-audit --no-fund playwright@1.62.1
+          node "$RUNNER_TEMP/cesium-browser/node_modules/playwright/cli.js" install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          echo "PLAYWRIGHT_MODULE=$RUNNER_TEMP/cesium-browser/node_modules/playwright" >> "$GITHUB_ENV"
+          node -e 'const { chromium } = require(process.argv[1]); console.log("BROWSER_EXECUTABLE=" + chromium.executablePath())' "$RUNNER_TEMP/cesium-browser/node_modules/playwright" >> "$GITHUB_ENV"
+      - name: Native media and occlusion regression, first run
+        run: node tests/round1-media-intent-browser.mjs
+        env:
+          ROUND1_MEDIA_BROWSER_OUT: output/ci-browser/media-first
+      - name: Native media and occlusion regression, independent second run
+        run: node tests/round1-media-intent-browser.mjs
+        env:
+          ROUND1_MEDIA_BROWSER_OUT: output/ci-browser/media-second
+      - name: Scene lifecycle regression
+        run: node tests/round1-scene-lifecycle-browser.mjs
+        env:
+          ROUND1_BROWSER_OUT: output/ci-browser/scene
+      - name: Surface rendering regression
+        run: node tests/surface-edit-browser.mjs
+      - name: Print synthetic browser evidence
+        if: always()
+        run: |
+          node --input-type=module <<'JS'
+          import { existsSync, readFileSync } from 'node:fs';
+          for (const file of ['output/ci-browser/media-first/report.json', 'output/ci-browser/media-second/report.json', 'output/ci-browser/scene/report.json', 'output/surface-edit-browser/report.json']) {
+            if (!existsSync(file)) { console.log(JSON.stringify({ file, execution: 'not-run' })); continue; }
+            const r = JSON.parse(readFileSync(file, 'utf8'));
+            console.log(JSON.stringify({ file, execution: r.execution, passed: r.passed, gpu: r.gpu, checks: r.checks, error: r.error, pageErrors: r.pageErrors, consoleErrors: r.consoleErrors, httpErrors: r.httpErrors, requestFailures: r.requestFailures }));
+          }
+          JS
+      - name: Verify tracked files unchanged
+        run: git diff --exit-code
+
+# CI browser coverage uses generated assets and software WebGL only. SDK, private
+# engineering assets and actual GPU remain local gates; no data artifacts upload.

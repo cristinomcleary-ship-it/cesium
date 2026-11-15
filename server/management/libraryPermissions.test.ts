@@ -1,14 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync } from "node:fs";
+import { mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join,resolve,sep } from "node:path";
 import { createManagementStore } from "../managementStore.ts";
 import { createProjectLibrary } from "../projectLibrary.ts";
 
-test("real library metadata and bytes respect independently granted models, files and media",async()=>{
- const dir=mkdtempSync(join(tmpdir(),"cesium-library-permission-")),sources=new Map<string,string>();
+test("real library metadata and bytes respect independently granted models, files and media",async t=>{
+ const temporaryDir=mkdtempSync(join(tmpdir(),"cesium-library-permission-")),dir=realpathSync.native(temporaryDir),sources=new Map<string,string>();
+ t.diagnostic(JSON.stringify({temporaryPathCanonicalized:temporaryDir!==dir,temporaryPathHasTilde:temporaryDir.includes("~"),canonicalPathHasTilde:dir.includes("~")}));
  for(const [id,kind] of [["model","3D Tiles"],["imagery","Imagery"],["cad","CAD"],["gis","GIS"],["video","Drone Video"],["scheme","Drone Video"]]){
   const settings=id==="scheme"?{video:{mode:"cc-overlay",version:1,schemeName:"Saved CC scheme",selectedIds:["model","cad"],sceneReference:{recordId:"model",matrix:[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},occlusion:{enabled:true,sourceId:"model"},adjustments:{cad:{east:0,north:0,up:29,heading:0}}}}:{};
   const folder=join(dir,"records",id);mkdirSync(join(folder,"data"),{recursive:true});const file=join(folder,"record.json"),value=JSON.stringify({version:1,id,kind,name:`private ${id}`,visible:false,createdAt:"2026-10-08T00:00:00Z",updatedAt:"2026-10-08T00:00:00Z",files:{data:{name:"secret.txt",url:`/__library/files/${id}/data/secret.txt`}},settings});writeFileSync(file,value);sources.set(file,value);writeFileSync(join(folder,"data/secret.txt"),`private ${id} bytes`);
@@ -29,7 +30,7 @@ test("real library metadata and bytes respect independently granted models, file
    assert.equal((await request("/__library/records/scheme/pos",{},"POST")).status,403,"POS attachment writes require admin even when this account may read media");
    const listing=await request("/__library/records");assert.equal(listing.status,200);assert.deepEqual((listing.data.records as {id:string}[]).map(r=>r.id).sort(),allowed);assert.deepEqual(listing.data.problems,[]);
    if(name==="models"){assert.equal((listing.data.view as Record<string,unknown>).activeVideoId,undefined);assert.equal((listing.data.view as Record<string,unknown>).activeImageryId,"imagery");}else assert.equal(listing.data.view,undefined);
-   for(const id of ["model","imagery","cad","gis","video","scheme"]){const expected=allowed.includes(id)?200:403;const record=await request(`/__library/records/${id}`);assert.equal(record.status,expected,`${name} metadata ${id}`);if(expected===403)assert.equal(JSON.stringify(record.data).includes(`private ${id}`),false);assert.equal((await request(`/__library/files/${id}/data/secret.txt`)).status,expected,`${name} file ${id}`);}
+   for(const id of ["model","imagery","cad","gis","video","scheme"]){const expected=allowed.includes(id)?200:403;const record=await request(`/__library/records/${id}`);assert.equal(record.status,expected,`${name} metadata ${id}`);if(expected===403)assert.equal(JSON.stringify(record.data).includes(`private ${id}`),false);const file=await request(`/__library/files/${id}/data/secret.txt`);assert.equal(file.status,expected,`${name} file ${id}: ${JSON.stringify(file.data)}`);}
    if(name==="media"){
     const scheme=await request("/__library/records/scheme");assert.equal(scheme.status,200);
     const settings=scheme.data.settings as {video:{selectedIds:string[];occlusion:{sourceId:string}}};
@@ -40,5 +41,5 @@ test("real library metadata and bytes respect independently granted models, file
   }
   cookie="";assert.equal((await request("/__library/records/scheme/pos",{},"POST")).status,401,"anonymous sessions cannot append POS attachments");assert.equal((await request("/__library/records")).status,401);assert.equal((await request("/__library/records/model")).status,401);
   for(const[file,value]of sources)assert.equal(readFileSync(file,"utf8"),value,"read filtering never rewrites original records/view");
- }finally{await new Promise<void>(done=>server.close(()=>done()));store.close();assert.ok(resolve(dir).startsWith(resolve(tmpdir())+sep+"cesium-library-permission-"));rmSync(dir,{recursive:true,force:true});}
+ }finally{await new Promise<void>(done=>server.close(()=>done()));store.close();assert.ok(resolve(dir).startsWith(realpathSync.native(tmpdir())+sep+"cesium-library-permission-"));rmSync(dir,{recursive:true,force:true});}
 });

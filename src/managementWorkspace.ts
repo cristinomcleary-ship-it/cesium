@@ -19,6 +19,7 @@ import { sceneMachineryResources } from './sceneDisplayResources';
 import type { SafetyWorkspace } from './safetyWorkspace';
 import { strictModelSurfacePick, type SurfacePickResult } from './safetyModelSurfacePicker';
 import { pickPreferredMachineryPlacement } from './machinerySurfacePicker';
+import { disposeOnPageLeave } from './pageDisposal';
 import './managementWorkspace.css';
 import './managementField.css';
 
@@ -209,7 +210,7 @@ export class ManagementWorkspace {
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) void this.refreshMachineryContext();
     }, { signal: this.events.signal });
-    window.addEventListener('beforeunload', () => this.dispose(), { signal: this.events.signal, once: true });
+    disposeOnPageLeave(() => this.dispose(), this.events.signal);
   }
 
   get isOpen(): boolean { return this.active; }

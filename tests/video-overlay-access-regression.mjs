@@ -16,11 +16,11 @@ try {
   // Run the production scheduler's update wrappers while replacing only GPU
   // compilation. Assigning _ready without update() never starts its queue job.
   Primitive.prototype.update = function () { this._ready = true; };
-  await build({ stdin: { contents: 'export { VideoModelOverlay } from "./src/videoModelOverlay.ts"; export { VideoOverlayResources } from "./src/videoOverlayResources.ts";', resolveDir: process.cwd(), loader: 'ts' },
+  await build({ stdin: { contents: 'export { VideoModelOverlay } from "./src/videoModelOverlay.ts"; export { VideoOverlayResources } from "./src/videoOverlayResources.ts"; export { SceneEffectsCoordinator } from "./src/sceneEffectsCoordinator.ts";', resolveDir: process.cwd(), loader: 'ts' },
     outfile: `${directory}/fixture.mjs`, bundle: true, platform: 'node', format: 'esm', packages: 'external', loader: { '.css': 'empty' } });
-  const { VideoModelOverlay, VideoOverlayResources } = await import(pathToFileURL(`${directory}/fixture.mjs`).href);
+  const { VideoModelOverlay, VideoOverlayResources, SceneEffectsCoordinator } = await import(pathToFileURL(`${directory}/fixture.mjs`).href);
   const source = ts.createSourceFile('main.ts', await readFile('src/main.ts', 'utf8'), ts.ScriptTarget.Latest, true);
-  const names = ['isLibraryRecordAllowed', 'isImportAllowed', 'isImportDisplayed', 'applyImportDisplay', 'applyPendingCadDisplay', 'applySceneDisplay', 'renderWorkbenchMachinery'];
+  const names = ['isLibraryRecordAllowed', 'isImportAllowed', 'isImportDisplayed', 'applyImportDisplay', 'applyPendingCadDisplay', 'applySceneDisplay', 'renderWorkbenchMachinery', 'getSceneLibraryContextKey'];
   const declarations = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text));
   assert.equal(declarations.length, names.length);
   let overlayOptions;
@@ -32,6 +32,8 @@ try {
   const property = name => overlayOptions.properties.find(node => node.name?.getText(source) === name).initializer.getText(source);
   const hostCode = ts.transpileModule(`${declarations.map(node => node.getText(source)).join('\n')}\nreturn { ${names.join(',')}, getImports: ${property('getImports')}, canAccessVideo: ${property('canAccessVideo')}, onExit: ${property('onExit')}, suspendExternalSceneEffects: ${property('suspendExternalSceneEffects')} };`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   let permissions = { models: true, files: true, media: true }, scheduled = 0;
+  const context = { projectId: 'project-a', actorId: 'actor-a', canView: true };
+  let contextRefreshes = 0;
   const imports = [], nodes = new Map();
   class Element {
     children = []; value = ''; dataset = {}; style = {}; classList = { remove() {} };
@@ -69,12 +71,32 @@ try {
       return () => { if (!released) { released = true; surfaceSuspensions--; } };
     },
   };
-  const host = new Function('managementWorkspace', 'imports', 'videoModelOverlay', 'viewer', 'scheduleSceneDisplay', 'modelEditor', 'projectLibrary', 'sceneDisplayPanel', 'document', 'surfaceEdits', 'cadLoads', `
+  const sceneEffectsCoordinator = new SceneEffectsCoordinator();
+  sceneEffectsCoordinator.register('surface-edit', () => surfaceEdits.suspendExternalSceneEffects());
+  const host = new Function('managementWorkspace', 'imports', 'videoModelOverlay', 'viewer', 'scheduleSceneDisplay', 'modelEditor', 'projectLibrary', 'sceneDisplayPanel', 'document', 'surfaceEdits', 'cadLoads', 'sceneEffectsCoordinator', 'refreshSubsurfaceContext', `
     let sceneDisplayOverrides = {}, resumeVideoOverlayInteractions;
+    let sceneLibraryContextFingerprint = '', sceneLibraryContextRevision = 0;
     const markupTools = undefined, temporaryWorks = undefined, foundationPitMonitoring = { setDisplayVisibility() {} }, modelQualityTrackers = new Map(), videoArFusion = { invalidateProjection() {} }, modelAppearancePanel = { close() {} };
     ${hostCode}`)(
-    { getWorkbenchLayerAccess: () => permissions, setWorkbenchDisplayVisibility() {} }, imports, owner, viewer, () => scheduled++, { select() {}, getSelected: () => undefined, endEditing() {} }, { saveView() {}, render() {} }, { labelsVisible: true }, globalThis.document, surfaceEdits, cadLoads);
+    { getWorkbenchLayerAccess: () => permissions, getWorkbenchMachineryState: () => context, setWorkbenchDisplayVisibility() {} }, imports, owner, viewer, () => scheduled++, { select() {}, getSelected: () => undefined, endEditing() {} }, { saveView() {}, render() {} }, { labelsVisible: true }, globalThis.document, surfaceEdits, cadLoads, sceneEffectsCoordinator, () => contextRefreshes++);
   owner.options = { getImports: host.getImports, getRecord: () => undefined, onExit: host.onExit, canAccessVideo: host.canAccessVideo, suspendExternalSceneEffects: host.suspendExternalSceneEffects };
+  const initialContextKey = host.getSceneLibraryContextKey();
+  assert.equal(host.getSceneLibraryContextKey(), initialContextKey);
+  assert.equal(contextRefreshes, 1, 'unchanged context reads do not rebuild old clipping effects');
+  for (const [state, property, changed] of [
+    [context, 'projectId', 'project-b'], [context, 'actorId', 'actor-b'], [context, 'canView', false],
+    [permissions, 'models', false], [permissions, 'files', false], [permissions, 'media', false],
+  ]) {
+    const original = state[property], beforeKey = host.getSceneLibraryContextKey(), beforeRefreshes = contextRefreshes;
+    state[property] = changed;
+    const changedKey = host.getSceneLibraryContextKey();
+    assert.notEqual(changedKey, beforeKey, `${property} changes invalidate pending scene restores`);
+    assert.equal(host.getSceneLibraryContextKey(), changedKey);
+    assert.equal(contextRefreshes, beforeRefreshes + 1, 'each actual context transition refreshes clipping once');
+    state[property] = original;
+    assert.notEqual(host.getSceneLibraryContextKey(), beforeKey, `${property} returning to its old value must not revive stale restores`);
+    assert.equal(contextRefreshes, beforeRefreshes + 2);
+  }
   const anchor = Cartesian3.fromDegrees(120, 30, 25), base = Transforms.eastNorthUpToFixedFrame(anchor);
   const model = { id: 'restricted-model', name: 'Private model', kind: 'Model', visible: true, resource: { show: false, modelMatrix: Matrix4.clone(base), boundingSphere: new BoundingSphere(anchor, 20), isDestroyed: () => false } };
   const cadLeaf = { show: true, modelMatrix: Matrix4.clone(Matrix4.IDENTITY), isDestroyed: () => false, destroy() {} };
@@ -234,6 +256,7 @@ try {
   assert.equal(surfaceSuspensions, 0, 'leaving AR releases the new map-effects lease exactly once');
   assert.equal(surfaceRequestedVisible, false, 'the production exit callback reapplies current hidden surface preferences before release');
   assert.deepEqual(owner.cleanupReport.errors, [], 'surface isolation does not introduce exit cleanup errors');
+  sceneEffectsCoordinator.dispose();
   viewer.scene.primitives.destroy(); cadResource.destroy();
   console.log('PASS: AR resource/media permissions, paused-pixel invalidation, cached-video/POS guards, saved selections, CAD copies, and exit restoration');
 } finally {

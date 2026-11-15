@@ -16,7 +16,8 @@ const dataDir = await mkdtemp(join(output, 'isolated-data-'));
 for (const key of ['CESIUM_DATA_DIR', 'CESIUM_MANAGEMENT_DATA_DIR', 'CESIUM_SAFETY_DATA_DIR']) process.env[key] = dataDir;
 const require = createRequire(import.meta.url);
 const report = { classification: 'synthetic-3d-tiles-glb-real-webgl', startedAt: new Date().toISOString(),
-  execution: 'not-started', passed: false, productionDataReadOrModified: false, checks: [], pageErrors: [], consoleErrors: [], screenshots: [] };
+  execution: 'not-started', passed: false, productionDataReadOrModified: false, checks: [], pageErrors: [], consoleErrors: [],
+  consoleErrorLocations: [], httpErrors: [], requestFailures: [], screenshots: [] };
 let server, browser, page;
 const check = async (name, callback) => {
   console.log('RUN', name); const item = { name, status: 'running' }; report.checks.push(item);
@@ -35,7 +36,11 @@ try {
   browser = await chromium.launch(options);
   page = await browser.newPage({ viewport: { width: 1280, height: 900 } }); page.setDefaultTimeout(60000);
   page.on('pageerror', error => report.pageErrors.push(error.message));
-  page.on('console', message => { if (message.type() === 'error') report.consoleErrors.push(message.text()); });
+  page.on('console', message => { if (message.type() === 'error') {
+    report.consoleErrors.push(message.text()); report.consoleErrorLocations.push({ message: message.text(), ...message.location() });
+  } });
+  page.on('response', response => { if (response.status() >= 400) report.httpErrors.push({ url: response.url(), status: response.status() }); });
+  page.on('requestfailed', request => report.requestFailures.push({ url: request.url(), error: request.failure()?.errorText }));
   report.execution = 'running';
   await page.goto(origin + '/tools/fixtures/surface-edit.html', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => window.__surfaceEditFixture?.ready || window.__surfaceEditFixture?.failure);

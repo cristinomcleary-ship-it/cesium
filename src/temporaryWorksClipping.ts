@@ -173,6 +173,9 @@ export class TemporaryWorksClippingManager {
   private readonly entries = new Map<string, Entry>();
   private readonly scopes = new Map<string, Scope>();
   private readonly attachments = new Map<Cesium3DTileset, Attachment>();
+  private readonly targetSuspensions = new Map<Cesium3DTileset, Map<object, number>>();
+  private readonly suspensions = new Map<object, number>();
+  private suspensionEpoch = 0;
   private stopWatching: (() => void) | undefined;
   private enabled = true;
   private disposed = false;
@@ -180,6 +183,59 @@ export class TemporaryWorksClippingManager {
 
   constructor(viewer: Viewer) {
     this.viewer = viewer;
+  }
+
+  /** Suspend every known map contributor for AR without changing persisted or
+   * user-requested visibility. Unknown clipping owners remain untouched. */
+  suspend(owner: object): () => void {
+    if (this.disposed) throw new Error('临建摄影遮挡管理器已关闭。');
+    const epoch = this.suspensionEpoch;
+    this.suspensions.set(owner, (this.suspensions.get(owner) ?? 0) + 1);
+    const decrement = () => {
+      const count = (this.suspensions.get(owner) ?? 1) - 1;
+      if (count) this.suspensions.set(owner, count); else this.suspensions.delete(owner);
+    };
+    try { this.synchronize(); }
+    catch (error) {
+      decrement();
+      try { this.synchronize(); }
+      catch (restoreError) { throw new AggregateError([error, restoreError], '裁剪暂停及恢复均失败，请保留错误详情。', { cause: error }); }
+      throw error;
+    }
+    let released = false;
+    return () => { if (released) return; released = true; if (epoch !== this.suspensionEpoch) return; decrement(); this.synchronize(); };
+  }
+
+  /** Legacy underground cuts retain their original Cesium polygon semantics
+   * (including inputs outside the newer footprint compiler's local bounds).
+   * A target lease temporarily withdraws managed contributions without changing
+   * their desired switches. Releasing it reconstructs current contributions;
+   * it never reattaches a collection destroyed by Cesium or replaces a foreign owner.
+   * Separate section/excavation owners may nest on the same photography target. */
+  suspendTarget(tileset: Cesium3DTileset, owner: object): () => void {
+    if (this.disposed) throw new Error('临建摄影遮挡管理器已关闭。');
+    const epoch = this.suspensionEpoch;
+    let owners = this.targetSuspensions.get(tileset);
+    if (!owners) { owners = new Map(); this.targetSuspensions.set(tileset, owners); }
+    owners.set(owner, (owners.get(owner) ?? 0) + 1);
+    try { this.synchronize(); }
+    catch (error) {
+      const count = owners.get(owner)! - 1;
+      if (count) owners.set(owner, count); else owners.delete(owner);
+      if (!owners.size) this.targetSuspensions.delete(tileset);
+      try { this.synchronize(); }
+      catch (restoreError) { throw new AggregateError([error, restoreError], '裁剪交接及恢复均失败，请保留错误详情。', { cause: error }); }
+      throw error;
+    }
+    let released = false;
+    return () => {
+      if (released) return; released = true;
+      if (epoch !== this.suspensionEpoch) return;
+      const count = (owners!.get(owner) ?? 1) - 1;
+      if (count) owners!.set(owner, count); else owners!.delete(owner);
+      if (!owners!.size && this.targetSuspensions.get(tileset) === owners) this.targetSuspensions.delete(tileset);
+      this.synchronize();
+    };
   }
 
   /** New modules share the owned Cesium collection without acquiring the legacy
@@ -198,7 +254,8 @@ export class TemporaryWorksClippingManager {
     };
     const clear = () => {
       if (scope.disposed) return;
-      scope.entries.clear(); this.synchronize(); this.releaseIdleWatcher();
+      scope.entries.clear();
+      try { this.synchronize(); } finally { this.releaseIdleWatcher(); }
     };
     return {
       upsert: input => {
@@ -235,7 +292,8 @@ export class TemporaryWorksClippingManager {
       clear,
       dispose: () => {
         if (scope.disposed) return;
-        clear(); scope.disposed = true; this.scopes.delete(id);
+        scope.disposed = true; scope.entries.clear(); this.scopes.delete(id);
+        try { this.synchronize(); } finally { this.releaseIdleWatcher(); }
       },
       getUsage: () => sumScopeUsage(scope),
     };
@@ -291,8 +349,7 @@ export class TemporaryWorksClippingManager {
 
   clear(): void {
     this.entries.clear();
-    this.synchronize();
-    this.releaseIdleWatcher();
+    try { this.synchronize(); } finally { this.releaseIdleWatcher(); }
   }
 
   /** May also be called explicitly after layer updates, before requesting a frame. */
@@ -323,6 +380,8 @@ export class TemporaryWorksClippingManager {
       let blocked: TemporaryWorksClipStatus | undefined;
       const attached = this.attachments.get(tileset);
       if (tileset.isDestroyed()) blocked = status('blocked', '关联摄影模型已卸载，请重新关联');
+      else if (this.suspensions.size) blocked = status('blocked', '当前模式暂时停用地图摄影裁剪，退出后自动恢复');
+      else if (this.targetSuspensions.has(tileset)) blocked = status('blocked', '地下工程正在使用该摄影，关闭其剖切或开挖后自动恢复');
       else if ((tileset.clippingPlanes && tileset.clippingPlanes.enabled !== false) || (tileset.clippingPolygons && tileset.clippingPolygons !== attached?.collection))
         blocked = status('blocked', '关联摄影模型正被其他裁剪功能使用，请关闭该功能后重试');
       else if (!ClippingPolygonCollection.isSupported(this.viewer.scene)) blocked = status('unsupported', '当前浏览器或显卡不支持 WebGL 2 多边形裁剪');
@@ -363,7 +422,11 @@ export class TemporaryWorksClippingManager {
 
   dispose(): void {
     if (this.disposed) return;
-    this.clear();
     this.disposed = true;
+    this.entries.clear();
+    this.suspensionEpoch++; this.suspensions.clear(); this.targetSuspensions.clear();
+    // Legacy manager disposal still leaves independent scopes alive. Invalidate
+    // only its leases; late releases cannot alter a later owner's state.
+    try { this.synchronize(); } finally { this.releaseIdleWatcher(); }
   }
 }

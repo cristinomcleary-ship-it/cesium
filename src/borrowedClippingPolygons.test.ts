@@ -1,6 +1,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { releaseBorrowedClippingPolygons } from './borrowedClippingPolygons.ts';
+import { Cartesian3, Cesium3DTileset, ClippingPlane, ClippingPlaneCollection, Model } from 'cesium';
+import { releaseBorrowedClippingPlanes, releaseBorrowedClippingPolygons } from './borrowedClippingPolygons.ts';
+
+test('owned plane release invalidates real Cesium model commands before the tileset setter destroys its texture', () => {
+  const owned = new ClippingPlaneCollection({ planes: [new ClippingPlane(Cartesian3.UNIT_X, 3)] });
+  const foreign = new ClippingPlaneCollection({ planes: [new ClippingPlane(Cartesian3.UNIT_Y, 4)] });
+  // No GL context is needed to exercise Cesium's real ownership setter and
+  // Model.resetDrawCommands. The texture stand-in records destruction order.
+  const texture = { destroyed: false, destroy() { this.destroyed = true; return undefined; } };
+  Object.assign(owned, { _clippingPlanesTexture: texture });
+  const borrower = (collection: ClippingPlaneCollection) => Object.assign(Object.create(Model.prototype), {
+    _clippingPlanes: collection, _clippingPlanesState: 1, _drawCommandsBuilt: true,
+  });
+  const direct = borrower(owned), nested = borrower(owned), other = borrower(foreign);
+  const child = { content: { innerContents: [{ _model: nested }, { _model: other }] }, _clippingPlanesState: 1, clippingPlanesDirty: false };
+  const root = { content: { _model: direct }, children: [child], _clippingPlanesState: 1, clippingPlanesDirty: false };
+  const tiles = Object.assign(Object.create(Cesium3DTileset.prototype), { _root: root });
+  tiles.clippingPlanes = owned;
+  assert.equal((owned as unknown as { owner: object }).owner, tiles);
+  assert.equal(releaseBorrowedClippingPlanes(tiles, owned), 2);
+  assert.equal(texture.destroyed, false, 'Borrowed commands must be invalidated before texture destruction');
+  for (const model of [direct, nested]) {
+    assert.equal(model._clippingPlanes, undefined); assert.equal(model._clippingPlanesState, 0);
+    assert.equal(model._drawCommandsBuilt, false);
+  }
+  for (const tile of [root, child]) { assert.equal(tile._clippingPlanesState, 0); assert.equal(tile.clippingPlanesDirty, true); }
+  assert.equal(other._clippingPlanes, foreign); assert.equal(other._drawCommandsBuilt, true);
+  tiles.clippingPlanes = undefined;
+  assert.equal(owned.isDestroyed(), true); assert.equal(texture.destroyed, true);
+  assert.equal(tiles.clippingPlanes, undefined); assert.equal(foreign.isDestroyed(), false);
+  assert.equal(releaseBorrowedClippingPlanes(tiles, owned), 0);
+  foreign.destroy();
+});
 
 test('owned collection release clears nested content aliases and invalidates stale uniform commands', () => {
   const owned = {}, foreign = {};

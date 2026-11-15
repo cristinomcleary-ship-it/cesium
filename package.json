@@ -10,7 +10,11 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc && vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "node tools/run-temporary-works-regression.mjs all",
+    "test:cpu": "node tests/model-placement-regression.mjs && node tests/video-overlay-cache-boundaries.mjs && node tests/video-overlay-access-regression.mjs",
+    "test:tools": "node --test tools/inspect-video-ar-recovery.test.cjs tools/validate-platform-ar-checkpoints.test.mjs tools/designed-surfaces-preview/preview.test.mjs tools/temporary-works-assets/geometry-signs.test.mjs",
+    "test:python": "node tools/run-python-tests.mjs"
   },
   "dependencies": {
     "@mlightcad/libredwg-web": "^0.7.9",

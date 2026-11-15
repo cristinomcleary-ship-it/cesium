@@ -58,7 +58,11 @@ import { VIDEO_AR_VERTEX_SHADER, VIDEO_AR_FRAGMENT_SHADER } from "./videoArShade
 import { VideoOverlaySceneIsolation } from "./videoOverlaySceneIsolation";
 
 type Notify = (message: string, error?: boolean) => void;
-type VideoArFusionOptions = { suspendExternalSceneEffects?: () => void | (() => void) };
+type VideoArFusionOptions = {
+  suspendExternalSceneEffects?: () => void | (() => void);
+  /** Manual source intent supersedes saved-scheme reads before their decoder activation. */
+  onReplayInputChanged?: () => void | (() => boolean);
+};
 
 type Attitude = {
   heading: number;
@@ -926,7 +930,7 @@ export class VideoArFusion {
   private restoringReplay = false;
   private replaySettingsReady = false;
   private replaySelectionPending = false;
-  onReplayLoaded?: (snapshot: SavedReplay) => Promise<void>;
+  onReplayLoaded?: (snapshot: SavedReplay, isCurrentInput: () => boolean) => Promise<boolean | void>;
   onReplaySettingsChanged?: (controls: Record<string, string | boolean>, sessions: ControlPointSession[], requireSaved?: boolean) => void | Promise<void>;
 
   private resetCalibration() {
@@ -1159,7 +1163,9 @@ export class VideoArFusion {
     this.modelProjector?.setEnabled(false);
   }
 
-  private newReplaySelection() {
+  private newReplaySelection(notifyInputChange = true) {
+    if (notifyInputChange) this.options?.onReplayInputChanged?.();
+    this.restoringReplay = false;
     this.setModelPreviewActive(false);
     this.calibrationSessions = [];
     this.replaySelectionPending = true;
@@ -1168,6 +1174,13 @@ export class VideoArFusion {
     this.pause();
     this.resetCalibration();
     this.invalidateCameraFrame();
+  }
+
+  private supersedePendingReplayWithAttachment() {
+    this.options?.onReplayInputChanged?.();
+    // Preserve the existing view/calibration while preventing an older restore
+    // from publishing or clearing these newly chosen auxiliary files.
+    if (this.restoringReplay) { ++this.loadGeneration; this.restoringReplay = false; }
   }
 
   private replayControls(forPersistence = false) {
@@ -1223,10 +1236,16 @@ export class VideoArFusion {
     return { name, files, settings: { flight: this.element<HTMLSelectElement>("#videoArFlightSelect").value, framePaths, controls, calibrationSessions: structuredClone(this.calibrationSessions) } };
   }
 
-  async restoreReplay(files: Record<string, File>, settings: SavedReplaySettings) {
+  async restoreReplay(files: Record<string, File>, settings: SavedReplaySettings, checkCurrent?: () => void) {
+    checkCurrent?.();
+    this.clear();
+    let generation = this.loadGeneration;
+    const checkRestore = () => {
+      if (generation !== this.loadGeneration) throw new DOMException('回放输入已切换', 'AbortError');
+      checkCurrent?.();
+    };
     this.restoringReplay = true;
     try {
-      this.clear();
       // Old saved records predate these controls: never inherit the preceding video's calibration.
       document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input[id^="videoAr"], select[id^="videoAr"]').forEach(input => {
         if (input.type === "file" || /Socket|Progress|FlightSelect/i.test(input.id)) return;
@@ -1240,7 +1259,10 @@ export class VideoArFusion {
       const source = files.source;
       if (!source) throw new Error("缺少已保存的回放数据");
       if (source.name.toLowerCase().endsWith(".zip")) {
-        await this.prepareZip(source);
+        const preparation = this.prepareZip(source, checkCurrent);
+        generation = this.loadGeneration;
+        await preparation;
+        checkRestore();
         if (!this.zipReader) throw new Error("已保存 ZIP 无法建立索引");
         this.element<HTMLSelectElement>("#videoArFlightSelect").value = settings.flight;
       } else {
@@ -1271,12 +1293,20 @@ export class VideoArFusion {
       this.element("#videoArVideoSelection").textContent = this.videoFile?.name ?? "使用已保存逐帧图片";
       this.element("#videoArGeoreferenceSelection").textContent = this.georeferenceFile?.name ?? "无独立配准文件";
       this.element("#videoArFramesSelection").textContent = "已恢复 " + new Set(this.frameFiles.values()).size + " 个图片文件";
-      await this.loadSelectedSource();
+      const loading = this.loadSelectedSource(() => checkCurrent?.());
+      generation = this.loadGeneration;
+      await loading;
+      checkRestore();
       if (!this.points.length) throw new Error("回放未能通过轨迹与媒体校验，原资料已保留");
       this.calibrationSessions = Array.isArray(settings.calibrationSessions) ? structuredClone(settings.calibrationSessions) : [];
       this.controlPointPicker?.restoreLastSession(this.calibrationSessions.at(-1));
       this.pause();
-    } finally { this.restoringReplay = false; }
+    } catch (error) {
+      // A manual import may have taken over while ZIP/media work was pending.
+      // Only this request's still-owned session may be cleared.
+      if (generation === this.loadGeneration) this.clear();
+      throw error;
+    } finally { if (generation === this.loadGeneration) this.restoringReplay = false; }
   }
 
   private zipFramePrefix = "";
@@ -1517,6 +1547,7 @@ export class VideoArFusion {
   }
 
   clear() {
+    this.restoringReplay = false;
     try { this.clearScene(); }
     finally {
       this.releasePickingIsolation();
@@ -1667,8 +1698,9 @@ export class VideoArFusion {
     const signal = this.abortController.signal;
     this.element<HTMLInputElement>("#videoArZipFile").addEventListener("change", () => void this.prepareZip(), { signal });
     this.element<HTMLInputElement>("#videoArTrajectoryFile").addEventListener("change", (event) => {
-      this.newReplaySelection();
-      this.trajectoryFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null;
+      const selected = (event.currentTarget as HTMLInputElement).files?.[0] ?? null;
+      this.newReplaySelection(Boolean(selected));
+      this.trajectoryFile = selected;
       this.element("#videoArTrajectorySelection").textContent = this.trajectoryFile?.name ?? "尚未选择轨迹";
       if (this.trajectoryFile) {
         this.zipReader = null;
@@ -1685,13 +1717,14 @@ export class VideoArFusion {
         this.setStatus("为防止跨航次错配，独立视频不能覆盖 ZIP 内同步帧", true);
         return;
       }
-      this.newReplaySelection();
+      this.newReplaySelection(Boolean(selected));
       this.videoFile = selected;
       this.element("#videoArVideoSelection").textContent = this.videoFile?.name ?? "也可使用轨迹中的逐帧图片";
     }, { signal });
     this.element<HTMLInputElement>("#videoArFramesDirectory").addEventListener("change", (event) => {
-      this.frameFiles.clear();
       const files = [...((event.currentTarget as HTMLInputElement).files ?? [])];
+      if (files.length) this.supersedePendingReplayWithAttachment();
+      this.frameFiles.clear();
       for (const file of files) {
         this.frameFiles.set(file.name, file);
         const relative = file.webkitRelativePath.replaceAll("\\", "/");
@@ -1706,6 +1739,7 @@ export class VideoArFusion {
     this.element<HTMLInputElement>("#videoArGeoreferenceFile").addEventListener("change", (event) => {
       const input = event.currentTarget as HTMLInputElement;
       const selected = input.files?.[0] ?? null;
+      if (selected) this.supersedePendingReplayWithAttachment();
       if (selected && /(?:全部元数据|Cesium轨迹)/i.test(selected.name)) {
         input.value = "";
         this.georeferenceFile = null;
@@ -1718,12 +1752,13 @@ export class VideoArFusion {
         ?? "优先 EPSG:4979 可见表面网格；兼容每帧 TL/TR/BR/BL 四角";
     }, { signal });
     this.element("#videoArClearGeoreference").addEventListener("click", () => {
+      this.supersedePendingReplayWithAttachment();
       this.resetGeoreferenceSelection();
       this.setStatus("三维配准文件已清除；可继续加载轨迹和视频");
     }, { signal });
     this.element("#videoArLoad").addEventListener("click", () => void this.loadSelectedSource(), { signal });
     this.element("#videoArLocate").addEventListener("click", () => this.locate(), { signal });
-    this.element("#videoArClear").addEventListener("click", () => this.clear(), { signal });
+    this.element("#videoArClear").addEventListener("click", () => { this.options?.onReplayInputChanged?.(); this.clear(); }, { signal });
     this.element("#videoArPlay").addEventListener("click", () => void (this.mediaPlaying() ? this.pause() : this.play()), { signal });
     this.element("#videoArPrevious").addEventListener("click", () => this.step(-1), { signal });
     this.element("#videoArNext").addEventListener("click", () => this.step(1), { signal });
@@ -1775,7 +1810,7 @@ export class VideoArFusion {
     }, { signal });
   }
 
-  private async prepareZip(savedFile?: File) {
+  private async prepareZip(savedFile?: File, checkCurrent?: () => void) {
     const file = savedFile ?? this.element<HTMLInputElement>("#videoArZipFile").files?.[0];
     if (!file) return;
     if (!savedFile) this.newReplaySelection();
@@ -1785,6 +1820,7 @@ export class VideoArFusion {
     try {
       const reader = await BrowserZipReader.open(file);
       if (generation !== this.loadGeneration) return;
+      checkCurrent?.();
       const trajectories = [...reader.entries.keys()].filter((name) => /(^|\/)trajectory_[^/]*\.json$/i.test(name)).sort();
       if (!trajectories.length) throw new Error("ZIP 中未找到 trajectory_*.json");
       this.zipReader = reader;
@@ -1806,6 +1842,7 @@ export class VideoArFusion {
       this.setStatus("ZIP 索引完成，点击“加载并定位”开始回放");
     } catch (error) {
       if (generation !== this.loadGeneration) return;
+      if (checkCurrent) throw error;
       this.zipReader = null;
       this.element("#videoArFlightField").classList.add("hidden");
       this.reportError("飞行数据 ZIP 读取失败", error);
@@ -1820,11 +1857,16 @@ export class VideoArFusion {
     this.element("#videoArGeoreferenceSelection").textContent = "优先 EPSG:4979 可见表面网格；兼容每帧 TL/TR/BR/BL 四角";
   }
 
-  private async loadSelectedSource() {
+  private async loadSelectedSource(checkCurrent?: () => void) {
+    // Capture intent before parsing/decoding: a later library choice can arrive
+    // before onReplayLoaded is invoked, while this controller still owns its URL.
+    const selectionCurrent = !checkCurrent ? this.options?.onReplayInputChanged?.() : undefined;
+    if (!checkCurrent) this.restoringReplay = false;
     this.replaySelectionPending = true;
     this.invalidateCameraFrame();
     this.replaySettingsReady = false;
     const generation = ++this.loadGeneration;
+    const isCurrentInput = () => generation === this.loadGeneration && (typeof selectionCurrent !== 'function' || selectionCurrent());
     this.pause();
     this.disconnectLive();
     this.removeProjectionPrimitive();
@@ -1874,6 +1916,7 @@ export class VideoArFusion {
         throw new Error("请先选择飞行数据 ZIP 或轨迹 JSON");
       }
       if (generation !== this.loadGeneration) return;
+      checkCurrent?.();
       const parsed = JSON.parse(text) as unknown;
       const points = parseVideoArTrajectory(parsed);
       const metadata = trajectoryMetadata.get(points);
@@ -1887,20 +1930,25 @@ export class VideoArFusion {
         );
       }
       if (generation !== this.loadGeneration) return;
+      checkCurrent?.();
       if (!this.zipReader && this.videoFile) await this.prepareVideo(this.videoFile, generation);
       else this.releaseVideo();
       if (generation !== this.loadGeneration) return;
+      checkCurrent?.();
       this.projectionSource = projectionSource;
-      await this.initializeFlight(points, label, generation);
+      await this.initializeFlight(points, label, generation, checkCurrent);
+      if (generation !== this.loadGeneration) return;
+      checkCurrent?.();
       if (generation === this.loadGeneration && !this.restoringReplay && this.onReplayLoaded) {
         this.setStatus("正在保存回放文件，完成前请不要退出…");
-        await this.onReplayLoaded(this.snapshotReplay(label));
-        if (generation !== this.loadGeneration) return;
+        const selected = await this.onReplayLoaded(this.snapshotReplay(label), isCurrentInput);
+        if (!isCurrentInput() || selected === false) return;
         this.setStatus("回放已保存到本机");
       }
       if (generation === this.loadGeneration) { this.replaySettingsReady = true; this.saveReplayControls(); }
     } catch (error) {
       if (generation !== this.loadGeneration) return;
+      if (checkCurrent) throw error;
       this.resetFailedLoadState();
       this.reportError("视频 AR 加载失败", error);
     } finally {
@@ -2095,7 +2143,7 @@ export class VideoArFusion {
       throw error;
     }
     if (generation !== this.loadGeneration) {
-      this.releaseVideo();
+      if (this.videoObjectUrl === url) this.releaseVideo();
       return;
     }
     this.resetPerformanceMetrics();
@@ -2283,9 +2331,10 @@ export class VideoArFusion {
     return { enabled: true, reason: "", firstVideoTimeMs: videoOriginMs };
   }
 
-  private async initializeFlight(points: FlightPoint[], label: string, generation: number) {
+  private async initializeFlight(points: FlightPoint[], label: string, generation: number, checkCurrent?: () => void) {
     await this.dataSourceReady;
     if (generation !== this.loadGeneration) return;
+    checkCurrent?.();
     if (this.videoObjectUrl && this.meshSourceVideoDurationMs !== undefined) {
       const decodedDurationMs = this.video.duration * 1000;
       if (!Number.isFinite(decodedDurationMs) || Math.abs(decodedDurationMs - this.meshSourceVideoDurationMs) > 500) {

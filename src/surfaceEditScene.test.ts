@@ -84,6 +84,8 @@ test('prepared surfaces never clip until enabled; toggles pair photography, terr
     handle.setEnabled(true); assert.equal(f.globe.clippingPolygons, terrain); assert.equal(terrain.enabled, true);
     f.renderer.destroy(); assert.equal(terrain.enabled, false); assert.equal(terrain.isDestroyed(), false);
     assert.equal(f.meshes[0].destroyed, 1); assert.equal(f.postUpdate.numberOfListeners, 0);
+    assert.equal(f.globe.clippingPolygons, terrain, 'Globe keeps the exact owned collection until its own teardown');
+    f.globe.destroy(); assert.equal(terrain.isDestroyed(), true, 'the real Globe/provider chain finally destroys the retained collection');
   } finally { f.close(); }
 });
 
@@ -103,6 +105,69 @@ test('multiple surfaces and legacy temporary works remain independent through su
     manager.clear(); assert.equal(legacySize(), 1); assert.equal(b.status.state, 'ready');
     b.destroy(); assert.equal(f.tileset.clippingPolygons, undefined); assert.equal(f.globe.clippingPolygons.enabled, false);
   } finally { f.close(); }
+});
+
+test('global AR suspension retains enable and disable changes even while AR hides the source', async () => {
+  const f = fixture();
+  let release: (() => void) | undefined;
+  try {
+    const manager = getTemporaryWorksClippingManager(f.viewer), a = await f.preparePlan(), b = await f.preparePlan(plan('b', 121.002));
+    a.setEnabled(true); b.setEnabled(true);
+    release = manager.suspend({}); f.renderer.setSuspended(true); f.tileset.show = false;
+    a.setEnabled(false);
+    assert.equal(a.setEnabled(true).state, 'suspended');
+    b.setEnabled(false);
+    assert.equal(a.enabled, true); assert.equal(b.enabled, false);
+    assert.equal(f.tileset.clippingPolygons, undefined); assert.equal(f.globe.clippingPolygons.enabled, false);
+    assert.ok(f.meshes.every(mesh => !mesh.visible));
+    // Match the composite lease order: surfaces resume before the manager and
+    // the next map traversal observes the final current state.
+    f.renderer.setSuspended(false); f.tileset.show = true; release(); release = undefined; f.postUpdate.raiseEvent();
+    assert.equal(a.status.state, 'ready'); assert.equal(b.status.state, 'hidden');
+    assert.equal((f.tileset.clippingPolygons as unknown as ClippingPolygonCollection).length, 1); assert.equal(f.globe.clippingPolygons.length, 1);
+    assert.equal(f.meshes[0].visible, true); assert.equal(f.meshes[1].visible, false);
+    assert.equal(f.meshes.length, 2, 'restoration must reuse the prepared meshes');
+  } finally { release?.(); f.close(); }
+});
+
+test('suspended replacement can roll back or commit without discarding the last valid handle', async () => {
+  const f = fixture();
+  let release: (() => void) | undefined;
+  try {
+    const old = await f.preparePlan(); old.setEnabled(true);
+    const terrain = f.globe.clippingPolygons, original = terrain.get(0).positions[0];
+    const manager = getTemporaryWorksClippingManager(f.viewer);
+    release = manager.suspend({}); f.renderer.setSuspended(true);
+    const cancelled = await f.preparePlan(plan('a', 121.01));
+    assert.equal(cancelled.setEnabled(true).state, 'suspended');
+    assert.equal(f.meshes[0].destroyed, 0); assert.equal(f.tileset.clippingPolygons, undefined);
+    cancelled.destroy();
+    f.renderer.setSuspended(false); release(); release = undefined; f.postUpdate.raiseEvent();
+    assert.equal(old.status.state, 'ready'); assert.deepEqual(terrain.get(0).positions[0], original);
+
+    release = manager.suspend({}); f.renderer.setSuspended(true);
+    const committed = await f.preparePlan(plan('a', 121.02));
+    assert.equal(committed.setEnabled(true).state, 'suspended'); old.destroy();
+    assert.equal(f.meshes[0].destroyed, 1); assert.equal(f.meshes[2].destroyed, 0);
+    f.renderer.setSuspended(false); release(); release = undefined; f.postUpdate.raiseEvent();
+    assert.equal(committed.status.state, 'ready'); assert.notDeepEqual(terrain.get(0).positions[0], original);
+    assert.equal((f.tileset.clippingPolygons as unknown as ClippingPolygonCollection).length, 1); assert.equal(f.meshes[2].visible, true);
+  } finally { release?.(); f.close(); }
+});
+
+test('pending suspended enable is checked against foreign clipping when it resumes', async () => {
+  const f = fixture(), plane = new ClippingPlaneCollection({ planes: [new ClippingPlane(Cartesian3.UNIT_X, 0)] });
+  let release: (() => void) | undefined;
+  try {
+    const handle = await f.preparePlan();
+    release = getTemporaryWorksClippingManager(f.viewer).suspend({}); f.renderer.setSuspended(true);
+    f.tileset.clippingPlanes = plane;
+    assert.equal(handle.setEnabled(true).state, 'suspended'); assert.equal(handle.enabled, true);
+    f.renderer.setSuspended(false); release(); release = undefined; f.postUpdate.raiseEvent();
+    assert.equal(handle.status.state, 'blocked'); assert.equal(f.tileset.clippingPlanes, plane);
+    assert.equal(f.tileset.clippingPolygons, undefined); assert.equal(f.meshes[0].visible, false);
+    plane.enabled = false; f.postUpdate.raiseEvent(); assert.equal(handle.status.state, 'ready');
+  } finally { release?.(); f.close(); }
 });
 
 test('candidate replacement is reversible until the original handle is discarded', async () => {
@@ -193,6 +258,44 @@ test('a failed mesh preparation does not change the last valid scene', async () 
     await assert.rejects(f.preparePlan(oversized), /预算/);
     assert.equal(f.tileset.clippingPolygons.length, 1); assert.equal(old.status.state, 'ready'); assert.equal(f.meshes.length, 1);
   } finally { f.close(); }
+});
+
+test('scene destruction releases terrain and every mesh even when clipping notification fails', async () => {
+  const f = fixture(), requestRender = f.viewer.scene.requestRender;
+  try {
+    const a = await f.preparePlan(), b = await f.preparePlan(plan('b', 121.002));
+    a.setEnabled(true); b.setEnabled(true);
+    const terrain = f.globe.clippingPolygons;
+    f.viewer.scene.requestRender = () => { throw new Error('injected render failure'); };
+    assert.throws(() => f.renderer.destroy(), AggregateError);
+    assert.equal(terrain.enabled, false); assert.equal(f.tileset.clippingPolygons, undefined);
+    assert.deepEqual(f.meshes.map(mesh => mesh.destroyed), [1, 1]);
+    assert.doesNotThrow(() => f.renderer.destroy());
+    assert.deepEqual(f.meshes.map(mesh => mesh.destroyed), [1, 1]);
+  } finally { f.viewer.scene.requestRender = requestRender; f.close(); }
+});
+
+test('a failing mesh disposer cannot prevent destruction of other prepared surfaces', async () => {
+  const f = fixture();
+  try {
+    (await f.preparePlan()).setEnabled(true); (await f.preparePlan(plan('b', 121.002))).setEnabled(true);
+    const destroyFirst = f.meshes[0].mesh.destroy;
+    f.meshes[0].mesh.destroy = () => { destroyFirst(); throw new Error('first mesh release failed'); };
+    assert.throws(() => f.renderer.destroy(), AggregateError);
+    assert.deepEqual(f.meshes.map(mesh => mesh.destroyed), [1, 1]);
+    assert.equal(f.globe.clippingPolygons.enabled, false); assert.equal(f.tileset.clippingPolygons, undefined);
+  } finally { f.close(); }
+});
+
+test('individual handle deletion releases its mesh and terrain even when a clipping callback fails', async () => {
+  const f = fixture(), requestRender = f.viewer.scene.requestRender;
+  try {
+    const handle = await f.preparePlan(); handle.setEnabled(true);
+    f.viewer.scene.requestRender = () => { throw new Error('injected render failure'); };
+    assert.throws(() => handle.destroy(), AggregateError);
+    assert.equal(f.meshes[0].destroyed, 1); assert.equal(f.globe.clippingPolygons.enabled, false);
+    assert.doesNotThrow(() => handle.destroy()); assert.equal(f.meshes[0].destroyed, 1);
+  } finally { f.viewer.scene.requestRender = requestRender; f.close(); }
 });
 
 test('mesh adapter retains metric UVs and rejects malformed or excessive buffers before GPU allocation', () => {

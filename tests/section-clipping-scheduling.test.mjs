@@ -181,16 +181,17 @@ test('closing before the frame cancels pending work and a later reopening can sc
     const collection = f.model.clippingPlanes;
     assert.ok(collection);
     assert.equal(collection.enabled, true);
-    const originalDistance = collection.get(0).distance;
+    const originalPlane = collection.get(0), originalDistance = originalPlane.distance;
     f.inputs.get('#sectionOffset').value = '19';
     f.tools.refreshClipping();
     assert.equal(f.preUpdate.numberOfListeners, 1);
     f.tools.clearSectionClipping();
     assert.equal(f.preUpdate.numberOfListeners, 0);
     f.preUpdate.raiseEvent(f.scene);
-    assert.equal(f.model.clippingPlanes, collection);
+    assert.equal(f.model.clippingPlanes, undefined, 'closing releases exact ownership so another effect can take over');
     assert.equal(collection.enabled, false);
-    assert.equal(collection.get(0).distance, originalDistance, 'a cancelled update must not apply its queued offset');
+    assert.equal(collection.isDestroyed(), true);
+    assert.equal(originalPlane.distance, originalDistance, 'a cancelled update must not apply its queued offset');
   } finally { f.close(); }
 });
 

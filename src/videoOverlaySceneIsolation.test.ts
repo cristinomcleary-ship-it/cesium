@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
+import { Cesium3DTileset } from 'cesium';
 import { VideoOverlaySceneIsolation } from './videoOverlaySceneIsolation.ts';
 
 function deferred() {
@@ -82,6 +83,151 @@ function fixture() {
   });
   return { owner, events };
 }
+
+test('dormant occlusion status reads never acquire an effects lease or cancel a map task', () => {
+  const { owner, events } = fixture();
+  const source = Object.create(Cesium3DTileset.prototype);
+  Object.defineProperties(source, {
+    isDestroyed: { value: () => false },
+    clippingPolygons: { value: { enabled: true, length: 1 }, writable: true },
+  });
+  const info = { textContent: '' };
+  Object.assign(owner, {
+    occlusion: { enabled: true, sourceId: 'survey' }, adjustments: {}, el: () => info,
+    options: { ...owner.options,
+      getImports: () => [{ id: 'survey', kind: '3D Tiles', resource: source }],
+      getRecord: () => ({ kind: '3D Tiles' }),
+    },
+  });
+  for (let index = 0; index < 3; index++) owner.updateOcclusionStatus();
+  assert.match(info.textContent, /剖切或开挖/);
+  assert.deepEqual(events, []);
+  assert.equal(source.clippingPolygons.enabled, true);
+  source.clippingPolygons = undefined;
+  owner.updateOcclusionStatus();
+  assert.match(info.textContent, /已选择遮挡参照/); assert.deepEqual(events, []);
+});
+
+test('actual panel activation still suspends before the read-only source compatibility check', () => {
+  const { owner, events } = fixture();
+  const source = Object.create(Cesium3DTileset.prototype);
+  const clipping = { enabled: true, length: 1 };
+  Object.defineProperties(source, { isDestroyed: { value: () => false }, clippingPolygons: { value: clipping } });
+  Object.assign(owner, { occlusion: { enabled: true, sourceId: 'survey' }, adjustments: {},
+    options: {
+      getImports: () => [{ id: 'survey', kind: '3D Tiles', resource: source }], getRecord: () => ({ kind: '3D Tiles' }),
+      suspendExternalSceneEffects() { events.push('suspend'); clipping.enabled = false; return () => { events.push('restore'); clipping.enabled = true; }; },
+    },
+    refreshResources() { owner.checkOcclusionSource(); events.push('validated'); },
+  });
+  owner.setPanelActive(true); assert.deepEqual(events, ['suspend', 'validated']);
+  owner.setPanelActive(false); assert.equal(clipping.enabled, true); assert.deepEqual(events.slice(-2), ['exit', 'restore']);
+});
+
+function occlusionInteractionFixture() {
+  const { owner, events } = fixture();
+  const failures: unknown[] = [];
+  const controls = new Map<string, { checked: boolean; value: string; textContent: string }>();
+  const control = (id: string) => {
+    if (!controls.has(id)) controls.set(id, { checked: false, value: '', textContent: '' });
+    return controls.get(id)!;
+  };
+  const clippings = [{ enabled: true, length: 1 }, { enabled: true, length: 1 }];
+  const sources = clippings.map(clipping => Object.defineProperties(Object.create(Cesium3DTileset.prototype), {
+    isDestroyed: { value: () => false }, clippingPolygons: { value: clipping, writable: true },
+    clippingPlanes: { value: undefined, writable: true },
+  }));
+  Object.assign(owner, {
+    inputGeneration: 0, replayInputIntent: 0, sessionGeneration: 0, files: {}, occlusion: { enabled: false, sourceId: '' }, adjustments: {},
+    options: {
+      getImports: () => sources.map((resource, index) => ({ id: `survey-${index}`, kind: '3D Tiles', resource })),
+      getRecord: () => ({ kind: '3D Tiles' }),
+      onReplayInputChanged() { events.push('manual intent'); },
+      suspendExternalSceneEffects() {
+        events.push('suspend'); clippings.forEach(clipping => { clipping.enabled = false; });
+        return () => { events.push('restore'); clippings.forEach(clipping => { clipping.enabled = true; }); };
+      },
+    },
+    el: control, dirty() { events.push('dirty'); }, fail(error: unknown) { failures.push(error); },
+    refreshSceneReferences() {}, refreshOcclusionSources() {}, syncCameraInputs() {}, syncAdjustmentInputs() {},
+    presentationEditor: { setValue() {} }, spatialEditor: { setValue() {} },
+    refreshResources() { owner.updateOcclusionStatus(); control('ccOcclusionEnabled').checked = owner.occlusion.enabled; },
+  });
+  const select = (enabled = true, index = 0) => {
+    control('ccOcclusionEnabled').checked = enabled; control('ccOcclusionSource').value = `survey-${index}`;
+    owner.changeOcclusion();
+  };
+  return { owner, events, failures, control, clippings, sources, select };
+}
+
+test('occlusion change reacquires a panel lease after manual file selection releases it', () => {
+  const { owner, events, failures, control, clippings, select } = occlusionInteractionFixture();
+  owner.setPanelActive(true);
+  owner.pickFile('video', new File(['synthetic'], 'new-manual.mp4'));
+  assert.deepEqual(events.slice(1, 4), ['manual intent', 'exit', 'restore']);
+  assert.equal(clippings[0].enabled, true, 'picking a file ended the preceding AR session');
+  events.length = 0;
+  select();
+  assert.deepEqual(events, ['suspend', 'exit', 'dirty']);
+  assert.deepEqual(owner.occlusion, { enabled: true, sourceId: 'survey-0' });
+  assert.equal(clippings[0].enabled, false);
+  assert.match(control('ccOcclusionInfo').textContent, /已选择遮挡参照/);
+  assert.deepEqual(failures, []);
+  select(true, 1); select(false, 1);
+  assert.equal(events.filter(event => event === 'suspend').length, 1, 'source changes share the panel owner');
+  assert.equal(events.filter(event => event === 'restore').length, 0);
+  owner.setPanelActive(false); owner.setPanelActive(false);
+  assert.equal(events.filter(event => event === 'restore').length, 1);
+  assert.ok(clippings.every(clipping => clipping.enabled));
+});
+
+test('occlusion source changes bridge the live lease through exit and leave restores the scene', () => {
+  const { owner, events, failures, clippings, select } = occlusionInteractionFixture();
+  owner.releaseLiveSceneEffects = owner.externalSceneIsolation().acquire();
+  owner.exit = () => {
+    events.push('exit'); owner.releaseLiveSceneEffects?.(); owner.releaseLiveSceneEffects = undefined;
+  };
+  select(true, 1);
+  assert.deepEqual(failures, []);
+  assert.deepEqual(events, ['suspend', 'exit', 'dirty']);
+  assert.equal(clippings[1].enabled, false, 'exit cannot restore cuts before validating the new source');
+  owner.leave();
+  assert.deepEqual(events.slice(-2), ['exit', 'restore']);
+  assert.ok(clippings.every(clipping => clipping.enabled));
+});
+
+test('unknown clipping still rejects occlusion and releases only the attempted activation lease', () => {
+  const { owner, events, failures, clippings, sources, select } = occlusionInteractionFixture();
+  const unknown = { enabled: true, length: 1 };
+  sources[0].clippingPlanes = unknown;
+  select();
+  assert.match(String(failures[0]), /剖切或开挖/);
+  assert.deepEqual(owner.occlusion, { enabled: false, sourceId: '' });
+  assert.deepEqual(events, ['suspend', 'exit', 'restore']);
+  assert.equal(owner.releasePanelSceneEffects, undefined);
+  assert.equal(sources[0].clippingPlanes, unknown); assert.equal(unknown.enabled, true);
+  assert.ok(clippings.every(clipping => clipping.enabled));
+
+  events.length = 0; owner.setPanelActive(true); select();
+  assert.equal(failures.length, 2);
+  assert.deepEqual(events, ['suspend', 'exit']);
+  assert.equal(clippings[0].enabled, false, 'a failed change does not release an existing panel owner');
+  owner.setPanelActive(false);
+  assert.equal(events.filter(event => event === 'restore').length, 1);
+});
+
+test('disabled source selection does not acquire an AR lease and invalid inputs never pause the scene', () => {
+  const { owner, events, failures, control, select } = occlusionInteractionFixture();
+  select(false);
+  assert.deepEqual(events, ['exit', 'dirty']);
+  events.length = 0; control('ccOcclusionEnabled').checked = true; control('ccOcclusionSource').value = '';
+  owner.changeOcclusion();
+  assert.equal(failures.length, 1); assert.deepEqual(events, []);
+  owner.options.suspendExternalSceneEffects = () => { throw new Error('host cannot suspend'); };
+  select();
+  assert.match(String(failures[1]), /host cannot suspend/); assert.deepEqual(events, []);
+  assert.deepEqual(owner.occlusion, { enabled: false, sourceId: 'survey-0' });
+});
 
 test('opening the AR panel suspends before object validation and explicit leave restores once', () => {
   const { owner, events } = fixture();

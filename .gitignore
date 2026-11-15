@@ -38,7 +38,7 @@ acad.err
 # Offline backup and local-only configuration snapshots
 /.local-backups/
 
-# Persistent user uploads; back up separately from application source
+# Persistent user uploads stay in place; never include business data in code versions
 /project-data/
 
 /ar_v2/.venv/
