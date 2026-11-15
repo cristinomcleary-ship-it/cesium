@@ -47,7 +47,10 @@ function syntheticPhotography() {
   face([[55, 55, 9], [70, 55, 9], [70, 70, 9], [55, 70, 9]], [0, 0, 1], [.8, .55, .2, 1]);
   const glb = writer.finish('Synthetic photography patch').bytes;
   const transform = Matrix4.toArray(Transforms.eastNorthUpToFixedFrame(Cartesian3.fromDegrees(121, 31, 15)));
-  const tiles = Buffer.from(JSON.stringify({ asset: { version: '1.1' }, geometricError: 0, root: {
+  // Cesium compares the tileset-level parent error before visiting the root.
+  // A zero top-level error would cull this whole source before requesting GLB;
+  // the leaf itself correctly has zero remaining geometric error.
+  const tiles = Buffer.from(JSON.stringify({ asset: { version: '1.1' }, geometricError: 25, root: {
     boundingVolume: { box: [0, 0, 5, 145, 0, 0, 0, 145, 0, 0, 0, 10] },
     transform, geometricError: 0, refine: 'REPLACE', content: { uri: 'photography.glb' },
   } }));
