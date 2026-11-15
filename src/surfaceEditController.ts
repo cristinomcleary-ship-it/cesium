@@ -196,13 +196,25 @@ export class SurfaceEditController {
   }
   /** Releases use current state, not snapshots of old objects or old projects. */
   suspendExternalSceneEffects(): () => void {
-    this.cancel(); this.suspensions++; this.scene.setSuspended(true);
+    if (this.disposed) return () => {};
+    this.cancel();
+    const previous = this.suspensions;
+    this.suspensions++;
+    try { this.scene.setSuspended(true); }
+    catch (error) {
+      this.suspensions = previous;
+      try { this.scene.setSuspended(previous > 0); }
+      catch (rollbackError) { throw new AggregateError([error, rollbackError], '地表效果暂停失败，恢复原状态也发生异常', { cause: error }); }
+      throw error;
+    }
     let released = false;
     return () => {
       if (released) return; released = true; this.suspensions = Math.max(0, this.suspensions - 1);
       if (this.disposed) return;
-      this.scene.setSuspended(this.suspensions > 0);
-      if (!this.suspensions) this.refreshTargets();
+      const errors: unknown[] = [];
+      try { this.scene.setSuspended(this.suspensions > 0); } catch (error) { errors.push(error); }
+      if (!this.suspensions) { try { this.refreshTargets(); } catch (error) { errors.push(error); } }
+      if (errors.length) throw new AggregateError(errors, '地表效果恢复失败');
     };
   }
   private newPlan() { this.cancel(); this.editingId = undefined; this.clearBoundary(); this.panel.fill(); }
@@ -216,10 +228,14 @@ export class SurfaceEditController {
     this.cancel(); this.boundary = []; this.holes = []; this.drawing.entities.removeAll(); this.panel.setBoundary(0, 0);
   }
   private endDrawing() {
-    this.drawHandler?.destroy(); this.drawHandler = undefined;
-    if (this.drawKey) document.removeEventListener('keydown', this.drawKey); this.drawKey = undefined;
-    const cleanup = this.drawCleanup; this.drawCleanup = undefined; cleanup?.();
-    this.drawing.entities.removeAll();
+    const handler = this.drawHandler, key = this.drawKey, cleanup = this.drawCleanup;
+    this.drawHandler = undefined; this.drawKey = undefined; this.drawCleanup = undefined;
+    const errors: unknown[] = [], release = (action: () => void) => { try { action(); } catch (error) { errors.push(error); } };
+    if (handler) release(() => handler.destroy());
+    if (key) release(() => document.removeEventListener('keydown', key));
+    if (cleanup) release(cleanup);
+    release(() => this.drawing.entities.removeAll());
+    if (errors.length) throw new AggregateError(errors, '地表绘制交互清理失败');
   }
   private startDrawing(mode: 'polygon' | 'rectangle' | 'hole') {
     try {
@@ -381,7 +397,13 @@ export class SurfaceEditController {
   }
   destroy() {
     if (this.disposed) return;
-    this.disposed = true; this.revision++; this.cancel(); this.handles.forEach(h => h.destroy()); this.handles.clear(); this.scene.destroy();
-    this.panel.destroy(); if (!this.options.viewer.isDestroyed()) this.options.viewer.dataSources.remove(this.drawing, true);
+    this.disposed = true; this.revision++;
+    const errors: unknown[] = [], release = (action: () => void) => { try { action(); } catch (error) { errors.push(error); } };
+    release(() => this.cancel());
+    const handles = [...this.handles.values()]; this.handles.clear();
+    for (const handle of handles) release(() => handle.destroy());
+    release(() => this.scene.destroy()); release(() => this.panel.destroy());
+    release(() => { if (!this.options.viewer.isDestroyed()) this.options.viewer.dataSources.remove(this.drawing, true); });
+    if (errors.length) throw new AggregateError(errors, '地表编辑清理失败');
   }
 }

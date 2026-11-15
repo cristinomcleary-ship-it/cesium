@@ -1,5 +1,6 @@
 import { TemporaryWorksPanel } from "./temporaryWorksPanel";
 import { temporaryWorksStore } from "./temporaryWorksStore";
+import { getTemporaryWorksClippingManager } from "./temporaryWorksGlbScene";
 import { SceneLibrary } from "./sceneLibrary";
 import { CadLoadRegistry } from "./cadLoadRegistry";
 import { installRenderErrorRecovery, renderErrorSummaryHtml } from "./renderErrorRecovery";
@@ -55,6 +56,7 @@ import { beginPickPlacement, getPlacementPreviewPosition, createAnchoredModelMat
 import { gaussKrugerToWgs84, inferredZoneNumber, parseLongitude, type GaussAxisOrder, type GaussEllipsoid } from "./coordinateUtils";
 import { SubsurfaceTools, subsurfacePanelHtml } from "./subsurfaceTools";
 import { SurfaceEditController } from "./surfaceEditController";
+import { SceneEffectsCoordinator } from "./sceneEffectsCoordinator";
 import { FoundationPitMonitoring, foundationPitMonitoringPanelHtml } from "./foundationPitMonitoring";
 import { ThreeDReport, threeDReportPanelHtml, threeDReportStageHtml } from "./threeDReport";
 import { MarkupTools, markupPanelHtml } from "./markupTools";
@@ -652,6 +654,8 @@ let safetyWorkspace: SafetyWorkspace | undefined;
 let safetyWorkspaceLoading: Promise<SafetyWorkspace> | undefined;
 let managementWorkspace: ManagementWorkspace | undefined;
 let managementWorkspaceLoading: Promise<ManagementWorkspace> | undefined;
+let sceneLibraryContextFingerprint = '', sceneLibraryContextRevision = 0;
+let refreshSubsurfaceContext: (() => void) | undefined;
 let projectLibrary: SceneLibrary | undefined;
 let videoModelOverlay: VideoModelOverlay | undefined;
 const tilesetSourceIds = new Map<string, string>();
@@ -712,8 +716,11 @@ function toast(message: string, error = false) {
   window.setTimeout(() => { element.className = ""; }, 3600);
 }
 
+// Owners register after construction, so early AR callbacks cannot reach a
+// not-yet-initialized SubsurfaceTools binding. Both AR systems share these leases.
+const sceneEffectsCoordinator = new SceneEffectsCoordinator();
 const videoArFusion = new VideoArFusion(viewer, toast, setStatus, {
-  suspendExternalSceneEffects: () => surfaceEdits?.suspendExternalSceneEffects(),
+  suspendExternalSceneEffects: () => sceneEffectsCoordinator.acquire(),
 });
 videoArFusion.onGetProjectionModels = () => imports.filter(item => item.kind === "3D Tiles").map(item => {
   const tileset = item.resource as Cesium3DTileset;
@@ -767,7 +774,7 @@ const modelAppearancePanel = new ModelAppearancePanel(document.body, {
 onPageDispose(() => { modelEditor.destroy(); modelAppearancePanel.dispose(); });
 let resumeVideoOverlayInteractions: (() => void) | undefined;
 videoModelOverlay = new VideoModelOverlay(viewer, {
-  suspendExternalSceneEffects: () => surfaceEdits?.suspendExternalSceneEffects(),
+  suspendExternalSceneEffects: () => sceneEffectsCoordinator.acquire(),
   canAccessVideo: () => isLibraryRecordAllowed({ kind: "Drone Video" }),
   getImports: () => imports.filter(isImportAllowed),
   getRecord: id => {
@@ -811,20 +818,24 @@ projectLibrary = new SceneLibrary({
   removeVideoCache: id => videoModelOverlay!.removeSavedCache(id),
   reconcileDeletedVideoCaches: ids => videoModelOverlay!.reconcileDeletedCaches(ids),
   setBasemap, getBasemap: () => activeBasemapKey, notify: toast,
-  restoreVideo: async (files, settings, recordId) => {
+  restoreVideo: async (files, settings, recordId, checkCurrent) => {
+    checkCurrent?.();
     if (!isLibraryRecordAllowed({ kind: "Drone Video" })) throw new Error("当前账号没有录像权限，融合方案已保留");
     if ((settings as SavedVideoOverlaySettings)?.mode === "cc-overlay") {
       videoArFusion.setPanelActive(false); videoArFusion.clear();
-      await videoModelOverlay!.restoreReplay(files, settings as SavedVideoOverlaySettings, recordId);
+      await videoModelOverlay!.restoreReplay(files, settings as SavedVideoOverlaySettings, recordId, checkCurrent);
+      checkCurrent?.();
     } else {
       videoModelOverlay!.clear();
-      await videoArFusion.restoreReplay(files, settings as SavedReplaySettings);
+      await videoArFusion.restoreReplay(files, settings as SavedReplaySettings, checkCurrent);
+      checkCurrent?.();
       videoArFusion.setPanelActive(false);
     }
   },
   clearVideo: () => { videoModelOverlay!.clear(); videoArFusion.clear(); },
   shouldSaveView: () => !videoModelOverlay?.active,
   canReadRecord: isLibraryRecordAllowed,
+  getContextKey: getSceneLibraryContextKey,
   prepareRecordDeletion: id => sceneDisplayPanel?.prepareItemDeletion(`layer:${id}`),
   libraryChanged: () => { renderVideoOverlaySchemes(); scheduleSceneDisplay(); },
   layersChanged: renderLayers,
@@ -1299,7 +1310,13 @@ async function cacheGisBoundingSphere(
   }
 }
 
-const subsurfaceTools = new SubsurfaceTools(viewer, () => imports, toast);
+const subsurfaceTools = new SubsurfaceTools(viewer, () => imports.filter(isImportAllowed), toast);
+// Release runs in reverse: new surfaces, managed clips, then old underground
+// effects. Old target leases keep their priority throughout that handoff.
+sceneEffectsCoordinator.register('subsurface', () => subsurfaceTools.suspendExternalSceneEffects());
+const arManagedClippingOwner = {};
+sceneEffectsCoordinator.register('managed-clipping', () => getTemporaryWorksClippingManager(viewer).suspend(arManagedClippingOwner));
+refreshSubsurfaceContext = () => subsurfaceTools.refreshClipping();
 const foundationPitMonitoring = new FoundationPitMonitoring(viewer, toast);
 let markupTools: MarkupTools | null = null;
 try {
@@ -1608,6 +1625,10 @@ try {
     onVisibilityChange: (id, visible) => sceneDisplayPanel?.setVisibility([`surface-edit:${id}`], visible),
     toast,
   });
+  const controller = surfaceEdits;
+  let unregisterEffects: () => void;
+  try { unregisterEffects = sceneEffectsCoordinator.register('surface-edit', () => controller.suspendExternalSceneEffects()); }
+  catch (error) { controller.destroy(); surfaceEdits = undefined; throw error; }
   const entry = document.createElement('button'); entry.type = 'button'; entry.id = 'openSurfaceEdit'; entry.textContent = '地表编辑';
   entry.title = '地表开挖、土体补面与局部压平';
   document.querySelector('.map-controls')?.insertBefore(entry, $("#openSubsurfacePanel"));
@@ -1617,7 +1638,7 @@ try {
   });
   document.querySelector('.tabs')?.addEventListener('click', () => surfaceEdits?.close());
   $("#openSubsurfacePanel").addEventListener('click', () => surfaceEdits?.close());
-  onPageDispose(() => { surfaceEdits?.destroy(); entry.remove(); });
+  onPageDispose(() => { try { controller.destroy(); } finally { unregisterEffects(); entry.remove(); } });
 } catch (error) { console.error('[Surface edit] Initialization failed without modifying the existing scene', error); }
 
 try {
@@ -2309,6 +2330,7 @@ digitalTwinSyncReady = true;
 syncDigitalTwinDataCenter();
 
 onPageDispose(() => { videoModelOverlay?.destroy(); videoArFusion.destroy(); });
+onPageDispose(() => { try { sceneEffectsCoordinator.dispose(); } finally { subsurfaceTools.dispose(); } });
 onPageDispose(() => {
   if (electronicSandTableRefreshFrame) window.cancelAnimationFrame(electronicSandTableRefreshFrame);
   electronicSandTableRefreshFrame = 0;
@@ -3419,6 +3441,9 @@ function setWorkbenchMachineryPanelOpen(open: boolean): void {
 }
 
 function renderWorkbenchMachinery(): void {
+  // Observe every permission/context notification, including revoke then grant
+  // back to the same values, so an older asynchronous restore stays obsolete.
+  getSceneLibraryContextKey();
   // Session changes must also revoke paused AR copies before another frame renders.
   if (!isLibraryRecordAllowed({ kind: "Drone Video" })) videoModelOverlay?.setPanelActive(false);
   videoModelOverlay?.refreshResources();
@@ -3491,6 +3516,7 @@ async function openCenterAction(action: FunctionCenterAction): Promise<boolean> 
   return workspace.openBusinessModule(route[0], route[1], () => navigation === workbenchNavigationGeneration);
 }
 function scheduleSceneDisplay(): void {
+  getSceneLibraryContextKey();
   if (!sceneDisplayReady) return;
   // Release the old project's new effects immediately, before the display-list rAF.
   const state = managementWorkspace?.getWorkbenchMachineryState();
@@ -3618,6 +3644,19 @@ function isLibraryRecordAllowed(record: Pick<LibraryRecord, "kind">): boolean {
   const access = managementWorkspace?.getWorkbenchLayerAccess();
   if (!access) return true;
   return record.kind === "Drone Video" ? access.media : record.kind === "CAD" || record.kind === "GIS" ? access.files : access.models;
+}
+function getSceneLibraryContextKey(): string {
+  const state = managementWorkspace?.getWorkbenchMachineryState();
+  const access = managementWorkspace?.getWorkbenchLayerAccess();
+  const fingerprint = JSON.stringify([state?.projectId ?? null, state?.actorId ?? null, state?.canView ?? null,
+    access?.models ?? null, access?.files ?? null, access?.media ?? null]);
+  if (fingerprint !== sceneLibraryContextFingerprint) {
+    sceneLibraryContextFingerprint = fingerprint; sceneLibraryContextRevision++;
+    // Only context transitions rebuild/prune old cuts. Ordinary display/status
+    // refreshes must not churn clipping collections or discard unsaved anchors.
+    refreshSubsurfaceContext?.();
+  }
+  return `${sceneLibraryContextRevision}:${fingerprint}`;
 }
 function isImportDisplayed(layer: ImportRecord): boolean {
   return isImportAllowed(layer) && (sceneDisplayOverrides[`layer:${layer.id}`] ?? layer.visible);

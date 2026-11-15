@@ -516,13 +516,13 @@ export class VideoModelOverlay {
   }
   private checkOcclusionSource(settings = this.occlusion) {
     if (!settings.enabled) return;
-    const release = this.externalSceneIsolation().acquire();
-    try {
-      const item = this.options.getImports().find(item => item.id === settings.sourceId && item.kind === '3D Tiles');
-      if (!item || this.options.getRecord(item.id)?.kind !== '3D Tiles') throw new Error('遮挡参照尚未加载或不可用，请加载对应倾斜摄影或关闭实景遮挡');
-      assertVideoOverlayOccluder(item.resource);
-      this.checkOcclusionAdjustment(settings);
-    } finally { release(); }
+    // Status/list/diagnostic queries also run while AR is dormant. They must not
+    // cancel map jobs or suspend clipping. Actual panel/prepare/render sessions
+    // acquire isolation before reaching this read-only compatibility check.
+    const item = this.options.getImports().find(item => item.id === settings.sourceId && item.kind === '3D Tiles');
+    if (!item || this.options.getRecord(item.id)?.kind !== '3D Tiles') throw new Error('遮挡参照尚未加载或不可用，请加载对应倾斜摄影或关闭实景遮挡');
+    assertVideoOverlayOccluder(item.resource);
+    this.checkOcclusionAdjustment(settings);
   }
   private changeOcclusion() {
     try {
@@ -637,15 +637,16 @@ export class VideoModelOverlay {
     try { await promise; signal?.throwIfAborted(); if (this.resumeTime > 0 && this.resumeTime < this.video.duration) this.seekVideo(this.resumeTime); }
     finally { signal?.removeEventListener('abort', abort); if (this.mediaLoad === load) this.mediaLoad = undefined; }
   }
-  private async prepare(validateReference = true, signal?: AbortSignal) {
-    return this.externalSceneIsolation().run(() => this.prepareInputs(validateReference, signal));
+  private async prepare(validateReference = true, signal?: AbortSignal, checkCurrent?: () => void) {
+    return this.externalSceneIsolation().run(() => this.prepareInputs(validateReference, signal, checkCurrent));
   }
-  private async prepareInputs(validateReference: boolean, signal?: AbortSignal) {
+  private async prepareInputs(validateReference: boolean, signal?: AbortSignal, checkCurrent?: () => void) {
     signal?.throwIfAborted();
+    checkCurrent?.();
     this.assertVideoAccess();
     if (!this.files.video || !this.files.source) throw new Error('请选择原视频和同一视频的 CC 空三 XML');
     const generation = this.inputGeneration, timing = this.readTiming(); if (validateReference) { this.checkSceneReference(); this.checkOcclusionSource(); }
-    const check = () => { signal?.throwIfAborted(); this.assertVideoAccess(); if (generation !== this.inputGeneration || this.destroyed) throw new DOMException('融合输入已切换', 'AbortError'); };
+    const check = () => { signal?.throwIfAborted(); this.assertVideoAccess(); if (generation !== this.inputGeneration || this.destroyed) throw new DOMException('融合输入已切换', 'AbortError'); checkCurrent?.(); };
     const dataset = this.dataset ?? parseCcCameraXml(await this.files.source.text()); check();
     const track = createCcCameraTrack(dataset, timing);
     if (Math.abs(track.intrinsics.skew) > 1e-8) throw new Error('当前叠加不支持非零相机 Skew，请使用无 skew 的 CC 相机标定');
@@ -1576,12 +1577,14 @@ export class VideoModelOverlay {
     if (this.autoSaveReady && (this.active || this.autosaveTimer !== undefined || this.editRevision > this.persistedRevision)) { if (this.active) ++this.editRevision; void this.queueSave().catch(() => {}); }
     try { this.exit(); } finally { this.releasePanelIsolation(); }
   }
-  async restoreReplay(files: Record<string, File>, settings: SavedVideoOverlaySettings, recordId?: string) {
+  async restoreReplay(files: Record<string, File>, settings: SavedVideoOverlaySettings, recordId?: string, checkCurrent?: () => void) {
+    checkCurrent?.();
     this.assertVideoAccess();
     this.leave(); this.clear();
     const restoreGeneration = this.inputGeneration, restoreEpoch = this.epoch;
     const restoreController = new AbortController(); this.controller = restoreController;
-    const checkRestore = () => { restoreController.signal.throwIfAborted(); if (restoreGeneration !== this.inputGeneration || restoreEpoch !== this.epoch || this.destroyed) throw new DOMException('融合方案已切换', 'AbortError'); };
+    const checkRestore = () => { restoreController.signal.throwIfAborted(); if (restoreGeneration !== this.inputGeneration || restoreEpoch !== this.epoch || this.destroyed) throw new DOMException('融合方案已切换', 'AbortError'); checkCurrent?.(); };
+    try {
     if (settings.mode !== 'cc-overlay' || settings.version !== 1 || !settings.timing) throw new Error('不支持的 CC 融合方案');
     if (!files.video || files.video.name !== settings.videoName || files.video.size !== settings.videoSize) throw new Error('保存的视频与融合方案不一致');
     this.files = { ...files }; this.savedId = recordId; this.adjustments = Object.fromEntries(Object.entries(settings.adjustments ?? {}).map(([id, value]) => [id, validateVideoOverlayAdjustment(value)])); this.selected = new Set(settings.selectedIds ?? []); this.selectionInitialized = true;
@@ -1609,7 +1612,11 @@ export class VideoModelOverlay {
     for (const [id, value] of Object.entries({ ccFirstTime: t.firstTimeSeconds, ccInterval: t.intervalSeconds, ccTimeMode: t.mode, ccFilenameStep: t.filenameStep ?? 1, ccHeightReference: t.heightReference, ccHeightOffset: t.heightOffsetMeters ?? 0 })) this.el<HTMLInputElement>(id).value = String(value);
     this.syncHeightInputs();
     this.opacity = Math.min(1, Math.max(0, settings.opacity ?? .8)); this.el<HTMLInputElement>('ccOpacity').value = String(this.opacity);
-    this.resumeTime = settings.currentTime || 0; await this.prepare(true, restoreController.signal); checkRestore(); this.autoSaveReady = true; this.persistedRevision = this.editRevision; this.seekVideo(Math.max(0, Math.min(this.video.duration, settings.currentTime || 0))); this.refreshResources(); this.el('ccSavedState').textContent = '已恢复，可进入融合编辑或生成完整缓存';
+    this.resumeTime = settings.currentTime || 0; await this.prepare(true, restoreController.signal, checkCurrent); checkRestore(); this.autoSaveReady = true; this.persistedRevision = this.editRevision; this.seekVideo(Math.max(0, Math.min(this.video.duration, settings.currentTime || 0))); this.refreshResources(); this.el('ccSavedState').textContent = '已恢复，可进入融合编辑或生成完整缓存';
+    } catch (error) {
+      if (restoreGeneration === this.inputGeneration && restoreEpoch === this.epoch && !this.destroyed) this.clear();
+      throw error;
+    }
   }
   setPanelActive(active: boolean) {
     if (!active) this.leave();

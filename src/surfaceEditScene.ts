@@ -307,7 +307,9 @@ export class SurfaceEditScene {
     if (!this.viewer.isDestroyed()) this.viewer.scene.requestRender();
   }
   private register(node: Node) {
-    return this.scope.upsert({ id: node.plan.id, tileset: node.tileset, footprints: [node.footprint], visible: true, enabled: true });
+    // A suspended plan records its current intent without competing with AR's
+    // global clipping lease or briefly cutting a source hidden by that session.
+    return this.scope.upsert({ id: node.plan.id, tileset: node.tileset, footprints: [node.footprint], visible: !this.suspendedState, enabled: true });
   }
   private setEnabled(node: Node, value: boolean): SurfaceEditSceneStatus {
     if (node.disposed || this.stopped) return { state: 'error', message: '地表方案已释放。' };
@@ -320,13 +322,13 @@ export class SurfaceEditScene {
     if (this.owners.get(node.plan.id) === node) { node.requested = true; this.synchronize(); return { ...node.status }; }
     const previous = this.owners.get(node.plan.id);
     try {
-      if (node.tileset.isDestroyed() || !node.tileset.show) throw new Error('关联摄影模型未显示，请先显示该模型。');
+      if (node.tileset.isDestroyed() || !this.suspendedState && !node.tileset.show) throw new Error('关联摄影模型未显示，请先显示该模型。');
       node.transformStale ||= !transformMatches(node);
       if (node.transformStale) throw new Error('摄影位置已变化，请重新生成地表方案。');
-      const unavailable = node.plan.clipTerrain && this.terrain.unavailable(); if (unavailable) throw new Error(unavailable);
+      const unavailable = !this.suspendedState && node.plan.clipTerrain && this.terrain.unavailable(); if (unavailable) throw new Error(unavailable);
       const status = this.register(node);
-      if (status.state !== 'active') throw new Error(clippingMessage(status.message));
-      node.clipVisible = true; node.requested = true; node.previous = previous;
+      if (status.state !== (this.suspendedState ? 'hidden' : 'active')) throw new Error(clippingMessage(status.message));
+      node.clipVisible = !this.suspendedState; node.requested = true; node.previous = previous;
       this.owners.set(node.plan.id, node);
       this.synchronize();
       if (!this.suspendedState && node.status.state !== 'ready') throw new Error(node.status.message);
@@ -339,7 +341,7 @@ export class SurfaceEditScene {
       let message = error instanceof Error ? error.message : String(error);
       if (previous && !previous.disposed) {
         this.owners.set(node.plan.id, previous);
-        try { this.register(previous); previous.clipVisible = true; }
+        try { this.register(previous); previous.clipVisible = !this.suspendedState; }
         catch (restoreError) { this.scope.remove(node.plan.id); previous.clipVisible = false; this.display(previous, false);
           message += `；旧裁剪恢复失败：${restoreError instanceof Error ? restoreError.message : String(restoreError)}`; }
       } else { this.owners.delete(node.plan.id); this.scope.remove(node.plan.id); }
@@ -390,22 +392,35 @@ export class SurfaceEditScene {
   private remove(node: Node) {
     if (node.disposed) return;
     node.disposed = true; this.nodes.delete(node);
+    const errors: unknown[] = [];
     if (this.owners.get(node.plan.id) === node) {
-      this.scope.remove(node.plan.id); this.owners.delete(node.plan.id);
+      this.owners.delete(node.plan.id);
+      try { this.scope.remove(node.plan.id); } catch (error) { errors.push(error); }
       const previous = node.previous;
       if (!this.stopped && previous && !previous.disposed && previous.requested) {
-        try { this.register(previous); previous.clipVisible = true; this.owners.set(previous.plan.id, previous); }
-        catch (error) { previous.requested = false; this.report(previous, { state: 'blocked', message: `旧方案恢复失败：${error instanceof Error ? error.message : String(error)}` }); }
+        try { this.register(previous); previous.clipVisible = !this.suspendedState; this.owners.set(previous.plan.id, previous); }
+        catch (error) {
+          errors.push(error); previous.requested = false; previous.clipVisible = false;
+          try { this.scope.remove(previous.plan.id); } catch (cleanupError) { errors.push(cleanupError); }
+          try { this.display(previous, false); } catch (cleanupError) { errors.push(cleanupError); }
+          this.report(previous, { state: 'blocked', message: `旧方案恢复失败：${error instanceof Error ? error.message : String(error)}` });
+        }
       }
     }
-    node.mesh.destroy(); this.synchronize();
+    try { node.mesh.destroy(); } catch (error) { errors.push(error); }
+    try { this.synchronize(); } catch (error) { errors.push(error); }
+    if (errors.length) throw new AggregateError(errors, '地表方案清理失败');
   }
   destroy() {
     if (this.stopped) return;
-    this.stopped = true; this.stopWatching();
-    for (const pending of this.pending) pending.abort(); this.pending.clear();
-    this.scope.dispose(); this.terrain.dispose();
-    this.owners.clear(); for (const node of [...this.nodes]) this.remove(node);
-    if (!this.viewer.isDestroyed()) this.viewer.scene.requestRender();
+    this.stopped = true;
+    const errors: unknown[] = [], release = (action: () => void) => { try { action(); } catch (error) { errors.push(error); } };
+    release(() => this.stopWatching());
+    const pending = [...this.pending]; this.pending.clear();
+    for (const task of pending) release(() => task.abort());
+    release(() => this.scope.dispose()); release(() => this.terrain.dispose());
+    this.owners.clear(); for (const node of [...this.nodes]) release(() => this.remove(node));
+    release(() => { if (!this.viewer.isDestroyed()) this.viewer.scene.requestRender(); });
+    if (errors.length) throw new AggregateError(errors, '地表场景清理失败');
   }
 }

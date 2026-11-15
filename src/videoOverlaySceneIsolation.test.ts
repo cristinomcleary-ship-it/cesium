@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
+import { Cesium3DTileset } from 'cesium';
 import { VideoOverlaySceneIsolation } from './videoOverlaySceneIsolation.ts';
 
 function deferred() {
@@ -82,6 +83,46 @@ function fixture() {
   });
   return { owner, events };
 }
+
+test('dormant occlusion status reads never acquire an effects lease or cancel a map task', () => {
+  const { owner, events } = fixture();
+  const source = Object.create(Cesium3DTileset.prototype);
+  Object.defineProperties(source, {
+    isDestroyed: { value: () => false },
+    clippingPolygons: { value: { enabled: true, length: 1 }, writable: true },
+  });
+  const info = { textContent: '' };
+  Object.assign(owner, {
+    occlusion: { enabled: true, sourceId: 'survey' }, adjustments: {}, el: () => info,
+    options: { ...owner.options,
+      getImports: () => [{ id: 'survey', kind: '3D Tiles', resource: source }],
+      getRecord: () => ({ kind: '3D Tiles' }),
+    },
+  });
+  for (let index = 0; index < 3; index++) owner.updateOcclusionStatus();
+  assert.match(info.textContent, /剖切或开挖/);
+  assert.deepEqual(events, []);
+  assert.equal(source.clippingPolygons.enabled, true);
+  source.clippingPolygons = undefined;
+  owner.updateOcclusionStatus();
+  assert.match(info.textContent, /已选择遮挡参照/); assert.deepEqual(events, []);
+});
+
+test('actual panel activation still suspends before the read-only source compatibility check', () => {
+  const { owner, events } = fixture();
+  const source = Object.create(Cesium3DTileset.prototype);
+  const clipping = { enabled: true, length: 1 };
+  Object.defineProperties(source, { isDestroyed: { value: () => false }, clippingPolygons: { value: clipping } });
+  Object.assign(owner, { occlusion: { enabled: true, sourceId: 'survey' }, adjustments: {},
+    options: {
+      getImports: () => [{ id: 'survey', kind: '3D Tiles', resource: source }], getRecord: () => ({ kind: '3D Tiles' }),
+      suspendExternalSceneEffects() { events.push('suspend'); clipping.enabled = false; return () => { events.push('restore'); clipping.enabled = true; }; },
+    },
+    refreshResources() { owner.checkOcclusionSource(); events.push('validated'); },
+  });
+  owner.setPanelActive(true); assert.deepEqual(events, ['suspend', 'validated']);
+  owner.setPanelActive(false); assert.equal(clipping.enabled, true); assert.deepEqual(events.slice(-2), ['exit', 'restore']);
+});
 
 test('opening the AR panel suspends before object validation and explicit leave restores once', () => {
   const { owner, events } = fixture();

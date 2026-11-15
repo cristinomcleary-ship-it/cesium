@@ -159,3 +159,8 @@ void (async () => {
   await camera(); await waitUntil(() => engineering.ready && tiles.tilesLoaded); await renderFrames(6);
   api.ready = true;
 })().catch(error => { api.failure = String(error.stack || error); errors.push(api.failure); });
+
+// Shared only by synthetic browser fixtures; the original acceptance flow above
+// remains the owner of this viewer, assets and surface-edit scope.
+export { api as surfaceFixture, viewer, world, geo, renderFrames, waitUntil };
+export const syntheticSurfaceAssets = () => ({ tiles, engineering, renderer });

@@ -2,6 +2,8 @@ type BorrowingModel = {
   isDestroyed?(): boolean;
   _clippingPolygons?: object;
   _clippingPolygonsState?: number;
+  _clippingPlanes?: object;
+  _clippingPlanesState?: number;
   resetDrawCommands?(): void;
 };
 type TileContent = { _model?: BorrowingModel; innerContents?: readonly TileContent[] };
@@ -10,6 +12,8 @@ type LoadedTile = {
   children?: readonly LoadedTile[];
   clippingPolygonsDirty?: boolean;
   _clippingPolygonsState?: number;
+  clippingPlanesDirty?: boolean;
+  _clippingPlanesState?: number;
 };
 
 /** Cesium 1.144 content models borrow the tileset collection, while their shader
@@ -19,6 +23,17 @@ type LoadedTile = {
  * previous collection are changed, once per ownership transition, never per frame.
  */
 export function releaseBorrowedClippingPolygons(resource: object, owned: object): number {
+  return releaseBorrowedClipping(resource, owned, '_clippingPolygons', '_clippingPolygonsState', 'clippingPolygonsDirty');
+}
+
+/** The legacy section tool uses the same pinned tile-model borrowing contract. */
+export function releaseBorrowedClippingPlanes(resource: object, owned: object): number {
+  return releaseBorrowedClipping(resource, owned, '_clippingPlanes', '_clippingPlanesState', 'clippingPlanesDirty');
+}
+
+function releaseBorrowedClipping(resource: object, owned: object,
+  key: '_clippingPolygons' | '_clippingPlanes', state: '_clippingPolygonsState' | '_clippingPlanesState',
+  dirty: 'clippingPolygonsDirty' | 'clippingPlanesDirty'): number {
   const root = (resource as { root?: LoadedTile }).root;
   const pending = root ? [root] : [];
   const visited = new Set<LoadedTile>();
@@ -36,13 +51,13 @@ export function releaseBorrowedClippingPolygons(resource: object, owned: object)
       seen.add(content);
       for (const child of content.innerContents ?? []) contents.push(child);
       const model = content._model;
-      if (!model || model.isDestroyed?.() || model._clippingPolygons !== owned) continue;
+      if (!model || model.isDestroyed?.() || model[key] !== owned) continue;
       // Use the borrowed internal slot; the public setter would destroy its owner.
-      model._clippingPolygons = undefined;
-      model._clippingPolygonsState = 0;
+      model[key] = undefined;
+      model[state] = 0;
       model.resetDrawCommands?.();
-      tile._clippingPolygonsState = 0;
-      tile.clippingPolygonsDirty = true;
+      tile[state] = 0;
+      tile[dirty] = true;
       released++;
     }
   }

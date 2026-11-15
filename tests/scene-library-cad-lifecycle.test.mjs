@@ -134,6 +134,25 @@ test('two restores of one pending CAD share its ownership without parsing or loa
   assert.equal(f.children.size, 1); assert.equal(f.owner.records.size, 1);
 });
 
+test('deletion rechecks access after waiting for a cancelled CAD owner', async () => {
+  const f = fixture(); f.prepareRestore(); let allowed = true;
+  f.owner.hooks.canReadRecord = () => allowed;
+  const restoration = f.owner.restore(f.record.id); await f.loadStarted.promise;
+  const deletion = f.owner.delete(f.record.id, false);
+  allowed = false; f.compile.resolve(); await restoration;
+  assert.equal(await deletion, false); assert.equal(f.owner.records.has(f.record.id), true);
+  assert.equal(f.requests.some(request => request.method === 'DELETE'), false);
+});
+
+test('unload rechecks context after waiting for a cancelled CAD owner', async () => {
+  const f = fixture(); f.prepareRestore(); let context = 'project-A/actor-A';
+  f.owner.hooks.getContextKey = () => context;
+  const restoration = f.owner.restore(f.record.id); await f.loadStarted.promise;
+  const unloading = f.owner.unload(f.record.id), rejected = assert.rejects(unloading, /项目或账号/);
+  context = 'project-B/actor-B'; f.compile.resolve(); await restoration; await rejected;
+  assert.equal(f.owner.records.has(f.record.id), true); assert.equal(f.owner.unloading.size, 0);
+});
+
 test('delete locks the CAD ID before cancelling and blocks restore throughout owner cleanup and the DELETE request', async () => {
   const deleteGate = deferred(), f = fixture({ deleteGate }); f.prepareRestore();
   const first = f.owner.restore(f.record.id); const { signal, collection } = await f.loadStarted.promise;
