@@ -130,8 +130,14 @@ async function openEditor() {
   await panel().waitFor({ state: 'visible' });
 }
 async function expandContaining(selector) {
-  const details = page.locator('details').filter({ has: page.locator(selector) }).last();
-  if (await details.count() && await details.getAttribute('open') === null) await details.locator(':scope > summary').click();
+  // The native workbench groups controls into an outer category accordion and
+  // sometimes an inner details block. Open both through their real summaries,
+  // in document (outer-to-inner) order; never set DOM visibility or force clicks.
+  const details = page.locator('details').filter({ has: page.locator(selector) });
+  for (let i = 0; i < await details.count(); i++) {
+    const detail = details.nth(i);
+    if (await detail.getAttribute('open') === null) await detail.locator(':scope > summary').click();
+  }
 }
 async function framePhotography() {
   await page.evaluate(async () => {
@@ -172,6 +178,7 @@ async function reload() {
   await captureSceneErrors(); await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }); await ready(); await tilesReady(); await frames();
 }
 async function nativeDiagnostics(name) {
+  await expandContaining('#ccDiagnostics');
   const pending = page.waitForEvent('download'); await page.locator('#ccDiagnostics').click();
   const download = await pending, file = join(output, name + '.json'); await download.saveAs(file);
   return JSON.parse(await readFile(file, 'utf8'));
@@ -220,7 +227,7 @@ try {
   if (process.env.PHOTOGRAMMETRY_REQUIRE_HARDWARE === '1' && report.gpuClassification !== 'reported hardware WebGL')
     throw new Error('BLOCKED: hardware acceptance requested, software or unidentified renderer found');
   initialized = true; report.execution = 'running'; phase = 'native-photography-load';
-  await openTab('tiles'); await page.locator('#tilesUrl').fill(origin + sourcePath);
+  await openTab('tiles'); await expandContaining('#tilesUrl'); await page.locator('#tilesUrl').fill(origin + sourcePath);
   await expandContaining('#tilesHeight'); await page.locator('#tilesHeight').fill('4'); await page.locator('#loadTiles').click();
   await page.waitForFunction(() => document.querySelector('#tilesQualityStatus')?.textContent?.includes('photogrammetry-tileset.json'), undefined, { timeout: 60000 });
   await page.waitForFunction(() => document.querySelector('#loadTiles')?.disabled === false, undefined, { timeout: 60000 });
@@ -339,10 +346,12 @@ try {
       'color=c=0x1b242c:s=640x360:r=15:d=2.2', '-c:v', report.encoder, '-pix_fmt', 'yuv420p', '-movflags', '+faststart', videoPath], { timeout: 30000 });
     const photo = i => `<Photo><Id>${i}</Id><ImagePath>frame_${String(i).padStart(6, '0')}.jpg</ImagePath><Component>1</Component><Pose><Center><x>121</x><y>31</y><z>150</z></Center><Rotation><Yaw>0</Yaw><Pitch>-90</Pitch><Roll>0</Roll></Rotation></Pose></Photo>`;
     const xml = `<?xml version="1.0"?><BlocksExchange version="3.2"><SpatialReferenceSystems><SRS><Id>0</Id><Name>WGS 84 3D</Name><Definition>EPSG:4979</Definition></SRS></SpatialReferenceSystems><Block><Name>Synthetic photography transform</Name><SRSId>0</SRSId><Photogroups><Photogroup><Name>Synthetic camera</Name><CameraModelType>Perspective</CameraModelType><CameraOrientation>XRightYDown</CameraOrientation><ImageDimensions><Width>640</Width><Height>360</Height></ImageDimensions><FocalLengthPixels>500</FocalLengthPixels><PrincipalPoint><x>319.5</x><y>179.5</y></PrincipalPoint><AspectRatio>1</AspectRatio><Skew>0</Skew><Distortion><K1>0</K1><K2>0</K2><K3>0</K3><P1>0</P1><P2>0</P2></Distortion>${[0, 1, 2].map(photo).join('')}</Photogroup></Photogroups></Block></BlocksExchange>`;
+    await expandContaining('#ccVideoFile');
     await page.locator('#ccVideoFile').setInputFiles({ name: 'synthetic-photogrammetry.mp4', mimeType: 'video/mp4', buffer: await readFile(videoPath) });
     await page.locator('#ccXmlFile').setInputFiles({ name: 'synthetic-photogrammetry.xml', mimeType: 'application/xml', buffer: Buffer.from(xml) });
-    await page.locator('#ccTimeMode').selectOption('ordinal'); await page.locator('#ccInterval').fill('1');
+    await expandContaining('#ccTimeMode'); await page.locator('#ccTimeMode').selectOption('ordinal'); await page.locator('#ccInterval').fill('1');
     await expandContaining('#ccSceneReference'); await page.locator('#ccSceneReference').selectOption(photoId);
+    await expandContaining('#ccOcclusionSource');
     await page.locator('#ccOcclusionSource').selectOption(photoId); await page.locator('#ccOcclusionEnabled').check();
     await page.locator('#ccStart').click(); await page.locator('.cc-video-controls').waitFor({ state: 'visible', timeout: 60000 }); await frames();
     await page.locator('#ccOcclusionInfo').filter({ hasText: '实景遮挡已生效' }).waitFor({ state: 'visible', timeout: 20000 });
