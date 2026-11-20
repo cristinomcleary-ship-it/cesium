@@ -1,5 +1,6 @@
 import type { CadCoordinateOptions, CadDisplayMode, TilesetOptions } from "./types";
 import type { ModelAppearanceSettings } from "./modelAppearance";
+import type { PhotogrammetryTransform } from "./photogrammetryTransform";
 
 export type LibraryKind = "CAD" | "3D Tiles" | "GIS" | "Model" | "Imagery" | "Drone Video";
 export type LibraryFile = { name: string; url: string };
@@ -7,6 +8,7 @@ export type LibrarySettings = {
   coordinates?: CadCoordinateOptions; displayMode?: CadDisplayMode;
   url?: string; assetId?: number; localPath?: string; tiles?: TilesetOptions; quality?: string;
   matrix?: number[]; scale?: number;
+  photogrammetryEditor?: PhotogrammetryTransform;
   appearance?: ModelAppearanceSettings;
   editor?: { baseMatrix: number[]; center: number[]; east: number; north: number; up: number; heading: number };
   bounds?: { west: number; south: number; east: number; north: number };

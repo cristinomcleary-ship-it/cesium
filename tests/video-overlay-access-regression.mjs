@@ -16,22 +16,31 @@ try {
   // Run the production scheduler's update wrappers while replacing only GPU
   // compilation. Assigning _ready without update() never starts its queue job.
   Primitive.prototype.update = function () { this._ready = true; };
-  await build({ stdin: { contents: 'export { VideoModelOverlay } from "./src/videoModelOverlay.ts"; export { VideoOverlayResources } from "./src/videoOverlayResources.ts";', resolveDir: process.cwd(), loader: 'ts' },
+  await build({ stdin: { contents: 'export { VideoModelOverlay } from "./src/videoModelOverlay.ts"; export { VideoOverlayResources } from "./src/videoOverlayResources.ts"; export { SceneEffectsCoordinator } from "./src/sceneEffectsCoordinator.ts";', resolveDir: process.cwd(), loader: 'ts' },
     outfile: `${directory}/fixture.mjs`, bundle: true, platform: 'node', format: 'esm', packages: 'external', loader: { '.css': 'empty' } });
-  const { VideoModelOverlay, VideoOverlayResources } = await import(pathToFileURL(`${directory}/fixture.mjs`).href);
+  const { VideoModelOverlay, VideoOverlayResources, SceneEffectsCoordinator } = await import(pathToFileURL(`${directory}/fixture.mjs`).href);
   const source = ts.createSourceFile('main.ts', await readFile('src/main.ts', 'utf8'), ts.ScriptTarget.Latest, true);
-  const names = ['isLibraryRecordAllowed', 'isImportAllowed', 'isImportDisplayed', 'applyImportDisplay', 'applyPendingCadDisplay', 'applySceneDisplay', 'renderWorkbenchMachinery'];
+  const names = ['isLibraryRecordAllowed', 'isImportAllowed', 'isImportDisplayed', 'applyImportDisplay', 'applyPendingCadDisplay', 'applySceneDisplay', 'renderWorkbenchMachinery', 'getSceneLibraryContextKey', 'getPhotogrammetryContextKey', 'acquireArSceneEffects'];
   const declarations = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text));
   assert.equal(declarations.length, names.length);
-  let overlayOptions;
+  let overlayOptions, legacyOptions;
   function visit(node) {
     if (ts.isNewExpression(node) && node.expression.getText(source) === 'VideoModelOverlay') overlayOptions = node.arguments[1];
+    if (ts.isNewExpression(node) && node.expression.getText(source) === 'VideoArFusion') legacyOptions = node.arguments[3];
     ts.forEachChild(node, visit);
   }
   visit(source);
   const property = name => overlayOptions.properties.find(node => node.name?.getText(source) === name).initializer.getText(source);
-  const hostCode = ts.transpileModule(`${declarations.map(node => node.getText(source)).join('\n')}\nreturn { ${names.join(',')}, getImports: ${property('getImports')}, canAccessVideo: ${property('canAccessVideo')}, onExit: ${property('onExit')}, suspendExternalSceneEffects: ${property('suspendExternalSceneEffects')} };`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const legacyIsolation = legacyOptions.properties.find(node => node.name?.getText(source) === 'suspendExternalSceneEffects').initializer.getText(source);
+  const hostCode = ts.transpileModule(`${declarations.map(node => node.getText(source)).join('\n')}\nreturn { ${names.join(',')}, getImports: ${property('getImports')}, canAccessVideo: ${property('canAccessVideo')}, onExit: ${property('onExit')}, suspendExternalSceneEffects: ${property('suspendExternalSceneEffects')}, suspendLegacySceneEffects: ${legacyIsolation} };`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   let permissions = { models: true, files: true, media: true }, scheduled = 0;
+  const context = { projectId: 'project-a', actorId: 'actor-a', canView: true };
+  let contextRefreshes = 0, photoCanEdit = true, photoValidityRefreshes = 0;
+  const photoInteractionEvents = [];
+  const photogrammetryEditor = { activeId: undefined, busy: false,
+    cancel() { photoInteractionEvents.push('cancel'); if (this.busy) return false; this.activeId = undefined; return true; },
+    refreshValidity() { photoValidityRefreshes++; },
+  };
   const imports = [], nodes = new Map();
   class Element {
     children = []; value = ''; dataset = {}; style = {}; classList = { remove() {} };
@@ -64,17 +73,46 @@ try {
     getDisplayItems: () => [{ id: 'fixture-surface', visible: true }],
     setPlanVisible(id, visible) { assert.equal(id, 'fixture-surface'); surfaceRequestedVisible = visible; },
     suspendExternalSceneEffects() {
+      photoInteractionEvents.push('lease');
       surfaceSuspensions++;
       let released = false;
       return () => { if (!released) { released = true; surfaceSuspensions--; } };
     },
   };
-  const host = new Function('managementWorkspace', 'imports', 'videoModelOverlay', 'viewer', 'scheduleSceneDisplay', 'modelEditor', 'projectLibrary', 'sceneDisplayPanel', 'document', 'surfaceEdits', 'cadLoads', `
+  const sceneEffectsCoordinator = new SceneEffectsCoordinator();
+  sceneEffectsCoordinator.register('surface-edit', () => surfaceEdits.suspendExternalSceneEffects());
+  const host = new Function('managementWorkspace', 'imports', 'videoModelOverlay', 'viewer', 'scheduleSceneDisplay', 'modelEditor', 'projectLibrary', 'sceneDisplayPanel', 'document', 'surfaceEdits', 'cadLoads', 'sceneEffectsCoordinator', 'refreshSubsurfaceContext', 'photogrammetryEditor', `
     let sceneDisplayOverrides = {}, resumeVideoOverlayInteractions;
+    let sceneLibraryContextFingerprint = '', sceneLibraryContextRevision = 0;
+    let photogrammetryContextFingerprint = '', photogrammetryContextRevision = 0, photogrammetryEditContext;
     const markupTools = undefined, temporaryWorks = undefined, foundationPitMonitoring = { setDisplayVisibility() {} }, modelQualityTrackers = new Map(), videoArFusion = { invalidateProjection() {} }, modelAppearancePanel = { close() {} };
     ${hostCode}`)(
-    { getWorkbenchLayerAccess: () => permissions, setWorkbenchDisplayVisibility() {} }, imports, owner, viewer, () => scheduled++, { select() {}, getSelected: () => undefined, endEditing() {} }, { saveView() {}, render() {} }, { labelsVisible: true }, globalThis.document, surfaceEdits, cadLoads);
+    { getWorkbenchLayerAccess: () => permissions, getWorkbenchMachineryState: () => context, canEditSceneLibraryModels: () => photoCanEdit && permissions.models, setWorkbenchDisplayVisibility() {} }, imports, owner, viewer, () => scheduled++, { select() {}, getSelected: () => undefined, endEditing() {} }, { saveView() {}, render() {} }, { labelsVisible: true }, globalThis.document, surfaceEdits, cadLoads, sceneEffectsCoordinator, () => contextRefreshes++, photogrammetryEditor);
   owner.options = { getImports: host.getImports, getRecord: () => undefined, onExit: host.onExit, canAccessVideo: host.canAccessVideo, suspendExternalSceneEffects: host.suspendExternalSceneEffects };
+  const initialContextKey = host.getSceneLibraryContextKey();
+  assert.equal(host.getSceneLibraryContextKey(), initialContextKey);
+  assert.equal(contextRefreshes, 1, 'unchanged context reads do not rebuild old clipping effects');
+  for (const [state, property, changed] of [
+    [context, 'projectId', 'project-b'], [context, 'actorId', 'actor-b'], [context, 'canView', false],
+    [permissions, 'models', false], [permissions, 'files', false], [permissions, 'media', false],
+  ]) {
+    const original = state[property], beforeKey = host.getSceneLibraryContextKey(), beforeRefreshes = contextRefreshes;
+    state[property] = changed;
+    const changedKey = host.getSceneLibraryContextKey();
+    assert.notEqual(changedKey, beforeKey, `${property} changes invalidate pending scene restores`);
+    assert.equal(host.getSceneLibraryContextKey(), changedKey);
+    assert.equal(contextRefreshes, beforeRefreshes + 1, 'each actual context transition refreshes clipping once');
+    state[property] = original;
+    assert.notEqual(host.getSceneLibraryContextKey(), beforeKey, `${property} returning to its old value must not revive stale restores`);
+    assert.equal(contextRefreshes, beforeRefreshes + 2);
+  }
+  const beforeEditContext = host.getPhotogrammetryContextKey(), stableSceneContext = host.getSceneLibraryContextKey(), beforeEditRefreshes = contextRefreshes;
+  photoCanEdit = false;
+  assert.notEqual(host.getPhotogrammetryContextKey(), beforeEditContext, 'edit revocation invalidates only pending photography work');
+  assert.equal(host.getSceneLibraryContextKey(), stableSceneContext, 'edit-only permission changes preserve ordinary AR and CAD restores');
+  photoCanEdit = true;
+  assert.notEqual(host.getPhotogrammetryContextKey(), beforeEditContext, 'granting edit again cannot revive stale photography saves');
+  assert.equal(contextRefreshes, beforeEditRefreshes, 'edit-only changes do not churn existing clipping effects');
   const anchor = Cartesian3.fromDegrees(120, 30, 25), base = Transforms.eastNorthUpToFixedFrame(anchor);
   const model = { id: 'restricted-model', name: 'Private model', kind: 'Model', visible: true, resource: { show: false, modelMatrix: Matrix4.clone(base), boundingSphere: new BoundingSphere(anchor, 20), isDestroyed: () => false } };
   const cadLeaf = { show: true, modelMatrix: Matrix4.clone(Matrix4.IDENTITY), isDestroyed: () => false, destroy() {} };
@@ -226,7 +264,17 @@ try {
   owner.options.canAccessVideo = mediaGate;
   permissions.media = true;
   host.applySceneDisplay({ 'surface-edit:fixture-surface': false }, true);
+  assert.equal(host.suspendLegacySceneEffects, host.suspendExternalSceneEffects, 'both production AR entries use the same photography-aware lease wrapper');
+  photoInteractionEvents.length = 0; photogrammetryEditor.busy = true;
+  assert.throws(() => owner.setPanelActive(true), /摄影位置正在保存/, 'CC AR cannot enter while photography is saving');
+  assert.throws(() => host.suspendLegacySceneEffects(), /摄影位置正在保存/, 'legacy AR cannot enter while photography is saving');
+  assert.equal(sceneEffectsCoordinator.leaseCount, 0, 'a refused photography cancellation never allocates an AR lease');
+  assert.equal(surfaceSuspensions, 0, 'a refused entry cannot suspend existing surface effects');
+  assert.deepEqual(photoInteractionEvents, ['cancel', 'cancel']);
+  photoInteractionEvents.length = 0; photogrammetryEditor.busy = false; photogrammetryEditor.activeId = 'editing-photo';
   owner.setPanelActive(true); owner.setPanelActive(true);
+  assert.deepEqual(photoInteractionEvents, ['cancel', 'lease'], 'photography preview is cancelled before acquiring the AR effect lease');
+  assert.equal(photogrammetryEditor.activeId, undefined, 'AR begins with the original photography preview released');
   assert.equal(surfaceSuspensions, 1, 'the production host hook acquires one shared map-effects lease for the AR panel');
   assert.equal(surfaceRequestedVisible, false, 'opening AR preserves the saved hidden surface preference');
   owner.enterHooksActive = true;
@@ -234,6 +282,8 @@ try {
   assert.equal(surfaceSuspensions, 0, 'leaving AR releases the new map-effects lease exactly once');
   assert.equal(surfaceRequestedVisible, false, 'the production exit callback reapplies current hidden surface preferences before release');
   assert.deepEqual(owner.cleanupReport.errors, [], 'surface isolation does not introduce exit cleanup errors');
+  assert.ok(photoValidityRefreshes > 0, 'session callbacks revalidate the photography editor while preserving old access checks');
+  sceneEffectsCoordinator.dispose();
   viewer.scene.primitives.destroy(); cadResource.destroy();
   console.log('PASS: AR resource/media permissions, paused-pixel invalidation, cached-video/POS guards, saved selections, CAD copies, and exit restoration');
 } finally {

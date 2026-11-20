@@ -19,6 +19,7 @@ import { sceneMachineryResources } from './sceneDisplayResources';
 import type { SafetyWorkspace } from './safetyWorkspace';
 import { strictModelSurfacePick, type SurfacePickResult } from './safetyModelSurfacePicker';
 import { pickPreferredMachineryPlacement } from './machinerySurfacePicker';
+import { disposeOnPageLeave } from './pageDisposal';
 import './managementWorkspace.css';
 import './managementField.css';
 
@@ -209,7 +210,7 @@ export class ManagementWorkspace {
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) void this.refreshMachineryContext();
     }, { signal: this.events.signal });
-    window.addEventListener('beforeunload', () => this.dispose(), { signal: this.events.signal, once: true });
+    disposeOnPageLeave(() => this.dispose(), this.events.signal);
   }
 
   get isOpen(): boolean { return this.active; }
@@ -315,6 +316,11 @@ export class ManagementWorkspace {
 
   /** Match the existing scene resource gate; personal display overrides cannot grant access. */
   getWorkbenchLayerAccess() { return this.safety.getManagementResourceAccess(); }
+
+  /** Match the existing library PATCH authorization; preview never grants write access. */
+  canEditSceneLibraryModels() {
+    return !!this.session?.permissions.includes('admin') && this.getWorkbenchLayerAccess().models;
+  }
 
   getWorkbenchDisplayObjects() {
     const placed = new Set(this.getWorkbenchMachineryState().records.map(record => record.id));

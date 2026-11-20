@@ -1,5 +1,6 @@
 import { TemporaryWorksPanel } from "./temporaryWorksPanel";
 import { temporaryWorksStore } from "./temporaryWorksStore";
+import { getTemporaryWorksClippingManager } from "./temporaryWorksGlbScene";
 import { SceneLibrary } from "./sceneLibrary";
 import { CadLoadRegistry } from "./cadLoadRegistry";
 import { installRenderErrorRecovery, renderErrorSummaryHtml } from "./renderErrorRecovery";
@@ -51,10 +52,13 @@ import { UnavailableMapTileDiscardPolicy } from "./imageryOverzoom";
 import { ModelEditor, type EditMode, type EditableModel } from "./modelEditor";
 import { applyModelAppearance, getModelAppearance } from "./modelAppearance";
 import { ModelAppearancePanel } from "./modelAppearancePanel";
+import { PhotogrammetryEditor } from "./photogrammetryEditor";
 import { beginPickPlacement, getPlacementPreviewPosition, createAnchoredModelMatrix, fetchGlbPlacementBounds, type ModelPlacementBounds } from "./modelPlacement";
 import { gaussKrugerToWgs84, inferredZoneNumber, parseLongitude, type GaussAxisOrder, type GaussEllipsoid } from "./coordinateUtils";
 import { SubsurfaceTools, subsurfacePanelHtml } from "./subsurfaceTools";
 import { SurfaceEditController } from "./surfaceEditController";
+import { SceneEffectsCoordinator } from "./sceneEffectsCoordinator";
+import { EngineeringComponentsController } from "./engineeringComponents/controller";
 import { FoundationPitMonitoring, foundationPitMonitoringPanelHtml } from "./foundationPitMonitoring";
 import { ThreeDReport, threeDReportPanelHtml, threeDReportStageHtml } from "./threeDReport";
 import { MarkupTools, markupPanelHtml } from "./markupTools";
@@ -96,6 +100,7 @@ import { prepareWorkbenchLeave } from './workbenchNavigation';
 
 let temporaryWorks: TemporaryWorksPanel | undefined;
 let surfaceEdits: SurfaceEditController | undefined;
+let engineeringComponents: EngineeringComponentsController | undefined;
 let sceneDisplayPanel: SceneDisplayPanel | undefined;
 let functionCenters: FunctionCentersController | undefined;
 let sceneDisplayReady = false, sceneDisplayFrame = 0;
@@ -652,8 +657,13 @@ let safetyWorkspace: SafetyWorkspace | undefined;
 let safetyWorkspaceLoading: Promise<SafetyWorkspace> | undefined;
 let managementWorkspace: ManagementWorkspace | undefined;
 let managementWorkspaceLoading: Promise<ManagementWorkspace> | undefined;
+let sceneLibraryContextFingerprint = '', sceneLibraryContextRevision = 0;
+let refreshSubsurfaceContext: (() => void) | undefined;
 let projectLibrary: SceneLibrary | undefined;
 let videoModelOverlay: VideoModelOverlay | undefined;
+let photogrammetryEditor: PhotogrammetryEditor | undefined;
+let photogrammetryEditContext: string | undefined;
+let photogrammetryContextFingerprint = '', photogrammetryContextRevision = 0;
 const tilesetSourceIds = new Map<string, string>();
 const modelQualityTrackers = new Map<string, ModelQualityTracker>();
 const modelQualityResources = new Map<Cesium3DTileset, ModelQualityTracker>();
@@ -712,8 +722,16 @@ function toast(message: string, error = false) {
   window.setTimeout(() => { element.className = ""; }, 3600);
 }
 
+// Owners register after construction, so early AR callbacks cannot reach a
+// not-yet-initialized SubsurfaceTools binding. Both AR systems share these leases.
+const sceneEffectsCoordinator = new SceneEffectsCoordinator();
+function acquireArSceneEffects(): () => void {
+  if (photogrammetryEditor && !photogrammetryEditor.cancel()) throw new Error('摄影位置正在保存，请完成后再进入 AR。');
+  return sceneEffectsCoordinator.acquire();
+}
 const videoArFusion = new VideoArFusion(viewer, toast, setStatus, {
-  suspendExternalSceneEffects: () => surfaceEdits?.suspendExternalSceneEffects(),
+  suspendExternalSceneEffects: acquireArSceneEffects,
+  onReplayInputChanged: () => projectLibrary?.invalidatePendingVideoRestore(),
 });
 videoArFusion.onGetProjectionModels = () => imports.filter(item => item.kind === "3D Tiles").map(item => {
   const tileset = item.resource as Cesium3DTileset;
@@ -767,7 +785,9 @@ const modelAppearancePanel = new ModelAppearancePanel(document.body, {
 onPageDispose(() => { modelEditor.destroy(); modelAppearancePanel.dispose(); });
 let resumeVideoOverlayInteractions: (() => void) | undefined;
 videoModelOverlay = new VideoModelOverlay(viewer, {
-  suspendExternalSceneEffects: () => surfaceEdits?.suspendExternalSceneEffects(),
+  suspendExternalSceneEffects: acquireArSceneEffects,
+  onReplayInputChanged: () => projectLibrary?.invalidatePendingVideoRestore(),
+  captureReplaySelectionGuard: () => projectLibrary?.captureVideoSelectionGuard() ?? (() => true),
   canAccessVideo: () => isLibraryRecordAllowed({ kind: "Drone Video" }),
   getImports: () => imports.filter(isImportAllowed),
   getRecord: id => {
@@ -811,24 +831,61 @@ projectLibrary = new SceneLibrary({
   removeVideoCache: id => videoModelOverlay!.removeSavedCache(id),
   reconcileDeletedVideoCaches: ids => videoModelOverlay!.reconcileDeletedCaches(ids),
   setBasemap, getBasemap: () => activeBasemapKey, notify: toast,
-  restoreVideo: async (files, settings, recordId) => {
+  restoreVideo: async (files, settings, recordId, checkCurrent) => {
+    checkCurrent?.();
     if (!isLibraryRecordAllowed({ kind: "Drone Video" })) throw new Error("当前账号没有录像权限，融合方案已保留");
     if ((settings as SavedVideoOverlaySettings)?.mode === "cc-overlay") {
       videoArFusion.setPanelActive(false); videoArFusion.clear();
-      await videoModelOverlay!.restoreReplay(files, settings as SavedVideoOverlaySettings, recordId);
+      await videoModelOverlay!.restoreReplay(files, settings as SavedVideoOverlaySettings, recordId, checkCurrent);
+      checkCurrent?.();
     } else {
       videoModelOverlay!.clear();
-      await videoArFusion.restoreReplay(files, settings as SavedReplaySettings);
+      await videoArFusion.restoreReplay(files, settings as SavedReplaySettings, checkCurrent);
+      checkCurrent?.();
       videoArFusion.setPanelActive(false);
     }
   },
   clearVideo: () => { videoModelOverlay!.clear(); videoArFusion.clear(); },
   shouldSaveView: () => !videoModelOverlay?.active,
   canReadRecord: isLibraryRecordAllowed,
+  canEditPhotogrammetry: record => record.kind === '3D Tiles' && canEditPhotogrammetry(),
+  getPhotogrammetryContextKey,
+  getContextKey: getSceneLibraryContextKey,
   prepareRecordDeletion: id => sceneDisplayPanel?.prepareItemDeletion(`layer:${id}`),
   libraryChanged: () => { renderVideoOverlaySchemes(); scheduleSceneDisplay(); },
   layersChanged: renderLayers,
 });
+photogrammetryEditor = new PhotogrammetryEditor(viewer, document.body, {
+  isValid: (id, tileset) => {
+    const item = imports.find(candidate => candidate.id === id && candidate.kind === '3D Tiles' && candidate.resource === tileset);
+    return !!item && !tileset.isDestroyed() && isImportDisplayed(item) && canEditPhotogrammetry()
+      && photogrammetryEditContext === getPhotogrammetryContextKey() && projectLibrary?.records.has(id) === true;
+  },
+  acquire: () => {
+    const restores: Array<() => void> = [];
+    const release = () => { for (const restore of restores.splice(0).reverse()) { try { restore(); } catch (error) { console.warn('[Photography editor] Restore failed', error); } } };
+    try {
+      restores.push(sceneEffectsCoordinator.acquire());
+      restores.push(modelEditor.suspendInteractions(), subsurfaceTools.suspendInteractions(), foundationPitMonitoring.suspendInteractions());
+      const markup = markupTools?.suspendInteractions(); if (markup) restores.push(markup);
+      return release;
+    } catch (error) { release(); throw error; }
+  },
+  save: (id, state, matrix) => projectLibrary!.commitPhotogrammetryTransform(id, Matrix4.toArray(matrix), state),
+  onCommitted: id => {
+    modelQualityTrackers.get(id)?.invalidateView();
+    videoArFusion.invalidateProjection('photogrammetry-transform-changed');
+    subsurfaceTools.refreshClipping();
+    renderLayers(); viewer.scene.requestRender();
+  },
+  notify: toast,
+});
+onPageDispose(() => photogrammetryEditor?.dispose());
+const leavePhotographyForSubsurface = (event: Event) => {
+  if (!finishPhotogrammetryPreview()) { event.preventDefault(); event.stopImmediatePropagation(); }
+};
+$('#openSubsurfacePanel').addEventListener('click', leavePhotographyForSubsurface, true);
+onPageDispose(() => $('#openSubsurfacePanel').removeEventListener('click', leavePhotographyForSubsurface, true));
 // Keep a failed first-save ID associated with these files. Retrying from the AR
 // panel must recover the same upload/record, including a lost success response.
 let videoOverlaySaveDraft: { id: string; files: Record<string, File> } | undefined;
@@ -882,9 +939,11 @@ async function openVideoOverlayScheme(copy: boolean): Promise<void> {
   const id = document.querySelector<HTMLSelectElement>("#ccSchemeList")?.value;
   if (!id || videoSchemeActionBusy) return;
   videoSchemeActionBusy = true; renderVideoOverlaySchemes();
+  const isCurrentSelection = projectLibrary!.captureVideoSelectionGuard();
   try {
     videoModelOverlay?.setPanelActive(false);
     await videoModelOverlay?.flushPendingSave();
+    if (!isCurrentSelection()) throw new DOMException('资料选择或项目已变化，已取消打开旧方案', 'AbortError');
     const scheme = projectLibrary!.listVideoOverlaySchemes().find(item => item.id === id);
     await projectLibrary!.openVideoOverlayScheme(id, copy ? { asCopy: true, name: `${(scheme?.name ?? "融合方案").slice(0, 490)} · 副本` } : {});
     document.querySelector<HTMLButtonElement>('.tab[data-tab="videoar"]')?.click();
@@ -917,12 +976,18 @@ document.getElementById("ccSchemeRefresh")?.addEventListener("click", () => {
     .finally(() => { videoSchemeActionBusy = false; renderVideoOverlaySchemes(); });
 });
 videoArFusion.onReplaySettingsChanged = (controls, sessions, requireSaved) => projectLibrary?.updateVideoControls(controls, sessions, requireSaved);
-videoArFusion.onReplayLoaded = async snapshot => {
+videoArFusion.onReplayLoaded = async (snapshot, isCurrentInput) => {
+  const isCurrentSelection = projectLibrary!.captureVideoSelectionGuard();
   await projectLibrary!.ready;
+  if (!isCurrentInput() || !isCurrentSelection()) return false;
   const files = Object.fromEntries(Object.entries(snapshot.files).map(([slot, file]) => [slot, { name: file.name, blob: file }]));
   const saved = await projectLibrary!.save(crypto.randomUUID(), snapshot.name, "Drone Video",
     { video: snapshot.settings as unknown as Record<string, unknown> }, files);
+  // The persisted record remains available; only the still-current input may
+  // become active or invalidate a pending library selection.
+  if (!isCurrentInput() || !isCurrentSelection()) return false;
   projectLibrary!.markVideo(saved.id);
+  return true;
 };
 function showCustomBasemapPanel() {
   const config = savedCustomBasemap();
@@ -1053,18 +1118,46 @@ document.querySelectorAll<HTMLButtonElement>("[data-model-rotate]").forEach(butt
 }));
 window.addEventListener("keydown", event => {
   if (event.key !== "Escape" || event.isComposing || modelPlacementPending || modelLoadBusy) return;
+  if (engineeringComponents?.panel.isOpen) engineeringComponents.close();
   if (modelEditor.isEditing) modelEditor.endEditing();
 });
 
 function beginModelEditing(item: ImportRecord): void {
+  if (photogrammetryEditor && !photogrammetryEditor.cancel()) { toast('请等待摄影位置保存完成。', true); return; }
   surfaceEdits?.close();
+  engineeringComponents?.close();
   if (modelLoadBusy || videoModelOverlay?.active || !isImportAllowed(item) || item.kind !== "Model") return;
   if (!isImportDisplayed(item)) { toast("请先显示模型，再调整位置", true); return; }
   modelAppearancePanel.close();
   modelEditor.beginEditing(item.id);
 }
 
+function canEditPhotogrammetry(): boolean {
+  return isLibraryRecordAllowed({ kind: '3D Tiles' }) && (!managementWorkspace || managementWorkspace.canEditSceneLibraryModels());
+}
+
+function finishPhotogrammetryPreview(): boolean {
+  if (!photogrammetryEditor || photogrammetryEditor.cancel()) return true;
+  toast('摄影位置正在保存，请完成后再切换工具。', true); return false;
+}
+
+function beginPhotogrammetryEditing(item: ImportRecord): void {
+  if (item.kind !== '3D Tiles' || !imports.includes(item) || !canEditPhotogrammetry()) { toast('当前账号没有摄影位置编辑权限。', true); return; }
+  if (!isImportDisplayed(item)) { toast('请先显示摄影模型，再调整位置。', true); return; }
+  if (modelLoadBusy || modelPlacementPending || photogrammetryEditor?.busy) { toast('请先完成当前模型操作。', true); return; }
+  if (temporaryWorks?.close() === false) return;
+  if (photogrammetryEditor && !photogrammetryEditor.cancel()) return;
+  surfaceEdits?.close(); engineeringComponents?.close(); modelEditor.endEditing(); modelAppearancePanel.close();
+  // AR may own a temporary matrix. Recover the map matrix before taking the edit snapshot.
+  videoModelOverlay?.setPanelActive(false); videoArFusion.setPanelActive(false);
+  photogrammetryEditContext = getPhotogrammetryContextKey();
+  try { photogrammetryEditor?.open({ id: item.id, name: item.name, tileset: item.resource as Cesium3DTileset,
+    saved: projectLibrary?.records.get(item.id)?.settings.photogrammetryEditor }); }
+  catch (error) { toast(error instanceof Error ? error.message : String(error), true); }
+}
+
 function openModelAppearance(item: ImportRecord): void {
+  if (photogrammetryEditor && !photogrammetryEditor.cancel()) { toast('请等待摄影位置保存完成。', true); return; }
   if (modelLoadBusy || videoModelOverlay?.active || !isImportAllowed(item) || item.kind !== "Model") return;
   if (!isImportDisplayed(item)) { toast("请先显示模型，再调整外观", true); return; }
   modelEditor.endEditing();
@@ -1079,6 +1172,7 @@ function locateImport(item: ImportRecord) {
 }
 
 function renderLayers() {
+  photogrammetryEditor?.refreshValidity();
   temporaryWorks?.refresh();
   videoModelOverlay?.refreshResources();
   scheduleSceneDisplay();
@@ -1105,6 +1199,10 @@ function renderLayerDirectory() {
       status.style.display = "block"; status.style.fontSize = "12px";
       status.textContent = modelQualityTrackers.get(item.id)?.getState().label ?? "首屏加载中";
       name.append(status);
+      const actions = document.createElement('div'); actions.className = 'layer-model-actions';
+      const edit = document.createElement('button'); edit.type = 'button'; edit.textContent = '调整位置';
+      edit.disabled = !item.visible || !canEditPhotogrammetry(); edit.addEventListener('click', () => beginPhotogrammetryEditing(item));
+      actions.append(edit); row.append(actions);
     }
     row.querySelector(".visibility")?.addEventListener("click", () => setImportVisibility(item, !item.visible));
     row.querySelector(".fly")?.addEventListener("click", () => locateImport(item));
@@ -1138,6 +1236,7 @@ function renderLayerDirectory() {
 
 /** User deletion must commit the saved record deletion before releasing its scene object. */
 async function deleteImportedResource(item: ImportRecord): Promise<boolean> {
+  if (photogrammetryEditor?.activeId === item.id && photogrammetryEditor.busy) throw new Error('摄影位置正在保存，请完成后再删除。');
   if (!isImportAllowed(item)) throw new Error('当前账号无法访问此资源');
   if (projectLibrary?.owns(item.id)) return projectLibrary.delete(item.id);
   if (!imports.includes(item)) return true;
@@ -1149,6 +1248,7 @@ async function deleteImportedResource(item: ImportRecord): Promise<boolean> {
 }
 
 function setImportVisibility(item: ImportRecord, visible: boolean, options: { silent?: boolean; deferRender?: boolean } = {}) {
+  if (!visible && photogrammetryEditor?.activeId === item.id && !photogrammetryEditor.cancel()) { toast('摄影位置正在保存，请完成后再隐藏。', true); return; }
   item.visible = visible;
   sceneDisplayPanel?.setVisibility([`layer:${item.id}`], visible);
   projectLibrary?.queueUpdate(item.id, { visible });
@@ -1173,6 +1273,8 @@ function setImportVisibility(item: ImportRecord, visible: boolean, options: { si
 }
 
 function removeImport(item: ImportRecord) {
+  engineeringComponents?.detachInstance(item.id);
+  if (photogrammetryEditor?.activeId === item.id) { photogrammetryEditContext = undefined; photogrammetryEditor.refreshValidity(); }
   if (modelAppearancePanel.activeId === item.id) modelAppearancePanel.close();
   if(modelEditor.getSelected()?.id===item.id && modelPlacementPending)modelLoadController?.abort();
   modelPlacementBounds.delete(item.id);
@@ -1299,7 +1401,13 @@ async function cacheGisBoundingSphere(
   }
 }
 
-const subsurfaceTools = new SubsurfaceTools(viewer, () => imports, toast);
+const subsurfaceTools = new SubsurfaceTools(viewer, () => imports.filter(isImportAllowed), toast);
+// Release runs in reverse: new surfaces, managed clips, then old underground
+// effects. Old target leases keep their priority throughout that handoff.
+sceneEffectsCoordinator.register('subsurface', () => subsurfaceTools.suspendExternalSceneEffects());
+const arManagedClippingOwner = {};
+sceneEffectsCoordinator.register('managed-clipping', () => getTemporaryWorksClippingManager(viewer).suspend(arManagedClippingOwner));
+refreshSubsurfaceContext = () => subsurfaceTools.refreshClipping();
 const foundationPitMonitoring = new FoundationPitMonitoring(viewer, toast);
 let markupTools: MarkupTools | null = null;
 try {
@@ -1608,17 +1716,66 @@ try {
     onVisibilityChange: (id, visible) => sceneDisplayPanel?.setVisibility([`surface-edit:${id}`], visible),
     toast,
   });
+  const controller = surfaceEdits;
+  let unregisterEffects: () => void;
+  try { unregisterEffects = sceneEffectsCoordinator.register('surface-edit', () => controller.suspendExternalSceneEffects()); }
+  catch (error) { controller.destroy(); surfaceEdits = undefined; throw error; }
   const entry = document.createElement('button'); entry.type = 'button'; entry.id = 'openSurfaceEdit'; entry.textContent = '地表编辑';
   entry.title = '地表开挖、土体补面与局部压平';
   document.querySelector('.map-controls')?.insertBefore(entry, $("#openSubsurfacePanel"));
   entry.addEventListener('click', () => {
+    if (!finishPhotogrammetryPreview()) return;
     videoModelOverlay?.setPanelActive(false); videoArFusion.setPanelActive(false);
     $("#subsurfacePanel").classList.add('hidden'); surfaceEdits?.open();
   });
   document.querySelector('.tabs')?.addEventListener('click', () => surfaceEdits?.close());
   $("#openSubsurfacePanel").addEventListener('click', () => surfaceEdits?.close());
-  onPageDispose(() => { surfaceEdits?.destroy(); entry.remove(); });
+  onPageDispose(() => { try { controller.destroy(); } finally { unregisterEffects(); entry.remove(); } });
 } catch (error) { console.error('[Surface edit] Initialization failed without modifying the existing scene', error); }
+
+try {
+  engineeringComponents = new EngineeringComponentsController({
+    viewer,
+    getContext: () => {
+      const state = managementWorkspace?.getWorkbenchMachineryState();
+      return state?.canView && state.projectId && managementWorkspace?.getWorkbenchLayerAccess().models
+        ? { projectId: state.projectId, actorId: state.actorId } : null;
+    },
+    getInstances: () => imports.flatMap(item => {
+      if (item.kind !== 'Model' || !isImportAllowed(item)) return [];
+      const model = item.resource as Model, record = projectLibrary?.records.get(item.id);
+      const url = record?.files.data?.url ?? record?.files.source?.url;
+      return url && !model.isDestroyed() ? [{ id: item.id, name: item.name, model, url, visible: isImportDisplayed(item) }] : [];
+    }),
+    canPick: () => !modelPlacementPending && !modelLoadBusy && !videoModelOverlay?.active && !photogrammetryEditor?.isOpen
+      && !document.body.classList.contains('workbench-machinery-open') && !markupTools?.hasActiveInteraction && !foundationPitMonitoring.hasActiveInteraction,
+    beginInteractionSession: () => {
+      const restores: Array<() => void> = [];
+      const restore = () => { for (const release of restores.splice(0).reverse()) { try { release(); } catch (error) { console.warn('[Engineering components] Interaction restore failed', error); } } };
+      try { restores.push(modelEditor.suspendInteractions()); restores.push(subsurfaceTools.suspendInteractions()); restores.push(foundationPitMonitoring.suspendInteractions()); const release = markupTools?.suspendInteractions(); if (release) restores.push(release); }
+      catch (error) { restore(); throw error; }
+      return restore;
+    },
+    toast,
+  });
+  const controller = engineeringComponents;
+  let unregister: () => void;
+  try { unregister = sceneEffectsCoordinator.register('engineering-components', () => controller.suspendExternalSceneEffects()); }
+  catch (error) { controller.dispose(); engineeringComponents = undefined; throw error; }
+  const entry = document.createElement('button'); entry.type = 'button'; entry.id = 'openEngineeringComponents'; entry.textContent = '工程构件';
+  document.querySelector('.map-controls')?.insertBefore(entry, $('#openSubsurfacePanel'));
+  entry.addEventListener('click', () => {
+    void ensureManagementWorkspace().then(() => {
+      if (!finishPhotogrammetryPreview()) return;
+      surfaceEdits?.close(); $('#subsurfacePanel').classList.add('hidden'); controller.open();
+    }).catch(error => toast(error instanceof Error ? error.message : String(error), true));
+  });
+  document.querySelector('.tabs')?.addEventListener('click', () => controller.close());
+  $('#openSubsurfacePanel').addEventListener('click', () => controller.close());
+  document.getElementById('openSurfaceEdit')?.addEventListener('click', () => controller.close());
+  onPageDispose(() => { unregister(); controller.dispose(); entry.remove(); });
+  if (import.meta.env.DEV) Object.assign(window, { __engineeringComponents: controller });
+} catch (error) { console.error('[Engineering components] Initialization failed without modifying the existing scene', error); }
 
 try {
   sandTableFacilities = new SandTableFacilities(viewer, {
@@ -2309,6 +2466,7 @@ digitalTwinSyncReady = true;
 syncDigitalTwinDataCenter();
 
 onPageDispose(() => { videoModelOverlay?.destroy(); videoArFusion.destroy(); });
+onPageDispose(() => { try { sceneEffectsCoordinator.dispose(); } finally { subsurfaceTools.dispose(); } });
 onPageDispose(() => {
   if (electronicSandTableRefreshFrame) window.cancelAnimationFrame(electronicSandTableRefreshFrame);
   electronicSandTableRefreshFrame = 0;
@@ -3360,7 +3518,7 @@ async function ensureManagementWorkspace(): Promise<ManagementWorkspace> {
         onDisplayMount: host => { sceneDisplayPanel?.mount(host ?? $("#workbenchDisplayHost")); scheduleSceneDisplay(); },
         onChange: renderWorkbenchMachinery,
         onPanelChange: setWorkbenchMachineryPanelOpen,
-        canSelectSceneObject: () => !modelPlacementPending && !modelLoadBusy && !videoModelOverlay?.active
+        canSelectSceneObject: () => !modelPlacementPending && !modelLoadBusy && !videoModelOverlay?.active && !photogrammetryEditor?.isOpen && !engineeringComponents?.isPicking
           && (document.querySelector<HTMLButtonElement>('#markupCancelDrawing')?.disabled ?? true),
         getSceneResources: () => imports.filter(isImportAllowed).map(layer => ({ id: layer.id, name: layer.name, kind: layer.kind, visible: isImportDisplayed(layer) })),
         pickMachineryPosition: pixel => pickMachinerySurface(viewer, pixel, imports.flatMap(item => {
@@ -3407,6 +3565,7 @@ function setWorkbenchMachineryPanelOpen(open: boolean): void {
   const cancelMarkup = document.querySelector<HTMLButtonElement>('#markupCancelDrawing');
   if (cancelMarkup && !cancelMarkup.disabled) throw new Error('请先完成或取消当前标绘，再打开施工机械。');
   surfaceEdits?.close();
+  engineeringComponents?.close();
   digitalTwinOverview.close(); electronicSandTable?.stopTour();
   sandTablePresentation?.deactivate(); sandTableFacilities?.deactivate();
   videoModelOverlay?.setPanelActive(false);
@@ -3419,6 +3578,11 @@ function setWorkbenchMachineryPanelOpen(open: boolean): void {
 }
 
 function renderWorkbenchMachinery(): void {
+  // Observe every permission/context notification, including revoke then grant
+  // back to the same values, so an older asynchronous restore stays obsolete.
+  getSceneLibraryContextKey();
+  getPhotogrammetryContextKey();
+  photogrammetryEditor?.refreshValidity();
   // Session changes must also revoke paused AR copies before another frame renders.
   if (!isLibraryRecordAllowed({ kind: "Drone Video" })) videoModelOverlay?.setPanelActive(false);
   videoModelOverlay?.refreshResources();
@@ -3434,6 +3598,7 @@ function setWorkbenchDock(mode: 'display' | 'editor'): void {
 }
 
 function canLeaveWorkbench(target?: string): boolean {
+  if (photogrammetryEditor?.busy) { toast('摄影位置正在保存，请完成后再切换。', true); return false; }
   const allowed = prepareWorkbenchLeave(target, {
     modelBusy: modelLoadBusy || modelPlacementPending || modelPlacementSaving,
     markupPicking: markupTools?.hasActiveInteraction ?? false,
@@ -3441,7 +3606,7 @@ function canLeaveWorkbench(target?: string): boolean {
     closeTemporaryWorks: () => temporaryWorks?.close() ?? true,
     notify: message => toast(message, true),
   });
-  if (allowed) surfaceEdits?.close();
+  if (allowed) { surfaceEdits?.close(); engineeringComponents?.close(); photogrammetryEditor?.cancel(); }
   return allowed;
 }
 
@@ -3491,6 +3656,8 @@ async function openCenterAction(action: FunctionCenterAction): Promise<boolean> 
   return workspace.openBusinessModule(route[0], route[1], () => navigation === workbenchNavigationGeneration);
 }
 function scheduleSceneDisplay(): void {
+  getSceneLibraryContextKey();
+  engineeringComponents?.synchronize();
   if (!sceneDisplayReady) return;
   // Release the old project's new effects immediately, before the display-list rAF.
   const state = managementWorkspace?.getWorkbenchMachineryState();
@@ -3500,6 +3667,7 @@ function scheduleSceneDisplay(): void {
   sceneDisplayFrame = requestAnimationFrame(() => { sceneDisplayFrame = 0; if (sceneDisplayReady) syncSceneDisplay(); });
 }
 function syncSceneDisplay(): void {
+  engineeringComponents?.synchronize();
   if (!sceneDisplayPanel) return;
   const state = managementWorkspace?.getWorkbenchMachineryState();
   const items: SceneDisplayItem[] = [];
@@ -3516,7 +3684,7 @@ function syncSceneDisplay(): void {
   surfaceEdits?.setContext(state?.canView && access?.files && state.projectId ? JSON.stringify([state.projectId, state.actorId ?? null]) : null, Boolean(state?.canEdit && access?.files));
   for (const plan of surfaceEdits?.getDisplayItems() ?? []) {
     items.push({ id: `surface-edit:${plan.id}`, name: plan.name, category: "地表编辑", detail: plan.typeName, visible: plan.visible,
-      locate: () => surfaceEdits?.locatePlan(plan.id), edit: () => surfaceEdits?.editPlan(plan.id),
+      locate: () => surfaceEdits?.locatePlan(plan.id), edit: () => { if (finishPhotogrammetryPreview()) surfaceEdits?.editPlan(plan.id); },
       removalConfirmedByHost: true,
       remove: state?.canEdit && access?.files ? async () => {
         const current = managementWorkspace?.getWorkbenchMachineryState();
@@ -3554,9 +3722,10 @@ function syncSceneDisplay(): void {
       if (deleted) syncSceneDisplay();
       return deleted;
     },
-    editLabel: layer.kind === 'Model' ? '调整位置' : undefined,
+    editLabel: layer.kind === 'Model' || layer.kind === '3D Tiles' ? '调整位置' : undefined,
     appearance: layer.kind === 'Model' ? () => { if (openExistingEditor('models')) openModelAppearance(layer); } : undefined,
-    edit: layer.kind === 'Model' ? () => { if (openExistingEditor('models')) beginModelEditing(layer); } : undefined });
+    edit: layer.kind === 'Model' ? () => { if (openExistingEditor('models')) beginModelEditing(layer); }
+      : layer.kind === '3D Tiles' && canEditPhotogrammetry() ? () => { if (openExistingEditor('tiles')) beginPhotogrammetryEditing(layer); } : undefined });
   if (isLibraryRecordAllowed({ kind: 'CAD' })) for (const load of cadLoads.values()) items.push({
     id: `layer:${load.id}`, name: load.name, category: 'CAD 图纸', visible: load.visible,
     detail: load.status, cancel: load.signal.aborted ? undefined : async () => { cadLoads.get(load.id)?.cancel(); await load.settled; },
@@ -3619,6 +3788,24 @@ function isLibraryRecordAllowed(record: Pick<LibraryRecord, "kind">): boolean {
   if (!access) return true;
   return record.kind === "Drone Video" ? access.media : record.kind === "CAD" || record.kind === "GIS" ? access.files : access.models;
 }
+function getSceneLibraryContextKey(): string {
+  const state = managementWorkspace?.getWorkbenchMachineryState();
+  const access = managementWorkspace?.getWorkbenchLayerAccess();
+  const fingerprint = JSON.stringify([state?.projectId ?? null, state?.actorId ?? null, state?.canView ?? null,
+    access?.models ?? null, access?.files ?? null, access?.media ?? null]);
+  if (fingerprint !== sceneLibraryContextFingerprint) {
+    sceneLibraryContextFingerprint = fingerprint; sceneLibraryContextRevision++;
+    // Only context transitions rebuild/prune old cuts. Ordinary display/status
+    // refreshes must not churn clipping collections or discard unsaved anchors.
+    refreshSubsurfaceContext?.();
+  }
+  return `${sceneLibraryContextRevision}:${fingerprint}`;
+}
+function getPhotogrammetryContextKey(): string {
+  const fingerprint = JSON.stringify([getSceneLibraryContextKey(), managementWorkspace?.canEditSceneLibraryModels() ?? null]);
+  if (fingerprint !== photogrammetryContextFingerprint) { photogrammetryContextFingerprint = fingerprint; photogrammetryContextRevision++; }
+  return `${photogrammetryContextRevision}:${fingerprint}`;
+}
 function isImportDisplayed(layer: ImportRecord): boolean {
   return isImportAllowed(layer) && (sceneDisplayOverrides[`layer:${layer.id}`] ?? layer.visible);
 }
@@ -3628,6 +3815,7 @@ function applyImportDisplay(layer: ImportRecord): void {
   // AR owns display preferences, but never the account's access permissions.
   if (videoModelOverlay?.active && isImportAllowed(layer)) return;
   const visible = isImportDisplayed(layer);
+  if (!visible && photogrammetryEditor?.activeId === layer.id) { photogrammetryEditContext = undefined; photogrammetryEditor.refreshValidity(); }
   if (resource.show === visible) return;
   resource.show = visible;
   if (layer.kind === '3D Tiles') { modelQualityTrackers.get(layer.id)?.invalidateView(); videoArFusion.invalidateProjection('display-preference-changed'); }

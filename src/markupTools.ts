@@ -428,6 +428,7 @@ export class MarkupTools {
   private recoveryOmittedCount = 0;
   private recoveryBackupDownloaded = false;
   private selectedId: string | null = null;
+  private propertyApplyVersion = 0;
   private drawingKind: MarkupKind | null = null;
   private drawingSession = 0;
   private redrawId: string | null = null;
@@ -664,6 +665,7 @@ export class MarkupTools {
   }
 
   cancelInteraction(updateUi = true, releaseExternalInteractions = false) {
+    this.propertyApplyVersion += 1;
     this.drawingSession += 1;
     this.drawingKind = null;
     this.redrawId = null;
@@ -924,23 +926,30 @@ export class MarkupTools {
     const record = this.records.find((item) => item.id === this.selectedId);
     if (!record) return this.toast("请先在标绘对象列表或三维场景中选择一个对象", true);
     const recordId = record.id;
+    const version = ++this.propertyApplyVersion, textureVersion = this.textureSelectionVersion;
+    // Applying again replaces the pending intent. Selection, texture changes and
+    // undo/redo must not let an old async apply overwrite the current record.
+    const current = () => !this.disposed && !this.viewer.isDestroyed() && version === this.propertyApplyVersion
+      && textureVersion === this.textureSelectionVersion && this.selectedId === recordId
+      && this.records.find(item => item.id === recordId) === record;
     const preparedName = element<HTMLInputElement>("#markupName").value.trim() || record.name;
     const preparedNote = element<HTMLTextAreaElement>("#markupNote").value.trim();
     const preparedHeightMode: HeightMode = record.kind === "facade" || record.kind === "volume" ? "picked" : element<HTMLSelectElement>("#markupHeightMode").value === "surface" ? "surface" : "picked";
     const preparedStyle = this.readStyleForm();
     if (record.kind === "facade" && this.textureSelectionPromise) {
       await this.waitForTextureSelection();
-      if (this.disposed || this.selectedId !== recordId) return;
+      if (!current()) return;
     }
     const pendingTexture = record.kind === "facade" ? this.pendingTexture : null;
     if (pendingTexture) {
       try { await this.ensureTextureSaved(pendingTexture); }
       catch (error) {
-        this.toast(error instanceof Error ? `立面贴图保存失败：${error.message}` : "立面贴图保存失败，请重新选择", true);
+        if (current()) this.toast(error instanceof Error ? `立面贴图保存失败：${error.message}` : "立面贴图保存失败，请重新选择", true);
         return;
       }
-      if (this.disposed || this.selectedId !== recordId || this.pendingTexture?.id !== pendingTexture.id) return;
+      if (!current() || this.pendingTexture?.id !== pendingTexture.id) return;
     }
+    if (!current()) return;
     const currentRecord = this.records.find((item) => item.id === recordId);
     if (!currentRecord) return;
     const changed = this.mutate(() => {
@@ -1256,6 +1265,7 @@ export class MarkupTools {
   private selectRecord(id: string, updateViewer = true) {
     const record = this.records.find((item) => item.id === id);
     if (!record) return;
+    if (this.selectedId !== id) this.propertyApplyVersion += 1;
     this.selectedId = id;
     this.fillForm(record);
     if (updateViewer) this.viewer.selectedEntity = this.dataSource.entities.getById(id);

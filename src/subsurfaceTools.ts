@@ -23,6 +23,9 @@ import type { ImportRecord } from "./types";
 import type { CadPolylineFeature } from "./cadPrimitiveLoader";
 import { recoverDestroyedClippingReferences } from "./destroyedClippingRecovery";
 import { isSurfaceEditGlobeClipping } from "./surfaceEditScene";
+import { getTemporaryWorksClippingManager } from "./temporaryWorksGlbScene";
+import { releaseBorrowedClippingPlanes, releaseBorrowedClippingPolygons } from "./borrowedClippingPolygons";
+import { tilesetClippingFrame } from "./tilesetClippingFrame";
 
 export const subsurfacePanelHtml = `
   <div id="subsurfacePanel" class="subsurface-panel hidden">
@@ -79,6 +82,10 @@ export const subsurfacePanelHtml = `
   </div>`;
 
 type InteractionMode = "section" | "excavation" | "archive" | null;
+type OwnedClipping = ClippingPlaneCollection | ClippingPolygonCollection;
+type ClippingKey = "clippingPlanes" | "clippingPolygons";
+type ClippingHost = { isDestroyed?(): boolean; clippingPlanes?: ClippingPlaneCollection; clippingPolygons?: ClippingPolygonCollection };
+type GroundState = { enabled: boolean; front: number; back: number; collision: boolean; depth: boolean };
 type PhotoRecord = { id: string; name: string; type: string; dataUrl: string; createdAt: string };
 type HiddenWorkRecord = {
   id: string;
@@ -271,6 +278,18 @@ export class SubsurfaceTools {
   private clippingFailedTiles?: WeakSet<object>;
   private originalCollision: boolean;
   private originalDepthTest: boolean;
+  private disposed = false;
+  private readonly lifecycle = new AbortController();
+  private effectsSuspensions = 0;
+  private resumeEffectsInput?: () => void;
+  private overlayBeforeSuspension?: boolean;
+  private groundBaseline?: GroundState;
+  private groundApplied?: GroundState;
+  private sectionTargetLeases?: Map<object, () => void>;
+  private excavationTargetLeases?: Map<object, () => void>;
+  private readonly sectionLeaseOwner = {};
+  private readonly excavationLeaseOwner = {};
+  private readonly downloadUrls = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(
     private readonly viewer: Viewer,
@@ -281,12 +300,13 @@ export class SubsurfaceTools {
     this.originalDepthTest = viewer.scene.globe.depthTestAgainstTerrain;
     // Keep Cesium's opaque-depth default for camera navigation. Translucent
     // depth requires an extra render/readback and belongs only to an explicit pick.
-    void viewer.dataSources.add(this.overlay);
-    this.disableGlobePolygonClipping();
+    void Promise.resolve(viewer.dataSources.add(this.overlay)).then(source => {
+      if (this.disposed && !viewer.isDestroyed()) viewer.dataSources.remove(source, true);
+    }).catch(error => { if (!this.disposed) this.notify(`地下工程图层加载失败：${String(error)}`, true); });
     this.handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
-    this.bindInterface();
-    this.bindMapInteraction();
-    void this.reloadArchives();
+    try {
+      this.bindInterface(); this.bindMapInteraction(); void this.reloadArchives();
+    } catch (error) { this.dispose(); throw error; }
   }
 
   /** Returns archive metadata only; photo data URLs never leave this module. */
@@ -325,32 +345,28 @@ export class SubsurfaceTools {
   }
 
   private disableGlobePolygonClipping() {
-    const globe = this.viewer.scene.globe as typeof this.viewer.scene.globe & {
-      clippingPolygons?: ClippingPolygonCollection;
-      _clippingPolygons?: ClippingPolygonCollection;
-    };
-    const collection = globe.clippingPolygons ?? globe._clippingPolygons;
-    if (!collection) return;
-    // New, explicitly owned terrain edits keep their own lifetime and are restored
-    // independently. The legacy disabled-terrain path remains unchanged otherwise.
-    if (isSurfaceEditGlobeClipping(collection)) return;
-    if (collection.isDestroyed()) globe._clippingPolygons = undefined;
-    else collection.enabled = false;
-    this.excavationClipTargets.delete(globe);
+    // This legacy tool no longer creates terrain polygons. Release a proven
+    // legacy owner only; constructing/using it must never disable another module.
+    this.releaseTarget(this.viewer.scene.globe, this.excavationClipTargets, "clippingPolygons");
   }
 
   refreshClipping() {
+    if (this.disposed) return;
+    if (this.viewer.isDestroyed?.()) { this.clearSectionClipping(); this.clearExcavationClipping(); return; }
+    if (this.effectsSuspensions > 0) { this.pruneDetachedTargets(); return; }
     if (element<HTMLInputElement>("#sectionEnabled").checked && this.sectionAnchor) this.requestSectionClipping(); else this.clearSectionClipping();
     if (this.excavationFinished && element<HTMLInputElement>("#clipExcavationSurface").checked) this.applyExcavationClipping(); else this.clearExcavationClipping();
   }
 
   detachImport(item: ImportRecord) {
     const target = item.resource as object;
-    // The primitive owns and destroys its clipping collections. Remove our
-    // references before the primitive itself is destroyed; never reattach an
-    // older collection because Cesium destroys it when ownership changes.
-    this.clippingTargets.delete(target);
-    this.excavationClipTargets.delete(target);
+    const errors: unknown[] = [];
+    for (const operation of [
+      () => this.releaseTarget(target, this.clippingTargets, "clippingPlanes"),
+      () => this.releaseTarget(target, this.excavationClipTargets, "clippingPolygons"),
+      () => this.releaseTargetLease(target, "clippingPlanes"), () => this.releaseTargetLease(target, "clippingPolygons"),
+    ]) { try { operation(); } catch (error) { errors.push(error); } }
+    if (errors.length) throw new AggregateError(errors, "地下工程资源解绑失败，请保留错误详情。", { cause: errors[0] });
   }
 
   cancelActiveInteraction() {
@@ -359,6 +375,7 @@ export class SubsurfaceTools {
 
   /** Pauses map picking while preserving the user's unfinished operation. */
   suspendInteractions() {
+    if (this.disposed) return () => {};
     this.interactionSuspensionDepth += 1;
     let restored = false;
     return () => {
@@ -366,6 +383,107 @@ export class SubsurfaceTools {
       restored = true;
       this.interactionSuspensionDepth = Math.max(0, this.interactionSuspensionDepth - 1);
     };
+  }
+
+  private requestRender() { if (!this.disposed && !this.viewer.isDestroyed?.()) this.viewer.scene.requestRender(); }
+  private targetLeases(key: ClippingKey) {
+    return key === "clippingPlanes" ? this.sectionTargetLeases ??= new Map() : this.excavationTargetLeases ??= new Map();
+  }
+  private acquireTargetLease(target: ClippingHost, key: ClippingKey) {
+    if (!(target instanceof Cesium3DTileset) || this.targetLeases(key).has(target)) return;
+    // Do not feed legacy freeform polygons through the newer footprint compiler:
+    // that would add local-span/topology restrictions to existing user inputs.
+    // Target leases preserve those semantics and allow reversible exclusive cuts.
+    const release = getTemporaryWorksClippingManager(this.viewer).suspendTarget(target,
+      key === "clippingPlanes" ? this.sectionLeaseOwner ?? this.clippingTargets : this.excavationLeaseOwner ?? this.excavationClipTargets);
+    this.targetLeases(key).set(target, release);
+  }
+  private releaseTargetLease(target: object, key: ClippingKey) {
+    const leases = this.targetLeases(key), release = leases.get(target);
+    leases.delete(target); release?.();
+  }
+  private releaseTarget(target: object, targets: Map<object, OwnedClipping>, key: ClippingKey) {
+    const collection = targets.get(target); if (!collection) return;
+    const host = target as ClippingHost;
+    try {
+      if (!host.isDestroyed?.()) {
+        const release = key === "clippingPlanes" ? releaseBorrowedClippingPlanes : releaseBorrowedClippingPolygons;
+        release(target, collection);
+        if (host[key] === collection) {
+          if (collection.isDestroyed()) {
+            // Globe delegates ownership to its tile provider in locked Cesium 1.144.
+            const owner = (target as { _surface?: { tileProvider?: object } })._surface?.tileProvider ?? target;
+            (owner as Record<string, unknown>)[key === "clippingPlanes" ? "_clippingPlanes" : "_clippingPolygons"] = undefined;
+            (target as { resetDrawCommands?(): void }).resetDrawCommands?.();
+          } else {
+            collection.enabled = false;
+            // The public setter releases only our exact live owner.
+            (host as Record<ClippingKey, OwnedClipping | undefined>)[key] = undefined;
+          }
+        }
+      }
+      if (!collection.isDestroyed()) collection.destroy();
+    } finally {
+      // A throwing host setter may leave the original owner bound. Keep that
+      // exact ownership proof so rollback/another close can retry safely.
+      if (host.isDestroyed?.() || host[key] !== collection) targets.delete(target);
+    }
+  }
+  private pruneDetachedTargets() {
+    const current = new Set<object>([this.viewer.scene.globe]);
+    for (const item of this.imports()) if ((item.kind === "3D Tiles" || item.kind === "Model") && !(item.resource as ClippingHost).isDestroyed?.()) current.add(item.resource as object);
+    for (const [targets, key] of [[this.clippingTargets, "clippingPlanes"], [this.excavationClipTargets, "clippingPolygons"]] as const) {
+      for (const target of new Set([...targets.keys(), ...this.targetLeases(key).keys()])) if (!current.has(target)) {
+        this.releaseTarget(target, targets, key); this.releaseTargetLease(target, key);
+      }
+    }
+  }
+
+  /** AR owns a temporary suspension, not the user's controls or saved geometry.
+   * Keep target leases while paused, so managed map cuts cannot reappear between
+   * participants. The final release rebuilds from current controls/imports. */
+  suspendExternalSceneEffects(): () => void {
+    if (this.disposed) return () => {};
+    this.effectsSuspensions = (this.effectsSuspensions ?? 0) + 1;
+    if (this.effectsSuspensions === 1) {
+      this.resumeEffectsInput = this.suspendInteractions();
+      this.overlayBeforeSuspension = this.overlay.show;
+      try {
+        this.clearSectionClipping(true); this.clearExcavationClipping(true);
+        this.overlay.show = false; this.releaseGroundMode(); this.requestRender();
+      } catch (error) {
+        this.effectsSuspensions = 0;
+        this.resumeEffectsInput?.(); this.resumeEffectsInput = undefined;
+        this.overlay.show = this.overlayBeforeSuspension ?? true; this.overlayBeforeSuspension = undefined;
+        try { this.applyGroundMode(); this.refreshClipping(); }
+        catch (restoreError) { throw new AggregateError([error, restoreError], "地下效果暂停及恢复均失败，请保留错误详情。", { cause: error }); }
+        throw error;
+      }
+    }
+    let released = false;
+    return () => {
+      if (released) return; released = true;
+      this.effectsSuspensions = Math.max(0, this.effectsSuspensions - 1);
+      if (this.disposed || this.effectsSuspensions) return;
+      this.resumeEffectsInput?.(); this.resumeEffectsInput = undefined;
+      this.overlay.show = this.overlayBeforeSuspension ?? true; this.overlayBeforeSuspension = undefined;
+      this.applyGroundMode(); this.refreshClipping(); this.requestRender();
+    };
+  }
+
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true; this.lifecycle?.abort(); this.pendingSectionUpdate?.(); this.pendingSectionUpdate = undefined;
+    this.interactionMode = null; this.resumeEffectsInput?.(); this.resumeEffectsInput = undefined; this.effectsSuspensions = 0;
+    const errors: unknown[] = [];
+    const cleanup = (operation: () => void) => { try { operation(); } catch (error) { errors.push(error); } };
+    cleanup(() => this.clearSectionClipping()); cleanup(() => this.clearExcavationClipping()); cleanup(() => this.releaseGroundMode());
+    cleanup(() => { if (!this.handler.isDestroyed?.()) this.handler.destroy(); });
+    cleanup(() => { if (!this.viewer.isDestroyed?.()) this.viewer.dataSources.remove(this.overlay, true); });
+    this.archiveOverviewListeners?.clear();
+    for (const [url, timer] of this.downloadUrls ?? []) { clearTimeout(timer); URL.revokeObjectURL(url); }
+    this.downloadUrls?.clear();
+    if (errors.length) console.warn("[Subsurface] Cleanup errors", errors);
   }
 
   /**
@@ -376,6 +494,7 @@ export class SubsurfaceTools {
    * our affected owners from the existing section/excavation configuration.
    */
   recoverFromDestroyedResources() {
+    if (this.disposed) return 0;
     let detached = 0;
     let failedClippingTiles = 0;
     const failedTiles = this.clippingFailedTiles ??= new WeakSet<object>();
@@ -397,7 +516,8 @@ export class SubsurfaceTools {
         }
         if (collection.isDestroyed()) {
           if (candidate[publicKey] === collection || candidate[privateKey] === collection) {
-            candidate[privateKey] = undefined;
+            const owner = (target as { _surface?: { tileProvider?: object } })._surface?.tileProvider ?? candidate;
+            (owner as Record<string, unknown>)[privateKey] = undefined;
             restores.add(target);
             // A directly imported Model may already have commands whose
             // uniforms captured the deleted clipping texture.
@@ -441,7 +561,7 @@ export class SubsurfaceTools {
           if (state.contentFailed) failedClippingTiles += 1;
           else failedTiles.delete(tile);
         }
-        pending.push(...(tile.children ?? []));
+        for (const child of tile.children ?? []) pending.push(child);
       }
       repaired += recoverDestroyedClippingReferences(target);
       detached += repaired;
@@ -458,7 +578,7 @@ export class SubsurfaceTools {
     }
     // First clear borrowed tile-model references, then replace only owners that
     // belonged to this tool. A live replacement supplied elsewhere is untouched.
-    if (sectionRestores.size && element<HTMLInputElement>("#sectionEnabled").checked && this.sectionAnchor) {
+    if (!this.effectsSuspensions && sectionRestores.size && element<HTMLInputElement>("#sectionEnabled").checked && this.sectionAnchor) {
       const worldFrame = Transforms.eastNorthUpToFixedFrame(this.sectionAnchor);
       const globe = this.viewer.scene.globe;
       if (sectionRestores.has(globe)) this.updateSectionCollection(globe, worldFrame);
@@ -468,7 +588,7 @@ export class SubsurfaceTools {
         if (sectionRestores.has(target)) this.updateSectionCollection(target, this.targetClipMatrix(item, worldFrame));
       }
     }
-    if (excavationRestores.size && element<HTMLInputElement>("#clipExcavationSurface").checked && this.excavationFinished && this.excavationPoints.length >= 3) {
+    if (!this.effectsSuspensions && excavationRestores.size && element<HTMLInputElement>("#clipExcavationSurface").checked && this.excavationFinished && this.excavationPoints.length >= 3) {
       for (const item of imports) {
         if (item.kind !== "Model" && item.kind !== "3D Tiles") continue;
         const target = item.resource as Model | Cesium3DTileset;
@@ -482,51 +602,56 @@ export class SubsurfaceTools {
     return detached;
   }
 
+  private listen(target: EventTarget, type: string, listener: EventListener) {
+    target.addEventListener(type, listener, { signal: this.lifecycle.signal });
+  }
   private bindInterface() {
-    element("#openSubsurfacePanel").addEventListener("click", () => element("#subsurfacePanel").classList.toggle("hidden"));
-    element("#closeSubsurfacePanel").addEventListener("click", () => element("#subsurfacePanel").classList.add("hidden"));
-    document.querySelectorAll<HTMLButtonElement>("[data-subtab]").forEach((button) => button.addEventListener("click", () => {
+    const on = (selector: string, type: string, listener: EventListener) => this.listen(element(selector), type, listener);
+    on("#openSubsurfacePanel", "click", () => element("#subsurfacePanel").classList.toggle("hidden"));
+    on("#closeSubsurfacePanel", "click", () => element("#subsurfacePanel").classList.add("hidden"));
+    document.querySelectorAll<HTMLButtonElement>("[data-subtab]").forEach((button) => this.listen(button, "click", () => {
       document.querySelectorAll("[data-subtab]").forEach((item) => item.classList.remove("active"));
       document.querySelectorAll("[data-subpanel]").forEach((item) => item.classList.remove("active"));
       button.classList.add("active");
       element(`[data-subpanel="${button.dataset.subtab}"]`).classList.add("active");
     }));
 
-    element("#groundTransparent").addEventListener("change", () => this.applyGroundMode());
-    element("#groundAlpha").addEventListener("input", () => this.applyGroundMode());
-    element("#undergroundMode").addEventListener("change", () => this.applyGroundMode());
-    element("#diveUnderground").addEventListener("click", () => this.diveUnderground());
-    element("#sectionEnabled").addEventListener("change", () => this.refreshClipping());
-    ["#sectionDirection", "#sectionInvert"].forEach((selector) => element(selector).addEventListener("change", () => this.refreshClipping()));
-    element("#sectionOffset").addEventListener("input", () => {
+    on("#groundTransparent", "change", () => this.applyGroundMode());
+    on("#groundAlpha", "input", () => this.applyGroundMode());
+    on("#undergroundMode", "change", () => this.applyGroundMode());
+    on("#diveUnderground", "click", () => this.diveUnderground());
+    on("#sectionEnabled", "change", () => this.refreshClipping());
+    ["#sectionDirection", "#sectionInvert"].forEach((selector) => on(selector, "change", () => this.refreshClipping()));
+    on("#sectionOffset", "input", () => {
       element<HTMLOutputElement>("#sectionOffsetValue").value = `${numberValue("#sectionOffset")}m`;
       this.refreshClipping();
     });
-    element("#pickSectionPoint").addEventListener("click", () => this.beginInteraction("section", "单击地图选择剖面经过的位置"));
+    on("#pickSectionPoint", "click", () => this.beginInteraction("section", "单击地图选择剖面经过的位置"));
 
-    element("#drawExcavation").addEventListener("click", () => this.startExcavationDrawing());
-    element("#clearExcavation").addEventListener("click", () => this.clearExcavation());
-    element("#runCollisionCheck").addEventListener("click", () => this.runCollisionCheck());
+    on("#drawExcavation", "click", () => this.startExcavationDrawing());
+    on("#clearExcavation", "click", () => this.clearExcavation());
+    on("#runCollisionCheck", "click", () => this.runCollisionCheck());
     ["#excavationMode", "#excavationDepth", "#excavationSlope"].forEach((selector) => {
-      element(selector).addEventListener("input", () => { if (this.excavationFinished) this.updateExcavationGraphic(true); });
-      element(selector).addEventListener("change", () => { if (this.excavationFinished) this.updateExcavationGraphic(true); });
+      on(selector, "input", () => { if (this.excavationFinished) this.updateExcavationGraphic(true); });
+      on(selector, "change", () => { if (this.excavationFinished) this.updateExcavationGraphic(true); });
     });
-    element("#clipExcavationSurface").addEventListener("change", () => {
-      if (element<HTMLInputElement>("#clipExcavationSurface").checked) this.applyExcavationClipping(); else this.clearExcavationClipping();
+    on("#clipExcavationSurface", "change", () => {
+      try { if (element<HTMLInputElement>("#clipExcavationSurface").checked) this.applyExcavationClipping(); else this.clearExcavationClipping(); }
+      catch (error) { this.notify(error instanceof Error ? error.message : String(error), true); }
     });
 
-    element("#pickHiddenWorkPoint").addEventListener("click", () => this.beginInteraction("archive", "单击地图选择隐蔽工程坐标"));
-    element<HTMLInputElement>("#beforePhotos").addEventListener("change", () => this.updatePhotoInputStatus("#beforePhotos", "#beforePhotoStatus"));
-    element<HTMLInputElement>("#afterPhotos").addEventListener("change", () => this.updatePhotoInputStatus("#afterPhotos", "#afterPhotoStatus"));
-    element("#saveHiddenWork").addEventListener("click", () => void this.saveArchive());
-    element("#cancelHiddenWorkEdit").addEventListener("click", () => this.resetArchiveForm());
-    element("#exportHiddenWorks").addEventListener("click", () => this.exportArchives());
-    element("#hiddenWorkList").addEventListener("click", (event) => void this.handleArchiveAction(event));
+    on("#pickHiddenWorkPoint", "click", () => this.beginInteraction("archive", "单击地图选择隐蔽工程坐标"));
+    on("#beforePhotos", "change", () => this.updatePhotoInputStatus("#beforePhotos", "#beforePhotoStatus"));
+    on("#afterPhotos", "change", () => this.updatePhotoInputStatus("#afterPhotos", "#afterPhotoStatus"));
+    on("#saveHiddenWork", "click", () => void this.saveArchive());
+    on("#cancelHiddenWorkEdit", "click", () => this.resetArchiveForm());
+    on("#exportHiddenWorks", "click", () => this.exportArchives());
+    on("#hiddenWorkList", "click", (event) => void this.handleArchiveAction(event));
   }
 
   private bindMapInteraction() {
     this.handler.setInputAction((movement: { position: Cartesian2 }) => {
-      if (this.interactionSuspensionDepth > 0) return;
+      if (this.disposed || this.interactionSuspensionDepth > 0) return;
       if (!this.interactionMode) return;
       const picked = this.pickSurfacePosition(movement.position);
       if (!picked) return this.notify("当前位置无法取得地面或模型坐标，请换一个位置", true);
@@ -556,7 +681,7 @@ export class SubsurfaceTools {
       }
     }, ScreenSpaceEventType.LEFT_CLICK);
     this.handler.setInputAction(() => {
-      if (this.interactionSuspensionDepth > 0) return;
+      if (this.disposed || this.interactionSuspensionDepth > 0) return;
       if (this.interactionMode !== "excavation") return;
       if (this.excavationPoints.length < 3) return this.notify("开挖范围至少需要 3 个点", true);
       this.interactionMode = null;
@@ -568,6 +693,7 @@ export class SubsurfaceTools {
   }
 
   private beginInteraction(mode: Exclude<InteractionMode, null>, message: string) {
+    if (this.disposed || this.effectsSuspensions > 0) return;
     this.interactionMode = mode;
     this.notify(message);
   }
@@ -598,23 +724,47 @@ export class SubsurfaceTools {
   }
 
   private applyGroundMode() {
+    if (this.disposed || this.effectsSuspensions > 0 || this.viewer.isDestroyed?.()) return;
     const translucent = element<HTMLInputElement>("#groundTransparent").checked;
     const underground = element<HTMLInputElement>("#undergroundMode").checked;
     const alpha = Math.max(0.05, Math.min(1, numberValue("#groundAlpha", 0.35)));
     const globe = this.viewer.scene.globe;
     element<HTMLOutputElement>("#groundAlphaValue").value = `${Math.round(alpha * 100)}%`;
+    if (!translucent && !underground) { this.releaseGroundMode(); this.requestRender(); return; }
+    this.groundBaseline ??= this.readGroundState();
     globe.translucency.enabled = translucent || underground;
     globe.translucency.frontFaceAlpha = translucent || underground ? alpha : 1;
     globe.translucency.backFaceAlpha = translucent || underground ? Math.min(1, alpha + 0.2) : 1;
     this.viewer.scene.screenSpaceCameraController.enableCollisionDetection = underground ? false : this.originalCollision;
     globe.depthTestAgainstTerrain = underground ? false : this.originalDepthTest;
+    this.groundApplied = this.readGroundState();
     if (underground && !translucent) {
       element<HTMLInputElement>("#groundTransparent").checked = true;
     }
     this.viewer.scene.requestRender();
   }
 
+  private readGroundState(): GroundState {
+    const globe = this.viewer.scene.globe;
+    return { enabled: globe.translucency.enabled, front: globe.translucency.frontFaceAlpha,
+      back: globe.translucency.backFaceAlpha, collision: this.viewer.scene.screenSpaceCameraController.enableCollisionDetection,
+      depth: globe.depthTestAgainstTerrain };
+  }
+  private releaseGroundMode() {
+    const baseline = this.groundBaseline, applied = this.groundApplied;
+    this.groundBaseline = undefined; this.groundApplied = undefined;
+    if (!baseline || !applied || this.viewer.isDestroyed?.()) return;
+    const globe = this.viewer.scene.globe, current = this.readGroundState();
+    // A later writer owns fields whose values differ from our last application.
+    if (current.enabled === applied.enabled) globe.translucency.enabled = baseline.enabled;
+    if (current.front === applied.front) globe.translucency.frontFaceAlpha = baseline.front;
+    if (current.back === applied.back) globe.translucency.backFaceAlpha = baseline.back;
+    if (current.collision === applied.collision) this.viewer.scene.screenSpaceCameraController.enableCollisionDetection = baseline.collision;
+    if (current.depth === applied.depth) globe.depthTestAgainstTerrain = baseline.depth;
+  }
+
   private diveUnderground() {
+    if (this.disposed || this.effectsSuspensions > 0) return;
     if (!this.sectionAnchor) {
       const center = new Cartesian2(this.viewer.scene.canvas.clientWidth / 2, this.viewer.scene.canvas.clientHeight / 2);
       const picked = this.pickSurfacePosition(center)?.position;
@@ -649,17 +799,14 @@ export class SubsurfaceTools {
     if (item.kind === "Model") {
       origin = (item.resource as Model).modelMatrix;
     } else {
-      const tileset = item.resource as Cesium3DTileset;
-      const rootTransform = tileset.root.transform;
-      origin = Matrix4.equals(rootTransform, Matrix4.IDENTITY)
-        ? Transforms.eastNorthUpToFixedFrame(tileset.boundingSphere.center)
-        : Matrix4.multiply(tileset.modelMatrix, rootTransform, new Matrix4());
+      origin = tilesetClippingFrame(item.resource as Cesium3DTileset);
     }
     const inverse = Matrix4.inverse(origin, new Matrix4());
     return Matrix4.multiply(inverse, worldFrame, new Matrix4());
   }
 
   private requestSectionClipping() {
+    if (this.disposed || this.effectsSuspensions > 0) return;
     if (this.viewer.isDestroyed()) {
       this.clearSectionClipping();
       return;
@@ -670,7 +817,7 @@ export class SubsurfaceTools {
     this.pendingSectionUpdate ??= this.viewer.scene.preUpdate.addEventListener(() => {
       this.pendingSectionUpdate?.();
       this.pendingSectionUpdate = undefined;
-      if (this.viewer.isDestroyed()) return;
+      if (this.disposed || this.effectsSuspensions > 0 || this.viewer.isDestroyed()) return;
       try {
         // Read current controls, anchor and imports, not the scheduling event's snapshot.
         this.applySectionClipping();
@@ -683,26 +830,32 @@ export class SubsurfaceTools {
     this.viewer.scene.requestRender();
   }
 
-  private clearSectionClipping() {
+  private clearSectionClipping(keepLeases = this.effectsSuspensions > 0) {
     this.pendingSectionUpdate?.();
     this.pendingSectionUpdate = undefined;
-    if (this.viewer.isDestroyed()) return;
-    for (const collection of this.clippingTargets.values()) {
-      if (!collection.isDestroyed()) collection.enabled = false;
+    let failure: unknown;
+    for (const target of [...this.clippingTargets.keys()]) {
+      try { this.releaseTarget(target, this.clippingTargets, "clippingPlanes"); } catch (error) { failure ??= error; }
     }
-    this.viewer.scene.requestRender();
+    if (!keepLeases) for (const target of [...this.targetLeases("clippingPlanes").keys()]) {
+      try { this.releaseTargetLease(target, "clippingPlanes"); } catch (error) { failure ??= error; }
+    }
+    this.requestRender(); if (failure) throw failure;
   }
 
   private applySectionClipping() {
+    if (this.disposed || this.effectsSuspensions > 0) return;
     if (!element<HTMLInputElement>("#sectionEnabled").checked || !this.sectionAnchor) {
       return this.clearSectionClipping();
     }
+    this.pruneDetachedTargets();
     const worldFrame = Transforms.eastNorthUpToFixedFrame(this.sectionAnchor);
     const globe = this.viewer.scene.globe as typeof this.viewer.scene.globe & { clippingPlanes: ClippingPlaneCollection | undefined };
     this.updateSectionCollection(globe, worldFrame);
     for (const item of this.imports()) {
       if (item.kind !== "3D Tiles" && item.kind !== "Model") continue;
       const target = item.resource as (Cesium3DTileset | Model) & { clippingPlanes: ClippingPlaneCollection | undefined };
+      if (target.isDestroyed()) continue;
       this.updateSectionCollection(target, this.targetClipMatrix(item, worldFrame));
     }
     this.updateSectionGuide();
@@ -710,10 +863,20 @@ export class SubsurfaceTools {
   }
 
   private updateSectionCollection(target: object & { clippingPlanes: ClippingPlaneCollection | undefined }, modelMatrix: Matrix4) {
+    if (this.disposed || this.effectsSuspensions > 0 || (target as ClippingHost).isDestroyed?.()) return;
     let collection = this.clippingTargets.get(target);
+    if (target.clippingPlanes && target.clippingPlanes !== collection) throw new Error("剖切目标正由其他功能使用，未替换其裁剪。请先关闭该功能。");
+    this.acquireTargetLease(target, "clippingPlanes");
+    const polygon = (target as ClippingHost).clippingPolygons;
+    if (polygon && polygon !== this.excavationClipTargets.get(target) && !isSurfaceEditGlobeClipping(polygon)) {
+      this.releaseTargetLease(target, "clippingPlanes");
+      throw new Error("剖切目标正由其他功能开挖，未替换其裁剪。请先关闭该功能。");
+    }
     if (!collection || collection.isDestroyed() || target.clippingPlanes !== collection) {
+      if (collection) this.releaseTarget(target, this.clippingTargets, "clippingPlanes");
       collection = this.createClippingCollection(modelMatrix);
-      target.clippingPlanes = collection;
+      try { target.clippingPlanes = collection; }
+      catch (error) { if (!collection.isDestroyed()) collection.destroy(); this.releaseTargetLease(target, "clippingPlanes"); throw error; }
       this.clippingTargets.set(target, collection);
       return;
     }
@@ -744,6 +907,7 @@ export class SubsurfaceTools {
   }
 
   private startExcavationDrawing() {
+    if (this.disposed || this.effectsSuspensions > 0) return;
     this.clearExcavation();
     this.interactionMode = "excavation";
     element("#collisionSummary").textContent = "请在地图上逐点单击，右键完成开挖边界";
@@ -810,18 +974,24 @@ export class SubsurfaceTools {
     volumePanel.innerHTML = `<strong>预计挖方 ${volume.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} m³</strong><span>顶口面积 ${topArea.toFixed(2)}㎡ · 坑底面积 ${bottomArea.toFixed(2)}㎡</span><small>深度 ${depth.toFixed(2)}m${slopeMode ? ` · 坡比 1:${slopeRatio.toFixed(2)} · 放坡宽度 ${insetDistance.toFixed(2)}m` : " · 垂直开挖"}</small>`;
   }
 
-  private clearExcavationClipping() {
-    for (const collection of this.excavationClipTargets.values()) {
-      if (!collection.isDestroyed()) collection.enabled = false;
+  private clearExcavationClipping(keepLeases = this.effectsSuspensions > 0) {
+    let failure: unknown;
+    for (const target of [...this.excavationClipTargets.keys()]) {
+      try { this.releaseTarget(target, this.excavationClipTargets, "clippingPolygons"); } catch (error) { failure ??= error; }
     }
-    this.viewer.scene.requestRender();
+    if (!keepLeases) for (const target of [...this.targetLeases("clippingPolygons").keys()]) {
+      try { this.releaseTargetLease(target, "clippingPolygons"); } catch (error) { failure ??= error; }
+    }
+    this.requestRender(); if (failure) throw failure;
   }
 
   private applyExcavationClipping() {
+    if (this.disposed || this.effectsSuspensions > 0 || this.viewer.isDestroyed?.()) return;
     if (!this.excavationFinished || this.excavationPoints.length < 3 || !element<HTMLInputElement>("#clipExcavationSurface").checked) {
       this.clearExcavationClipping();
       return;
     }
+    this.pruneDetachedTargets();
     if (!ClippingPolygonCollection.isSupported(this.viewer.scene)) {
       element<HTMLInputElement>("#clipExcavationSurface").checked = false;
       this.clearExcavationClipping();
@@ -835,20 +1005,30 @@ export class SubsurfaceTools {
     for (const item of this.imports()) {
       if (item.kind !== "3D Tiles" && item.kind !== "Model") continue;
       const target = item.resource as (Cesium3DTileset | Model) & { clippingPolygons: ClippingPolygonCollection | undefined };
+      if (target.isDestroyed()) continue;
       this.updateExcavationCollection(target);
     }
     this.viewer.scene.requestRender();
   }
 
   private updateExcavationCollection(target: object & { clippingPolygons: ClippingPolygonCollection | undefined }) {
+    if (this.disposed || this.effectsSuspensions > 0 || (target as ClippingHost).isDestroyed?.()) return;
     let collection = this.excavationClipTargets.get(target);
+    this.acquireTargetLease(target, "clippingPolygons");
+    const plane = (target as ClippingHost).clippingPlanes;
+    if (target.clippingPolygons && target.clippingPolygons !== collection || plane?.enabled && plane !== this.clippingTargets.get(target)) {
+      this.releaseTargetLease(target, "clippingPolygons");
+      throw new Error("开挖目标正由其他功能裁剪，未替换其资源。请先关闭该功能。");
+    }
     if (!collection || collection.isDestroyed() || target.clippingPolygons !== collection) {
+      if (collection) this.releaseTarget(target, this.excavationClipTargets, "clippingPolygons");
       collection = new ClippingPolygonCollection({
         polygons: [new ClippingPolygon({ positions: this.excavationPoints })],
         inverse: false,
         quality: 1.5,
       });
-      target.clippingPolygons = collection;
+      try { target.clippingPolygons = collection; }
+      catch (error) { if (!collection.isDestroyed()) collection.destroy(); this.releaseTargetLease(target, "clippingPolygons"); throw error; }
       this.excavationClipTargets.set(target, collection);
       return;
     }
@@ -869,7 +1049,9 @@ export class SubsurfaceTools {
       inverse: false,
       quality: 1.5,
     });
-    target.clippingPolygons = replacement;
+    releaseBorrowedClippingPolygons(target, collection);
+    try { target.clippingPolygons = replacement; }
+    catch (error) { if (!replacement.isDestroyed()) replacement.destroy(); throw error; }
     this.excavationClipTargets.set(target, replacement);
   }
 
@@ -938,7 +1120,7 @@ export class SubsurfaceTools {
     hits.forEach((hit, index) => this.overlay.entities.add({ id: `collision-${index}`, position: hit.position, point: { pixelSize: 13, color: hit.kind === "空间碰撞" ? Color.RED : Color.ORANGE, outlineColor: Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY }, label: { text: `⚠ ${hit.kind}`, font: "13px sans-serif", fillColor: Color.WHITE, outlineColor: Color.BLACK, outlineWidth: 3, pixelOffset: new Cartesian2(0, -24), disableDepthTestDistance: Number.POSITIVE_INFINITY } }));
     element("#collisionSummary").textContent = hits.length ? `发现 ${hits.length} 处风险：${hits.filter((hit) => hit.kind === "空间碰撞").length} 处空间碰撞，${hits.filter((hit) => hit.kind === "平面相交").length} 处高程待核` : `已检查 ${candidates.length} 条管线，未发现碰撞`;
     element("#collisionResults").innerHTML = hits.length ? hits.map((hit) => `<button data-hit-index="${hits.indexOf(hit)}"><strong>${escapeHtml(hit.kind)}</strong><span>${escapeHtml(hit.layer)} · ${escapeHtml(hit.entity)}</span><small>相对开挖面高差 ${hit.heightDifference.toFixed(2)}m</small></button>`).join("") : '<div class="collision-ok">✓ 未发现相交管线</div>';
-    element("#collisionResults").querySelectorAll<HTMLButtonElement>("[data-hit-index]").forEach((button) => button.addEventListener("click", () => {
+    element("#collisionResults").querySelectorAll<HTMLButtonElement>("[data-hit-index]").forEach((button) => this.listen(button, "click", () => {
       const hit = hits[Number(button.dataset.hitIndex)];
       if (hit) this.viewer.camera.flyTo({ destination: Cartesian3.add(hit.position, new Cartesian3(0, 0, 80), new Cartesian3()), duration: 0.8 });
     }));
@@ -954,6 +1136,7 @@ export class SubsurfaceTools {
     const files = [...(element<HTMLInputElement>(selector).files ?? [])];
     const result: PhotoRecord[] = [];
     for (const file of files) {
+      if (this.disposed) throw new DOMException("地下工程已关闭", "AbortError");
       if (!file.type.startsWith("image/")) throw new Error(`${file.name} 不是图片文件`);
       if (file.size > 15 * 1024 * 1024) throw new Error(`${file.name} 超过 15MB，请压缩后再归档`);
       result.push({ id: crypto.randomUUID(), name: file.name, type: file.type, dataUrl: await fileAsDataUrl(file), createdAt: new Date().toISOString() });
@@ -962,6 +1145,7 @@ export class SubsurfaceTools {
   }
 
   private async saveArchive() {
+    if (this.disposed) return;
     if (this.archiveMutationPending) return this.notify("请等待当前档案保存或删除完成", true);
     this.archiveMutationPending = true;
     try {
@@ -986,13 +1170,15 @@ export class SubsurfaceTools {
         createdAt: previous?.createdAt ?? now,
         updatedAt: now,
       };
+      if (this.disposed) return;
       if (!record.beforePhotos.length && !record.afterPhotos.length) throw new Error("请至少选择一张施工前或施工后照片");
       await putArchiveRecord(record);
+      if (this.disposed) return;
       this.resetArchiveForm();
       await this.reloadArchives();
-      this.notify(previous ? "隐蔽工程档案已更新" : "隐蔽工程档案已保存到本机");
+      if (!this.disposed) this.notify(previous ? "隐蔽工程档案已更新" : "隐蔽工程档案已保存到本机");
     } catch (error) {
-      this.notify(error instanceof Error ? error.message : "隐蔽工程档案保存失败", true);
+      if (!this.disposed) this.notify(error instanceof Error ? error.message : "隐蔽工程档案保存失败", true);
     } finally { this.archiveMutationPending = false; }
   }
 
@@ -1008,13 +1194,16 @@ export class SubsurfaceTools {
   }
 
   private async reloadArchives() {
+    if (this.disposed) return;
     try {
-      this.records = await listArchiveRecords();
+      const records = await listArchiveRecords();
+      if (this.disposed) return;
+      this.records = records;
       this.renderArchiveMarkers();
       this.renderArchiveList();
       this.notifyArchiveOverview();
     } catch (error) {
-      element("#hiddenWorkList").innerHTML = `<div class="panel-status error-text">${escapeHtml(error instanceof Error ? error.message : "本地档案读取失败")}</div>`;
+      if (!this.disposed) element("#hiddenWorkList").innerHTML = `<div class="panel-status error-text">${escapeHtml(error instanceof Error ? error.message : "本地档案读取失败")}</div>`;
     }
   }
 
@@ -1033,6 +1222,7 @@ export class SubsurfaceTools {
   }
 
   private async handleArchiveAction(event: Event) {
+    if (this.disposed) return;
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-archive-action]");
     const card = button?.closest<HTMLElement>("[data-record-id]");
     const record = this.records.find((item) => item.id === card?.dataset.recordId);
@@ -1061,11 +1251,12 @@ export class SubsurfaceTools {
       this.archiveMutationPending = true;
       try {
         await deleteArchiveRecord(record.id);
+        if (this.disposed) return;
         if (element<HTMLInputElement>("#hiddenWorkId").value === record.id) this.resetArchiveForm();
         await this.reloadArchives();
-        this.notify("隐蔽工程档案已删除");
+        if (!this.disposed) this.notify("隐蔽工程档案已删除");
       } catch (error) {
-        this.notify(error instanceof Error ? error.message : "隐蔽工程档案删除失败", true);
+        if (!this.disposed) this.notify(error instanceof Error ? error.message : "隐蔽工程档案删除失败", true);
       } finally { this.archiveMutationPending = false; }
     }
   }
@@ -1076,11 +1267,12 @@ export class SubsurfaceTools {
   }
 
   private downloadJson(name: string, value: unknown) {
+    if (this.disposed) return;
     const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" }));
     const link = document.createElement("a");
     link.href = url;
     link.download = name.replace(/[\\/:*?"<>|]/g, "_");
     link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    this.downloadUrls.set(url, setTimeout(() => { this.downloadUrls.delete(url); URL.revokeObjectURL(url); }, 1000));
   }
 }

@@ -2,7 +2,7 @@ import { fieldObjectReferences, validateWorkflowFile, workflowCategory } from ".
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { mkdirSync, existsSync, readFileSync, realpathSync, writeFileSync, renameSync, unlinkSync, createReadStream } from "node:fs";
-import { resolve,join,basename,sep } from "node:path";
+import { resolve,join,basename,sep,posix } from "node:path";
 import type { IncomingMessage,ServerResponse } from "node:http";
 import type { Plugin } from "vite";
 import { MANAGEMENT_API,MANAGEMENT_COLLECTIONS, type ManagementCollection,type ManagementCommand,type ManagementRecord,type ManagementProject,type ManagementMember,type ManagementSnapshot,type ManagementRole,type ManagementSession,type ManagementFilters } from "../src/managementTypes.ts";
@@ -21,8 +21,9 @@ import type { ModelRegistryEntry } from "../src/safetySpatialTypes.ts";
 import type { RailSafetyRecord } from "../src/railSafetyTypes.ts";
 import { PositioningGateway, loadPositioningGatewayConfig, validatePositioningGatewayConfig, type PositioningGatewayConfig } from "./management/positioningGateway.ts";
 import { createMachineryTelemetryGateway, validateMachineryTelemetryFrame, type MachineryTelemetryConfig } from "./management/machineryTelemetryGateway.ts";
+import { BufferedUploadBudget, LoginAttemptBudget, type UploadBudgetOptions } from "./management/requestBudgets.ts";
 export { ManagementError } from "./management/domain.ts";
-export type ManagementStoreOptions={removeOwnedFile?:(path:string)=>void;dataDir?:string;projectId?:string;projectName?:string;libraryDataDir?:string;spatialDataDir?:string;modelRegistry?:ModelRegistryEntry[]|(()=>Promise<ModelRegistryEntry[]>);localCompatibility?:boolean;now?:()=>string;positioningConfig?:PositioningGatewayConfig;machineryTelemetryConfig?:MachineryTelemetryConfig;
+export type ManagementStoreOptions={cookieSecure?:boolean;uploadBudget?:UploadBudgetOptions;removeOwnedFile?:(path:string)=>void;dataDir?:string;projectId?:string;projectName?:string;libraryDataDir?:string;spatialDataDir?:string;modelRegistry?:ModelRegistryEntry[]|(()=>Promise<ModelRegistryEntry[]>);localCompatibility?:boolean;now?:()=>string;positioningConfig?:PositioningGatewayConfig;machineryTelemetryConfig?:MachineryTelemetryConfig;
  resolveSpatialReference?:(projectId:string,objectId:string)=>unknown|Promise<unknown>;
  resolveLibraryEvidence?:(projectId:string,recordId:string,fileKey:string)=>LibraryEvidence|undefined|Promise<LibraryEvidence|undefined>};
 type DbRow={data:string};
@@ -44,7 +45,7 @@ function errorOutput(res:ServerResponse,error:unknown,actor?:Actor){const e=publ
 function loopback(req:IncomingMessage){return ["127.0.0.1","::1","::ffff:127.0.0.1"].includes(req.socket.remoteAddress||"");}
 function sameOrigin(req:IncomingMessage){const origin=req.headers.origin;if(!origin)return;let host="";try{host=new URL(origin).host;}catch{/* denied */}if(!host||host!==req.headers.host)throw new ManagementError(403,"CROSS_ORIGIN","不允许跨站访问管理数据");}
 function canonical(value:unknown):string{if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+canonical((value as Record<string,unknown>)[k])).join(',')+'}';return JSON.stringify(value);}
-async function body(req:IncomingMessage,limit=1_048_576){let bytes=0;const chunks:Buffer[]=[];for await(const raw of req){const c=Buffer.from(raw);bytes+=c.length;if(bytes>limit)throw new ManagementError(413,"BODY_TOO_LARGE","请求超过大小限制");chunks.push(c);}return Buffer.concat(chunks);}
+async function body(req:IncomingMessage,limit=1_048_576,reserve?:(bytes:number)=>void){let bytes=0;const chunks:Buffer[]=[];for await(const raw of reserve?req.iterator({destroyOnReturn:false}):req){const c=Buffer.isBuffer(raw)?raw:Buffer.from(raw);bytes+=c.length;if(bytes>limit)throw new ManagementError(413,"BODY_TOO_LARGE","请求超过大小限制");reserve?.(c.length);chunks.push(c);}return Buffer.concat(chunks);}
 async function jsonBody(req:IncomingMessage){ensure(req.headers["content-type"]?.startsWith("application/json"),"CONTENT_TYPE","请求必须为JSON");try{return JSON.parse((await body(req)).toString("utf8"));}catch(e){if(e instanceof ManagementError)throw e;throw new ManagementError(400,"INVALID_JSON","JSON格式无效");}}
 function routeId(value:string){let decoded:string;try{decoded=decodeURIComponent(value);}catch{throw new ManagementError(400,"INVALID_ID","编号路径编码无效");}return id(decoded);}
 function requestMarker(req:IncomingMessage){if(req.headers["x-cesium-library"]!=="1")throw new ManagementError(403,"MISSING_REQUEST_MARKER","缺少同源业务请求标识");}
@@ -53,6 +54,9 @@ function passwordMatches(password:string,saved:string){const [salt,value]=saved.
 
 /** SQLite v1 is additive. Original library, media, model and spatial files are never migrated or rewritten. */
 export function createManagementStore(options:ManagementStoreOptions={}){
+ // Only explicit trusted deployment configuration enables Secure; forwarded headers are not authority.
+ const cookieSecure=options.cookieSecure??process.env.CESIUM_COOKIE_SECURE==="true";
+ const uploadBudget=new BufferedUploadBudget(options.uploadBudget);
  const root=resolve(options.dataDir||process.env.CESIUM_MANAGEMENT_DATA_DIR||process.env.CESIUM_DATA_DIR||join(process.cwd(),"project-data"));mkdirSync(root,{recursive:true});
  const legacyEventPath=join(options.spatialDataDir||process.env.CESIUM_SAFETY_DATA_DIR||root,"safety-events.json");
  const libraryRoot=resolve(options.libraryDataDir||process.env.CESIUM_DATA_DIR||join(process.cwd(),"project-data"));
@@ -172,22 +176,24 @@ export function createManagementStore(options:ManagementStoreOptions={}){
  const eventBridge=createManagementEventBridge({projectId:legacyProjectId,legacy:()=>readLegacyEvents(legacyEventPath),fresh:actor=>fresh(actor,legacyProjectId),snapshot:actor=>snapshot(legacyProjectId,fresh(actor,legacyProjectId)),command});
  function metrics(projectId:string,actor:Actor,D:string,F=now(),filters:ManagementFilters={}){allow(actor,"read");F=instant(F,"确认截止F");return calculateMetrics(collections(projectId,actor,F),{D,F,now:now(),revision:revision(),filters});}
  function login(username:string,password:string,projectId:string){const row=db.prepare("SELECT id,password_hash,active FROM users WHERE username=?").get(username.toLowerCase()) as {id:string;password_hash:string;active:number}|undefined;if(!row?.active||!passwordMatches(password,row.password_hash))throw new ManagementError(401,"INVALID_CREDENTIALS","用户名或密码不正确");const expiresAt=new Date(Date.parse(now())+SESSION_MS).toISOString(),actor=accountActor(row.id,projectId,expiresAt),token=randomBytes(32).toString("hex");db.prepare("DELETE FROM sessions WHERE expires_at<=?").run(now());db.prepare("INSERT INTO sessions VALUES(?,?,?)").run(hash(token),row.id,expiresAt);return {actor,token};}
- const cookie=(res:ServerResponse,token:string)=>{res.setHeader("Clear-Site-Data",'"cache"');res.setHeader("Set-Cookie",`${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MS/1000}`);};
- const failedLogins=new Map<string,{count:number;since:number}>();
+ const cookie=(res:ServerResponse,token:string)=>{res.setHeader("Clear-Site-Data",'"cache"');res.setHeader("Set-Cookie",`${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${token?SESSION_MS/1000:0}${cookieSecure?"; Secure":""}`);};
+ const failedLogins=new LoginAttemptBudget();
  async function accessMiddleware(req:IncomingMessage,res:ServerResponse,next:()=>void){
-  try{let path=new URL(req.url||"/","http://localhost").pathname;for(let i=0;i<2;i++){const decoded=decodeURIComponent(path);if(decoded===path)break;path=decoded;}path=path.replaceAll("\\","/");const lower=path.toLowerCase();
+  try{let path=new URL(req.url||"/","http://localhost").pathname;for(let i=0;i<2;i++){const decoded=decodeURIComponent(path);if(decoded===path)break;path=decoded;}path=posix.normalize(path.replaceAll("\\","/"));const lower=path.toLowerCase();
    // Filesystem routes are not an alternative object store, even for an owner.
-   const rawRoots=["/project-data/","/tmp/","/output/","/.local-backups/","/server/","/.git/"];
-   const direct=rawRoots.some(x=>(lower+"/").startsWith(x))||lower.startsWith("/@fs/")&&!['/node_modules/','/src/','/ar_v2/web/'].some(x=>lower.startsWith('/@fs/'+process.cwd().replaceAll('\\','/').toLowerCase()+x));
+   const rawRoots=["/project-data/","/tmp/","/output/","/.local-backups/","/server/","/.git/","/.model-cache/","/.cad-cache/","/.local-imagery-cache/","/.render-errors/","/.basemap-cache/","/private-assets/","/private-asset-audit/","/docs/temporary-works-upgrade/private/","/tools/sketchup-sdk/","/tools/navisworksbridge/bin/","/video_ar_backend/.venv/","/video_ar_backend/data/","/video_ar_backend/tools/colmap/","/video_ar_backend/tools/ffmpeg/","/ar_v2/.venv/"];
+   const privateFile=["/model-converters.json","/video_ar_backend/.env","/video_ar_backend/dji_extractor_launcher.log","/acad.err"].includes(lower)||/^\/\.env(?:\.[^/]*)?$/.test(lower)&&lower!=="/.env.example"||/^\/docs\/temporary-works-upgrade\/assets-[^/]+\.json$/.test(lower)||/^\/video_ar_backend\/tools\/[^/]+\.zip$/.test(lower);
+   const direct=privateFile||rawRoots.some(x=>(lower+"/").startsWith(x))||lower.startsWith("/@fs/")&&!['/node_modules/','/src/','/ar_v2/web/'].some(x=>lower.startsWith('/@fs/'+process.cwd().replaceAll('\\','/').toLowerCase()+x));
    if(direct)throw new ManagementError(403,"RAW_STORAGE_FORBIDDEN","请通过受控资料或模型接口访问文件");
-   if(!/^\/__(library|local_tiles|models|local_imagery|safety)(?:\/|$)/.test(path)){next();return;}
+   if(!/^\/__(library|local_tiles|models|local_imagery|safety|diagnostics|engineering-components)(?:\/|$)/.test(path)){next();return;}
    sameOrigin(req);const actor=authenticate(req,legacyProjectId);setManagementActor(req,actor);if(path==="/__safety/events"){next();return;}const read=req.method==="GET"||req.method==="HEAD";
+   if(path.startsWith("/__diagnostics/")){allow(actor,req.method==="POST"?"read":"admin");next();return;}
    if(actor.taskIds!==undefined){
     const sourceFile=path.match(/^\/__library\/files\/([^/]+)\/([^/]+)\/.+$/);
     if(read&&sourceFile){const referenced=list(legacyProjectId,"evidence").find(e=>e.url===path&&visible(actor,e,"evidence"));if(referenced)authorizeEvidence(legacyProjectId,actor,referenced.id);if(!referenced)throw new ManagementError(403,"FILE_FORBIDDEN","原件或预览未关联当前授权任务");}
     else throw new ManagementError(403,"RESOURCE_SCOPE_FORBIDDEN","完整工程模型与目录需要单独的全项目授权");
    }
-   if(path.startsWith("/__local_tiles")||path.startsWith("/__models")||path.startsWith("/__safety/models")||path.startsWith("/__safety/model-optimization"))allow(actor,read?"models":"admin");
+   if(path.startsWith("/__local_tiles")||path.startsWith("/__models")||path.startsWith("/__safety/models")||path.startsWith("/__safety/model-optimization")||path.startsWith("/__engineering-components"))allow(actor,read?"models":"admin");
    else if(path.startsWith("/__local_imagery"))allow(actor,read?"models":"admin");
    else if(path.startsWith("/__safety"))allow(actor,read?"read":"field");
    else if(path.startsWith("/__library")){
@@ -231,8 +237,24 @@ export function createManagementStore(options:ManagementStoreOptions={}){
   let objectRefs:unknown;const rawRefs=url.searchParams.get("objectRefs");if(rawRefs!==null){try{objectRefs=JSON.parse(rawRefs);}catch{throw new ManagementError(400,"INVALID_OBJECT_REFS","对象关联JSON无效");}}
   validateMachineryDocumentRefs(machineCategory,objectRefs);
   fieldObjectReferences({actor,projectId,now:now(),get:(kind,key)=>authorizedGet(projectId,actor,kind,key)},objectRefs);
-  const data=await body(req,100*1024*1024);ensure(data.length>0,"EMPTY_FILE","附件为空");const taskId=url.searchParams.get("taskId")||undefined;if(taskId)authorizedGet(projectId,actor,"tasks",id(taskId));allow(actor,"files");const key=randomUUID(),folder=join(root,"management-files"),destination=join(folder,key),tmp=destination+".pending";mkdirSync(folder,{recursive:true});writeFileSync(tmp,data,{flag:"wx"});renameSync(tmp,destination);
-  const task=queue.catch(()=>undefined).then(()=>{db.exec("BEGIN IMMEDIATE");try{const current=fresh(actor,projectId),at=now();authorizeUpload(current);if(taskId)authorizedGet(projectId,current,"tasks",taskId);const record:ManagementRecord={id:key,projectId,revision:1,name,status:"ready",createdAt:at,updatedAt:at,createdBy:current.id,taskId,workflowCategory:category,machineryDocumentCategory:machineCategory,...fieldObjectReferences({actor:current,projectId,now:at,get:(kind,key)=>authorizedGet(projectId,current,kind,key)},objectRefs),storageName:key,size:data.length,mime,sha256:hash(data),url:`${MANAGEMENT_API}/files/${key}/original?projectId=${encodeURIComponent(projectId)}`};authorizeRecord(current,"evidence",record,recordSource(projectId),true);storeRecord(projectId,"evidence",record);bump();audit(projectId,current,{type:"evidence.register",projectId,idempotencyKey:key,payload:{reason:"受控二进制上传"}},key,null,1,at);db.exec("COMMIT");return record;}catch(e){db.exec("ROLLBACK");try{unlinkSync(destination);}catch{/* original error retained */}throw e;}});queue=task;output(res,201,await task);
+  const maxBytes=100*1024*1024,declaredLength=Number(req.headers["content-length"]);
+  if(Number.isFinite(declaredLength)&&declaredLength>maxBytes)throw new ManagementError(413,"BODY_TOO_LARGE","请求超过大小限制");
+  const lease=uploadBudget.acquire();let tmp:string|undefined,destination:string|undefined,data:Buffer|undefined,onDisconnect:(()=>void)|undefined,committed=false;
+  try{
+   data=await body(req,maxBytes,lease.reserve);ensure(data.length>0,"EMPTY_FILE","附件为空");
+   const assertConnected=()=>{if(req.aborted||res.destroyed)throw new ManagementError(499,"UPLOAD_ABORTED","附件上传已取消");};
+   assertConnected();const taskId=url.searchParams.get("taskId")||undefined;if(taskId)authorizedGet(projectId,actor,"tasks",id(taskId));allow(actor,"files");
+   const key=randomUUID(),folder=join(root,"management-files");destination=join(folder,key);tmp=destination+".pending";mkdirSync(folder,{recursive:true});writeFileSync(tmp,data,{flag:"wx"});renameSync(tmp,destination);
+   const task=queue.catch(()=>undefined).then(()=>{assertConnected();const bytes=data;ensure(bytes,"UPLOAD_ABORTED","附件上传已取消");db.exec("BEGIN IMMEDIATE");try{const current=fresh(actor,projectId),at=now();authorizeUpload(current);if(taskId)authorizedGet(projectId,current,"tasks",taskId);const record:ManagementRecord={id:key,projectId,revision:1,name,status:"ready",createdAt:at,updatedAt:at,createdBy:current.id,taskId,workflowCategory:category,machineryDocumentCategory:machineCategory,...fieldObjectReferences({actor:current,projectId,now:at,get:(kind,key)=>authorizedGet(projectId,current,kind,key)},objectRefs),storageName:key,size:bytes.length,mime,sha256:hash(bytes),url:`${MANAGEMENT_API}/files/${key}/original?projectId=${encodeURIComponent(projectId)}`};authorizeRecord(current,"evidence",record,recordSource(projectId),true);storeRecord(projectId,"evidence",record);bump();audit(projectId,current,{type:"evidence.register",projectId,idempotencyKey:key,payload:{reason:"受控二进制上传"}},key,null,1,at);db.exec("COMMIT");committed=true;return record;}catch(e){db.exec("ROLLBACK");throw e;}});queue=task;
+   const disconnected=new Promise<never>((_resolve,reject)=>{onDisconnect=()=>reject(new ManagementError(499,"UPLOAD_ABORTED","附件上传已取消"));res.once("close",onDisconnect);});
+   output(res,201,await Promise.race([task,disconnected]));
+  }catch(error){
+   if(!req.complete&&!res.destroyed){res.setHeader("Connection","close");res.once("finish",()=>req.destroy());req.resume();}
+   throw error;
+  }finally{
+   if(onDisconnect)res.off("close",onDisconnect);data=undefined;lease.release();
+   if(!committed)for(const path of [tmp,destination])if(path){try{unlinkSync(path);}catch{/* Preserve the upload or authorization error. */}}
+  }
  }
  async function middleware(req:IncomingMessage,res:ServerResponse,next:()=>void){
   let url:URL;try{url=new URL(req.url||"/","http://localhost");}catch{next();return;}if(url.pathname==="/__safety/events"){try{sameOrigin(req);const actor=authenticate(req,legacyProjectId);await eventBridge.middleware(req,res,actor);}catch(e){errorOutput(res,e);}return;}if(!url.pathname.startsWith(MANAGEMENT_API+"/")&&url.pathname!==MANAGEMENT_API){next();return;}
@@ -261,10 +283,10 @@ export function createManagementStore(options:ManagementStoreOptions={}){
    }
    if(url.pathname===MANAGEMENT_API+"/session"){
     if(req.method==="POST"){
-     requestMarker(req);const input=await jsonBody(req);const loginKey=(req.socket.remoteAddress||"")+":"+String(input.username).toLowerCase(),attempt=failedLogins.get(loginKey);if(attempt&&attempt.count>=10&&Date.now()-attempt.since<300000)throw new ManagementError(429,"LOGIN_RATE_LIMIT","登录尝试过多，请稍后重试");
-     try{const result=login(str(input.username,"用户名",80),str(input.password,"密码",200),String(input.projectId||projectId));failedLogins.delete(loginKey);cookie(res,result.token);output(res,200,publicSession(result.actor));}catch(e){failedLogins.set(loginKey,{count:attempt&&Date.now()-attempt.since<300000?attempt.count+1:1,since:attempt?.since||Date.now()});throw e;}return;
+     requestMarker(req);const input=await jsonBody(req),username=str(input.username,"用户名",80),password=str(input.password,"密码",200);const loginKey=(req.socket.remoteAddress||"")+":"+username.toLowerCase();failedLogins.check(loginKey);
+     try{const result=login(username,password,String(input.projectId||projectId));failedLogins.clear(loginKey);cookie(res,result.token);output(res,200,publicSession(result.actor));}catch(e){failedLogins.fail(loginKey);throw e;}return;
     }
-    if(req.method==="DELETE"){requestMarker(req);const token=req.headers.cookie?.split(";").map(s=>s.trim()).find(v=>v.startsWith(COOKIE+"="))?.slice(COOKIE.length+1);if(token)db.prepare("DELETE FROM sessions WHERE token_hash=?").run(hash(token));res.setHeader("Clear-Site-Data",'"cache"');res.setHeader("Set-Cookie",`${COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);output(res,200,{ok:true});return;}
+    if(req.method==="DELETE"){requestMarker(req);const token=req.headers.cookie?.split(";").map(s=>s.trim()).find(v=>v.startsWith(COOKIE+"="))?.slice(COOKIE.length+1);if(token)db.prepare("DELETE FROM sessions WHERE token_hash=?").run(hash(token));cookie(res,"");output(res,200,{ok:true});return;}
     if(req.method==="GET"){output(res,200,publicSession(authenticate(req,projectId)));return;}throw new ManagementError(405,"METHOD_NOT_ALLOWED","身份接口不支持该方法");
    }
    if(req.method==="POST"&&[MANAGEMENT_API+"/commands",MANAGEMENT_API+"/command"].includes(url.pathname)){
@@ -300,7 +322,7 @@ export function createManagementStore(options:ManagementStoreOptions={}){
    throw new ManagementError(404,"ENDPOINT_NOT_FOUND","管理接口不存在");
   }catch(e){errorOutput(res,e,responseActor);}
  }
- return {middleware,accessMiddleware,command,load:snapshot,metrics,authenticate,localActor,root,close:()=>{if(!closed){closed=true;db.close();}}};
+ return {middleware,accessMiddleware,command,load:snapshot,metrics,authenticate,localActor,root,close:()=>{if(!closed){closed=true;failedLogins.clear();db.close();}}};
 }
 export function managementPlugin(options:ManagementStoreOptions={}):Plugin{
  const attach=(server:{middlewares:{use:(handler:ReturnType<typeof createManagementStore>["middleware"])=>void};httpServer?:{once:(event:string,callback:()=>void)=>void}|null})=>{const store=createManagementStore(options);server.middlewares.use(store.accessMiddleware);server.middlewares.use(store.middleware);server.httpServer?.once("close",()=>store.close());};
