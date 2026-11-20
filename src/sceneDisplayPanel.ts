@@ -128,6 +128,7 @@ export class SceneDisplayPanel {
     this.renderList();
   }
   getOverrides(): Record<string, boolean> { return this.store.getOverrides(); }
+  getGroups(): SceneDisplayGroup[] { return this.store.getGroups(); }
 
   /** Owners outside this panel capture the scope before starting an async delete. */
   prepareItemDeletion(id: string): () => void {

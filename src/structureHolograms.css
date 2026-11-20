@@ -1,0 +1,44 @@
+.structure-hologram {
+  position: fixed;
+  z-index: 116;
+  left: 18px;
+  bottom: 52px;
+  box-sizing: border-box;
+  width: min(340px, calc(100vw - 36px));
+  max-height: calc(100dvh - 116px);
+  overflow: auto;
+  padding: 14px 16px;
+  border: 1px solid #356477;
+  border-radius: 9px;
+  color: #d9eaf3;
+  background: #102330fa;
+  box-shadow: 0 8px 30px #0006;
+  font: 13px/1.5 "Microsoft YaHei", system-ui, sans-serif;
+  color-scheme: dark;
+}
+
+.structure-hologram[hidden], .structure-hologram [hidden] { display: none; }
+.structure-hologram header, .structure-hologram footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.structure-hologram header strong { font-size: 15px; }
+.structure-hologram p { margin: 9px 0; color: #a0c9da; }
+.structure-hologram[data-state="error"] p { color: #ffc2aa; }
+.structure-hologram-model { display: grid; gap: 2px; margin-bottom: 8px; overflow-wrap: anywhere; }
+.structure-hologram-model small { color: #a0c9da; }
+.structure-hologram-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 10px 0; }
+.structure-hologram-controls label { display: grid; grid-template-columns: 1fr auto; gap: 4px; }
+.structure-hologram-controls output { font-variant-numeric: tabular-nums; color: #8ddfea; }
+.structure-hologram input[type="range"] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: #54cddd; }
+.structure-hologram button, .structure-hologram a {
+  padding: 5px 8px;
+  border: 1px solid #427085;
+  border-radius: 5px;
+  background: #193748;
+  color: #d0e7f2;
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+.structure-hologram a { background: #215667; border-color: #5cbccc; }
+.structure-hologram a:hover, .structure-hologram button:hover:not(:disabled) { border-color: #7de0eb; }
+.structure-hologram button:disabled { opacity: 0.55; cursor: default; }
+.structure-hologram :focus-visible { outline: 2px solid #7de0eb; outline-offset: 2px; }

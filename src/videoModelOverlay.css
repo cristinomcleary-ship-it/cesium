@@ -10,6 +10,7 @@
 .cc-overlay-panel .cc-actions button {flex:1;min-width:65px}
 .cc-overlay-panel .cc-resource {padding:8px 0;border-bottom:1px solid #365069}
 .cc-overlay-panel .cc-resource label {display:flex;align-items:center;margin:0}
+.cc-overlay-panel .cc-resource [data-cc-engineering-occlusion] {width:100%;max-width:100%;margin-top:4px}
 .cc-overlay-panel small,.cc-overlay-panel .cc-hint {display:block;color:#9bb2c8;line-height:1.6;font-size:12px}
 .cc-overlay-panel [role=status] {padding:10px;background:#142638;border-radius:5px;font-size:12px;line-height:1.6}
 .cc-overlay-panel details {padding:9px 0;border-bottom:1px solid #365069}

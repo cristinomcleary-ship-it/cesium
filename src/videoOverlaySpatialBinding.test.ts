@@ -83,6 +83,7 @@ test('surface authoring rejects unrelated/empty picks and restores translucent-d
   let picked: unknown = { primitive: model }, depthCalls = 0;
   const resources = {
     spatialVisible: () => true, spatialFrame: () => Matrix4.IDENTITY, get: () => ({ kind: 'Model' }),
+    withEngineeringPick: (_id: string, pick: () => unknown) => pick(),
     spatialOwnsPick: (_id: string, hit: unknown) => !!hit && (hit as { primitive: unknown }).primitive === model,
     spatialPickedLines: () => [],
   } as unknown as VideoOverlayResources;

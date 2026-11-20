@@ -64,14 +64,17 @@ const modelDefinitions = [
   { id: 'above-opaque', x: 12, y: -12, z: 16, color: [0, 1, 1, 1] },
   { id: 'buried-translucent', x: -12, y: 12, z: -16, color: [0, 1, 0, .55] },
   { id: 'above-translucent', x: 12, y: 12, z: 16, color: [1, 1, 0, .55] },
+  { id: 'engineering-cap', x: -13, y: 0, z: 20, color: [0, 0, 1, 1], cap: true },
 ];
 const cube = Array.from({ length: 8 }, (_, mask) => [mask & 1 ? 5 : -5, mask & 2 ? 5 : -5, mask & 4 ? 5 : -5]);
 const faces = [0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7];
+const cap = [[-10,-25,0], [10,-25,0], [10,25,0], [-10,25,0]];
 const models: Model[] = [], imports: ImportRecord[] = [], records = new Map<string, LibraryRecord>();
 const record = (id: string, kind: LibraryRecord['kind'], matrix: Matrix4): LibraryRecord => ({ version: 1, id, name: id, kind, visible: true,
   createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z', files: {}, settings: { matrix: Matrix4.toArray(matrix) } });
 for (const item of [0, 300].flatMap(east => modelDefinitions.map(item => ({ ...item, id: `${east ? 'remote-' : ''}${item.id}`, x: item.x + east })))) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(mesh(cube, faces, item.color))], { type: 'model/gltf+json' }));
+  const geometry = item.cap ? mesh(cap, [0, 1, 2, 0, 2, 3], item.color) : mesh(cube, faces, item.color);
+  const url = URL.createObjectURL(new Blob([JSON.stringify(geometry)], { type: 'model/gltf+json' }));
   const matrix = Matrix4.multiply(frame, Matrix4.fromTranslation(new Cartesian3(item.x, item.y, item.z)), new Matrix4());
   const model = await Model.fromGltfAsync({ url, modelMatrix: matrix, minimumPixelSize: 0 });
   viewer.scene.primitives.add(model); models.push(model);
@@ -102,12 +105,14 @@ function snapshot() { return { active: overlay.active, matrices: matrices(), cad
   cameraPosition: xyz(viewer.camera.positionWC), tilesLoaded: tiles.tilesLoaded, shaderRestored: tiles.customShader === originalShader, styleRestored: tiles.style === originalStyle,
   cameraLocal: xyz(Matrix4.multiplyByPoint(Matrix4.inverseTransformation(frame, new Matrix4()), viewer.camera.positionWC, new Cartesian3())),
   saved: saved ? structuredClone(saved.settings) : null, messages: [...messages], renderErrors: [...renderErrors], info: document.getElementById('ccOcclusionInfo')?.textContent,
+  engineeringCap: { show: models[modelDefinitions.length - 1].show, hasShader: !!models[modelDefinitions.length - 1].customShader },
   badge: document.querySelector('.cc-video-status')?.textContent, modelReady: models.every(model => model.ready) }; }
-function pixels(render = true) {
+function pixels(render = true, presentation = false) {
   if (render) viewer.render();
-  const gl = viewer.canvas.getContext('webgl2')!, data = new Uint8Array(viewer.canvas.width * viewer.canvas.height * 4);
-  gl.readPixels(0, 0, viewer.canvas.width, viewer.canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, data);
-  let orange = 0, cyan = 0, green = 0, yellow = 0, magenta = 0, white = 0, transparent = 0, dirtyTransparent = 0;
+  const canvas = presentation ? document.querySelector<HTMLCanvasElement>('.cc-video-presentation')! : viewer.canvas;
+  const gl = canvas.getContext('webgl2')!, data = new Uint8Array(canvas.width * canvas.height * 4);
+  gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  let orange = 0, cyan = 0, green = 0, yellow = 0, magenta = 0, blue = 0, white = 0, transparent = 0, dirtyTransparent = 0;
   for (let i = 0; i < data.length; i += 4) {
     const [r, g, b, a] = data.subarray(i, i + 4);
     if (r > 60 && r > 1.6 * g && g > 2 * b && a > 20) orange++;
@@ -115,10 +120,11 @@ function pixels(render = true) {
     if (r < 30 && g > 60 && b < 30 && a > 20) green++;
     if (r > 60 && g > 60 && b < 30 && r / g > .7 && r / g < 1.3 && a > 20) yellow++;
     if (r > 60 && g < 30 && b > 60 && a > 20) magenta++;
+    if (r < 30 && g < 30 && b > 60 && a > 20) blue++;
     if (r > 180 && g > 180 && b > 180 && a > 180) white++;
     if (a === 0) { transparent++; if (r || g || b) dirtyTransparent++; }
   }
-  return { orange, cyan, green, yellow, magenta, white, transparent, dirtyTransparent, total: data.length / 4, glError: gl.getError() };
+  return { orange, cyan, green, yellow, magenta, blue, white, transparent, dirtyTransparent, total: data.length / 4, glError: gl.getError() };
 }
 function capturePlaybackFrames(count: number) {
   return new Promise((resolve, reject) => {
@@ -133,6 +139,7 @@ function capturePlaybackFrames(count: number) {
   });
 }
 (window as unknown as { __occlusion: unknown }).__occlusion = { snapshot, pixels, baseline, planeGltf: () => JSON.stringify(planeGltf),
+  presentationPixels: () => pixels(true, true),
   capturePlaybackFrames,
   async restoreSaved() { if (!saved) throw new Error('No saved scheme'); await overlay.restoreReplay(saved.files, structuredClone(saved.settings), 'saved-occlusion'); },
   revoke() { authorized = false; overlay.refreshResources(); }, restoreAuthorization() { authorized = true; overlay.refreshResources(); },

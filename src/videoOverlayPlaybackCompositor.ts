@@ -45,6 +45,11 @@ export class VideoOverlayPlaybackCompositor {
   private readonly sourceTexture: TextureSlot;
   private readonly overlayTexture: TextureSlot;
   private readonly annotationTexture: TextureSlot;
+  private underlayTexture?: TextureSlot;
+  private underlayTime?: number;
+  private readonly useUnderlay: WebGLUniformLocation | null;
+  private readonly underlayImage: WebGLUniformLocation | null;
+  private readonly layeredOpacity: WebGLUniformLocation | null;
   private readonly maxDimension: number;
   private readonly position: number;
   private readonly contextLostListener: (event: Event) => void;
@@ -79,9 +84,16 @@ export class VideoOverlayPlaybackCompositor {
       uniform sampler2D sourceImage;
       uniform sampler2D overlayImage;
       uniform sampler2D annotationImage;
+      uniform sampler2D underlayImage;
+      uniform bool useUnderlay;
+      uniform float layeredOpacity;
       void main(){
         vec4 base = SAMPLE(sourceImage,uv);
         vec4 model = SAMPLE(overlayImage,uv);
+        if (useUnderlay) {
+          vec4 underlay = SAMPLE(underlayImage,uv);
+          model = (model + underlay * (1. - model.a)) * layeredOpacity;
+        }
         vec4 mark = SAMPLE(annotationImage,uv);
         vec4 merged = model + base * (1. - model.a);
         OUTPUT = mark + merged * (1. - mark.a);
@@ -109,11 +121,16 @@ export class VideoOverlayPlaybackCompositor {
       }
       gl.useProgram(program);
       ['sourceImage', 'overlayImage', 'annotationImage'].forEach((name, index) => gl.uniform1i(gl.getUniformLocation(program!, name), index));
+      // Keep the default path valid before allocating an optional fourth texture.
+      gl.uniform1i(gl.getUniformLocation(program, 'underlayImage'), 0);
     } catch (error) {
       textures.forEach(slot => gl.deleteTexture(slot.texture)); if (buffer) gl.deleteBuffer(buffer); if (program) gl.deleteProgram(program);
       gl.getExtension('WEBGL_lose_context')?.loseContext(); throw error;
     } finally { shaders.forEach(shader => gl.deleteShader(shader)); }
     this.program = program;
+    this.useUnderlay = gl.getUniformLocation(program, 'useUnderlay');
+    this.underlayImage = gl.getUniformLocation(program, 'underlayImage');
+    this.layeredOpacity = gl.getUniformLocation(program, 'layeredOpacity');
     this.buffer = buffer;
     [this.sourceTexture, this.overlayTexture, this.annotationTexture] = textures;
     this.position = gl.getAttribLocation(program, 'position');
@@ -144,18 +161,41 @@ export class VideoOverlayPlaybackCompositor {
   }
 
   /** False leaves the last complete presentation untouched rather than flashing. */
-  commit(overlay: HTMLCanvasElement, mediaTime: number, annotations?: HTMLCanvasElement): boolean {
+  commit(overlay: HTMLCanvasElement, mediaTime: number, annotations?: HTMLCanvasElement, layeredOpacity?: number): boolean {
     if (this.disposed || this.isContextLost || !Number.isFinite(mediaTime) || this.capturedTime === undefined || Math.abs(this.capturedTime - mediaTime) > 1e-6) return false;
-    this.validateSize(overlay.width, overlay.height);
-    const roundingOnly = this.allowOverlayRounding && overlay.width >= this.canvas.width && overlay.height >= this.canvas.height
-      && overlay.width - this.canvas.width <= this.overlayRoundingPixels && overlay.height - this.canvas.height <= this.overlayRoundingPixels;
-    if (!roundingOnly) this.validateSourceSize(overlay.width, overlay.height);
+    if (layeredOpacity !== undefined && this.underlayTime !== mediaTime) return false;
+    this.validateOverlaySize(overlay);
     if (annotations) this.validateSourceSize(annotations.width, annotations.height);
     this.upload(this.overlayTexture, overlay, overlay.width, overlay.height, 1);
     if (annotations) { this.upload(this.annotationTexture, annotations, annotations.width, annotations.height, 2); this.hasAnnotations = true; }
     else if (this.hasAnnotations) this.clearAnnotations();
-    this.draw();
+    this.draw(layeredOpacity);
     this.committedTime = mediaTime; return true;
+  }
+
+  captureUnderlay(overlay: HTMLCanvasElement, mediaTime: number): boolean {
+    if (this.disposed || this.isContextLost || this.capturedTime !== mediaTime) return false;
+    this.validateOverlaySize(overlay);
+    const gl = this.gl;
+    if (!this.underlayTexture) {
+      const texture = gl.createTexture();
+      if (!texture) throw new Error('无法创建工程模型独立显示纹理');
+      this.underlayTexture = { texture, width: 0, height: 0 };
+      gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    }
+    this.upload(this.underlayTexture, overlay, overlay.width, overlay.height, 3);
+    this.underlayTime = mediaTime;
+    return true;
+  }
+
+  releaseUnderlay(): void {
+    if (this.underlayTexture) this.gl.deleteTexture(this.underlayTexture.texture);
+    this.underlayTexture = undefined;
+    this.underlayTime = undefined;
   }
 
   /** Remove cached model and annotation pixels synchronously on access revocation.
@@ -167,15 +207,21 @@ export class VideoOverlayPlaybackCompositor {
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.overlayTexture.texture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
     this.overlayTexture.width = 1; this.overlayTexture.height = 1;
+    this.releaseUnderlay();
     this.clearAnnotations(); this.draw(); this.committedTime = undefined;
     return true;
   }
 
-  private draw(): void {
+  private draw(layeredOpacity?: number): void {
     const gl = this.gl;
+    const useUnderlay = layeredOpacity !== undefined;
     gl.useProgram(this.program); gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
     gl.enableVertexAttribArray(this.position); gl.vertexAttribPointer(this.position, 2, gl.FLOAT, false, 0, 0);
     [this.sourceTexture, this.overlayTexture, this.annotationTexture].forEach((slot, index) => { gl.activeTexture(gl.TEXTURE0 + index); gl.bindTexture(gl.TEXTURE_2D, slot.texture); });
+    gl.uniform1i(this.useUnderlay, Number(useUnderlay));
+    gl.uniform1i(this.underlayImage, useUnderlay ? 3 : 0);
+    if (useUnderlay) gl.uniform1f(this.layeredOpacity, layeredOpacity);
+    if (useUnderlay && this.underlayTexture) { gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.underlayTexture.texture); }
     gl.disable(gl.BLEND); gl.disable(gl.DEPTH_TEST); gl.disable(gl.SCISSOR_TEST);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
@@ -193,6 +239,7 @@ export class VideoOverlayPlaybackCompositor {
     this.validateSize(width, height);
     if (this.canvas.width === width && this.canvas.height === height) return;
     this.canvas.width = width; this.canvas.height = height; this.capturedTime = undefined; this.committedTime = undefined;
+    this.releaseUnderlay();
   }
 
   dispose(): void {
@@ -201,6 +248,7 @@ export class VideoOverlayPlaybackCompositor {
     this.canvas.removeEventListener('webglcontextlost', this.contextLostListener);
     const gl = this.gl;
     [this.sourceTexture, this.overlayTexture, this.annotationTexture].forEach(slot => gl.deleteTexture(slot.texture));
+    this.releaseUnderlay();
     gl.deleteBuffer(this.buffer); gl.deleteProgram(this.program);
     gl.getExtension('WEBGL_lose_context')?.loseContext();
     this.canvas.width = 0; this.canvas.height = 0;
@@ -211,6 +259,12 @@ export class VideoOverlayPlaybackCompositor {
   }
   private validateSourceSize(width: number, height: number): void {
     if (width !== this.canvas.width || height !== this.canvas.height) throw new Error(`播放帧尺寸 ${width} × ${height} 与原视频 ${this.canvas.width} × ${this.canvas.height} 不一致。`);
+  }
+  private validateOverlaySize(overlay: HTMLCanvasElement): void {
+    this.validateSize(overlay.width, overlay.height);
+    const roundingOnly = this.allowOverlayRounding && overlay.width >= this.canvas.width && overlay.height >= this.canvas.height
+      && overlay.width - this.canvas.width <= this.overlayRoundingPixels && overlay.height - this.canvas.height <= this.overlayRoundingPixels;
+    if (!roundingOnly) this.validateSourceSize(overlay.width, overlay.height);
   }
   private upload(slot: TextureSlot, source: TexImageSource, width: number, height: number, unit: number): void {
     const gl = this.gl;

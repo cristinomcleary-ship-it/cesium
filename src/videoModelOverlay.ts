@@ -1,4 +1,4 @@
-import { Cartesian3, Color, Matrix4, PerspectiveFrustum, SceneMode, Transforms, type PostProcessStage, type Viewer } from 'cesium';
+import { Cartesian3, Color, Matrix4, Model, PerspectiveFrustum, SceneMode, Transforms, type PostProcessStage, type Viewer } from 'cesium';
 import { createCcCameraTrack, parseCcCameraXml, type CcCameraDataset, type CcCameraTrack, type CcTrackOptions } from './ccCameraTrack';
 import { VideoOverlayResources, findVideoOverlayGroupCenter, validateVideoOverlayAdjustment, validateVideoOverlayGroupAdjustment, videoOverlayAdjustmentMatrix, type VideoOverlayGroupAdjustment, type VideoOverlayAdjustment } from './videoOverlayResources';
 import { containVideoRect, overlayLensBounds, overlayTransparencyUniforms, createVideoOverlayLensStage } from './videoOverlayLens';
@@ -24,6 +24,7 @@ import { VideoOverlayCacheStore, hashVideoOverlayInputs, type VideoOverlayCached
 import { createCachedSpatialProjector } from './videoOverlayCachedAnnotations';
 import { VideoOverlayLifecycle } from './videoOverlayLifecycle';
 import { VideoOverlaySceneIsolation } from './videoOverlaySceneIsolation';
+import { engineeringOcclusionFrameRole, validateEngineeringOcclusion, type EngineeringOcclusionRules } from './engineeringOcclusion';
 import './videoModelOverlay.css';
 
 export const VIDEO_OVERLAY_BUILD = '2026.11.10-R10-layered-annotations';
@@ -36,6 +37,7 @@ export type SavedVideoOverlaySettings = {
   sceneReference?: { recordId: string; matrix: number[] };
   cameraRegistration?: CcCameraRegistration & { anchor?: CcCameraRegistrationAnchor };
   occlusion?: SavedVideoOverlayOcclusion;
+  engineeringOcclusion?: EngineeringOcclusionRules;
   posTiming?: { frameRate: number; firstTime: number };
   annotations?: VideoOverlayAnnotation[];
   spatialAnnotations?: SpatialAnnotation[];
@@ -53,6 +55,7 @@ type Options = {
   captureReplaySelectionGuard?: () => (() => boolean);
   /** Exclude new map-only effects before any AR sampling or validation. */
   suspendExternalSceneEffects?: () => void | (() => void);
+  getModelOcclusion?: (id: string) => boolean | undefined;
 };
 type Visible = { show: boolean; isDestroyed?: () => boolean };
 const zero = (): Required<VideoOverlayAdjustment> => ({ east: 0, north: 0, up: 0, heading: 0, tiltEast: 0, tiltNorth: 0 });
@@ -144,6 +147,8 @@ export class VideoModelOverlay {
   private cameraAnchor?: CcCameraRegistrationAnchor;
   private cameraCorrection: readonly number[] = Matrix4.toArray(Matrix4.IDENTITY);
   private occlusion = validateVideoOverlayOcclusion();
+  private engineeringOcclusion = validateEngineeringOcclusion(undefined);
+  private engineeringOcclusionInitialized = false;
   private removeOcclusionStatus?: () => void;
   private resources?: VideoOverlayResources;
   private adjustments: Record<string, VideoOverlayAdjustment> = {};
@@ -198,6 +203,8 @@ export class VideoModelOverlay {
   private removePresentationGuard?: () => void;
   private renderReady = false;
   private lensFrame?: { number: number; time: number; ready: boolean };
+  private engineeringUnderlayKey = '';
+  private currentEngineeringUnderlayKey = '';
   private cameraKey = '';
   private cachedPreview?: { video: HTMLVideoElement; url: string; file: Blob; start: number; end: number; revision: number; signature?: string; signatureRange?: { start: number; end: number }; spatialFrames: Record<string, number[]>; displayTime?: number };
   private cachedAnnotationCanvas?: HTMLCanvasElement;
@@ -459,8 +466,17 @@ export class VideoModelOverlay {
   }
   private pickFile(slot: string, file?: File) {
     if (!file) return;
+    const seedEngineeringOcclusion = slot === 'video' || !!this.savedId || !this.engineeringOcclusionInitialized;
     this.replayInputChanged();
     this.leave(); this.autoSaveReady = false; this.accessInvalid = false; ++this.sessionGeneration; ++this.inputGeneration; this.exit(); this.mediaLoad?.cancel(); this.files = { ...this.files, [slot]: file }; this.savedId = undefined; this.dataset = undefined; this.track = undefined;
+    if (seedEngineeringOcclusion) {
+      const defaults = this.options.getImports().flatMap(({id, kind}) => {
+        const rule = kind === 'Model' ? this.options.getModelOcclusion?.(id) : undefined;
+        return rule === undefined ? [] : [[id, rule] as const];
+      });
+      this.engineeringOcclusion = validateEngineeringOcclusion(Object.fromEntries(defaults));
+      this.engineeringOcclusionInitialized = true;
+    }
     if (slot === 'video') { this.annotations = []; this.effects = []; this.presentationEditor.setValue([], []); this.spatialAnnotations = []; this.spatialEditor.setValue([]); this.manifest = undefined; delete this.files.manifest; delete this.files.pos; this.el<HTMLInputElement>('ccPosFile').value = ''; this.resumeTime = 0; this.metadata = undefined; }
     this.el<HTMLInputElement>('ccSchemeName').value = `${this.files.video?.name ?? '视频'} · CC 融合`;
     this.sceneReference = undefined; this.refreshSceneReferences();
@@ -520,6 +536,39 @@ export class VideoModelOverlay {
     return [...validateCcSceneTransform(record.settings.matrix ?? Matrix4.toArray(Matrix4.IDENTITY))];
   }
   private isOcclusionSource(id: string) { return this.occlusion.enabled && this.occlusion.sourceId === id; }
+  private engineeringDepthIds(): string[] {
+    return Object.entries(this.engineeringOcclusion ?? {}).filter(([id, rule]) => engineeringOcclusionFrameRole(this.selected.has(id), rule) === 'depth').map(([id]) => id);
+  }
+  private engineeringColorIds(): string[] {
+    return Object.entries(this.engineeringOcclusion ?? {}).filter(([id, rule]) => engineeringOcclusionFrameRole(this.selected.has(id), rule) === 'color').map(([id]) => id);
+  }
+  private missingEngineeringDepthIds(imports?: readonly ImportRecord[]): string[] {
+    const depthIds = this.engineeringDepthIds();
+    if (!depthIds.length) return [];
+    const ids = new Set((imports ?? this.options.getImports()).filter(item => item.kind === 'Model' && item.resource instanceof Model).map(item => item.id));
+    return depthIds.filter(id => !ids.has(id));
+  }
+  private checkEngineeringDepth(): void {
+    if (this.missingEngineeringDepthIds().length) throw new Error('方案的工程遮挡模型已移除或不可用，请恢复对应资源或清除规则。');
+  }
+  private changeEngineeringOcclusion(id: string, choice: string): void {
+    const previous = this.engineeringOcclusion;
+    const before = engineeringOcclusionFrameRole(this.selected.has(id), previous[id]);
+    const next = validateEngineeringOcclusion(previous);
+    if (choice === 'default') delete next[id];
+    else next[id] = choice === 'on';
+    try {
+      this.resources?.setEngineeringOcclusion(next);
+      this.engineeringOcclusion = next;
+      this.engineeringOcclusionInitialized = true;
+      this.dirty(before !== engineeringOcclusionFrameRole(this.selected.has(id), next[id]));
+      this.refreshResources();
+    } catch (error) {
+      this.resources?.setEngineeringOcclusion(previous);
+      this.engineeringOcclusion = previous;
+      this.refreshResources(); this.fail(error);
+    }
+  }
   private checkOcclusionAdjustment(settings = this.occlusion, values = this.adjustments) {
     if (!settings.enabled) return;
     const value = values[settings.sourceId];
@@ -698,7 +747,9 @@ export class VideoModelOverlay {
         await this.extractionTask?.catch(() => {});
       }
       if (epoch !== this.epoch || this.destroyed) return;
+      this.checkEngineeringDepth();
       await this.prepare(true, entryController.signal); if (epoch !== this.epoch || this.destroyed) return;
+      this.checkEngineeringDepth();
       if (this.viewer.scene.mode !== SceneMode.SCENE3D) throw new Error('请先切换到三维场景，再开始视频融合');
       this.enterHooksActive = true; this.options.onEnter?.();
       // Snapshot the normal map after other tools have relinquished the shared scene.
@@ -713,8 +764,16 @@ export class VideoModelOverlay {
       this.resources = resources;
       this.captureScene();
       this.resources.setOcclusion(this.occlusion.enabled ? this.occlusion.sourceId : undefined); this.resources.applyAdjustments(this.adjustments, this.groupAdjustment); this.resources.setSelection([...this.selected]);
+      this.resources.setEngineeringOcclusion(this.engineeringOcclusion);
       this.mountStage(); this.installLens(); this.refreshResources();
       this.removePresentationGuard = this.viewer.scene.preRender.addEventListener(() => {
+        const resources = this.resources;
+        const colorLayer = !!resources?.hasEngineeringColorLayer();
+        const key = colorLayer && this.pendingTime !== undefined
+          ? `${this.pendingTime}/${this.editRevision}/${this.viewer.canvas.width}/${this.viewer.canvas.height}` : '';
+        this.currentEngineeringUnderlayKey = key !== this.engineeringUnderlayKey ? key : '';
+        resources?.setEngineeringRenderLayer(this.currentEngineeringUnderlayKey ? 'color' : colorLayer ? 'normal' : 'all');
+        if (!colorLayer) { this.engineeringUnderlayKey = ''; this.compositor?.releaseUnderlay(); }
         this.renderReady = this.resources?.isPresentationReady(true) ?? false;
       });
       this.removeOcclusionStatus = this.viewer.scene.postRender.addEventListener(() => { this.commitPresentation(); this.updateOcclusionStatus(); });
@@ -790,7 +849,7 @@ export class VideoModelOverlay {
       overlayOpacity: () => {
         const ready = !this.occlusion.enabled || !!this.resources?.getOcclusionStatus().ready;
         this.lensFrame = { number: this.sceneFrameNumber(), time: this.pendingTime ?? -1, ready };
-        return this.opacity * (ready ? 1 : 0);
+        return (this.engineeringUnderlayKey || this.currentEngineeringUnderlayKey ? 1 : this.opacity) * (ready ? 1 : 0);
       },
     }, `cc-video-overlay-${crypto.randomUUID()}`);
     this.viewer.scene.postProcessStages.add(this.lensStage);
@@ -920,8 +979,17 @@ export class VideoModelOverlay {
     const stamped = this.lensFrame?.number === this.sceneFrameNumber() && this.lensFrame?.time === this.pendingTime && this.lensFrame.ready;
     if (hasSample && (!stamped || !this.renderReady || !this.resources?.isPresentationReady())) {
       this.buffering = true;
-      if (this.badge) this.badge.textContent = status?.error || '正在准备当前帧的完整模型与遮挡，保留上一幅融合画面…';
-      this.viewer.scene.requestRender(); this.updatePlayback(); return;
+      const engineeringError = this.resources?.engineeringDepthError();
+      if (this.badge) this.badge.textContent = status?.error || engineeringError || '正在准备当前帧的完整模型与遮挡，保留上一幅融合画面…';
+      if (!engineeringError) this.viewer.scene.requestRender();
+      this.updatePlayback(); return;
+    }
+    if (this.currentEngineeringUnderlayKey) {
+      if (this.compositor.captureUnderlay(this.viewer.canvas, this.pendingTime)) {
+        this.engineeringUnderlayKey = this.currentEngineeringUnderlayKey;
+        this.viewer.scene.requestRender();
+      }
+      return;
     }
     const presentationKey = `${this.pendingTime}/${this.editRevision}/${!!status?.ready}/${this.presentation.width}/${this.presentation.height}`;
     // Paused videos and hidden tools must not repeatedly copy multi-megapixel frames.
@@ -939,7 +1007,7 @@ export class VideoModelOverlay {
         drawVideoOverlayAnnotations(context, this.annotations, { width, height, mediaTime: this.pendingTime }); this.annotationKey = key;
       }
     }
-    if (!this.compositor.commit(this.viewer.canvas, this.pendingTime, annotations)) return;
+    if (!this.compositor.commit(this.viewer.canvas, this.pendingTime, annotations, this.engineeringUnderlayKey ? this.opacity : undefined)) return;
     this.lastPresentationKey = presentationKey;
     this.presentedTime = this.pendingTime;
     if (this.buffering) {
@@ -1091,7 +1159,7 @@ export class VideoModelOverlay {
     try {
       releasePreparation = this.externalSceneIsolation().acquire();
       this.releasePickingSceneEffects = this.externalSceneIsolation().acquire();
-      check(); this.enterHooksActive = true; this.options.onEnter?.();
+      check(); this.checkEngineeringDepth(); this.enterHooksActive = true; this.options.onEnter?.();
       this.resourceMatricesBeforeAR.clear();
       for (const item of this.options.getImports()) {
         const matrix = (item.resource as unknown as { modelMatrix?: Matrix4 }).modelMatrix;
@@ -1102,6 +1170,7 @@ export class VideoModelOverlay {
       this.resources = resources; this.captureScene();
       resources.setOcclusion(this.occlusion.enabled ? this.occlusion.sourceId : undefined);
       resources.applyAdjustments(this.adjustments, this.groupAdjustment); resources.setSelection([...this.selected]); resources.setVisible(true);
+      resources.setEngineeringOcclusion(this.engineeringOcclusion);
       resources.setTimelineOpacity(evaluateVideoOverlayEffects(this.effects, time, [...this.selected], { occluderId: this.occlusion.enabled ? this.occlusion.sourceId : undefined }));
       this.installLens();
       Object.assign(this.container.style, { position: 'absolute', left: cache.video.style.left, top: cache.video.style.top, width: cache.video.style.width, height: cache.video.style.height });
@@ -1116,7 +1185,7 @@ export class VideoModelOverlay {
         remove = this.viewer.scene.postRender.addEventListener(() => {
           try {
             check();
-            const status = resources.getOcclusionStatus(); if (status.error) throw new Error(status.error);
+            const status = resources.getOcclusionStatus(), error = status.error || resources.engineeringDepthError(); if (error) throw new Error(error);
             if (this.occlusion.enabled && !status.ready || !resources.isPresentationReady()) { this.viewer.scene.requestRender(); return; }
             clean(); resolve();
           } catch (error) { clean(); reject(error); }
@@ -1253,7 +1322,7 @@ export class VideoModelOverlay {
       const abort = () => { cleanup(); reject(new DOMException('导出已取消', 'AbortError')); };
       const timer = window.setTimeout(() => { cleanup(); reject(new Error(`缓存 ${time.toFixed(3)} 秒的模型或遮挡未就绪，已停止生成，未跳过该帧。请检查模型和遮挡参照的加载状态，或导出配准诊断`)); }, 45000);
       remove = this.viewer.scene.postRender.addEventListener(() => {
-        const error = this.resources?.getOcclusionStatus().error;
+        const error = this.resources?.getOcclusionStatus().error || this.resources?.engineeringDepthError();
         if (error) { cleanup(); reject(new Error(error)); return; }
         if (!this.nativeCacheRendering && this.video.seeking || this.seeking || this.buffering || this.presentedTime === undefined) return;
         if (this.sourceTarget === undefined || Math.abs(this.sourceTarget - time) > 1e-5 || this.presentedTime !== this.pendingTime) return;
@@ -1263,7 +1332,8 @@ export class VideoModelOverlay {
     });
   }
   private cacheSignature(range: { start: number; end: number }): string {
-    const ids = new Set([...this.selected, ...(this.occlusion.enabled && this.occlusion.sourceId ? [this.occlusion.sourceId] : []), ...(this.sceneReference ? [this.sceneReference.recordId] : [])]);
+    const engineeringDepth = this.engineeringDepthIds().sort(), engineeringColor = this.engineeringColorIds().sort();
+    const ids = new Set([...this.selected, ...engineeringDepth, ...(this.occlusion.enabled && this.occlusion.sourceId ? [this.occlusion.sourceId] : []), ...(this.sceneReference ? [this.sceneReference.recordId] : [])]);
     const imports = this.options.getImports();
     const surfaceModes = imports.filter(item => this.selected.has(item.id) && item.kind === 'CAD')
       .map(item => this.options.getRecord(item.id)?.settings.displayMode);
@@ -1289,6 +1359,8 @@ export class VideoModelOverlay {
     return JSON.stringify({ algorithm: VIDEO_OVERLAY_BUILD, range, selected: [...this.selected].sort(), timing: this.readTiming(), resources, terrain,
       adjustments: this.adjustments, groupAdjustment: this.groupAdjustment, opacity: this.opacity, sceneReference: this.sceneReference,
       cameraRegistration: this.cameraRegistration, cameraAnchor: this.cameraAnchor, occlusion: this.occlusion,
+      ...(engineeringDepth.length ? { engineeringDepth } : {}),
+      ...(engineeringColor.length ? { engineeringColor } : {}),
       effects: this.effects, includeAudio: this.el<HTMLInputElement>('ccExportAudio').checked,
       width: this.metadata?.width, height: this.metadata?.height });
   }
@@ -1319,7 +1391,7 @@ export class VideoModelOverlay {
       const check = () => { signal.throwIfAborted(); this.assertVideoAccess(); if (generation !== this.inputGeneration || this.destroyed) throw new DOMException('融合输入已切换', 'AbortError'); };
       await priorExtraction?.catch(() => {}); check(); lock();
       this.el('ccPreviewStatus').textContent = '正在核对源视频与融合方案…';
-      await this.prepare(true, signal); check();
+      this.checkEngineeringDepth(); await this.prepare(true, signal); check(); this.checkEngineeringDepth();
       const first = this.el<HTMLInputElement>('ccExportStart').value.trim(), last = this.el<HTMLInputElement>('ccExportEnd').value.trim();
       const range = { start: first ? Number(first) : this.track!.startTime, end: last ? Number(last) : Math.min(this.track!.endTime, this.metadata!.duration) };
       if (![range.start, range.end].every(Number.isFinite) || range.start < this.track!.startTime || range.end > Math.min(this.track!.endTime, this.metadata!.duration) + 1e-6 || range.end <= range.start) throw new Error('缓存区间必须在视频与空三定位的共同范围内');
@@ -1425,14 +1497,16 @@ export class VideoModelOverlay {
       if (cached?.signature && cached.signature !== this.cacheSignature(cached.signatureRange ?? { start: cached.start, end: cached.end })) this.clearCachedPreview(false);
     } catch { this.cacheLifecycle?.abort(); this.clearCachedPreview(false); }
     const imports = this.options.getImports(), allowedIds = new Set(imports.map(item => item.id));
-    this.accessInvalid = [...this.selected].some(id => !allowedIds.has(id));
+    const missingDepth = this.missingEngineeringDepthIds(imports), deniedDepth = missingDepth.length > 0;
+    this.accessInvalid = deniedDepth || [...this.selected].some(id => !allowedIds.has(id));
     // A baked preview owns pixels independently of Cesium visibility. Revoke it
     // before exposing the sanitized live canvas when any selected layer is lost.
     if (this.accessInvalid) this.clearCachedPreview(false);
-    this.lastPresentationKey = ''; this.annotationKey = '';
+    this.lastPresentationKey = ''; this.annotationKey = ''; this.engineeringUnderlayKey = '';
     // The presentation canvas holds pixels independently of Cesium visibility.
     // Remove revoked objects immediately, then redraw authorized layers next frame.
     if (this.active && this.accessInvalid && !this.compositor?.clearOverlay()) this.exit();
+    if (this.active && deniedDepth) { this.exit(); this.fail(new Error('方案的工程遮挡模型已移除或不可用。')); }
     if (this.active && (this.sceneReference || this.occlusion.enabled)) {
       try { this.checkSceneReference(); this.checkOcclusionSource(); }
       catch (error) { this.accessInvalid = true; this.exit(); this.fail(error); return; }
@@ -1442,15 +1516,54 @@ export class VideoModelOverlay {
     if ([...this.selected].some(id => !allowedIds.has(id))) this.accessInvalid = true;
     if (!this.selectionInitialized && items.length) { for (const item of items) if (item.kind !== '3D Tiles') this.selected.add(item.id); this.selectionInitialized = true; }
     const list = this.el('ccResources'); list.replaceChildren();
+    const engineeringModels = new Set(imports.filter(item => item.kind === 'Model' && item.resource instanceof Model).map(item => item.id));
     for (const item of items) {
       const row = document.createElement('div'); row.className = 'cc-resource'; const label = document.createElement('label'), check = document.createElement('input');
       const occluder = this.isOcclusionSource(item.id);
       check.type = 'checkbox'; check.checked = !occluder && this.selected.has(item.id); check.disabled = !item.available || occluder; check.dataset.ccResource = item.id;
-      check.addEventListener('change', () => { if (check.checked) this.selected.add(item.id); else this.selected.delete(item.id); this.resources?.setSelection([...this.selected]); this.updateTargets(); this.dirty(); });
+      check.addEventListener('change', () => {
+        const previous = this.selected.has(item.id);
+        try {
+          if (check.checked) this.selected.add(item.id); else this.selected.delete(item.id);
+          this.resources?.setSelection([...this.selected]); this.updateTargets(); this.dirty();
+          if (this.engineeringOcclusion[item.id] !== undefined) this.renderFrame(this.lastFrameTime);
+        } catch (error) {
+          if (previous) this.selected.add(item.id); else this.selected.delete(item.id);
+          check.checked = previous;
+          this.resources?.setSelection([...this.selected]); this.fail(error);
+        }
+      });
       label.append(check, document.createTextNode(`${item.name} · ${occluder ? '遮挡参照（仅深度）' : item.kind}`)); row.append(label);
+      if (engineeringModels.has(item.id)) {
+        const rule = document.createElement('select');
+        rule.dataset.ccEngineeringOcclusion = item.id;
+        rule.setAttribute('aria-label', `${item.name}工程遮挡`);
+        rule.add(new Option('沿用原渲染方式', 'default'));
+        rule.add(new Option('参与遮挡', 'on'));
+        rule.add(new Option('仅显示，不遮挡工程叠加', 'off'));
+        rule.value = this.engineeringOcclusion[item.id] === undefined ? 'default' : this.engineeringOcclusion[item.id] ? 'on' : 'off';
+        rule.disabled = !item.available;
+        rule.addEventListener('change', () => this.changeEngineeringOcclusion(item.id, rule.value));
+        row.append(rule);
+      }
       if (item.description || item.error) { const small = document.createElement('small'); small.textContent = item.error || item.description; row.append(small); } list.append(row);
     }
     if (!items.length) list.textContent = '请先导入并定位 CAD 或工程模型。';
+    if (deniedDepth) {
+      const status = document.createElement('small'), clear = document.createElement('button');
+      status.textContent = `有 ${missingDepth.length} 个工程遮挡来源不可用。恢复模型后可继续使用原规则。`;
+      clear.type = 'button'; clear.textContent = '移除不可用的遮挡规则';
+      clear.addEventListener('click', () => {
+        try {
+          this.assertVideoAccess();
+          const next = validateEngineeringOcclusion(this.engineeringOcclusion);
+          for (const id of this.missingEngineeringDepthIds()) delete next[id];
+          this.engineeringOcclusion = next;
+          this.dirty(); this.refreshResources();
+        } catch (error) { this.fail(error); }
+      });
+      list.append(status, clear);
+    }
     this.resources?.setSelection([...this.selected]);
     this.updateTargets();
     if (this.active) this.viewer.scene.requestRender();
@@ -1582,6 +1695,7 @@ export class VideoModelOverlay {
       posTiming: { frameRate: this.number('ccPosFrameRate'), firstTime: this.number('ccPosFirstTime') },
       ...(this.sceneReference ? { sceneReference: structuredClone(this.sceneReference) } : {}),
       cameraRegistration: structuredClone({ ...this.cameraRegistration, anchor: this.cameraAnchor }), occlusion: { ...this.occlusion },
+      ...(Object.keys(this.engineeringOcclusion).length ? { engineeringOcclusion: { ...this.engineeringOcclusion } } : {}),
     } };
   }
   private async queueSave() {
@@ -1619,6 +1733,7 @@ export class VideoModelOverlay {
     this.files = { ...files }; this.savedId = recordId; this.adjustments = Object.fromEntries(Object.entries(settings.adjustments ?? {}).map(([id, value]) => [id, validateVideoOverlayAdjustment(value)])); this.selected = new Set(settings.selectedIds ?? []); this.selectionInitialized = true;
     this.groupAdjustment = validateVideoOverlayGroupAdjustment(settings.groupAdjustment);
     this.occlusion = validateVideoOverlayOcclusion(settings.occlusion);
+    this.engineeringOcclusion = validateEngineeringOcclusion(settings.engineeringOcclusion); this.engineeringOcclusionInitialized = true;
     this.annotations = (settings.annotations ?? []).map(validateVideoOverlayAnnotation); this.effects = validateVideoOverlayEffects(settings.effects); this.presentationEditor.setValue(this.annotations, this.effects);
     this.spatialAnnotations = validateSpatialAnnotations(settings.spatialAnnotations ?? []); this.spatialEditor.setValue(this.spatialAnnotations);
     if (settings.sceneReference) {
@@ -1734,6 +1849,7 @@ export class VideoModelOverlay {
     if (this.animationHandle !== undefined) cancelAnimationFrame(this.animationHandle); this.animationHandle = undefined;
     release(() => this.resize?.disconnect()); this.resize = undefined;
     release(() => this.removePresentationGuard?.()); this.removePresentationGuard = undefined; this.lensFrame = undefined; this.renderReady = false; this.cameraKey = '';
+    this.engineeringUnderlayKey = ''; this.currentEngineeringUnderlayKey = '';
     release(() => this.removeProjectionGuard?.()); this.removeProjectionGuard = undefined;
     release(() => this.removeOcclusionStatus?.()); this.removeOcclusionStatus = undefined;
     release(() => { if (this.lensStage && !this.viewer.isDestroyed()) this.viewer.scene.postProcessStages.remove(this.lensStage); }); this.lensStage = undefined;
@@ -1797,6 +1913,7 @@ export class VideoModelOverlay {
     this.resumeTime = 0; this.mediaUrl = undefined; this.videoFile = undefined; this.files = {}; this.savedId = undefined; this.dataset = undefined; this.track = undefined;
     this.sceneReference = undefined;
     this.occlusion = validateVideoOverlayOcclusion();
+    this.engineeringOcclusion = validateEngineeringOcclusion(undefined); this.engineeringOcclusionInitialized = false;
     this.cameraRegistration = defaultCcCameraRegistration(); this.cameraAnchor = undefined; this.cameraCorrection = Matrix4.toArray(Matrix4.IDENTITY); this.syncCameraInputs();
     this.annotations = []; this.effects = []; this.presentationEditor.setValue([], []); this.spatialAnnotations = []; this.spatialEditor.setValue([]);
     this.adjustments = {}; this.groupAdjustment = undefined; this.undo = []; this.redo = []; this.selected.clear(); this.selectionInitialized = false;

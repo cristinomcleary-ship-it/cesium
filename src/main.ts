@@ -52,6 +52,8 @@ import { UnavailableMapTileDiscardPolicy } from "./imageryOverzoom";
 import { ModelEditor, type EditMode, type EditableModel } from "./modelEditor";
 import { applyModelAppearance, getModelAppearance } from "./modelAppearance";
 import { ModelAppearancePanel } from "./modelAppearancePanel";
+import { ModelOcclusionPreferences, engineeringGroupModelIds } from "./modelOcclusionPreferences";
+import { StructureHolograms } from "./structureHolograms";
 import { PhotogrammetryEditor } from "./photogrammetryEditor";
 import { beginPickPlacement, getPlacementPreviewPosition, createAnchoredModelMatrix, fetchGlbPlacementBounds, type ModelPlacementBounds } from "./modelPlacement";
 import { gaussKrugerToWgs84, inferredZoneNumber, parseLongitude, type GaussAxisOrder, type GaussEllipsoid } from "./coordinateUtils";
@@ -235,6 +237,15 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="notice"><strong>处理方式</strong><p>首次选择 DWG 时，页面会在本机内存中展开图层和块参照，并生成专用 .cadimport。可下载保存；以后直接选择该文件即可快速加载，坐标参数仍可随时修改。</p></div>
         </section>
         <section class="panel" data-panel="models">
+          <button id="openStructureHologram" type="button">结构全息投影</button>
+          <details id="modelOcclusionPanel">
+            <summary>工程模型遮挡</summary>
+            <p class="hint">设置新建 CC 融合方案的遮挡初始值。可在方案内单独调整。</p>
+            <label>工程模型或分组<select id="modelOcclusionTarget"></select></label>
+            <label>遮挡设置<select id="modelOcclusionChoice"><option value="default">继承原规则</option><option value="on">启用遮挡</option><option value="off">关闭遮挡</option></select></label>
+            <button id="saveModelOcclusion" type="button">保存个人设置</button>
+            <p id="modelOcclusionStatus" class="hint" role="status"></p>
+          </details>
           <div class="dropzone" id="modelDropzone">
             <input id="modelFile" type="file" accept=".dwg,.rvt,.skp,.glb" hidden />
             <span class="drop-icon">⬡</span><strong>选择或拖入三维模型</strong>
@@ -659,6 +670,8 @@ let sceneLibraryContextFingerprint = '', sceneLibraryContextRevision = 0;
 let refreshSubsurfaceContext: (() => void) | undefined;
 let projectLibrary: SceneLibrary | undefined;
 let videoModelOverlay: VideoModelOverlay | undefined;
+let structureHolograms: StructureHolograms | undefined;
+const modelOcclusionPreferences = new ModelOcclusionPreferences();
 let photogrammetryEditor: PhotogrammetryEditor | undefined;
 let photogrammetryEditContext: string | undefined;
 let photogrammetryContextFingerprint = '', photogrammetryContextRevision = 0;
@@ -725,6 +738,7 @@ function toast(message: string, error = false) {
 const sceneEffectsCoordinator = new SceneEffectsCoordinator();
 function acquireArSceneEffects(): () => void {
   if (photogrammetryEditor && !photogrammetryEditor.cancel()) throw new Error('摄影位置正在保存，请完成后再进入 AR。');
+  structureHolograms?.close();
   return sceneEffectsCoordinator.acquire();
 }
 const videoArFusion = new VideoArFusion(viewer, toast, setStatus, {
@@ -788,6 +802,11 @@ videoModelOverlay = new VideoModelOverlay(viewer, {
   captureReplaySelectionGuard: () => projectLibrary?.captureVideoSelectionGuard() ?? (() => true),
   canAccessVideo: () => isLibraryRecordAllowed({ kind: "Drone Video" }),
   getImports: () => imports.filter(isImportAllowed),
+  getModelOcclusion: id => {
+    const { projectId, actorId } = modelOcclusionScope();
+    try { return modelOcclusionPreferences.read(projectId, actorId).get(id); }
+    catch { return undefined; }
+  },
   getRecord: id => {
     const record = projectLibrary?.records.get(id);
     return record && isLibraryRecordAllowed(record) ? record : undefined;
@@ -881,6 +900,7 @@ photogrammetryEditor = new PhotogrammetryEditor(viewer, document.body, {
 onPageDispose(() => photogrammetryEditor?.dispose());
 const leavePhotographyForSubsurface = (event: Event) => {
   if (!finishPhotogrammetryPreview()) { event.preventDefault(); event.stopImmediatePropagation(); }
+  else structureHolograms?.close();
 };
 $('#openSubsurfacePanel').addEventListener('click', leavePhotographyForSubsurface, true);
 onPageDispose(() => $('#openSubsurfacePanel').removeEventListener('click', leavePhotographyForSubsurface, true));
@@ -1124,6 +1144,7 @@ function beginModelEditing(item: ImportRecord): void {
   surfaceEdits?.close();
   if (modelLoadBusy || videoModelOverlay?.active || !isImportAllowed(item) || item.kind !== "Model") return;
   if (!isImportDisplayed(item)) { toast("请先显示模型，再调整位置", true); return; }
+  structureHolograms?.close();
   modelAppearancePanel.close();
   modelEditor.beginEditing(item.id);
 }
@@ -1143,6 +1164,7 @@ function beginPhotogrammetryEditing(item: ImportRecord): void {
   if (modelLoadBusy || modelPlacementPending || photogrammetryEditor?.busy) { toast('请先完成当前模型操作。', true); return; }
   if (temporaryWorks?.close() === false) return;
   if (photogrammetryEditor && !photogrammetryEditor.cancel()) return;
+  structureHolograms?.close();
   surfaceEdits?.close(); modelEditor.endEditing(); modelAppearancePanel.close();
   // AR may own a temporary matrix. Recover the map matrix before taking the edit snapshot.
   videoModelOverlay?.setPanelActive(false); videoArFusion.setPanelActive(false);
@@ -1156,6 +1178,7 @@ function openModelAppearance(item: ImportRecord): void {
   if (photogrammetryEditor && !photogrammetryEditor.cancel()) { toast('请等待摄影位置保存完成。', true); return; }
   if (modelLoadBusy || videoModelOverlay?.active || !isImportAllowed(item) || item.kind !== "Model") return;
   if (!isImportDisplayed(item)) { toast("请先显示模型，再调整外观", true); return; }
+  structureHolograms?.close();
   modelEditor.endEditing();
   modelAppearancePanel.open({ id: item.id, name: item.name, settings: getModelAppearance(item.resource as Model) });
 }
@@ -1169,6 +1192,7 @@ function locateImport(item: ImportRecord) {
 
 function renderLayers() {
   photogrammetryEditor?.refreshValidity();
+  structureHolograms?.refreshValidity();
   temporaryWorks?.refresh();
   videoModelOverlay?.refreshResources();
   scheduleSceneDisplay();
@@ -1721,6 +1745,7 @@ try {
   entry.addEventListener('click', () => {
     if (!finishPhotogrammetryPreview()) return;
     videoModelOverlay?.setPanelActive(false); videoArFusion.setPanelActive(false);
+    structureHolograms?.close();
     $("#subsurfacePanel").classList.add('hidden'); surfaceEdits?.open();
   });
   document.querySelector('.tabs')?.addEventListener('click', () => surfaceEdits?.close());
@@ -2763,6 +2788,7 @@ $("#loadModel").addEventListener("click", async () => {
   const extension = selectedModelFile.name.split(".").pop()?.toLowerCase() ?? "";
   if (!["dwg", "rvt", "skp", "glb"].includes(extension)) return toast("仅支持 DWG、RVT、SKP 和 GLB", true);
   const sourceFile=selectedModelFile;
+  structureHolograms?.close();
   const selectedPlacement=value("#modelPlacement");
   const controller = new AbortController();
   let stagedModel: Model | undefined;
@@ -3469,7 +3495,7 @@ async function ensureManagementWorkspace(): Promise<ManagementWorkspace> {
         onDisplayMount: host => { sceneDisplayPanel?.mount(host ?? $("#workbenchDisplayHost")); scheduleSceneDisplay(); },
         onChange: renderWorkbenchMachinery,
         onPanelChange: setWorkbenchMachineryPanelOpen,
-        canSelectSceneObject: () => !modelPlacementPending && !modelLoadBusy && !videoModelOverlay?.active && !photogrammetryEditor?.isOpen
+        canSelectSceneObject: () => !modelPlacementPending && !modelLoadBusy && !videoModelOverlay?.active && !photogrammetryEditor?.isOpen && !structureHolograms?.isPicking
           && (document.querySelector<HTMLButtonElement>('#markupCancelDrawing')?.disabled ?? true),
         getSceneResources: () => imports.filter(isImportAllowed).map(layer => ({ id: layer.id, name: layer.name, kind: layer.kind, visible: isImportDisplayed(layer) })),
         pickMachineryPosition: pixel => pickMachinerySurface(viewer, pixel, imports.flatMap(item => {
@@ -3533,6 +3559,7 @@ function renderWorkbenchMachinery(): void {
   getSceneLibraryContextKey();
   getPhotogrammetryContextKey();
   photogrammetryEditor?.refreshValidity();
+  structureHolograms?.refreshValidity();
   // Session changes must also revoke paused AR copies before another frame renders.
   if (!isLibraryRecordAllowed({ kind: "Drone Video" })) videoModelOverlay?.setPanelActive(false);
   videoModelOverlay?.refreshResources();
@@ -3556,7 +3583,10 @@ function canLeaveWorkbench(target?: string): boolean {
     closeTemporaryWorks: () => temporaryWorks?.close() ?? true,
     notify: message => toast(message, true),
   });
-  if (allowed) { surfaceEdits?.close(); photogrammetryEditor?.cancel(); }
+  if (allowed) {
+    surfaceEdits?.close(); photogrammetryEditor?.cancel();
+    if (target !== 'models') structureHolograms?.close();
+  }
   return allowed;
 }
 
@@ -3691,10 +3721,13 @@ function syncSceneDisplay(): void {
   for (const object of managementWorkspace?.isOpen && !state?.canView ? [] : foundationPitMonitoring.getDisplayItems()) items.push({ ...localRemoval(foundationPitMonitoring.getDisplayObjectRemoval(object.id)), id: object.id, name: object.name, category: object.kind === 'model' ? '基坑模型' : object.kind === 'marker' ? '基坑中心提示' : '基坑监测点', visible: object.defaultVisible, edit: () => { foundationPitMonitoring.assertCanSelectDisplayObject(object.id); if (openExistingEditor('monitoring')) foundationPitMonitoring.selectDisplayObject(object.id); } });
   sceneDisplayPanel.setContext(state?.projectId ?? 'workbench-local', state?.actorId, items);
   for (const layer of imports) applyImportDisplay(layer);
+  structureHolograms?.refreshValidity();
+  if ($<HTMLDetailsElement>('#modelOcclusionPanel').open) renderModelOcclusionPreferences();
   applyPendingCadDisplay();
 }
 function applySceneDisplay(overrides: Record<string,boolean>, labelsVisible: boolean): void {
   sceneDisplayOverrides = overrides;
+  structureHolograms?.refreshValidity();
   for (const plan of surfaceEdits?.getDisplayItems() ?? []) surfaceEdits?.setPlanVisible(plan.id, overrides[`surface-edit:${plan.id}`] ?? plan.visible);
   applyPendingCadDisplay();
   for (const plan of temporaryWorks?.getDisplayItems() ?? []) {
@@ -3757,6 +3790,107 @@ function getPhotogrammetryContextKey(): string {
 function isImportDisplayed(layer: ImportRecord): boolean {
   return isImportAllowed(layer) && (sceneDisplayOverrides[`layer:${layer.id}`] ?? layer.visible);
 }
+
+function modelOcclusionScope() {
+  const state = managementWorkspace?.getWorkbenchMachineryState();
+  return { projectId: state?.projectId ?? 'workbench-local', actorId: state?.actorId };
+}
+
+function modelOcclusionTargets(): Map<string, { label: string; ids: string[] }> {
+  const result = new Map<string, { label: string; ids: string[] }>();
+  if (!isLibraryRecordAllowed({ kind: 'Model' })) return result;
+  const models = new Set<string>();
+  for (const record of projectLibrary?.records.values() ?? []) {
+    if (record.kind !== 'Model') continue;
+    models.add(record.id);
+    result.set(`model:${record.id}`, { label: record.name, ids: [record.id] });
+  }
+  for (const group of sceneDisplayPanel?.getGroups() ?? []) {
+    const ids = engineeringGroupModelIds(group, models);
+    if (ids.length) result.set(`group:${group.id}`, { label: `${group.name}（${ids.length} 个模型）`, ids });
+  }
+  return result;
+}
+
+let modelOcclusionOptionsKey = '';
+function renderModelOcclusionPreferences(reset = false): void {
+  const scope = modelOcclusionScope(), targets = modelOcclusionTargets();
+  const key = JSON.stringify([scope, [...targets]]);
+  const target = $<HTMLSelectElement>('#modelOcclusionTarget');
+  const choice = $<HTMLSelectElement>('#modelOcclusionChoice');
+  const save = $<HTMLButtonElement>('#saveModelOcclusion');
+  const status = $('#modelOcclusionStatus');
+  if (key === modelOcclusionOptionsKey && !reset) return;
+  if (key !== modelOcclusionOptionsKey) {
+    const selected = target.value;
+    target.replaceChildren(...[...targets].map(([id, entry]) => new Option(entry.label, id)));
+    if (targets.has(selected)) target.value = selected;
+    modelOcclusionOptionsKey = key;
+  }
+  choice.querySelector('option[value=""]')?.remove();
+  const entry = targets.get(target.value);
+  target.disabled = !entry;
+  choice.disabled = !entry;
+  save.disabled = !entry;
+  status.textContent = entry ? '' : '当前没有可设置的已保存工程模型。';
+  if (!entry) return;
+  try {
+    const rules = modelOcclusionPreferences.read(scope.projectId, scope.actorId);
+    const values = new Set(entry.ids.map(id => rules.get(id)));
+    const enabled = rules.get(entry.ids[0]);
+    if (values.size > 1) {
+      const mixed = new Option('成员设置不同', ''); mixed.disabled = true;
+      choice.add(mixed); choice.value = ''; save.disabled = true;
+    } else choice.value = enabled === undefined ? 'default' : enabled ? 'on' : 'off';
+    if (entry.ids.length === 1 && target.value.startsWith('model:')) status.textContent = `模型记录 ID：${entry.ids[0]}`;
+  } catch (error) {
+    choice.disabled = true; save.disabled = true;
+    status.textContent = `无法读取个人遮挡设置：${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+const modelOcclusionPanel = $<HTMLDetailsElement>('#modelOcclusionPanel');
+modelOcclusionPanel.addEventListener('toggle', () => { if (modelOcclusionPanel.open) renderModelOcclusionPreferences(true); });
+$('#modelOcclusionTarget').addEventListener('change', () => renderModelOcclusionPreferences(true));
+$('#modelOcclusionChoice').addEventListener('change', () => { $<HTMLButtonElement>('#saveModelOcclusion').disabled = false; });
+$('#saveModelOcclusion').addEventListener('click', () => {
+  const target = modelOcclusionTargets().get($<HTMLSelectElement>('#modelOcclusionTarget').value);
+  const choice = $<HTMLSelectElement>('#modelOcclusionChoice').value;
+  if (!target || (choice !== 'default' && choice !== 'on' && choice !== 'off')) return;
+  const { projectId, actorId } = modelOcclusionScope();
+  try {
+    modelOcclusionPreferences.update(projectId, actorId, target.ids, choice);
+    toast('已保存工程模型个人遮挡设置');
+  } catch (error) { toast(error instanceof Error ? error.message : String(error), true); }
+});
+const invalidateModelOcclusion = (event: StorageEvent) => {
+  if (event.key !== null && !event.key.startsWith('model-occlusion:v1:')) return;
+  modelOcclusionPreferences.invalidate(event.key);
+  if (modelOcclusionPanel.open) renderModelOcclusionPreferences(true);
+};
+window.addEventListener('storage', invalidateModelOcclusion);
+onPageDispose(() => window.removeEventListener('storage', invalidateModelOcclusion));
+
+structureHolograms = new StructureHolograms(viewer, document.body, {
+  getModels: () => imports.flatMap(item => {
+    if (item.kind !== 'Model' || !isImportDisplayed(item) || projectLibrary?.records.get(item.id)?.kind !== 'Model') return [];
+    const model = item.resource as Model;
+    return model.isDestroyed() ? [] : [{ id: item.id, model }];
+  }),
+  getContextKey: getSceneLibraryContextKey,
+  acquirePicking: () => {
+    if (!isLibraryRecordAllowed({ kind: 'Model' })) throw new Error('当前账号没有工程模型查看权限。');
+    if (modelLoadBusy || modelPlacementPending || modelEditor.isEditing || modelAppearancePanel.activeId
+      || videoModelOverlay?.active || photogrammetryEditor?.isOpen || sceneEffectsCoordinator.leaseCount
+      || markupTools?.hasActiveInteraction || foundationPitMonitoring.hasActiveInteraction)
+      throw new Error('请先结束当前拾取、编辑或融合操作。');
+    return subsurfaceTools.suspendInteractions();
+  },
+  notify: toast,
+});
+$('#openStructureHologram').addEventListener('click', () => structureHolograms?.open());
+onPageDispose(() => structureHolograms?.dispose());
+
 function applyImportDisplay(layer: ImportRecord): void {
   const resource = layer.resource as {show:boolean;isDestroyed?:()=>boolean};
   if (resource.isDestroyed?.()) return;

@@ -80,10 +80,15 @@ export class VideoOverlaySpatialBinding {
   pick(targetId: string, u: number, v: number): Point3 {
     const resources = this.options.resources(), k = this.options.intrinsics();
     if (!resources || !k || !resources.spatialVisible(targetId)) throw new Error('请先进入融合编辑并选择当前可见的模型或 CAD');
+    const viewer = this.options.viewer;
+    const windowPoint = spatialVideoToScenePoint(u, v, k, this.options.lens() ?? {}, viewer.canvas.clientWidth, viewer.canvas.clientHeight);
+    return resources.withEngineeringPick(targetId, () => this.pickLayer(resources, targetId, u, v, k, windowPoint), () => viewer.scene.pick(windowPoint, 1, 1));
+  }
+
+  private pickLayer(resources: VideoOverlayResources, targetId: string, u: number, v: number, k: CameraIntrinsics, windowPoint: Cartesian2): Point3 {
     const frame = resources.spatialFrame(targetId);
     if (!frame) throw new Error('关联对象缺少有效空间定位，请重新加载对象');
     const viewer = this.options.viewer, scene = viewer.scene, lens = this.options.lens() ?? {};
-    const windowPoint = spatialVideoToScenePoint(u, v, k, lens, viewer.canvas.clientWidth, viewer.canvas.clientHeight);
     // One pixel for surface picking prevents using another pixel's geometry with
     // the cursor's depth. CAD lines have an explicit 9 px tolerance and snap.
     const exactHit = scene.pick(windowPoint, 1, 1);

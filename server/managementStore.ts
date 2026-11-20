@@ -28,6 +28,7 @@ export type ManagementStoreOptions={cookieSecure?:boolean;uploadBudget?:UploadBu
  resolveLibraryEvidence?:(projectId:string,recordId:string,fileKey:string)=>LibraryEvidence|undefined|Promise<LibraryEvidence|undefined>};
 type DbRow={data:string};
 import { setManagementActor } from "./management/actorContext.ts";
+import { setStructurePreviewAuthorizer } from "./management/structurePreviewContext.ts";
 export { managementActor } from "./management/actorContext.ts";
 const COOKIE="cesium_management_session",SESSION_MS=8*60*60*1000;
 const emptyCollections=()=>Object.fromEntries(MANAGEMENT_COLLECTIONS.map(k=>[k,[]])) as unknown as Record<ManagementCollection,ManagementRecord[]>;
@@ -42,7 +43,8 @@ function withoutUnauthorizedMachinery<T>(value:T,actor?:Actor):T{
 }
 function publicError(error:unknown,actor?:Actor){return error instanceof ManagementError?new ManagementError(error.status,error.code,error.message,withoutUnauthorizedMachinery(error.details,actor),withoutUnauthorizedMachinery(error.current,actor)):error;}
 function errorOutput(res:ServerResponse,error:unknown,actor?:Actor){const e=publicError(error instanceof ManagementError?error:new ManagementError(500,"INTERNAL_ERROR","管理服务失败，输入未写入，请重试"),actor) as ManagementError;output(res,e.status,{error:e.message,code:e.code,details:e.details,current:e.current});}
-function loopback(req:IncomingMessage){return ["127.0.0.1","::1","::ffff:127.0.0.1"].includes(req.socket.remoteAddress||"");}
+type SessionRequest={headers:Pick<IncomingMessage["headers"],"cookie"|"host">;socket:Pick<IncomingMessage["socket"],"remoteAddress">};
+function loopback(req:SessionRequest){return ["127.0.0.1","::1","::ffff:127.0.0.1"].includes(req.socket.remoteAddress||"");}
 function sameOrigin(req:IncomingMessage){const origin=req.headers.origin;if(!origin)return;let host="";try{host=new URL(origin).host;}catch{/* denied */}if(!host||host!==req.headers.host)throw new ManagementError(403,"CROSS_ORIGIN","不允许跨站访问管理数据");}
 function canonical(value:unknown):string{if(Array.isArray(value))return '['+value.map(canonical).join(',')+']';if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+canonical((value as Record<string,unknown>)[k])).join(',')+'}';return JSON.stringify(value);}
 async function body(req:IncomingMessage,limit=1_048_576,reserve?:(bytes:number)=>void){let bytes=0;const chunks:Buffer[]=[];for await(const raw of reserve?req.iterator({destroyOnReturn:false}):req){const c=Buffer.isBuffer(raw)?raw:Buffer.from(raw);bytes+=c.length;if(bytes>limit)throw new ManagementError(413,"BODY_TOO_LARGE","请求超过大小限制");reserve?.(c.length);chunks.push(c);}return Buffer.concat(chunks);}
@@ -89,7 +91,7 @@ export function createManagementStore(options:ManagementStoreOptions={}){
  function accountActor(userId:string,projectId:string,expiresAt?:string):Actor{const user=db.prepare("SELECT active,display_name FROM users WHERE id=?").get(userId) as {active:number;display_name:string}|undefined;const member=getMember(projectId,userId);if(!user?.active||!member?.active)throw new ManagementError(403,"PROJECT_FORBIDDEN","账号没有此项目权限");
   const permissions=[...new Set(member.roles.flatMap(r=>rolePermissions[r]))].filter(p=>!["models","files","media"].includes(p)||member.resourceAccess[p as "models"|"files"|"media"]&&(p!=="models"||member.taskIds===undefined));
   return {id:userId,displayName:member.displayName,roles:member.roles,permissions,authMode:"local-account",taskIds:member.taskIds,expiresAt};}
- function authenticate(req:IncomingMessage,projectId=legacyProjectId):Actor{getProject(projectId);const match=req.headers.cookie?.split(";").map(v=>v.trim()).find(v=>v.startsWith(COOKIE+"="));if(match){const token=match.slice(COOKIE.length+1);const row=db.prepare("SELECT user_id,expires_at FROM sessions WHERE token_hash=?").get(hash(token)) as {user_id:string;expires_at:string}|undefined;if(!row||row.expires_at<=now())throw new ManagementError(401,"SESSION_EXPIRED","本机会话已失效，请重新登录");return accountActor(row.user_id,projectId,row.expires_at);}
+ function authenticate(req:SessionRequest,projectId=legacyProjectId):Actor{getProject(projectId);const match=req.headers.cookie?.split(";").map(v=>v.trim()).find(v=>v.startsWith(COOKIE+"="));if(match){const token=match.slice(COOKIE.length+1);const row=db.prepare("SELECT user_id,expires_at FROM sessions WHERE token_hash=?").get(hash(token)) as {user_id:string;expires_at:string}|undefined;if(!row||row.expires_at<=now())throw new ManagementError(401,"SESSION_EXPIRED","本机会话已失效，请重新登录");return accountActor(row.user_id,projectId,row.expires_at);}
   if(!usersExist()&&options.localCompatibility!==false&&loopback(req)&&["localhost","127.0.0.1","[::1]"].includes(new URL("http://"+(req.headers.host||"invalid")).hostname))return localActor();throw new ManagementError(401,"AUTH_REQUIRED",usersExist()?"已启用本机账号，请先登录":"远程访问需先在本机建立账号");}
  function recordSource(projectId:string):RecordSource{return{get:(kind,key)=>get(projectId,kind,key),list:kind=>list(projectId,kind)};}
  function visible(actor:Actor,record:ManagementRecord,kind:ManagementCollection){return canAccessRecord(actor,kind,record,recordSource(record.projectId));}
@@ -185,7 +187,7 @@ export function createManagementStore(options:ManagementStoreOptions={}){
    const privateFile=["/model-converters.json","/video_ar_backend/.env","/video_ar_backend/dji_extractor_launcher.log","/acad.err"].includes(lower)||/^\/\.env(?:\.[^/]*)?$/.test(lower)&&lower!=="/.env.example"||/^\/docs\/temporary-works-upgrade\/assets-[^/]+\.json$/.test(lower)||/^\/video_ar_backend\/tools\/[^/]+\.zip$/.test(lower);
    const direct=privateFile||rawRoots.some(x=>(lower+"/").startsWith(x))||lower.startsWith("/@fs/")&&!['/node_modules/','/src/','/ar_v2/web/'].some(x=>lower.startsWith('/@fs/'+process.cwd().replaceAll('\\','/').toLowerCase()+x));
    if(direct)throw new ManagementError(403,"RAW_STORAGE_FORBIDDEN","请通过受控资料或模型接口访问文件");
-   if(!/^\/__(library|local_tiles|models|local_imagery|safety|diagnostics)(?:\/|$)/.test(path)){next();return;}
+   if(!/^\/__(library|local_tiles|models|local_imagery|safety|diagnostics|structure_library)(?:\/|$)/.test(path)){next();return;}
    sameOrigin(req);const actor=authenticate(req,legacyProjectId);setManagementActor(req,actor);if(path==="/__safety/events"){next();return;}const read=req.method==="GET"||req.method==="HEAD";
    if(path.startsWith("/__diagnostics/")){allow(actor,req.method==="POST"?"read":"admin");next();return;}
    if(actor.taskIds!==undefined){
@@ -194,6 +196,13 @@ export function createManagementStore(options:ManagementStoreOptions={}){
     else throw new ManagementError(403,"RESOURCE_SCOPE_FORBIDDEN","完整工程模型与目录需要单独的全项目授权");
    }
    if(path.startsWith("/__local_tiles")||path.startsWith("/__models")||path.startsWith("/__safety/models")||path.startsWith("/__safety/model-optimization"))allow(actor,read?"models":"admin");
+   else if(path.startsWith("/__structure_library")){
+    allow(actor,read?"models":"admin");
+    if(read&&/^\/__structure_library\/[^/]+\/[^/]+\/preview$/.test(path)){
+     const proof:SessionRequest={headers:{cookie:req.headers.cookie,host:req.headers.host},socket:{remoteAddress:req.socket.remoteAddress}};
+     setStructurePreviewAuthorizer(req,()=>authenticate(proof,legacyProjectId));
+    }
+   }
    else if(path.startsWith("/__local_imagery"))allow(actor,read?"models":"admin");
    else if(path.startsWith("/__safety"))allow(actor,read?"read":"field");
    else if(path.startsWith("/__library")){

@@ -6,6 +6,7 @@ on:
     branches:
       - codex/platform-round1-v1.2.2
       - codex/photogrammetry-transform-v1.2.2
+      - codex/model-occlusion-hologram-v1.2.2
   workflow_dispatch:
 
 permissions:
@@ -93,6 +94,16 @@ jobs:
           sudo apt-get install -y ffmpeg
           echo "PLAYWRIGHT_MODULE=$RUNNER_TEMP/cesium-browser/node_modules/playwright" >> "$GITHUB_ENV"
           node -e 'const { chromium } = require(process.argv[1]); console.log("BROWSER_EXECUTABLE=" + chromium.executablePath())' "$RUNNER_TEMP/cesium-browser/node_modules/playwright" >> "$GITHUB_ENV"
+      - name: Engineering occlusion pixel and replay regression
+        run: node tools/verify-cc-video-occlusion.mjs --engineering
+        env:
+          START_VITE: '1'
+          BASE_URL: http://127.0.0.1:5193
+          OUTPUT_DIR: output/ci-browser/engineering-occlusion
+      - name: Structure hologram and original webpage regression
+        run: node tests/structure-hologram-browser.mjs
+        env:
+          STRUCTURE_HOLOGRAM_BROWSER_OUT: output/ci-browser/structure-hologram
       - name: Native media and occlusion regression, first run
         run: node tests/round1-media-intent-browser.mjs
         env:
@@ -112,10 +123,10 @@ jobs:
         run: |
           node --input-type=module <<'JS'
           import { existsSync, readFileSync } from 'node:fs';
-          for (const file of ['output/ci-browser/media-first/report.json', 'output/ci-browser/media-second/report.json', 'output/ci-browser/scene/report.json', 'output/surface-edit-browser/report.json']) {
+          for (const file of ['output/ci-browser/engineering-occlusion/cc-occlusion-browser-report.json', 'output/ci-browser/structure-hologram/report.json', 'output/ci-browser/media-first/report.json', 'output/ci-browser/media-second/report.json', 'output/ci-browser/scene/report.json', 'output/surface-edit-browser/report.json']) {
             if (!existsSync(file)) { console.log(JSON.stringify({ file, execution: 'not-run' })); continue; }
             const r = JSON.parse(readFileSync(file, 'utf8'));
-            console.log(JSON.stringify({ file, execution: r.execution, passed: r.passed, gpu: r.gpu, checks: r.checks, error: r.error, pageErrors: r.pageErrors, consoleErrors: r.consoleErrors, httpErrors: r.httpErrors, requestFailures: r.requestFailures }));
+            console.log(JSON.stringify({ file, execution: r.execution, passed: r.passed ?? r.pass, gpu: r.gpu, checks: r.checks, error: r.error, pageErrors: r.pageErrors ?? r.browserErrors, consoleErrors: r.consoleErrors, httpErrors: r.httpErrors, requestFailures: r.requestFailures }));
           }
           JS
       - name: Verify tracked files unchanged

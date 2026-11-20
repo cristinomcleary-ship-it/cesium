@@ -2,7 +2,7 @@ import {
   Appearance, BlendOption, BoundingSphere, CallbackProperty, Cartesian3, Cesium3DTileset, Color,
   ColorMaterialProperty, ConstantPositionProperty, ConstantProperty, CustomShader,
   CustomShaderTranslucencyMode, GroundPolylinePrimitive, GroundPrimitive, HeightReference,
-  LabelCollection, Material, Matrix3, Matrix4, PolygonHierarchy, Primitive,
+  LabelCollection, Material, Matrix3, Matrix4, Model, PolygonHierarchy, Primitive,
   PrimitiveCollection, Transforms, UniformType,
   type CustomDataSource, type JulianDate, type Property, type Viewer,
 } from "cesium";
@@ -13,6 +13,8 @@ import type { LibraryRecord } from "./projectLibrary.ts";
 import type { ImportRecord } from "./types.ts";
 import { assertVideoOverlayOccluder, VideoOverlayOcclusion, VideoOverlayTileCoverage, type VideoOverlayOcclusionStatus } from './videoOverlayOcclusion.ts';
 import type { VideoOverlayEffectState } from './videoOverlayEffects.ts';
+import { engineeringOcclusionFrameRole, type EngineeringOcclusionRules } from './engineeringOcclusion.ts';
+import { VideoEngineeringDepthMask } from './videoEngineeringDepthMask.ts';
 
 /** Metres in the object's fixed local ENU frame; angles are degrees.
  * Heading is clockwise. Positive tilts raise the east / north side respectively.
@@ -46,6 +48,7 @@ type MatrixResource = VisibleResource & { modelMatrix: Matrix4; boundingSphere?:
 type MatrixBinding = { resource: MatrixResource; original: Matrix4 };
 type PositionBinding = { apply: (transform: Matrix4) => void; restore: () => void };
 type OpacityBinding = { apply: (opacity: number) => void; restore: () => void };
+type EngineeringLayer = 'all' | 'normal' | 'color';
 type Entry = {
   record: ImportRecord; original: VisibleResource;
   target: VisibleResource; center?: Cartesian3; matrices: MatrixBinding[];
@@ -430,6 +433,9 @@ export class VideoOverlayResources {
   private readonly tileCoverage = new Map<string, VideoOverlayTileCoverage>();
   private readonly touchedTiles = new Set<Cesium3DTileset>();
   private occlusion?: VideoOverlayOcclusion;
+  private engineeringOcclusion: EngineeringOcclusionRules = {};
+  private readonly engineeringDepth = new Map<string, VideoEngineeringDepthMask>();
+  private engineeringLayer: EngineeringLayer = 'all';
   private selected = new Set<string>();
   private visible = true;
   private restored = false;
@@ -660,7 +666,7 @@ export class VideoOverlayResources {
   spatialVisible(id: string): boolean {
     const entry = this.entries.get(id);
     return !!entry && this.visible && this.selected.has(id) && id !== this.occlusion?.sourceId
-      && this.available(entry, this.importIndex()) && entry.target.show && this.opacityStates.get(id)?.visible !== false;
+      && this.available(entry, this.importIndex()) && (entry.target.show || this.engineeringLayer !== 'all') && this.opacityStates.get(id)?.visible !== false;
   }
 
   /** Verify the pick's real resource identity, not a coincident feature name. */
@@ -752,8 +758,81 @@ export class VideoOverlayResources {
     this.selected = new Set(ids.filter(id => {
       const entry = this.entries.get(id); return !!entry && this.available(entry, current);
     }));
+    this.syncEngineeringDepth(current);
     this.prepareSelectedTileCoverage();
     this.updateVisibility(imports);
+  }
+
+  setEngineeringOcclusion(rules: EngineeringOcclusionRules): void {
+    this.throwIfCancelled();
+    if (this.engineeringOcclusion === rules || !Object.keys(this.engineeringOcclusion).length && !Object.keys(rules).length) return;
+    this.engineeringOcclusion = rules;
+    this.syncEngineeringDepth(this.importIndex());
+    this.updateVisibility(undefined, true);
+  }
+
+  hasEngineeringColorLayer(): boolean {
+    if (!this.visible) return false;
+    if (!Object.values(this.engineeringOcclusion).includes(false)) return false;
+    const current = this.importIndex();
+    return [...this.selected].some(id => {
+      const entry = this.entries.get(id);
+      return !!entry && this.engineeringColorOnly(id, entry) && this.available(entry, current) && this.opacityStates.get(id)?.visible !== false;
+    });
+  }
+
+  setEngineeringRenderLayer(layer: EngineeringLayer): void {
+    if (layer === this.engineeringLayer) return;
+    this.engineeringLayer = layer;
+    this.updateVisibility(undefined, false, false);
+  }
+
+  /** Picks use the same isolated geometry as the corresponding color pass. */
+  withEngineeringPick<T>(id: string, pick: () => T, pickFront: () => unknown): T {
+    const previous = this.engineeringLayer;
+    if (!this.hasEngineeringColorLayer()) return pick();
+    const entry = this.entries.get(id);
+    this.setEngineeringRenderLayer('normal');
+    try {
+      if (entry && this.engineeringColorOnly(id, entry)) {
+        const front = pickFront();
+        for (const selected of this.selected) {
+          const layer = this.entries.get(selected);
+          if (layer && !this.engineeringColorOnly(selected, layer) && this.spatialOwnsPick(selected, front)) {
+            throw new Error('该点被工程叠加对象覆盖，请点击模型其余可见表面');
+          }
+        }
+        this.setEngineeringRenderLayer('color');
+      }
+      return pick();
+    } finally { this.setEngineeringRenderLayer(previous); }
+  }
+
+  private engineeringColorOnly(id: string, entry: Entry): boolean {
+    return entry.record.kind === 'Model' && engineeringOcclusionFrameRole(this.selected.has(id), this.engineeringOcclusion[id]) === 'color';
+  }
+
+  private passesEngineeringLayer(id: string, entry: Entry): boolean {
+    return this.engineeringLayer === 'all' || this.engineeringColorOnly(id, entry) === (this.engineeringLayer === 'color');
+  }
+
+  private syncEngineeringDepth(current: ReadonlyMap<string, ImportRecord>): void {
+    const wanted = new Set(Object.entries(this.engineeringOcclusion).flatMap(([id, rule]) => {
+      const entry = this.entries.get(id);
+      return rule && !this.selected.has(id) && entry?.record.kind === 'Model' && entry.target instanceof Model
+        && this.available(entry, current) ? [id] : [];
+    }));
+    for (const [id, depth] of this.engineeringDepth) if (!wanted.has(id)) { depth.dispose(); this.engineeringDepth.delete(id); }
+    for (const id of wanted) if (!this.engineeringDepth.has(id)) {
+      const entry = this.entries.get(id)!;
+      this.restoreOpacity(entry);
+      this.opacityStates.delete(id);
+      this.engineeringDepth.set(id, new VideoEngineeringDepthMask(entry.target as Model));
+    }
+  }
+
+  engineeringDepthError(): string | undefined {
+    for (const depth of this.engineeringDepth.values()) if (depth.error) return depth.error;
   }
 
   private prepareSelectedTileCoverage() {
@@ -793,7 +872,7 @@ export class VideoOverlayResources {
     const imports = this.options.imports(), current = this.importIndex(imports);
     let changed = false;
     for (const [id, entry] of this.entries) {
-      if (id === this.occlusion?.sourceId || !this.available(entry, current)) continue;
+      if (id === this.occlusion?.sourceId || this.engineeringDepth.has(id) || !this.available(entry, current)) continue;
       const next = normalized.get(id) ?? { opacity: 1, visible: true };
       const previous = this.opacityStates.get(id) ?? { opacity: 1, visible: true };
       if (next.opacity === previous.opacity && next.visible === previous.visible) continue;
@@ -833,11 +912,12 @@ export class VideoOverlayResources {
    */
   isPresentationReady(beforeRender = false): boolean {
     if (this.restored || !this.visible) return !this.restored;
+    for (const depth of this.engineeringDepth.values()) if (!depth.ready) return false;
     const current = this.importIndex();
     for (const id of this.selected) {
       if (id === this.occlusion?.sourceId) continue;
       const entry = this.entries.get(id);
-      if (!entry || !this.available(entry, current) || this.opacityStates.get(id)?.visible === false) continue;
+      if (!entry || !this.available(entry, current) || !this.passesEngineeringLayer(id, entry) || this.opacityStates.get(id)?.visible === false) continue;
       if (entry.record.kind === '3D Tiles' && this.tileCoverage.has(id)) {
         // preRender resets coverage before traversal; only postRender can test
         // this frame's selected tiles. Treating its empty pre-pass as a failure
@@ -862,7 +942,7 @@ export class VideoOverlayResources {
     this.updateVisibility();
   }
 
-  private updateVisibility(imports = this.options.imports(), forceRender = false) {
+  private updateVisibility(imports = this.options.imports(), forceRender = false, requestRender = true) {
     // Newly loaded unrelated layers also stay out of the video and are restored on exit.
     // Compute final visibility before writing. Toggling an entity CAD off/on
     // would walk every entity twice and invalidate its display on every frame.
@@ -876,11 +956,12 @@ export class VideoOverlayResources {
     const current = this.importIndex(imports), occlusion = this.occlusionStatus(current);
     for (const [id, entry] of this.entries) {
       desired.set(entry.target, this.visible && this.available(entry, current)
-        && (id === occlusion.sourceId ? !occlusion.error : this.selected.has(id) && this.opacityStates.get(id)?.visible !== false));
+        && (id === occlusion.sourceId ? !occlusion.error : this.engineeringDepth.has(id) || this.selected.has(id)
+          && this.passesEngineeringLayer(id, entry) && this.opacityStates.get(id)?.visible !== false));
     }
     let changed = false;
     for (const [resource, show] of desired) changed = setShow(resource, show) || changed;
-    if (changed || forceRender) this.options.viewer.scene.requestRender();
+    if (requestRender && (changed || forceRender)) this.options.viewer.scene.requestRender();
   }
 
   /** Per-object offsets are patched; group is the complete group state (undefined clears it).
@@ -963,6 +1044,10 @@ export class VideoOverlayResources {
     this.removeAbortListener = undefined;
     try { this.occlusion?.restore(); } catch { /* Continue independent releases. */ }
     this.occlusion = undefined;
+    for (const depth of this.engineeringDepth.values()) {
+      try { depth.dispose(); } catch { /* Continue independent releases. */ }
+    }
+    this.engineeringDepth.clear();
     for (const coverage of this.tileCoverage.values()) {
       try { coverage.restore(); } catch { /* Another owner must still be released. */ }
     }

@@ -1,5 +1,6 @@
 import type { SavedReplaySettings } from "./videoArFusion";
 import type { SavedVideoOverlaySettings } from "./videoModelOverlay";
+import { validateEngineeringOcclusion } from "./engineeringOcclusion";
 import {
   Cartesian3, Cesium3DTileset, Color, CzmlDataSource, GeoJsonDataSource, IonResource,
   KmlDataSource, Matrix4, Model, UrlTemplateImageryProvider, type Viewer,
@@ -420,8 +421,10 @@ export class SceneLibrary {
     this.records.set(record.id, record);
     return record;
   }
-  private async videoOverlayDependencies(settings: SavedVideoOverlaySettings): Promise<void> {
+  private async videoOverlayDependencies(settings: SavedVideoOverlaySettings, checkCurrent: () => void): Promise<void> {
     const ids = new Set(settings.selectedIds ?? []);
+    const engineeringOccluders = new Set(Object.entries(validateEngineeringOcclusion(settings.engineeringOcclusion))
+      .filter(([, enabled]) => enabled).map(([id]) => id));
     if (settings.sceneReference) ids.add(settings.sceneReference.recordId);
     if (settings.occlusion?.enabled) ids.add(settings.occlusion.sourceId);
     const records: LibraryRecord[] = [];
@@ -429,6 +432,7 @@ export class SceneLibrary {
       let record: LibraryRecord;
       try { record = await this.readableRecord(id); }
       catch { throw new Error("融合方案引用的工程资料不可用或当前账号无权读取，原方案已保留"); }
+      if (engineeringOccluders.has(id) && record.kind !== "Model") throw new Error("工程遮挡源须为已保存的工程模型，原方案已保留");
       if (!["CAD", "Model", "3D Tiles"].includes(record.kind)) throw new Error("融合方案引用了不支持的工程资料，原方案已保留");
       records.push(record);
     }
@@ -439,16 +443,30 @@ export class SceneLibrary {
         throw new Error("融合方案依赖的工程资料尚未恢复，原方案已保留，请在资料库重试");
       }
     }
+    for (const id of engineeringOccluders) {
+      if (ids.has(id)) continue;
+      checkCurrent();
+      try {
+        const source = await this.readableRecord(id);
+        checkCurrent();
+        if (source.kind === "Model" && !this.hooks.getImports().some(item => item.id === source.id)) await this.restore(source.id);
+      } catch {
+        // A missing mask keeps the scheme editable. Its render guard requires
+        // the user to restore the resource or explicitly clear the missing rule.
+        checkCurrent();
+      }
+    }
   }
   private async restoreVideoOverlay(record: LibraryRecord, request: RestoreRequest, options: { asCopy?: boolean; name?: string } = {}): Promise<void> {
     const settings = structuredClone(record.settings.video) as unknown as SavedVideoOverlaySettings;
-    await this.videoOverlayDependencies(settings);
+    const checkCurrent = () => this.checkRestore(record, request);
+    await this.videoOverlayDependencies(settings, checkCurrent);
     this.checkRestore(record, request);
     const files: Record<string, File> = {};
     for (const slot of Object.keys(record.files)) { this.checkRestore(record, request); files[slot] = await this.file(record, slot); }
     // Large video reads can outlive a permission change. Recheck before handing
     // already downloaded bytes and scene objects to the controller.
-    await this.readableRecord(record.id); await this.videoOverlayDependencies(settings);
+    await this.readableRecord(record.id); await this.videoOverlayDependencies(settings, checkCurrent);
     this.checkRestore(record, request);
     if (options.asCopy) {
       const name = options.name?.trim() || `${videoSchemeName(record).slice(0, 490)} · 副本`;

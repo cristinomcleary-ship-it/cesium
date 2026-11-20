@@ -37,6 +37,7 @@ try {
   const context = { projectId: 'project-a', actorId: 'actor-a', canView: true };
   let contextRefreshes = 0, photoCanEdit = true, photoValidityRefreshes = 0;
   const photoInteractionEvents = [];
+  const hologramEvents = [];
   const photogrammetryEditor = { activeId: undefined, busy: false,
     cancel() { photoInteractionEvents.push('cancel'); if (this.busy) return false; this.activeId = undefined; return true; },
     refreshValidity() { photoValidityRefreshes++; },
@@ -81,13 +82,14 @@ try {
   };
   const sceneEffectsCoordinator = new SceneEffectsCoordinator();
   sceneEffectsCoordinator.register('surface-edit', () => surfaceEdits.suspendExternalSceneEffects());
-  const host = new Function('managementWorkspace', 'imports', 'videoModelOverlay', 'viewer', 'scheduleSceneDisplay', 'modelEditor', 'projectLibrary', 'sceneDisplayPanel', 'document', 'surfaceEdits', 'cadLoads', 'sceneEffectsCoordinator', 'refreshSubsurfaceContext', 'photogrammetryEditor', `
+  const host = new Function('managementWorkspace', 'imports', 'videoModelOverlay', 'viewer', 'scheduleSceneDisplay', 'modelEditor', 'projectLibrary', 'sceneDisplayPanel', 'document', 'surfaceEdits', 'cadLoads', 'sceneEffectsCoordinator', 'refreshSubsurfaceContext', 'photogrammetryEditor', 'structureHolograms', `
     let sceneDisplayOverrides = {}, resumeVideoOverlayInteractions;
     let sceneLibraryContextFingerprint = '', sceneLibraryContextRevision = 0;
     let photogrammetryContextFingerprint = '', photogrammetryContextRevision = 0, photogrammetryEditContext;
     const markupTools = undefined, temporaryWorks = undefined, foundationPitMonitoring = { setDisplayVisibility() {} }, modelQualityTrackers = new Map(), videoArFusion = { invalidateProjection() {} }, modelAppearancePanel = { close() {} };
     ${hostCode}`)(
-    { getWorkbenchLayerAccess: () => permissions, getWorkbenchMachineryState: () => context, canEditSceneLibraryModels: () => photoCanEdit && permissions.models, setWorkbenchDisplayVisibility() {} }, imports, owner, viewer, () => scheduled++, { select() {}, getSelected: () => undefined, endEditing() {} }, { saveView() {}, render() {} }, { labelsVisible: true }, globalThis.document, surfaceEdits, cadLoads, sceneEffectsCoordinator, () => contextRefreshes++, photogrammetryEditor);
+    { getWorkbenchLayerAccess: () => permissions, getWorkbenchMachineryState: () => context, canEditSceneLibraryModels: () => photoCanEdit && permissions.models, setWorkbenchDisplayVisibility() {} }, imports, owner, viewer, () => scheduled++, { select() {}, getSelected: () => undefined, endEditing() {} }, { saveView() {}, render() {} }, { labelsVisible: true }, globalThis.document, surfaceEdits, cadLoads, sceneEffectsCoordinator, () => contextRefreshes++, photogrammetryEditor,
+    { close() { hologramEvents.push('close'); }, refreshValidity() {} });
   owner.options = { getImports: host.getImports, getRecord: () => undefined, onExit: host.onExit, canAccessVideo: host.canAccessVideo, suspendExternalSceneEffects: host.suspendExternalSceneEffects };
   const initialContextKey = host.getSceneLibraryContextKey();
   assert.equal(host.getSceneLibraryContextKey(), initialContextKey);
@@ -272,8 +274,10 @@ try {
   assert.equal(surfaceSuspensions, 0, 'a refused entry cannot suspend existing surface effects');
   assert.deepEqual(photoInteractionEvents, ['cancel', 'cancel']);
   photoInteractionEvents.length = 0; photogrammetryEditor.busy = false; photogrammetryEditor.activeId = 'editing-photo';
+  hologramEvents.length = 0;
   owner.setPanelActive(true); owner.setPanelActive(true);
   assert.deepEqual(photoInteractionEvents, ['cancel', 'lease'], 'photography preview is cancelled before acquiring the AR effect lease');
+  assert.deepEqual(hologramEvents, ['close'], 'AR closes an open structure hologram');
   assert.equal(photogrammetryEditor.activeId, undefined, 'AR begins with the original photography preview released');
   assert.equal(surfaceSuspensions, 1, 'the production host hook acquires one shared map-effects lease for the AR panel');
   assert.equal(surfaceRequestedVisible, false, 'opening AR preserves the saved hidden surface preference');
