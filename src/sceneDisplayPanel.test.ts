@@ -51,6 +51,18 @@ test('model appearance actions remain separate from position editing and refresh
   assert.equal(positions, 1);
 });
 
+test('model contact state refreshes its row and remains actionable while hidden or computing without changing V', async () => {
+  const f = fixture(); let switches = 0;
+  const status = { enabled: true, busy: true, state: 'preparing', message: '正在计算' };
+  const model = item({ id: 'layer:skp', category: '工程模型', name: '高架模型.skp', visible: false, occlusion: () => { switches++; }, occlusionState: status });
+  f.panel.setContext('project', 'actor', [model]);
+  const renders = f.renders(), applies = f.applies();
+  await f.panel.action('item-occlusion', { dataset: { itemId: model.id }, disabled: false });
+  assert.equal(switches, 1); assert.equal(f.store.isVisible(model.id), false);
+  f.panel.setContext('project', 'actor', [{ ...model, occlusionState: { ...status, busy: false, state: 'active', message: '接触遮挡已生效' } }]);
+  assert.equal(f.renders(), renders + 1); assert.equal(f.applies(), applies, 'O status never rewrites visibility preferences');
+});
+
 test('removing only a model cannot delete the resource row supplied by the removal snapshot', async () => {
   const f = fixture();
   f.panel.setContext('project', 'actor', [item({ removalPreservesResource: true, remove: async () => {

@@ -3,3 +3,4 @@
 @media(max-height:700px){.sdp-heading{padding:9px 12px}.sdp-toolbar{gap:7px;padding-top:8px}.sdp-selection{padding-top:7px;padding-bottom:7px}.sdp-footer p{font-size:9px}.sdp-item{padding-top:7px;padding-bottom:7px}}
 
 .sdp-item-tools .sdp-item-remove{margin-left:auto;color:#f0b4a6;border-color:#80584f;background:#3b292b}.sdp-item-tools .sdp-item-remove:hover:enabled{color:#ffe0d5;border-color:#ce9383;background:#573437}.sdp-item.is-removing .sdp-item-name{opacity:.65}.sdp-item.is-removing .sdp-item-remove{cursor:wait}
+.sdp-item-tools{flex-wrap:wrap}.sdp-item-tools .sdp-item-occlusion[aria-pressed=true]{color:#c9fff1;border-color:#47846f;background:#244d43}.sdp-item-tools .sdp-item-occlusion[data-state=error]{color:#ffd0be;border-color:#a36550}.sdp-item-tools .sdp-item-occlusion[data-state=preparing]{border-color:#bdab65;color:#f4e6b3}

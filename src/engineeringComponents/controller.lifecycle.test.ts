@@ -67,7 +67,7 @@ function glb(ids: string[]) {
   view.setUint32(0, 0x46546c67, true); view.setUint32(4, 2, true); view.setUint32(8, bytes.byteLength, true);
   view.setUint32(12, bytes.byteLength - 20, true); view.setUint32(16, 0x4e4f534a, true); bytes.fill(32, 20); bytes.set(new TextEncoder().encode(json), 20); return bytes;
 }
-function environment(unitOnly = false) {
+function environment(unitOnly = false, modelContact?: unknown) {
   code.reset();
   const components = ['C0', 'C1', 'C2'].map((id, index) => ({ id, name: id, parentId: index === 1 ? 'TRACK' : 'ROOT', unitId: index < 2 ? 'T' : null,
     type: 'wall', typeName: '墙', visible: true, occlusion: false, geometryRef: { file: 'full.glb', node: id, mesh: id } }));
@@ -98,11 +98,29 @@ function environment(unitOnly = false) {
     if (!bytes) throw new Error(`Unexpected fixture request: ${url.pathname}`);
     return new Response(bytes as unknown as BodyInit, { headers: { 'content-length': String(bytes.byteLength) } });
   });
-  const controller = new code.EngineeringComponentsController({ viewer: env.viewer, getInstances: () => env.instances, getContext: () => env.context,
+  const controller = new code.EngineeringComponentsController({ viewer: env.viewer, getInstances: () => env.instances, getContext: () => env.context, modelContact,
     canPick: () => true, beginInteractionSession: () => () => { env.releases++; }, toast: (message: string) => errors.push(message) });
   return { ...env, env, controller, panel: controller.panel, cleanup() { controller.dispose(); for (const [key, descriptor] of originals) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); } } };
 }
 const tick = () => new Promise<void>(resolveTick => setImmediate(resolveTick));
+
+test('production contact bridge shares row state and retains its owner when the component tree disconnects', async () => {
+  const listeners = new Set<() => void>(), selections: unknown[] = []; let selectedState: any, released = 0;
+  const status = { targetId: 'all', enabled: true, busy: false, state: 'active', message: '真实三维接触', error: false, componentCount: 0 };
+  const contact = { bindComponentSelection(_id: string, mappings: unknown, state: unknown) { selectedState = state; selections.push(mappings); return () => {}; },
+    subscribe(callback: () => void) { listeners.add(callback); return () => { listeners.delete(callback); released++; }; },
+    getState() { return status; }, getTargets() { return [{ id: 'photo', name: '摄影' }]; },
+    select(_id: string, targetId: string, enabled: boolean) { status.targetId = targetId; status.enabled = enabled; for (const listener of listeners) listener(); },
+    retry() {}, cancel() {} };
+  const f = environment(false, contact); try {
+    await f.controller.connect('M'); assert.equal(code.photographies.length, 0, 'product bridge never starts the old 2D projection pipeline');
+    assert.equal(selections.length, 1); f.panel.actions.setState('C0', false, 'occlusionEnabled', true);
+    assert.equal(selectedState.get('C0').occlusionEnabled, true);
+    f.panel.actions.photography('photo', false); assert.equal(f.panel.photographyEnabled, false);
+    f.panel.actions.disconnect(); assert.equal(released, 1); assert.equal(selectedState.get('C0').occlusionEnabled, true);
+    assert.equal(status.enabled, false, 'tree teardown does not clear or overwrite the model owner');
+  } finally { f.cleanup(); }
+});
 
 test('real controller persists independent flags and scopes a sample without changing other saved components', async () => {
   const f = environment(); try {

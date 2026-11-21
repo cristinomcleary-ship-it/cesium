@@ -34,7 +34,7 @@ export class EngineeringComponentPanel {
       <p class="ec-status" data-ec="status" role="status">选择已加载的重构模型，核验后接入构件。</p>
       <div class="ec-photography"><label>关联倾斜摄影<select data-ec="photography-target" aria-label="关联倾斜摄影" disabled><option value="">请选择要遮挡的倾斜摄影</option></select></label>
       <label><input type="checkbox" data-ec="photography-enabled" checked disabled> 启用工程模型摄影遮挡</label>
-      <small>勾选构件的“遮挡”后，裁掉其真实轮廓内的关联摄影；隐藏构件仍保留遮挡。</small>
+      <small>与模型列表的“模型遮挡”共用开关。仅裁掉与实体或表面接触的摄影；隐藏构件仍保留遮挡。</small>
       <p data-ec="photography-status" role="status">请先接入工程构件，再选择关联摄影。</p>
       <div class="ec-actions"><button type="button" data-ec-action="photography-retry" disabled>重新计算遮挡</button><button type="button" data-ec-action="photography-cancel" disabled>取消计算</button></div></div>
       <div class="ec-controls"><label>查看范围<select data-ec="scope" disabled><option value="all">全线全部构件</option><option value="A001">A001# 墩 · 样板</option><option value="TN021">TN021 隧道 · 样板</option></select></label>
@@ -86,8 +86,8 @@ export class EngineeringComponentPanel {
   setDetection(active: boolean) { this.input('detection').checked = active; }
   setPhotographyTargets(items: readonly { id: string; name: string }[], selected: string, enabled: boolean) {
     const select = this.root.querySelector<HTMLSelectElement>('[data-ec="photography-target"]')!;
-    const entries = [{ id: '', name: '请选择要遮挡的倾斜摄影' }, ...items];
-    if (selected && !items.some(item => item.id === selected)) entries.push({ id: selected, name: '关联摄影未加载或无访问权限' });
+    const entries = [{ id: 'all', name: '全部已加载且有权限的倾斜摄影' }, { id: '', name: '请选择要遮挡的倾斜摄影' }, ...items];
+    if (selected && selected !== 'all' && !items.some(item => item.id === selected)) entries.push({ id: selected, name: '关联摄影未加载或无访问权限' });
     if (JSON.stringify([...select.options].map(o => [o.value, o.text])) !== JSON.stringify(entries.map(i => [i.id, i.name]))) select.replaceChildren(...entries.map(item => new Option(item.name, item.id)));
     select.value = selected; this.input('photography-enabled').checked = enabled;
   }

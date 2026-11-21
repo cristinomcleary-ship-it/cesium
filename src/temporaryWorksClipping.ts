@@ -1,6 +1,8 @@
 import { markOwnedFragmentClipping } from './ownedClippingPolygons';
 import { releaseBorrowedClippingPolygons } from './borrowedClippingPolygons';
 import { PreciseClippingPolygonCollection } from './engineeringComponents/preciseClipping';
+import { ContactClippingPolygonCollection } from './modelContactOcclusion/clipping';
+import type { ContactVolume } from './modelContactOcclusion/types';
 import {
   Cartesian3, ClippingPolygon, ClippingPolygonCollection, Ellipsoid,
   type Cesium3DTileset, type Viewer,
@@ -22,6 +24,16 @@ export type TemporaryWorksClipInput = {
 };
 export type TemporaryWorksClipState = 'active' | 'hidden' | 'disabled' | 'blocked' | 'unsupported';
 export type TemporaryWorksClipStatus = { state: TemporaryWorksClipState; message: string; polygons: number };
+/** A three-dimensional source never enters the legacy footprint union. */
+export type ModelContactClipInput = {
+  id: string; tileset: Cesium3DTileset; volume: ContactVolume; visible?: boolean; enabled?: boolean;
+};
+export type ModelContactClippingScope = {
+  upsert(input: ModelContactClipInput): TemporaryWorksClipStatus;
+  getStatus(id: string): TemporaryWorksClipStatus | undefined;
+  setEnabled(enabled: boolean): void;
+  remove(id: string): void; clear(): void; dispose(): void;
+};
 export type ClippingScopeUsage = { contributors: number; boundaryPoints: number; polygons: number; topologyChecks: number };
 export type ClippingScopeLimits = Readonly<ClippingScopeUsage>;
 export type ClippingValidationPolicy = Readonly<{ minimumAreaSquareMeters?: number }>;
@@ -49,8 +61,9 @@ type Scope = {
 type Entry = TemporaryWorksClipInput & {
   polygons: ClippingPolygon[]; status: TemporaryWorksClipStatus;
   scope?: Scope; usage?: ClippingScopeUsage;
+  volume?: ContactVolume;
 };
-type Attachment = { collection: ClippingPolygonCollection; polygons: ClippingPolygon[]; precise: boolean };
+type Attachment = { collection: ClippingPolygonCollection; polygons: ClippingPolygon[]; precise: boolean; volumes: ContactVolume[] };
 const status = (state: TemporaryWorksClipState, message: string, polygons = 0): TemporaryWorksClipStatus => ({ state, message, polygons });
 const emptyUsage = (): ClippingScopeUsage => ({ contributors: 0, boundaryPoints: 0, polygons: 0, topologyChecks: 0 });
 const usageKeys = ['contributors', 'boundaryPoints', 'polygons', 'topologyChecks'] as const;
@@ -184,6 +197,7 @@ export class TemporaryWorksClippingManager {
   private readonly entries = new Map<string, Entry>();
   private readonly scopes = new Map<string, Scope>();
   private readonly attachments = new Map<Cesium3DTileset, Attachment>();
+  private readonly blockedRebuilds = new Map<Cesium3DTileset, string>();
   private readonly targetSuspensions = new Map<Cesium3DTileset, Map<object, number>>();
   private readonly suspensions = new Map<object, number>();
   private suspensionEpoch = 0;
@@ -249,6 +263,88 @@ export class TemporaryWorksClippingManager {
     };
   }
 
+  /** Model geometry shares the same owner and leases as legacy clipping, but
+   * has no two-dimensional footprint that could erase an entire height column. */
+  createContactScope(id: string): ModelContactClippingScope {
+    if (!id.trim() || this.scopes.has(id)) throw new Error('模型接触遮挡来源为空或已被占用。');
+    const scope: Scope = { entries: new Map(), enabled: true, disposed: false,
+      limits: DEFAULT_SCOPED_CLIPPING_LIMITS, precise: true };
+    this.scopes.set(id, scope);
+    const getStatus = (key: string) => {
+      const value = scope.entries.get(key)?.status;
+      return value && { ...value };
+    };
+    const clear = () => {
+      if (scope.disposed || !scope.entries.size) return;
+      const previous = new Map(scope.entries);
+      this.changeDesired(() => scope.entries.clear(), () => { scope.entries = previous; }, true);
+      this.releaseIdleWatcher();
+    };
+    return {
+      upsert: input => {
+        if (scope.disposed || !input.id.trim()) throw new Error('模型接触遮挡来源已释放或缺少编号。');
+        const matrix = input.volume?.worldFromLocal;
+        if (!matrix || matrix.length !== 16 || !matrix.every(Number.isFinite)
+          || matrix[3] !== 0 || matrix[7] !== 0 || matrix[11] !== 0 || matrix[15] !== 1
+          || !input.volume.geometry || input.volume.geometry.stats.sourceTriangles < 1)
+          throw new Error('模型接触遮挡缺少有效三维几何或定位。');
+        const previous = scope.entries.get(input.id);
+        // Freeze the placement snapshot. Geometry is an immutable worker result;
+        // a subsequent model pose must submit a new contribution.
+        const volume: ContactVolume = Object.freeze({ geometry: input.volume.geometry,
+          worldFromLocal: Object.freeze([...matrix]) });
+        this.changeDesired(() => {
+          scope.entries.set(input.id, { ...input, volume, footprints: [], polygons: [], scope,
+            usage: { ...emptyUsage(), contributors: 1 }, status: status('disabled', '三维接触遮挡待更新') });
+          this.watch();
+        }, () => { if (previous) scope.entries.set(input.id, previous); else scope.entries.delete(input.id); }, true, [input.tileset]);
+        return getStatus(input.id)!;
+      },
+      getStatus,
+      setEnabled: enabled => {
+        if (scope.disposed || scope.enabled === enabled) return;
+        const previous = scope.enabled;
+        this.changeDesired(() => { scope.enabled = enabled; }, () => { scope.enabled = previous; }, true);
+      },
+      remove: key => {
+        if (scope.disposed) return;
+        const previous = scope.entries.get(key); if (!previous) return;
+        this.changeDesired(() => { scope.entries.delete(key); }, () => { scope.entries.set(key, previous); }, true);
+        this.releaseIdleWatcher();
+      },
+      clear,
+      dispose: () => {
+        if (scope.disposed) return;
+        const targets = new Set([...scope.entries.values()].map(entry => entry.tileset));
+        try { clear(); }
+        catch {
+          // Revoking an owner is authoritative. Unlike an ordinary edit, it must
+          // not restore a deleted/unauthorized model when the remaining GPU
+          // collection cannot be allocated. Withdraw the affected owned object,
+          // keep other owners' desired entries, and require an explicit retry.
+          scope.entries.clear(); scope.disposed = true; this.scopes.delete(id);
+          const errors: unknown[] = [];
+          for (const target of targets) {
+            const reason = '模型来源已撤销，其余裁剪重建失败，尚未生效；请手动重试。';
+            this.blockedRebuilds.set(target, reason);
+            const attached = this.attachments.get(target);
+            if (attached) {
+              try { this.detach(target, attached); }
+              catch (error) { errors.push(error); }
+            }
+            for (const entry of [...this.entries.values(), ...[...this.scopes.values()].flatMap(value => [...value.entries.values()])])
+              if (entry.tileset === target) entry.status = status('blocked', reason);
+          }
+          this.releaseIdleWatcher();
+          if (!this.viewer.isDestroyed()) this.viewer.scene.requestRender();
+          if (errors.length) throw new AggregateError(errors, '模型来源已撤销，但部分自有裁剪资源释放失败。');
+          return;
+        }
+        scope.disposed = true; this.scopes.delete(id); this.releaseIdleWatcher();
+      },
+    };
+  }
+
   /** New modules share the owned Cesium collection without acquiring the legacy
    * temporary-work switch/lifecycle. A scope name has one live owner at a time. */
   createScope(id: string, options: { limits?: Partial<ClippingScopeLimits>; precise?: boolean } & ClippingValidationPolicy = {}): TemporaryWorksClippingScope {
@@ -285,7 +381,7 @@ export class TemporaryWorksClippingManager {
         this.changeDesired(() => {
           scope.entries.set(input.id, { ...input, polygons, scope, usage, status: status('disabled', '摄影遮挡待更新') });
           this.watch();
-        }, () => { if (previous) scope.entries.set(input.id, previous); else scope.entries.delete(input.id); }, scope.precise);
+        }, () => { if (previous) scope.entries.set(input.id, previous); else scope.entries.delete(input.id); }, scope.precise, [input.tileset]);
         return getStatus(input.id)!;
       },
       getStatus,
@@ -337,13 +433,17 @@ export class TemporaryWorksClippingManager {
   /** Precise collections add a combined geometry/GPU preparation step. A failed
    * proposal must not remain desired and retry on every scene frame. The old
    * non-precise callers keep their historical mutation/synchronization path. */
-  private changeDesired(change: () => void, restore: () => void, precise = false): void {
+  private changeDesired(change: () => void, restore: () => void, precise = false, retryTargets: readonly Cesium3DTileset[] = []): void {
+    const blockedBefore = new Map(this.blockedRebuilds);
+    for (const target of retryTargets) this.blockedRebuilds.delete(target);
     const guarded = precise || [...this.scopes.values()].some(scope => scope.precise && scope.entries.size > 0)
       || [...this.attachments.values()].some(attachment => attachment.precise);
     if (!guarded) { change(); this.synchronize(); return; }
     try { change(); this.synchronize(); }
     catch (error) {
       restore();
+      this.blockedRebuilds.clear();
+      for (const [target, reason] of blockedBefore) this.blockedRebuilds.set(target, reason);
       try { this.synchronize(); }
       catch (restoreError) { throw new AggregateError([error, restoreError], '精确裁剪更新及恢复均失败，请保留错误详情。', { cause: error }); }
       finally { this.releaseIdleWatcher(); }
@@ -351,8 +451,10 @@ export class TemporaryWorksClippingManager {
     }
   }
 
-  private preparePrecise(polygons: ClippingPolygon[]): ClippingPolygonCollection {
-    const collection = markOwnedFragmentClipping(new PreciseClippingPolygonCollection(polygons));
+  private preparePrecise(polygons: ClippingPolygon[], volumes: ContactVolume[] = []): ClippingPolygonCollection {
+    const collection = markOwnedFragmentClipping(volumes.length
+      ? new ContactClippingPolygonCollection(polygons, volumes)
+      : new PreciseClippingPolygonCollection(polygons));
     try {
       const context = (this.viewer.scene as unknown as { context: { _gl?: object } }).context;
       if (context._gl) collection.prepare(context);
@@ -374,7 +476,7 @@ export class TemporaryWorksClippingManager {
     this.changeDesired(() => {
       this.entries.set(input.id, { ...input, polygons, status: status('disabled', '摄影遮挡待更新') });
       this.watch();
-    }, () => { if (previous) this.entries.set(input.id, previous); else this.entries.delete(input.id); });
+    }, () => { if (previous) this.entries.set(input.id, previous); else this.entries.delete(input.id); }, false, [input.tileset]);
     return this.getStatus(input.id)!;
   }
 
@@ -425,6 +527,7 @@ export class TemporaryWorksClippingManager {
     };
     for (const entry of this.entries.values()) add(entry);
     for (const scope of this.scopes.values()) for (const entry of scope.entries.values()) add(entry);
+    for (const target of this.blockedRebuilds.keys()) if (!groups.has(target)) this.blockedRebuilds.delete(target);
     let changed = false;
     for (const [tileset, attached] of this.attachments) {
       if (tileset.isDestroyed() || tileset.clippingPolygons !== attached.collection || attached.collection.isDestroyed()) {
@@ -443,13 +546,15 @@ export class TemporaryWorksClippingManager {
         const active = entries.filter(e => (e.scope?.enabled ?? this.enabled) && e.enabled !== false && e.visible !== false);
         if (!active.some(e => e.scope?.precise)) continue;
         const attached = this.attachments.get(tileset);
-        if (tileset.isDestroyed() || this.suspensions.size || this.targetSuspensions.has(tileset)
+        if (tileset.isDestroyed() || this.blockedRebuilds.has(tileset) || this.suspensions.size || this.targetSuspensions.has(tileset)
           || (tileset.clippingPlanes && tileset.clippingPlanes.enabled !== false)
           || (tileset.clippingPolygons && tileset.clippingPolygons !== attached?.collection)
           || !ClippingPolygonCollection.isSupported(this.viewer.scene)) continue;
         const polygons = active.flatMap(e => e.polygons);
-        if (!attached || !attached.precise || attached.polygons.length !== polygons.length || attached.polygons.some((p, i) => p !== polygons[i]))
-          prepared.set(tileset, this.preparePrecise(polygons));
+        const volumes = active.flatMap(e => e.volume ? [e.volume] : []);
+        if (!attached || !attached.precise || attached.polygons.length !== polygons.length || attached.polygons.some((p, i) => p !== polygons[i])
+          || attached.volumes.length !== volumes.length || attached.volumes.some((v, i) => v !== volumes[i]))
+          prepared.set(tileset, this.preparePrecise(polygons, volumes));
       }
     for (const tileset of new Set([...groups.keys(), ...this.attachments.keys()])) {
       const entries = groups.get(tileset) ?? [], active = entries.filter(e => (e.scope?.enabled ?? this.enabled) && e.enabled !== false && e.visible !== false);
@@ -460,6 +565,7 @@ export class TemporaryWorksClippingManager {
       let blocked: TemporaryWorksClipStatus | undefined;
       const attached = this.attachments.get(tileset);
       if (tileset.isDestroyed()) blocked = status('blocked', '关联摄影模型已卸载，请重新关联');
+      else if (this.blockedRebuilds.has(tileset)) blocked = status('blocked', this.blockedRebuilds.get(tileset)!);
       else if (this.suspensions.size) blocked = status('blocked', '当前模式暂时停用地图摄影裁剪，退出后自动恢复');
       else if (this.targetSuspensions.has(tileset)) blocked = status('blocked', '地下工程正在使用该摄影，关闭其剖切或开挖后自动恢复');
       else if ((tileset.clippingPlanes && tileset.clippingPlanes.enabled !== false) || (tileset.clippingPolygons && tileset.clippingPolygons !== attached?.collection))
@@ -471,14 +577,16 @@ export class TemporaryWorksClippingManager {
         continue;
       }
       const polygons = active.flatMap(e => e.polygons);
+      const volumes = active.flatMap(e => e.volume ? [e.volume] : []);
       const precise = active.some(e => e.scope?.precise);
-      if (!attached || attached.precise !== precise || attached.polygons.length !== polygons.length || attached.polygons.some((p, i) => p !== polygons[i])) {
-        const collection = precise ? prepared.get(tileset) ?? this.preparePrecise(polygons)
+      if (!attached || attached.precise !== precise || attached.polygons.length !== polygons.length || attached.polygons.some((p, i) => p !== polygons[i])
+        || attached.volumes.length !== volumes.length || attached.volumes.some((v, i) => v !== volumes[i])) {
+        const collection = precise ? prepared.get(tileset) ?? this.preparePrecise(polygons, volumes)
           : markOwnedFragmentClipping(new ClippingPolygonCollection({ polygons, inverse: false, enabled: true, quality: 2 }));
         // Setter destroys only our old owned collection. Never expose an empty owned collection mid-frame.
         if (attached) releaseBorrowedClippingPolygons(tileset, attached.collection);
         tileset.clippingPolygons = collection;
-        this.attachments.set(tileset, { collection, polygons, precise });
+        this.attachments.set(tileset, { collection, polygons, precise, volumes });
         prepared.delete(tileset);
         changed = true;
       } else if (!attached.collection.enabled || attached.collection.inverse) {
@@ -488,7 +596,8 @@ export class TemporaryWorksClippingManager {
         changed = true;
         continue;
       }
-      active.forEach(e => { e.status = status('active', e.scope ? '已按方案范围遮挡关联摄影' : '已按建筑底面遮挡关联摄影', e.polygons.length); });
+      active.forEach(e => { e.status = status('active', e.volume ? '已按模型三维实体与原表面接触遮挡摄影'
+        : e.scope ? '已按方案范围遮挡关联摄影' : '已按建筑底面遮挡关联摄影', e.polygons.length); });
     }
     if (changed && !this.viewer.isDestroyed()) this.viewer.scene.requestRender();
     } finally {

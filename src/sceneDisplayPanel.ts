@@ -14,6 +14,9 @@ export type SceneDisplayItem = {
   editLabel?: string;
   /** Model appearance is independent from position editing. */
   appearance?: () => void | Promise<void>;
+  /** Contact clipping is independent of model visibility and position editing. */
+  occlusion?: () => void | Promise<void>;
+  occlusionState?: { enabled: boolean; busy: boolean; state: string; message: string; error?: boolean; partial?: boolean };
   /** Persist removal; return false if the user cancels, or reject on failure. */
   remove?: () => void | boolean | Promise<void | boolean>;
   /** Runtime unloading never deletes the saved original or its display preferences. */
@@ -156,7 +159,7 @@ export class SceneDisplayPanel {
       this.query = ""; this.selected.clear(); this.editor = undefined; this.message = ""; this.error = false;
       this.find<HTMLInputElement>('[data-role="search"]').value = "";
     } else this.selected = new Set([...this.selected].filter(id => seen.has(id)));
-    const signature = JSON.stringify([this.store.scopeKey, this.items.map(item => [item.id, item.name, item.category, item.visible, item.visibilityAvailable, item.detail, !!item.locate, !!item.edit, item.editLabel, !!item.appearance, !!item.remove, !!item.cancel, item.removalPreservesResource, item.removalKind, item.removalDescription, item.removalConfirmedByHost])]);
+    const signature = JSON.stringify([this.store.scopeKey, this.items.map(item => [item.id, item.name, item.category, item.visible, item.visibilityAvailable, item.detail, !!item.locate, !!item.edit, item.editLabel, !!item.appearance, !!item.occlusion, item.occlusionState, !!item.remove, !!item.cancel, item.removalPreservesResource, item.removalKind, item.removalDescription, item.removalConfirmedByHost])]);
     if (changed || signature !== this.directorySignature) { this.directorySignature = signature; this.render(); }
     // Pose/status refreshes do not change visibility. Rebuilt hosts may explicitly
     // call reapply(); directory refreshes must not redraw an unchanged scene.
@@ -266,6 +269,15 @@ export class SceneDisplayPanel {
     if (item.locate) { const button = this.button("item-locate", "定位"); button.dataset.itemId = item.id; button.title = visible ? "定位此对象" : "先显示此对象再定位"; button.disabled = !visible || removing; tools.append(button); }
     if (item.edit) { const button = this.button("item-edit", item.editLabel || "配置"); button.dataset.itemId = item.id; button.disabled = removing; tools.append(button); }
     if (item.appearance) { const button = this.button("item-appearance", "外观"); button.dataset.itemId = item.id; button.disabled = removing; tools.append(button); }
+    if (item.occlusion) {
+      const state = item.occlusionState;
+      const label = !state?.enabled ? '关' : state.busy ? '计算中' : state.error ? '失败' : state.state === 'active' ? state.partial ? '部分' : '开' : state.state === 'empty' ? '无构件' : '待生效';
+      const button = this.button('item-occlusion', `模型遮挡：${label}`); button.dataset.itemId = item.id;
+      button.className = 'sdp-item-occlusion'; button.disabled = removing;
+      button.setAttribute('aria-pressed', String(state?.enabled === true)); button.setAttribute('aria-label', `${item.name}模型遮挡`);
+      button.title = `${state?.message ?? '裁剪与此模型真实几何接触的倾斜摄影。'}${state?.enabled ? ' 点击关闭；隐藏模型不会关闭遮挡。' : ' 点击启用；与模型显隐独立。'}`;
+      button.dataset.state = state?.state ?? 'disabled'; tools.append(button);
+    }
     if (item.remove) {
       const kind = sceneRemovalKind(item), label = removalLabel[kind];
       const button = this.button("item-remove", removing ? "处理中…" : label); button.dataset.itemId = item.id; button.className = "sdp-item-remove"; button.disabled = removing;
@@ -377,6 +389,10 @@ export class SceneDisplayPanel {
       else if (action === "cancel-group") { this.editor = undefined; this.render(); }
       else if (action === "save-group") this.saveGroupEditor();
       else if (action === "item-remove") await this.removeItem(button.dataset.itemId!);
+      else if (action === 'item-occlusion') {
+        // Busy means the action must remain available to cancel/disable its own job.
+        await this.item(button.dataset.itemId!)?.occlusion?.();
+      }
       else if (action === "item-locate" || action === "item-edit" || action === "item-cancel" || action === "item-appearance") {
         const item = this.item(button.dataset.itemId!); button.disabled = true;
         try { await (action === "item-locate" ? item?.locate?.() : action === 'item-cancel' ? item?.cancel?.() : action === 'item-appearance' ? item?.appearance?.() : item?.edit?.()); } finally { if (!this.disposed) this.render(); }

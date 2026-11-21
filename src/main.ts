@@ -59,6 +59,7 @@ import { SubsurfaceTools, subsurfacePanelHtml } from "./subsurfaceTools";
 import { SurfaceEditController } from "./surfaceEditController";
 import { SceneEffectsCoordinator } from "./sceneEffectsCoordinator";
 import { EngineeringComponentsController } from "./engineeringComponents/controller";
+import { ModelContactOcclusionController } from './modelContactOcclusion/controller';
 import { FoundationPitMonitoring, foundationPitMonitoringPanelHtml } from "./foundationPitMonitoring";
 import { ThreeDReport, threeDReportPanelHtml, threeDReportStageHtml } from "./threeDReport";
 import { MarkupTools, markupPanelHtml } from "./markupTools";
@@ -101,6 +102,7 @@ import { prepareWorkbenchLeave } from './workbenchNavigation';
 let temporaryWorks: TemporaryWorksPanel | undefined;
 let surfaceEdits: SurfaceEditController | undefined;
 let engineeringComponents: EngineeringComponentsController | undefined;
+let modelContactOcclusion: ModelContactOcclusionController | undefined;
 let sceneDisplayPanel: SceneDisplayPanel | undefined;
 let functionCenters: FunctionCentersController | undefined;
 let sceneDisplayReady = false, sceneDisplayFrame = 0;
@@ -851,7 +853,10 @@ projectLibrary = new SceneLibrary({
   canEditPhotogrammetry: record => record.kind === '3D Tiles' && canEditPhotogrammetry(),
   getPhotogrammetryContextKey,
   getContextKey: getSceneLibraryContextKey,
-  prepareRecordDeletion: id => sceneDisplayPanel?.prepareItemDeletion(`layer:${id}`),
+  prepareRecordDeletion: id => {
+    const display = sceneDisplayPanel?.prepareItemDeletion(`layer:${id}`), contact = modelContactOcclusion?.prepareDeletion(id);
+    return () => { contact?.(); display?.(); };
+  },
   libraryChanged: () => { renderVideoOverlaySchemes(); scheduleSceneDisplay(); },
   layersChanged: renderLayers,
 });
@@ -1242,7 +1247,9 @@ async function deleteImportedResource(item: ImportRecord): Promise<boolean> {
   if (!imports.includes(item)) return true;
   if (!window.confirm(`删除场景对象“${item.name}”？\n此对象尚无已保存资料；电脑上最初选择的导入文件不受影响。`)) return false;
   const finishDeletion = sceneDisplayPanel?.prepareItemDeletion(`layer:${item.id}`);
+  const finishContactDeletion = modelContactOcclusion?.prepareDeletion(item.id);
   removeImport(item);
+  finishContactDeletion?.();
   finishDeletion?.();
   return true;
 }
@@ -1273,6 +1280,7 @@ function setImportVisibility(item: ImportRecord, visible: boolean, options: { si
 }
 
 function removeImport(item: ImportRecord) {
+  modelContactOcclusion?.detachInstance(item.id);
   engineeringComponents?.detachInstance(item.id);
   if (photogrammetryEditor?.activeId === item.id) { photogrammetryEditContext = undefined; photogrammetryEditor.refreshValidity(); }
   if (modelAppearancePanel.activeId === item.id) modelAppearancePanel.close();
@@ -1734,8 +1742,36 @@ try {
 } catch (error) { console.error('[Surface edit] Initialization failed without modifying the existing scene', error); }
 
 try {
+  modelContactOcclusion = new ModelContactOcclusionController({
+    viewer,
+    getContext: () => {
+      const state = managementWorkspace?.getWorkbenchMachineryState();
+      return state?.canView && state.projectId && managementWorkspace?.getWorkbenchLayerAccess().models
+        ? { projectId: state.projectId, actorId: state.actorId } : null;
+    },
+    getInstances: () => imports.flatMap(item => {
+      if (item.kind !== 'Model' || !isImportAllowed(item)) return [];
+      const model = item.resource as Model, record = projectLibrary?.records.get(item.id);
+      const url = record?.files.data?.url ?? record?.files.source?.url;
+      return url && !model.isDestroyed() ? [{ id: item.id, name: item.name, model, url }] : [];
+    }),
+    getTargets: () => imports.flatMap(item => item.kind === '3D Tiles' && isImportAllowed(item)
+      && !(item.resource as Cesium3DTileset).isDestroyed() ? [{ id: item.id, name: item.name, tileset: item.resource as Cesium3DTileset }] : []),
+    onChanged: () => {
+      // Status updates schedule the directory only; they never recursively run model synchronization.
+      if (!sceneDisplayReady || sceneDisplayFrame) return;
+      sceneDisplayFrame = requestAnimationFrame(() => { sceneDisplayFrame = 0; if (sceneDisplayReady) syncSceneDisplay(); });
+    },
+    toast,
+  });
+  const contact = modelContactOcclusion;
+  let unregisterContact: () => void;
+  try { unregisterContact = sceneEffectsCoordinator.register('model-contact', () => contact.suspendExternalSceneEffects()); }
+  catch (error) { contact.dispose(); modelContactOcclusion = undefined; throw error; }
+  onPageDispose(() => { unregisterContact(); contact.dispose(); });
   engineeringComponents = new EngineeringComponentsController({
     viewer,
+    modelContact: contact,
     getContext: () => {
       const state = managementWorkspace?.getWorkbenchMachineryState();
       return state?.canView && state.projectId && managementWorkspace?.getWorkbenchLayerAccess().models
@@ -1782,7 +1818,7 @@ try {
   $('#openSubsurfacePanel').addEventListener('click', () => controller.close());
   document.getElementById('openSurfaceEdit')?.addEventListener('click', () => controller.close());
   onPageDispose(() => { unregister(); controller.dispose(); entry.remove(); });
-  if (import.meta.env.DEV) Object.assign(window, { __engineeringComponents: controller });
+  if (import.meta.env.DEV) Object.assign(window, { __engineeringComponents: controller, __modelContactOcclusion: contact });
 } catch (error) { console.error('[Engineering components] Initialization failed without modifying the existing scene', error); }
 
 try {
@@ -3665,6 +3701,7 @@ async function openCenterAction(action: FunctionCenterAction): Promise<boolean> 
 }
 function scheduleSceneDisplay(): void {
   getSceneLibraryContextKey();
+  modelContactOcclusion?.synchronize();
   engineeringComponents?.synchronize();
   if (!sceneDisplayReady) return;
   // Release the old project's new effects immediately, before the display-list rAF.
@@ -3675,6 +3712,7 @@ function scheduleSceneDisplay(): void {
   sceneDisplayFrame = requestAnimationFrame(() => { sceneDisplayFrame = 0; if (sceneDisplayReady) syncSceneDisplay(); });
 }
 function syncSceneDisplay(): void {
+  modelContactOcclusion?.synchronize();
   engineeringComponents?.synchronize();
   if (!sceneDisplayPanel) return;
   const state = managementWorkspace?.getWorkbenchMachineryState();
@@ -3732,6 +3770,8 @@ function syncSceneDisplay(): void {
     },
     editLabel: layer.kind === 'Model' || layer.kind === '3D Tiles' ? '调整位置' : undefined,
     appearance: layer.kind === 'Model' ? () => { if (openExistingEditor('models')) openModelAppearance(layer); } : undefined,
+    occlusion: layer.kind === 'Model' && modelContactOcclusion ? () => modelContactOcclusion?.toggle(layer.id) : undefined,
+    occlusionState: layer.kind === 'Model' ? modelContactOcclusion?.getState(layer.id) : undefined,
     edit: layer.kind === 'Model' ? () => { if (openExistingEditor('models')) beginModelEditing(layer); }
       : layer.kind === '3D Tiles' && canEditPhotogrammetry() ? () => { if (openExistingEditor('tiles')) beginPhotogrammetryEditing(layer); } : undefined });
   if (isLibraryRecordAllowed({ kind: 'CAD' })) for (const load of cadLoads.values()) items.push({

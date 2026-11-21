@@ -5,6 +5,7 @@ import { EngineeringRenderAdapter } from './renderAdapter';
 import { EngineeringOcclusionRenderer } from './occlusion';
 import { EngineeringComponentPanel, type EngineeringTreeRow } from './panel';
 import { EngineeringPhotographyController, type EngineeringNamedPhotographyTarget } from './photographyController';
+import type { ModelContactOcclusionController } from '../modelContactOcclusion/controller';
 
 export type EngineeringInstance = { id: string; name: string; model: Model; url: string; visible: boolean };
 export type EngineeringContext = { projectId: string; actorId?: string | null };
@@ -13,6 +14,7 @@ type Manifest = { available: boolean; message?: string; fingerprint: string; cat
 type Options = {
   viewer: Viewer; getInstances(): EngineeringInstance[]; getContext(): EngineeringContext | null;
   getPhotographyTargets?(): EngineeringNamedPhotographyTarget[];
+  modelContact?: ModelContactOcclusionController;
   canPick(): boolean; beginInteractionSession(): () => void; toast(message: string, error?: boolean): void;
 };
 const textError = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -57,7 +59,7 @@ export class EngineeringComponentsController {
   private state?: EngineeringComponentState;
   private adapter?: EngineeringRenderAdapter;
   private renderer?: EngineeringOcclusionRenderer;
-  private photography?: EngineeringPhotographyController;
+  private photography?: Pick<EngineeringPhotographyController, 'select' | 'check' | 'updateFlags' | 'retry' | 'cancel' | 'dispose' | 'setSuspended' | 'status'>;
   private instance?: EngineeringInstance;
   private ids = new Set<string>();
   private reviewScope: EngineeringScope = { kind: 'all' };
@@ -170,7 +172,31 @@ export class EngineeringComponentsController {
       this.expanded = new Set(catalog.rootGroupIds); this.search = ''; this.lastRenderError = undefined;
       const units = [...catalog.unitMembers.keys()].filter(key => catalog.getMembers({ kind: 'unit', id: key }).some(value => this.ids.has(value))).map(key => ({ id: key, name: key === 'A001' ? 'A001# 墩 · 样板' : key === 'TN021' ? 'TN021 隧道 · 样板' : key }));
       this.panel.setBound(true, units); this.panel.setScope(unit?.id ?? 'all');
-      this.photography = new EngineeringPhotographyController({
+      if (this.options.modelContact) {
+        const contact = this.options.modelContact;
+        contact.bindComponentSelection(id, mappings.bindings, state, hash);
+        let lastContactSignature = '';
+        const refreshContact = () => {
+          if (this.instance !== instance) return;
+          const status = contact.getState(id), targets = contact.getTargets();
+          const signature = JSON.stringify([status, targets.map(target => [target.id, target.name])]);
+          if (signature === lastContactSignature) return;
+          lastContactSignature = signature;
+          this.panel.setPhotographyTargets(targets, status.targetId, status.enabled);
+          this.panel.setPhotographyStatus(status.message, status.error, status.busy);
+        };
+        const release = contact.subscribe(refreshContact);
+        this.photography = {
+          select: (targetId, enabled) => contact.select(id, targetId, enabled),
+          check: refreshContact, updateFlags: refreshContact,
+          retry: () => contact.retry(id), cancel: () => contact.cancel(id),
+          setSuspended: () => {}, // The independent model owner joins the scene coordinator itself.
+          dispose: release,
+          get status() { const current = contact.getState(id); return { targetId: current.targetId, enabled: current.enabled, busy: current.busy,
+            componentCount: current.componentCount, clipping: { state: current.state, message: current.message, polygons: 0 } }; },
+        };
+        refreshContact();
+      } else this.photography = new EngineeringPhotographyController({
         viewer: this.options.viewer, model: instance.model, bytes: glbBytes,
         bindings: mappings.bindings.filter(binding => catalog.itemsById.get(binding.componentId)?.kind !== 'reference'), state,
         getTargets: () => this.options.getPhotographyTargets?.() ?? [], canMutate: () => this.canMutate(),
