@@ -1,3 +1,4 @@
+import { RAIL_SAFETY_DECLARED_CONSTRUCTION_LABELS } from "./railSafetyTypes.ts";
 import { MACHINERY_ASSET_IDS, MACHINERY_ASSET_VERSION, type MachineryAssetId, type MachineryMetadata } from "./machineryTypes.ts";
 
 /** Source geometry measurements for this asset version, not manufacturer specifications. */
@@ -43,7 +44,8 @@ function matching(actual: number, expected: number, field: string) {
  * the geometry engine. This lightweight validator enforces the fixed body and local constraints. */
 export function validateMachineryMetadata(value: unknown): MachineryMetadata {
   const v = object(value, "machinery");
-  exactKeys(v, ["schemaVersion", "assetId", "assetVersion", "proportional", "parameters", "placement", "visible"], "machinery");
+  exactKeys(v, ["schemaVersion", "assetId", "assetVersion", "proportional", "parameters", "placement", "visible", ...(Object.hasOwn(v, "constructionClass") ? ["constructionClass"] : [])], "machinery");
+  requireValue(v.constructionClass === undefined || typeof v.constructionClass === "string" && Object.hasOwn(RAIL_SAFETY_DECLARED_CONSTRUCTION_LABELS, v.constructionClass), "constructionClass", "施工分类须为A类、天窗点、B类、C类，或B类施工＋天窗点施工");
   requireValue(v.schemaVersion === 1, "schemaVersion", "机械模型数据版本不支持");
   requireValue(typeof v.assetId === "string" && (MACHINERY_ASSET_IDS as readonly string[]).includes(v.assetId), "assetId", "机械模型类型不支持");
   const assetId = v.assetId as MachineryAssetId;
@@ -85,5 +87,5 @@ export function validateMachineryMetadata(value: unknown): MachineryMetadata {
     heading: numeric(p.heading, "placement.heading", 0, 360),
   };
   requireValue(placement.heading < 360, "placement.heading", "方位角须为 0（含）至 360（不含）的度数");
-  return { schemaVersion: 1, assetId, assetVersion: MACHINERY_ASSET_VERSION, proportional: v.proportional, parameters, placement, visible: v.visible };
+  return { schemaVersion: 1, assetId, assetVersion: MACHINERY_ASSET_VERSION, proportional: v.proportional, parameters, placement, visible: v.visible, ...(v.constructionClass === undefined ? {} : { constructionClass: v.constructionClass as MachineryMetadata["constructionClass"] }) };
 }

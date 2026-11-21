@@ -168,3 +168,17 @@ test('same source field bound to targets with different histories preserves thei
   assert.equal(runtime.state.placement.heading, 20, 'newer longitude does not lend its timestamp to the older angle');
   near(runtime.value('boom_rotation_deg'), 10);
 });
+
+test('declared construction class survives live pose updates and explicit manual class edits', async () => {
+  const { runtime } = await setup([binding('heading'), binding('boom_rotation_deg')]);
+  runtime.setManualState({ ...runtime.state, constructionClass: 'C' });
+  assert.equal(runtime.apply(frame({ heading: 125, boom_rotation_deg: 90 }), now).accepted, true);
+  assert.equal(runtime.state.constructionClass, 'C');
+  runtime.setManualState({ ...runtime.state, constructionClass: 'A' });
+  assert.equal(runtime.state.placement.heading, 125, 'bound channels remain live during class edits');
+  assert.equal(runtime.apply(frame({ heading: 160 }, now + 1000), now + 1000).accepted, true);
+  assert.equal(runtime.state.constructionClass, 'A');
+  runtime.setManualState({ ...runtime.state, constructionClass: 'B+window' });
+  assert.equal(runtime.apply(frame({ heading: 190 }, now + 2000), now + 2000).accepted, true);
+  assert.equal(runtime.state.constructionClass, 'B+window', 'live poses preserve both declared classes');
+});

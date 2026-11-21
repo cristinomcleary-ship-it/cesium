@@ -105,6 +105,8 @@ export class MachineryPanel {
         <fieldset data-role="identity"><legend>1 · 指定机械识别号</legend>
           <label class="mp-label">机械识别号<input data-role="equipment-code" maxlength="120" required placeholder="如 QZ-001，每台机械一个识别号"></label>
           <label class="mp-label mp-identity-name">机械名称（选填）<input data-role="equipment-name" maxlength="120" placeholder="留空时使用识别号和机械种类"></label>
+          <label class="mp-label">施工分类<select data-role="construction-class"><option value="">请选择施工分类</option><option value="A">A类施工</option><option value="window">天窗点施工</option><option value="B">B类施工</option><option value="C">C类施工</option><option value="B+window">B类施工＋天窗点施工</option></select></label>
+          <p class="mp-help">施工分类为本机申报类别，A类高于天窗点施工。可同时申报“B类施工＋天窗点施工”，触及天窗点不报警，触及A类仍报警；范围与关联限界在邻营管控中设置。</p>
           <p class="mp-help">识别号在当前项目内唯一；保存后，机械台账、三维模型和传感器配置均关联同一台机械。</p>
         </fieldset>
         <fieldset data-role="machine-type"><legend>2 · 选择机械种类</legend>
@@ -225,6 +227,13 @@ export class MachineryPanel {
         else this.positionSource = "手动输入 · WGS84 椭球高";
         this.dirty = true; this.queuePreview();
       }
+    }, { signal });
+    this.find<HTMLSelectElement>('[data-role="construction-class"]').addEventListener("change", event => {
+      if (!this.editable || !this.draft || this.busy || this.loading) return;
+      const value = (event.target as HTMLSelectElement).value;
+      if (value) this.draft.constructionClass = value as MachineryState["constructionClass"];
+      else delete this.draft.constructionClass;
+      this.dirty = true; this.queuePreview(); this.updateControls();
     }, { signal });
     this.find<HTMLSelectElement>('[data-role="manage-sensors"]').addEventListener("change", event => {
       if (!this.editable || !this.draft || this.busy || this.loading) return;
@@ -466,6 +475,7 @@ export class MachineryPanel {
     this.find<HTMLInputElement>('[data-role="equipment-code"]').value = this.identity.equipmentCode;
     this.find<HTMLInputElement>('[data-role="equipment-name"]').value = this.identity.name;
     this.find<HTMLSelectElement>('[data-role="manage-sensors"]').value = this.identity.manageSensors ? "yes" : "no";
+    this.find<HTMLSelectElement>('[data-role="construction-class"]').value = this.draft?.constructionClass ?? "";
     const list = this.find<HTMLElement>('[data-role="parameters"]'); list.replaceChildren();
     const rotation = this.find<HTMLElement>('[data-role="boom-rotation"]'); rotation.replaceChildren(); rotation.hidden = true;
     const elevation = this.find<HTMLElement>('[data-role="boom-elevation"]'); elevation.replaceChildren(); elevation.hidden = true;
@@ -581,7 +591,7 @@ export class MachineryPanel {
       this.updateControls();
     }
     const previous = this.draft;
-    this.draft = copy(state);
+    this.draft = { ...copy(state), ...(previous.constructionClass ? { constructionClass: previous.constructionClass } : {}) };
     for (const input of this.root.querySelectorAll<HTMLInputElement>('[data-parameter], [data-placement]')) {
       const key = input.dataset.parameter ?? input.dataset.placement!;
       // Update derived dimensions too, but preserve the user's unfinished unbound input.
@@ -595,6 +605,13 @@ export class MachineryPanel {
   }
   private collectInputs(requirePosition: boolean): boolean {
     if (!this.asset || !this.draft) return false;
+    const classification = this.find<HTMLSelectElement>('[data-role="construction-class"]').value;
+    if (classification) this.draft.constructionClass = classification as MachineryState["constructionClass"];
+    else delete this.draft.constructionClass;
+    if (requirePosition && !classification) {
+      this.message("请选择施工分类：A类施工、天窗点施工、B类施工、C类施工或B类施工＋天窗点施工。", true);
+      this.find<HTMLSelectElement>('[data-role="construction-class"]').focus(); return false;
+    }
     const changes: Record<string, number> = {};
     const values: Record<string, number> = {};
     for (const definition of this.asset.config.parameters) {

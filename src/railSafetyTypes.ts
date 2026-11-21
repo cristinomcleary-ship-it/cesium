@@ -24,8 +24,24 @@ export type RailSafetyPositioningResult = {
   state: RailSafetyPositioningState; reason: string; isAlarm: boolean;
   source?: RailSafetyPositionSample["source"]; sample?: RailSafetyPositionSample; boundaryDistanceMeters?: number;
 };
-export type RailSafetyLimit = { schemaVersion: 1; kind: "limit"; polygon: RailSafetyPolygon };
-export type RailSafetyMachine = { schemaVersion: 1; kind: "machine"; resourceId: string; selectedLimitIds: string[]; inspectionStatus?: "unknown" | "reported" | "unreported"; support?: RailSafetySupport };
+export type RailSafetyConstructionClass = "window" | "A" | "B" | "C";
+export const RAIL_SAFETY_CONSTRUCTION_LABELS: Record<RailSafetyConstructionClass, string> = { window: "天窗点施工", A: "A类施工", B: "B类施工", C: "C类施工" };
+/** A machine may be declared for B-class work together with a window; site zones remain single classes. */
+export type RailSafetyDeclaredConstructionClass = RailSafetyConstructionClass | "B+window";
+export const RAIL_SAFETY_DECLARED_CONSTRUCTION_LABELS: Record<RailSafetyDeclaredConstructionClass, string> = { ...RAIL_SAFETY_CONSTRUCTION_LABELS, "B+window": "B类施工＋天窗点施工" };
+/** User-authored machine-relative ring, moved from its saved anchor with the current pose. */
+export type RailSafetyAttachedRange = { polygon: RailSafetyPolygon; anchor: RailSafetyPosition & { heading: number } };
+/** Fixed site polygons never move with a machine. */
+export type RailSafetyConstructionZone = { id: string; name: string; classification: RailSafetyConstructionClass; polygon: RailSafetyPolygon };
+/** Legacy limits retain their equipment meaning without rewriting saved records. */
+export type RailSafetyLimit = { schemaVersion: 1; kind: "limit"; polygon: RailSafetyPolygon; limitType?: "equipment" | "line" };
+export type RailSafetyMachine = {
+  schemaVersion: 1; kind: "machine"; resourceId: string; selectedLimitIds: string[];
+  inspectionStatus?: "unknown" | "reported" | "unreported"; support?: RailSafetySupport;
+  /** Omission selects the automatic model range for the current pose. */
+  workRange?: RailSafetyAttachedRange; fallRange?: RailSafetyAttachedRange;
+  activityPolygon?: RailSafetyPolygon; constructionZones?: RailSafetyConstructionZone[];
+};
 export type RailSafetyDefinition = RailSafetyGuard | RailSafetyLimit | RailSafetyMachine;
 /** Existing management name/taskId/revision/audit fields remain authoritative. */
 export type RailSafetyRecord = ManagementRecord & { definition: RailSafetyDefinition; status: "active" | "deleted"; deletedAt?: string; deletedBy?: string };

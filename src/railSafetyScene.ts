@@ -1,7 +1,7 @@
 import {
-  Cartesian2, Cartesian3, Cartographic, ClassificationType, Color, CustomDataSource, EllipsoidTerrainProvider,
-  Entity, HeadingPitchRange, HeadingPitchRoll, HeightReference, LabelStyle, Math as CesiumMath, Matrix4,
-  PolygonHierarchy, PolylineOutlineMaterialProperty, ScreenSpaceEventHandler, ScreenSpaceEventType,
+  CallbackProperty, Cartesian2, Cartesian3, Cartographic, ClassificationType, Color, CustomDataSource, EllipsoidTerrainProvider,
+  Entity, HeadingPitchRange, HeadingPitchRoll, HeightReference, HorizontalOrigin, LabelStyle, Math as CesiumMath, Matrix4,
+  PolygonHierarchy, PolylineOutlineMaterialProperty, SceneTransforms, ScreenSpaceEventHandler, ScreenSpaceEventType,
   Transforms, VerticalOrigin, type Viewer,
 } from 'cesium';
 import { loadMachineryAsset, type LoadedMachineryAsset } from './machinery/index';
@@ -11,8 +11,9 @@ import {
   polygonArea, unprojectLocalToWgs84, type Point2, type FallEnvelope,
 } from './railSafetyGeometry';
 import { RailSafetyComputation } from './railSafetyComputation';
+import { assessMachineryConstruction, computeMachineryWorkRange, transformAttachedRange, type RailSafetyConstructionAssessment, type RailSafetyWorkRange } from './railSafetyMachineryRanges';
 import {
-  RAIL_SAFETY_MAX_VERTICES, type RailSafetyDefinition, type RailSafetyMachine,
+  RAIL_SAFETY_CONSTRUCTION_LABELS, RAIL_SAFETY_MAX_VERTICES, type RailSafetyDefinition, type RailSafetyMachine,
   type RailSafetyPosition, type RailSafetyPositioningResult, type RailSafetyRecord,
 } from './railSafetyTypes';
 import { validateRailSafetyDefinition, validateRailSafetyPolygon } from './railSafetyValidation';
@@ -27,12 +28,12 @@ export type RailSafetyPick = MachineryPlacementPick;
 export type RailSafetyPickProgress = {
   kind: 'point' | 'polygon'; points: RailSafetyPick[]; source?: RailSafetyPick['source']; message?: string;
 };
-export type RailSafetyMachineResult = {
+export type RailSafetyMachineResult = RailSafetyConstructionAssessment & {
   resourceId: string; resourceName: string; recordId?: string;
   status: 'unknown' | 'overlap' | 'touching' | 'clear'; label: string; message: string;
   draft: boolean; maxDistanceMeters?: number; nearestDistanceMeters?: number;
-  supportSource?: string; warnings: string[];
-  limits: Array<{ id: string; name: string; status: 'unknown' | 'overlap' | 'touching' | 'clear'; distanceMeters?: number; message?: string }>;
+  supportSource?: string; warnings: string[]; workRangeSource?: RailSafetyWorkRange['source']; workRadiusMeters?: number;
+  limits: Array<{ id: string; name: string; limitType?: 'equipment' | 'line'; workStatus?: 'unknown' | 'overlap' | 'touching' | 'clear'; status: 'unknown' | 'overlap' | 'touching' | 'clear'; distanceMeters?: number; message?: string }>;
   guards: Array<{ id: string; name: string; containsStation: boolean; known: boolean; message?: string }>;
   signature: string;
 };
@@ -51,12 +52,12 @@ export type RailSafetySceneOptions = {
   onFallDemoChange?: (snapshot: RailSafetyFallDemoSnapshot) => void;
 };
 export type RailSafetyGuardPositionState = { guardId: string; result: RailSafetyPositioningResult };
-export type RailSafetyDisplayObjectKind = 'personnel' | 'responsibility' | 'workArea' | 'limit' | 'envelope';
+export type RailSafetyDisplayObjectKind = 'personnel' | 'responsibility' | 'workArea' | 'limit' | 'envelope' | 'machineWorkRange' | 'machineActivity' | 'constructionZone';
 export type RailSafetyDisplayObject = { key: string; kind: RailSafetyDisplayObjectKind; id: string; name: string; visible: boolean };
 type Draft = { id: string; name: string; taskId?: string; definition: RailSafetyDefinition };
 type Entry = Draft & { revision?: number; deleted?: boolean; definitionError?: string };
 type Envelope = FallEnvelope;
-type MachineVisual = { resourceId: string; envelope: Envelope; intersections: Array<{ limitId: string; polygons: Point2[][] }>; touchingLimitIds: string[] };
+type MachineVisual = { resourceId: string; envelope: Envelope; workRange?: RailSafetyWorkRange; fallRangeSource?: string; intersections: Array<{ limitId: string; polygons: Point2[][] }>; touchingLimitIds: string[] };
 type Picking = {
   kind: 'point' | 'polygon'; points: RailSafetyPick[];
   pointCallback?: (point: RailSafetyPick) => void; polygonCallback?: (points: RailSafetyPick[]) => void;
@@ -120,6 +121,19 @@ export function simplifyRailSafetyDisplayRing(positions: RailSafetyPosition[]): 
   return indexes.map(i => positions[i]);
 }
 
+/** Wrap wide Chinese glyphs and narrower Latin glyphs without splitting alarm groups or surrogate pairs. */
+export function wrapRailSafetyAlarmText(text: string, width = 28): string {
+  return text.split('\n').map(paragraph => {
+    const lines: string[] = []; let line = '', used = 0;
+    for (const character of paragraph) {
+      const weight = /[\u0000-\u00ff]/.test(character) ? 0.55 : 1;
+      if (used + weight > width && line) { lines.push(line); line = ''; used = 0; }
+      line += character; used += weight;
+    }
+    lines.push(line); return lines.join('\n');
+  }).join('\n');
+}
+
 /** Shared-Viewer display and client-side screening. It never writes business events. */
 export class RailSafetyScene {
   private readonly source = new CustomDataSource('铁路旁施工管控');
@@ -148,7 +162,7 @@ export class RailSafetyScene {
   private readonly pendingResourceIds = new Set<string>();
   private computeTimer?: ReturnType<typeof setTimeout>;
   private disposed = false;
-  private layers = { guards: true, limits: true, envelopes: true };
+  private layers = { guards: true, limits: true, envelopes: true, workRanges: true, activityAreas: true, constructionZones: true };
   private display = normalizeRailSafetyDisplay(DEFAULT_RAIL_SAFETY_DISPLAY);
   private objectVisibility: Record<string, boolean> = {};
   private labelsVisible = true;
@@ -301,7 +315,14 @@ export class RailSafetyScene {
         if (entry.definition.workArea || saved?.definition.kind === 'guard' && saved.definition.workArea) add('workArea', entry.id, `${entry.name} · 人员工作区`);
       } else if (entry.definition.kind === 'limit') add('limit', entry.id, entry.name);
     }
-    for (const result of this.results) add('envelope', result.resourceId, `${result.resourceName} · 倾覆影响区`);
+    for (const result of this.results) {
+      add('envelope', result.resourceId, `${result.resourceName} · 倾覆影响区`);
+      add('machineWorkRange', result.resourceId, `${result.resourceName} · 机械工作范围`);
+      const definition = this.entries.find(entry => !entry.deleted && entry.definition.kind === 'machine' && entry.definition.resourceId === result.resourceId)?.definition;
+      if (definition?.kind !== 'machine') continue;
+      if (definition.activityPolygon) add('machineActivity', result.resourceId, `${result.resourceName} · 机械活动范围`);
+      for (const zone of definition.constructionZones ?? []) add('constructionZone', `${result.resourceId}:${zone.id}`, `${result.resourceName} · ${zone.name}`);
+    }
     return [...objects.values()];
   }
 
@@ -316,7 +337,7 @@ export class RailSafetyScene {
     if (this.disposed) return;
     const next: Record<string, boolean> = {};
     for (const [key, value] of Object.entries(overrides)) {
-      if (/^rail:(personnel|responsibility|workArea|limit|envelope):.+$/.test(key) && typeof value === 'boolean') next[key] = value;
+      if (/^rail:(personnel|responsibility|workArea|limit|envelope|machineWorkRange|machineActivity|constructionZone):.+$/.test(key) && typeof value === 'boolean') next[key] = value;
     }
     if (JSON.stringify(next) === JSON.stringify(this.objectVisibility) && labelsVisible === this.labelsVisible) return;
     this.objectVisibility = next; this.labelsVisible = labelsVisible; this.render();
@@ -379,6 +400,11 @@ export class RailSafetyScene {
   }
 
   getResults(): RailSafetyMachineResult[] { return clone(this.results); }
+
+  getMachineState(resourceId: string): MachineryState | undefined {
+    if (this.disposed || !this.context.active || !this.context.canView) return;
+    const state = this.stateFor(resourceId); return state ? clone(state) : undefined;
+  }
 
   getSnapshot() {
     return { projectId: this.context.projectId, active: this.context.active, canView: this.context.canView,
@@ -506,6 +532,7 @@ export class RailSafetyScene {
     const config = configs[0];
     return { resourceId: resource.id, resourceName: resource.name, recordId: config?.id,
       status: 'unknown', label: '待计算', message: '正在根据当前机械工况计算平面范围', draft: this.isDraft(resource.id),
+      classification: 'unknown', classificationComplete: false, classificationReasons: [], alarms: [], activityStatus: 'unconfigured',
       warnings: [], limits: [], guards: [], signature: this.signature };
   }
 
@@ -554,21 +581,45 @@ export class RailSafetyScene {
     const result = this.baseResult(resource);
     const live = () => !this.disposed && generation === this.generation && this.context.canView && this.context.active;
     let visual: MachineVisual | undefined;
+    let state: MachineryState | undefined, definition: RailSafetyMachine | undefined, workRange: RailSafetyWorkRange | undefined;
+    let incompleteMachineDraft: string | undefined;
+    const savedLimitAssessments: RailSafetyMachineResult['limits'] = [];
     try {
-      const state = this.stateFor(resource.id);
+      state = this.stateFor(resource.id);
       if (!state) throw new Error('机械模型、尺寸或站位不完整，无法判断');
       const configs = this.entries.filter(e => !e.deleted && e.definition.kind === 'machine' && e.definition.resourceId === resource.id);
       if (configs.length > 1) throw new Error('存在重复机械管控配置，请先核对配置');
       const entry = configs[0];
-      if (entry?.definitionError) throw new Error(`机械管控草稿未完成：${entry.definitionError}`);
-      const definition = entry?.definition as RailSafetyMachine | undefined;
+      let comparisonTaskId = entry?.taskId;
+      definition = entry?.definition as RailSafetyMachine | undefined;
+      if (entry?.definitionError) {
+        incompleteMachineDraft = `机械管控草稿未完成：${entry.definitionError}`;
+        const saved = this.context.records.find(record => record.id === entry.id && record.status !== 'deleted'
+          && record.definition.kind === 'machine' && record.definition.resourceId === resource.id);
+        definition = undefined;
+        if (saved) {
+          try { const validated = validateRailSafetyDefinition(saved.definition); if (validated.kind === 'machine') { definition = validated; comparisonTaskId = saved.taskId; } }
+          catch { /* An invalid persisted record cannot provide a monitoring boundary. */ }
+        }
+        if (!definition) throw new Error(incompleteMachineDraft);
+      }
       const asset = await this.loadAsset(state.assetId);
       if (!live()) return;
       if (asset.version !== state.assetVersion || asset.id !== state.assetId) throw new Error('机械模型版本不匹配，无法判断');
+      workRange = computeMachineryWorkRange(asset, state);
+      if (definition?.workRange) workRange = { ...workRange, source: 'user-defined', radiusMeters: undefined,
+        polygon: transformAttachedRange(definition.workRange, state.placement).map(p => projectWgs84ToLocal(p, state!.placement)) };
+      result.workRangeSource = workRange.source; result.workRadiusMeters = workRange.radiusMeters;
       const key = JSON.stringify([state.assetId, state.assetVersion, state.parameters, state.proportional, state.placement, definition?.support]);
       const cached = this.envelopes.get(resource.id);
       let envelope: Envelope;
-      if (cached?.key === key) envelope = cached.value;
+      if (definition?.fallRange) {
+        const polygon = transformAttachedRange(definition.fallRange, state.placement).map(p => projectWgs84ToLocal(p, state!.placement));
+        const maximum = Math.max(...polygon.map(p => Math.hypot(p.x, p.y)));
+        envelope = { status: 'estimated', origin: state.placement, polygon, landingPoints: polygon, supportPolygon: [],
+          maxDistanceMeters: maximum, envelopeRadiusMeters: maximum, samplingMarginMeters: 0, stripMarginMeters: 0,
+          supportSource: 'user-defined', method: 'user-defined-attached-range', assumptions: [], warnings: ['倾覆范围采用用户绘制范围，随机械站位与朝向移动'] };
+      } else if (cached?.key === key) envelope = cached.value;
       else {
         // Queue cancellation is per resource. Never share a cancellable request
         // between two distinct machines which happen to have identical poses.
@@ -579,15 +630,17 @@ export class RailSafetyScene {
           const complete = () => { if (this.envelopeTasks.get(taskKey) === task) this.envelopeTasks.delete(taskKey); };
           void task.then(complete, complete);
         }
-        envelope = await task;
+        try { envelope = await task; }
+        catch (error) { envelope = { status: 'unavailable', origin: state.placement, polygon: [], landingPoints: [], supportPolygon: [],
+          maxDistanceMeters: 0, envelopeRadiusMeters: 0, samplingMarginMeters: 0, stripMarginMeters: 0,
+          supportSource: 'unavailable', method: 'unavailable', assumptions: [], warnings: [errorText(error)] }; }
       }
       if (!live()) return;
-      this.envelopes.set(resource.id, { key, value: envelope });
-      if (envelope.status !== 'estimated') throw new Error(envelope.warnings.join('；') || '无法建立当前工况的倾覆影响范围');
+      if (!definition?.fallRange) this.envelopes.set(resource.id, { key, value: envelope });
       result.maxDistanceMeters = envelope.maxDistanceMeters;
       result.supportSource = envelope.supportSource;
       result.warnings = [...envelope.warnings, '仅进行平面几何筛查；不代表三维碰撞判定或施工安全批准'];
-      visual = { resourceId: resource.id, envelope, intersections: [], touchingLimitIds: [] };
+      visual = { resourceId: resource.id, envelope, workRange, fallRangeSource: definition?.fallRange ? '用户自定义倾覆范围' : undefined, intersections: [], touchingLimitIds: [] };
       for (const guard of this.entries.filter(e => !e.deleted && e.definition.kind === 'guard' && e.definition.resourceIds.includes(resource.id))) {
         if (guard.definition.kind !== 'guard') continue;
         if (guard.definitionError) result.guards.push({ id: guard.id, name: guard.name, containsStation: false, known: false, message: guard.definitionError });
@@ -603,26 +656,46 @@ export class RailSafetyScene {
           }
         }
       }
-      if (!definition?.selectedLimitIds.length) throw new Error('尚未选用铁路设备安全限界，无法判断侵限');
+      if (!definition?.selectedLimitIds.length) throw new Error('尚未选用铁路安全限界，无法判断侵限');
       for (const limitId of definition.selectedLimitIds) {
         const limit = this.entries.find(e => e.id === limitId);
         if (!limit || limit.deleted || limit.definition.kind !== 'limit' || limit.definitionError) {
           result.limits.push({ id: limitId, name: limit?.name ?? '不可用限界', status: 'unknown',
             message: limit?.definitionError ?? '限界已删除、无权查看或不存在，请重新核对选用范围' });
+          // An unfinished editor ring must not clear an existing alarm against the saved boundary.
+          // Public draft status stays unknown; saved hazards are retained as a separate evidence channel.
+          if (limit?.definitionError && !limit.deleted) {
+            const saved = this.context.records.find(record => record.id === limitId && record.status !== 'deleted' && record.definition.kind === 'limit');
+            if (saved && (!saved.taskId || saved.taskId === comparisonTaskId)) try {
+              const validated = validateRailSafetyDefinition(saved.definition);
+              if (validated.kind === 'limit') {
+                const polygon = validated.polygon.map(p => projectWgs84ToLocal(p, envelope.origin));
+                const falling = envelope.status === 'estimated' ? intersectPolygons(envelope.polygon, polygon) : undefined;
+                const working = intersectPolygons(workRange.polygon, polygon);
+                savedLimitAssessments.push({ id: limitId, name: `${saved.name}（已保存限界，草稿未完成）`, limitType: validated.limitType ?? 'equipment',
+                  status: !falling ? 'unknown' : falling.relation === 'disjoint' ? 'clear' : falling.relation,
+                  workStatus: working.relation === 'disjoint' ? 'clear' : working.relation });
+                result.warnings.push(`限界「${saved.name}」草稿未完成，报警继续使用已保存边界`);
+              }
+            } catch { /* No valid saved comparison; retain unknown rather than guessing a clearance. */ }
+          }
           continue;
         }
         // Match the server's reference rule: global limits or the configuration's own task only.
-        if (limit.taskId && limit.taskId !== entry?.taskId) {
+        if (limit.taskId && limit.taskId !== comparisonTaskId) {
           result.limits.push({ id: limit.id, name: limit.name, status: 'unknown', message: '所选限界属于不同任务，请重新核对选用范围' });
           continue;
         }
         try {
           const polygon = limit.definition.polygon.map(p => projectWgs84ToLocal(p, envelope.origin));
-          const intersection = intersectPolygons(envelope.polygon, polygon);
-          const status = intersection.relation === 'disjoint' ? 'clear' : intersection.relation;
-          result.limits.push({ id: limit.id, name: limit.name, status, distanceMeters: intersection.distanceMeters });
+          const intersection = envelope.status === 'estimated' ? intersectPolygons(envelope.polygon, polygon) : undefined;
+          const working = intersectPolygons(workRange.polygon, polygon);
+          const status = !intersection ? 'unknown' : intersection.relation === 'disjoint' ? 'clear' : intersection.relation;
+          const workStatus = working.relation === 'disjoint' ? 'clear' : working.relation;
+          result.limits.push({ id: limit.id, name: limit.name, limitType: limit.definition.limitType ?? 'equipment', status, workStatus,
+            distanceMeters: intersection?.distanceMeters, message: !intersection ? envelope.warnings.join('；') : undefined });
           if (status === 'touching') visual.touchingLimitIds.push(limit.id);
-          if (intersection.intersectionPolygons.length) visual.intersections.push({ limitId: limit.id, polygons: intersection.intersectionPolygons });
+          if (intersection?.intersectionPolygons.length) visual.intersections.push({ limitId: limit.id, polygons: intersection.intersectionPolygons });
         } catch (error) {
           result.limits.push({ id: limit.id, name: limit.name, status: 'unknown', message: errorText(error) });
         }
@@ -642,6 +715,14 @@ export class RailSafetyScene {
       result.status = 'unknown'; result.label = '待核实／无法判定'; result.message = errorText(error);
     } finally {
       if (live()) {
+        if (state) Object.assign(result, assessMachineryConstruction({ state, definition, limits: [...result.limits, ...savedLimitAssessments], workRange }));
+        if (incompleteMachineDraft) {
+          const notice = incompleteMachineDraft + (definition ? '；报警继续使用已保存机械管控配置' : '；尚无有效的已保存配置');
+          result.classificationComplete = false; result.classificationReasons.push(notice); result.warnings.push(notice);
+          if (result.classification === 'C') { result.classification = 'unknown'; result.classifications = []; }
+          if (result.status === 'clear') { result.status = 'unknown'; result.label = '草稿未完成，待核实'; }
+          result.message = notice;
+        }
         const index = this.results.findIndex(r => r.resourceId === resource.id);
         if (index >= 0) this.results[index] = result;
         if (visual) this.visuals.push(visual);
@@ -664,10 +745,13 @@ export class RailSafetyScene {
 
   private add(entity: Entity.ConstructorOptions, kind: 'machine' | 'guard' | 'limit', id: string): void {
     const suffix = String(entity.id).slice(`${PREFIX}${kind}:${id}:`.length);
-    const displayKind: RailSafetyDisplayObjectKind = kind === 'machine' ? 'envelope' : kind === 'limit' ? 'limit'
+    const alarm = kind === 'machine' && suffix === 'alarm';
+    const displayKind: RailSafetyDisplayObjectKind = kind === 'machine' ? suffix.startsWith('work-range') ? 'machineWorkRange'
+      : suffix.startsWith('activity-range') ? 'machineActivity' : suffix.startsWith('construction-zone:') ? 'constructionZone' : 'envelope' : kind === 'limit' ? 'limit'
       : suffix.startsWith('work-area') ? 'workArea' : suffix === 'area' ? 'responsibility' : 'personnel';
-    if (this.objectVisibility[`rail:${displayKind}:${id}`] === false) return;
-    if (!this.labelsVisible && entity.label) entity = { ...entity, label: undefined };
+    const displayId = displayKind === 'constructionZone' ? `${id}:${suffix.slice('construction-zone:'.length).replace(/:label$/, '')}` : id;
+    if (!alarm && this.objectVisibility[`rail:${displayKind}:${displayId}`] === false) return;
+    if (!alarm && !this.labelsVisible && entity.label) entity = { ...entity, label: undefined };
     const replacement = new Entity(entity);
     let added = this.source.entities.getById(replacement.id);
     if (added) {
@@ -684,7 +768,8 @@ export class RailSafetyScene {
   }
 
   private rangeCategory(id: string): keyof RailSafetyRangeColors {
-    if (id.includes(':work-area')) return 'workArea';
+    if (id.includes(':work-area') || id.includes(':work-range')) return 'workArea';
+    if (id.includes(':activity-range') || id.includes(':construction-zone:')) return 'responsibility';
     if (id.startsWith(`${PREFIX}guard:`)) return 'responsibility';
     if (id.startsWith(`${PREFIX}limit:`)) return 'limit';
     if (id.endsWith(':support')) return 'support';
@@ -698,7 +783,7 @@ export class RailSafetyScene {
 
   private syncEffectAnimation(): void {
     const active = this.context.active && this.context.canView && this.source.show && this.source.entities.values.some(entity =>
-      entity.show && [entity.polygon?.material, entity.polyline?.material, entity.wall?.material].some(material => material && isRailSafetyEffectMaterialAnimated(material)));
+      entity.show && (entity.id.endsWith(':alarm') || [entity.polygon?.material, entity.polyline?.material, entity.wall?.material].some(material => material && isRailSafetyEffectMaterialAnimated(material))));
     this.effectRenderLoop.setActive(active);
   }
 
@@ -902,6 +987,7 @@ export class RailSafetyScene {
       }
       if (this.layers.envelopes) for (const visual of this.visuals) {
         const { resourceId, envelope } = visual;
+        if (envelope.status !== 'estimated') continue;
         const display = this.display.envelopes;
         const currentProjection = demo.active && demo.resourceId === resourceId && demo.projectionReady && !demo.projectionError;
         const overviewDisplay = currentProjection && display.representation === 'both' ? { ...display, style: 'outline' as const } : display;
@@ -911,7 +997,7 @@ export class RailSafetyScene {
         // A single direction/angle is not the all-direction assessment. Hide its old
         // overview highlights as a unit; the unchanged results retain that explicit scope.
         if (currentProjection && display.representation === 'pose') continue;
-        this.polygon(`${PREFIX}machine:${resourceId}:envelope`, '全方向倾覆保守外包', convert(envelope.polygon), colors.envelope, 'machine', resourceId,
+        this.polygon(`${PREFIX}machine:${resourceId}:envelope`, visual.fallRangeSource ?? '全方向倾覆保守外包', convert(envelope.polygon), colors.envelope, 'machine', resourceId,
           overviewDisplay.opacity, overviewDisplay);
         const farthest = envelope.landingPoints.reduce<Point2 | undefined>((best, p) => !best || Math.hypot(p.x, p.y) > Math.hypot(best.x, best.y) ? p : best, undefined);
         if (farthest) {
@@ -935,12 +1021,63 @@ export class RailSafetyScene {
           }, 'machine', resourceId);
         }
       }
+      for (const visual of this.visuals) {
+        if (this.layers.workRanges && visual.workRange) this.polygon(`${PREFIX}machine:${visual.resourceId}:work-range`,
+          visual.workRange.source === 'user-defined' ? '用户自定义机械工作范围' : visual.workRange.source === 'model-rotation' ? '吊臂全回转工作范围' : '机械当前姿态工作投影',
+          visual.workRange.polygon.map(p => unprojectLocalToWgs84(p, visual.workRange!.origin)), Color.fromCssColorString(this.display.colors.workArea),
+          'machine', visual.resourceId, Math.min(0.2, this.display.envelopes.opacity), this.display.envelopes);
+      }
+      for (const entry of this.entries) {
+        if (entry.deleted || entry.definitionError || entry.definition.kind !== 'machine') continue;
+        const definition = entry.definition, id = definition.resourceId;
+        if (this.layers.activityAreas && definition.activityPolygon) this.polygon(`${PREFIX}machine:${id}:activity-range`, '机械允许活动范围',
+          definition.activityPolygon, BLUE, 'machine', id, 0.08, this.display.envelopes);
+        if (this.layers.constructionZones) for (const zone of definition.constructionZones ?? []) {
+          const color = { window: RED, A: ORANGE, B: PURPLE, C: GREEN }[zone.classification];
+          this.polygon(`${PREFIX}machine:${id}:construction-zone:${zone.id}`, zone.name, zone.polygon, color, 'machine', id, 0.10, this.display.envelopes);
+          this.label(`${PREFIX}machine:${id}:construction-zone:${zone.id}:label`, zone.name, zone.polygon[0], color, 'machine', id,
+            { point: false, surface: this.display.envelopes.surface, textColor: color });
+        }
+      }
+      for (const result of this.results) if (result.alarms.length) this.machineAlarm(result);
     } finally {
       for (const entity of [...this.source.entities.values]) {
         if (!entity.id.startsWith(`${PREFIX}drawing:`) && !this.renderedEntityIds.has(entity.id)) this.source.entities.remove(entity);
       }
       this.source.entities.resumeEvents(); this.syncEffectAnimation(); this.renderPicking(); this.requestRender();
     }
+  }
+
+  /** Alarm graphics remain independent of range and ordinary-label visibility. */
+  private machineAlarm(result: RailSafetyMachineResult): void {
+    const state = this.stateFor(result.resourceId); if (!state) return;
+    const visual = this.visuals.find(item => item.resourceId === result.resourceId);
+    const lift = Math.max(visual?.workRange?.heightMeters ?? 0, state.parameters.overall_height_m ?? state.parameters.total_height_m ?? 0, 2) + 1.5;
+    const alarmGroups = new Map<string, string[]>();
+    for (const alarm of result.alarms) {
+      const title = alarm.classification ? RAIL_SAFETY_CONSTRUCTION_LABELS[alarm.classification] + '报警' : alarm.kind === 'activity' ? '活动范围越界报警' : '施工范围报警';
+      const reasons = alarmGroups.get(title) ?? []; reasons.push(alarm.message); alarmGroups.set(title, reasons);
+    }
+    const sections = [...alarmGroups].map(([title, reasons]) => '【' + title + '】\n' + reasons.join('\n'));
+    const text = wrapRailSafetyAlarmText('警报 · ' + result.resourceName + '\n' + sections.join('\n'));
+    const fontReady = this.ensureLabelFont(text);
+    const flash = () => Math.floor(Date.now() / 450) % 2 === 0;
+    const position = world(state.placement, lift);
+    const horizontalOrigin = new CallbackProperty(() => {
+      try {
+        const screen = SceneTransforms.worldToWindowCoordinates(this.viewer.scene, position);
+        if (screen && screen.x < this.viewer.canvas.clientWidth / 2) return HorizontalOrigin.LEFT;
+      } catch { /* Keep labels readable in headless or not-yet-ready scenes too. */ }
+      return HorizontalOrigin.RIGHT;
+    }, false);
+    this.add({ id: `${PREFIX}machine:${result.resourceId}:alarm`, name: text, position,
+      point: { pixelSize: new CallbackProperty(() => flash() ? 20 : 12, false), color: RED, outlineColor: Color.WHITE,
+        outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+      label: { text, font: fontReady ? 'bold 14px "Noto Sans SC", "Microsoft YaHei", sans-serif' : 'bold 14px "Microsoft YaHei", sans-serif',
+        fillColor: RED, horizontalOrigin, outlineColor: Color.BLACK, outlineWidth: 3,
+        style: LabelStyle.FILL_AND_OUTLINE, verticalOrigin: VerticalOrigin.BOTTOM, pixelOffset: new Cartesian2(0, -24),
+        showBackground: true, backgroundColor: Color.BLACK.withAlpha(0.8), disableDepthTestDistance: Number.POSITIVE_INFINITY },
+    }, 'machine', result.resourceId);
   }
 
   private startPicking(picking: Picking): void {

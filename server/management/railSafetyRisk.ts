@@ -1,6 +1,6 @@
 import type { ManagementCollection, ManagementRecord } from "../../src/managementTypes.ts";
 import type { RailSafetyLimit, RailSafetyMachine } from "../../src/railSafetyTypes.ts";
-import { RAIL_SAFETY_RISK_CLOSED_STATUSES, RAIL_SAFETY_RISK_METHOD, type RailSafetyRiskSnapshot } from "../../src/railSafetyRiskTypes.ts";
+import { RAIL_SAFETY_RISK_CLOSED_STATUSES, RAIL_SAFETY_RISK_METHOD, RAIL_SAFETY_CUSTOM_RANGE_METHOD, type RailSafetyRiskSnapshot } from "../../src/railSafetyRiskTypes.ts";
 import { allow, ensure, id, instant, ManagementError, num, str, type DomainContext } from "./domain.ts";
 
 const fail = (test: unknown, message: string) => ensure(test, "INVALID_RAIL_SAFETY_RISK", message);
@@ -44,7 +44,8 @@ export function railSafetyRiskIssueFields(c: DomainContext): Record<string, unkn
     fail(!["cancelled", "deleted"].includes(task.status), "任务已取消或移除，不能登记新的处置单");
   } else fail(p.taskRevision === undefined, "无关联任务时不能提供任务修订号");
   const screening = strictObject(p.screening, ["schemaVersion", "source", "method", "capturedAt", "status", "distanceMeters", "maxDistanceMeters", "warnings"], "几何筛查快照");
-  fail(screening.schemaVersion === 1 && screening.source === "browser-geometric-screening" && screening.method === RAIL_SAFETY_RISK_METHOD, "仅接受当前全方向几何筛查结果");
+  const method = machineDefinition!.fallRange ? RAIL_SAFETY_CUSTOM_RANGE_METHOD : RAIL_SAFETY_RISK_METHOD;
+  fail(screening.schemaVersion === 1 && screening.source === "browser-geometric-screening" && screening.method === method, "筛查方法须与已保存的机械倾覆范围来源一致");
   fail(screening.status === "overlap" || screening.status === "touching", "仅潜在侵限或边界接触结果可登记处置");
   const capturedAt = instant(screening.capturedAt, "结果捕获时间");
   fail(Date.parse(capturedAt) <= Date.parse(c.now) + 60_000 && Date.parse(capturedAt) >= Date.parse(c.now) - 30 * 60_000, "捕获时间已过期或超前，请重新登记当前结果");
@@ -63,7 +64,7 @@ export function railSafetyRiskIssueFields(c: DomainContext): Record<string, unkn
     throw new ManagementError(409, "RAIL_SAFETY_RISK_EXISTS", "此机械与限界已有未关闭处置单，请继续办理原单", { issueId: existing.id });
   }
   const railSafetyRisk: RailSafetyRiskSnapshot = {
-    schemaVersion: 1, source: "browser-geometric-screening", method: RAIL_SAFETY_RISK_METHOD,
+    schemaVersion: 1, source: "browser-geometric-screening", method,
     capturedAt, registeredAt: c.now, serverRecomputed: false, physicalPrediction: false,
     status: screening.status as "overlap" | "touching", distanceMeters, maxDistanceMeters, warnings,
     ...(description ? { description } : {}),

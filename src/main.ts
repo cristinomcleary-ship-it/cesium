@@ -197,7 +197,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </section>
         <section class="panel" data-panel="temporary-works" aria-label="临建规划"></section>
         <section class="panel" data-panel="machinery"><h2>施工机械</h2><p>在当前 Cesium 场景放置吊机、桩机与挖机。右侧面板编辑尺寸与位置，保存到同一工程资源台账。</p><p>关闭编辑面板或切换功能后，已保存的机械仍显示在场景中。可在右侧“场景显示 → 施工机械”中定位和管理全部机械。</p></section>
-        <section class="panel" data-panel="rail-safety"><h2>邻近营业线管控</h2><p>定义防护人员站位与责任区、铁路设备安全限界，并选择机械检查假设倾覆的地面影响范围。</p><p>尺寸单位 m。范围与人员位置由用户定义；相交结果为当前参数下的平面几何筛查。</p><button type="button" id="reopenRailSafety" class="text-button">打开管控面板</button></section>
+        <section class="panel" data-panel="rail-safety"><h2>邻近营业线管控</h2><p>定义防护人员站位与责任区、铁路设备及线路安全限界，配置机械施工分类、工作范围、倾覆范围、活动范围与分类区域，实时提示越级和越界报警。</p><p>尺寸单位 m。范围与人员位置由用户定义；相交结果为当前参数下的平面几何筛查。</p><button type="button" id="reopenRailSafety" class="text-button">打开管控面板</button></section>
         <section class="panel active" data-panel="cad">
           <div class="dropzone" id="cadDropzone">
             <input id="cadFile" type="file" accept=".dwg,.cadimport" hidden />
@@ -3783,7 +3783,7 @@ function syncSceneDisplay(): void {
     detail: `${machinery ? `已布置 · ${{ crane: '吊机', pile: '桩机', excavator: '挖机' }[machinery.assetId]}` : record.machinery ? '配置待检查，请重新保存机械参数' : '尚未布置，请配置并保存位置与尺寸'} · 识别号：${record.equipmentCode || '待补充'}`,
     locate: machinery ? async () => { await managementWorkspace?.locateWorkbenchMachinery(record.id); } : undefined,
     edit: async () => { if (managementWorkspace?.isOpen) { await managementWorkspace.editFieldObject('machine', record.id); return; } requestedMachineryRecord = record.id; document.querySelector<HTMLButtonElement>('.tab[data-tab="machinery"]')?.click(); } });
-  const categories: Record<string,string> = { personnel: '防护人员', responsibility: '防护责任区', workArea: '人员工作区', limit: '铁路安全限界', envelope: '机械倾覆范围' };
+  const categories: Record<string,string> = { personnel: '防护人员', responsibility: '防护责任区', workArea: '人员工作区', limit: '铁路安全限界', envelope: '机械倾覆范围', machineWorkRange: '机械工作范围', machineActivity: '机械活动范围', constructionZone: '施工分类区域' };
   for (const object of managementWorkspace?.getWorkbenchDisplayObjects() ?? []) items.push({ ...managementWorkspace?.getDisplayObjectRemoval(object.kind, object.id), id: object.key, name: object.name, category: categories[object.kind] ?? object.kind, visible: true,
     locate: async () => { await managementWorkspace?.locateRailDisplayObject(object.id); },
     edit: async () => { if (managementWorkspace?.isOpen) { await managementWorkspace.editFieldObject(object.kind, object.id); return; } requestedRailDisplayObject = { kind: object.kind, id: object.id }; document.querySelector<HTMLButtonElement>('.tab[data-tab="rail-safety"]')?.click(); } });

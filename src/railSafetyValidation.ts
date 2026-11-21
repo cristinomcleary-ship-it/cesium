@@ -1,4 +1,4 @@
-import { RAIL_SAFETY_MAX_EXTENT_METRES, RAIL_SAFETY_MAX_REFERENCES, RAIL_SAFETY_MAX_VERTICES, type RailSafetyDefinition, type RailSafetyPolygon, type RailSafetyPosition, type RailSafetySupport, type RailSafetyWorkArea } from "./railSafetyTypes.ts";
+import { RAIL_SAFETY_MAX_EXTENT_METRES, RAIL_SAFETY_MAX_REFERENCES, RAIL_SAFETY_MAX_VERTICES, type RailSafetyAttachedRange, type RailSafetyConstructionClass, type RailSafetyConstructionZone, type RailSafetyDefinition, type RailSafetyPolygon, type RailSafetyPosition, type RailSafetySupport, type RailSafetyWorkArea } from "./railSafetyTypes.ts";
 
 export class RailSafetyValidationError extends Error {
   readonly code = "INVALID_RAIL_SAFETY";
@@ -71,15 +71,53 @@ export function validateRailSafetyWorkArea(value: unknown): RailSafetyWorkArea {
     ...(p.staleAfterSeconds === undefined ? {} : { staleAfterSeconds: number(p.staleAfterSeconds, 1, 3600, "workArea.staleAfterSeconds") }),
   };
 }
+export function validateRailSafetyConstructionClass(value: unknown, field = "classification"): RailSafetyConstructionClass {
+  if (typeof value !== "string" || !["window", "A", "B", "C"].includes(value)) fail("施工分类须为天窗点施工、A类施工、B类施工或C类施工", field);
+  return value as RailSafetyConstructionClass;
+}
+export function validateRailSafetyAttachedRange(value: unknown, field: string): RailSafetyAttachedRange {
+  const p = object(value, ["polygon", "anchor"], field);
+  const a = object(p.anchor, ["longitude", "latitude", "height", "heading"], field + ".anchor");
+  const position = validateRailSafetyPosition({ longitude: a.longitude, latitude: a.latitude, height: a.height }, field + ".anchor");
+  const heading = number(a.heading, 0, 360, field + ".anchor.heading");
+  if (heading >= 360) fail("方位角须小于360°", field + ".anchor.heading");
+  const polygon = validateRailSafetyPolygon(p.polygon, field + ".polygon");
+  // Apply the same local-worksite bound relative to the moving anchor as to ring edges.
+  const rad = Math.PI / 180, radius = 6378137;
+  for (const point of polygon) {
+    const aLat = position.latitude * rad, bLat = point.latitude * rad, dLon = (point.longitude - position.longitude) * rad;
+    const angle = Math.acos(Math.max(-1, Math.min(1, Math.sin(aLat) * Math.sin(bLat) + Math.cos(aLat) * Math.cos(bLat) * Math.cos(dLon))));
+    if (angle * radius > RAIL_SAFETY_MAX_EXTENT_METRES) fail("机械范围距锚点超过20 km，请核对坐标", field);
+  }
+  return { polygon, anchor: { ...position, heading } };
+}
+export function validateRailSafetyConstructionZones(value: unknown): RailSafetyConstructionZone[] {
+  if (!Array.isArray(value) || value.length > RAIL_SAFETY_MAX_REFERENCES) fail("施工分类区域须为最多128项的列表", "constructionZones");
+  const zones = value.map((item, i) => {
+    const field = "constructionZones[" + i + "]", p = object(item, ["id", "name", "classification", "polygon"], field);
+    if (typeof p.name !== "string" || !p.name.trim() || p.name.length > 120) fail("分类区域名称须为1至120个字符", field + ".name");
+    return { id: identifier(p.id, field + ".id"), name: p.name.trim(), classification: validateRailSafetyConstructionClass(p.classification, field + ".classification"), polygon: validateRailSafetyPolygon(p.polygon, field + ".polygon") };
+  });
+  if (new Set(zones.map(zone => zone.id)).size !== zones.length) fail("施工分类区域编号不能重复", "constructionZones");
+  return zones;
+}
 /** Strict replacement contract: neither geometry approval nor automatic attendance is inferred. */
 export function validateRailSafetyDefinition(value: unknown): RailSafetyDefinition {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("缺少管控配置", "definition");
   const kind = (value as Record<string, unknown>).kind;
-  const extra = kind === "guard" ? ["station", "polygon", "resourceIds", "workArea"] : kind === "limit" ? ["polygon"] : kind === "machine" ? ["resourceId", "selectedLimitIds", "inspectionStatus", "support"] : fail("不支持的管控对象类别", "kind");
+  const extra = kind === "guard" ? ["station", "polygon", "resourceIds", "workArea"] : kind === "limit" ? ["polygon", "limitType"] : kind === "machine" ? ["resourceId", "selectedLimitIds", "inspectionStatus", "support", "workRange", "fallRange", "activityPolygon", "constructionZones"] : fail("不支持的管控对象类别", "kind");
   const p = object(value, ["schemaVersion", "kind", ...extra], "definition");
   if (p.schemaVersion !== 1) fail("不支持的管控数据版本", "schemaVersion");
   if (kind === "guard") return { schemaVersion: 1, kind, station: validateRailSafetyPosition(p.station, "station"), polygon: validateRailSafetyPolygon(p.polygon), resourceIds: references(p.resourceIds, "resourceIds"), ...(p.workArea === undefined ? {} : { workArea: validateRailSafetyWorkArea(p.workArea) }) };
-  if (kind === "limit") return { schemaVersion: 1, kind, polygon: validateRailSafetyPolygon(p.polygon) };
+  if (kind === "limit") {
+    if (p.limitType !== undefined && p.limitType !== "equipment" && p.limitType !== "line") fail("限界类型须为铁路设备限界或铁路线路限界", "limitType");
+    return { schemaVersion: 1, kind, polygon: validateRailSafetyPolygon(p.polygon), ...(p.limitType === undefined ? {} : { limitType: p.limitType }) };
+  }
   if (p.inspectionStatus !== undefined && (typeof p.inspectionStatus !== "string" || !["unknown", "reported", "unreported"].includes(p.inspectionStatus))) fail("报验标记无效", "inspectionStatus");
-  return { schemaVersion: 1, kind: "machine", resourceId: identifier(p.resourceId, "resourceId"), selectedLimitIds: references(p.selectedLimitIds, "selectedLimitIds"), ...(p.inspectionStatus === undefined ? {} : { inspectionStatus: p.inspectionStatus as "unknown" | "reported" | "unreported" }), ...(p.support === undefined ? {} : { support: validateRailSafetySupport(p.support) }) };
+  return { schemaVersion: 1, kind: "machine", resourceId: identifier(p.resourceId, "resourceId"), selectedLimitIds: references(p.selectedLimitIds, "selectedLimitIds"), ...(p.inspectionStatus === undefined ? {} : { inspectionStatus: p.inspectionStatus as "unknown" | "reported" | "unreported" }), ...(p.support === undefined ? {} : { support: validateRailSafetySupport(p.support) }),
+    ...(p.workRange === undefined ? {} : { workRange: validateRailSafetyAttachedRange(p.workRange, "workRange") }),
+    ...(p.fallRange === undefined ? {} : { fallRange: validateRailSafetyAttachedRange(p.fallRange, "fallRange") }),
+    ...(p.activityPolygon === undefined ? {} : { activityPolygon: validateRailSafetyPolygon(p.activityPolygon, "activityPolygon") }),
+    ...(p.constructionZones === undefined ? {} : { constructionZones: validateRailSafetyConstructionZones(p.constructionZones) }),
+  };
 }

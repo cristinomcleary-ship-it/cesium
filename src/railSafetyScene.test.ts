@@ -6,7 +6,7 @@ import {
   Matrix3, Matrix4, ScreenSpaceEventType, Transforms,
   type CustomDataSource, type Entity, type ScreenSpaceEventHandler, type Viewer,
 } from 'cesium';
-import { RailSafetyScene, simplifyRailSafetyDisplayRing, type RailSafetySceneContext, type RailSafetySceneOptions } from './railSafetyScene.ts';
+import { RailSafetyScene, simplifyRailSafetyDisplayRing, wrapRailSafetyAlarmText, type RailSafetySceneContext, type RailSafetySceneOptions } from './railSafetyScene.ts';
 import { DEFAULT_RAIL_SAFETY_DISPLAY } from './railSafetyDisplay.ts';
 import { projectWgs84ToLocal, unprojectLocalToWgs84 } from './railSafetyGeometry.ts';
 import { MACHINERY_ASSET_VERSION, type MachineryMetadata } from './machineryTypes.ts';
@@ -655,12 +655,13 @@ test('display catalogue separates personnel and two areas; visibility and labels
     await settled(f.scene);
     const baseline = f.scene.getSnapshot(), entities = () => f.source().entities.values;
     assert.deepEqual(f.scene.getDisplayObjects().map(item => item.key), [
-      'rail:personnel:guard', 'rail:responsibility:guard', 'rail:workArea:guard', 'rail:limit:limit', 'rail:envelope:crane',
+      'rail:personnel:guard', 'rail:responsibility:guard', 'rail:workArea:guard', 'rail:limit:limit', 'rail:envelope:crane', 'rail:machineWorkRange:crane',
     ]);
     assert.equal(entities().find(e => e.id === 'rail-safety:guard:guard:area'), undefined);
     assert.ok(entities().find(e => e.id === 'rail-safety:guard:guard:station')?.model);
     assert.ok(entities().find(e => e.id === 'rail-safety:guard:guard:work-area')?.polygon);
-    assert.ok(!entities().some(e => e.id.startsWith('rail-safety:machine:')), 'late calculation honours the hidden envelope override');
+    assert.ok(!entities().some(e => e.id.startsWith('rail-safety:machine:') && !e.id.endsWith(':work-range')), 'late calculation honours the hidden envelope override');
+    assert.ok(entities().some(e => e.id.endsWith(':work-range')), 'working-range display is independent of the envelope override');
     assert.ok(entities().every(e => !e.label));
     assert.equal(f.scene.getResults()[0].status, 'overlap', 'hidden limits and envelopes still participate in screening');
     f.scene.setObjectVisibility('personnel', 'guard', false);
@@ -739,4 +740,162 @@ test('range effects keep geometry and screening fixed, animate all six categorie
     f.scene.dispose();
     globalThis.requestAnimationFrame = previousSchedule; globalThis.cancelAnimationFrame = previousCancel;
   }
+});
+
+
+test('machine classification alarms flash above the machine and remain visible when all ranges and ordinary labels are hidden', async () => {
+  const f=fixture(), state={...machinery(),constructionClass:'C' as const};
+  const attached={polygon:square(origin,3),anchor:state.placement};
+  const saved=context([
+    record('config',{schemaVersion:1,kind:'machine',resourceId:'crane',selectedLimitIds:['line'],fallRange:attached,workRange:attached,activityPolygon:square(origin,10),
+      constructionZones:[{id:'zone',name:'天窗作业区',classification:'window',polygon:square(origin,5)}]}),
+    record('line',{schemaVersion:1,kind:'limit',limitType:'line',polygon:square(origin,2)}),
+  ]); saved.resources[0].machinery=state;
+  try {
+    f.scene.setContext(saved);await settled(f.scene);
+    const result=f.scene.getResults()[0];
+    assert.equal(result.classification,'A');assert.deepEqual(result.classifications,['A','window']);assert.equal(result.alarms.length,3);assert.equal(result.workRangeSource,'user-defined');
+    const alarmId='rail-safety:machine:crane:alarm',alarm=f.source().entities.getById(alarmId)!;
+    const alarmHeight=Cartographic.fromCartesian(alarm.position!.getValue(JulianDate.now())!).height;
+    assert.ok(alarmHeight>state.placement.height+state.parameters.overall_height_m);
+    assert.equal(alarm.label!.disableDepthTestDistance!.getValue(JulianDate.now()),Infinity);
+    assert.match(alarm.label!.text!.getValue(JulianDate.now()),/天窗点施工/);
+    const now=Date.now;
+    try { Date.now=()=>0;const a=alarm.point!.pixelSize!.getValue(JulianDate.now());Date.now=()=>450;assert.notEqual(alarm.point!.pixelSize!.getValue(JulianDate.now()),a); }
+    finally {Date.now=now;}
+    const generation=f.scene.getSnapshot().generation;
+    f.scene.setDisplayVisibility(Object.fromEntries(f.scene.getDisplayObjects().map(object=>[object.key,false])),false);
+    f.scene.setLayers({guards:false,limits:false,envelopes:false,workRanges:false,activityAreas:false,constructionZones:false});
+    assert.deepEqual(f.scene.getResults()[0],result);assert.equal(f.scene.getSnapshot().generation,generation);
+    assert.ok(f.source().entities.getById(alarmId)?.label);assert.deepEqual(f.scene.getSnapshot().entityIds,[alarmId]);
+    f.scene.setContext({...saved,active:false});assert.deepEqual(f.scene.getSnapshot().entityIds,[]);
+  } finally {f.scene.dispose();}
+});
+
+test('live poses move both attached ranges, keep site boundaries fixed and update activity alarms even with hidden ranges', async () => {
+  const f=fixture(),state={...machinery(),constructionClass:'B' as const},attached={polygon:square(origin,3),anchor:state.placement};
+  const saved=context([
+    record('config',{schemaVersion:1,kind:'machine',resourceId:'crane',selectedLimitIds:['equipment'],fallRange:attached,workRange:attached,activityPolygon:square(origin,10)}),
+    record('equipment',{schemaVersion:1,kind:'limit',polygon:square(origin,2)}),
+  ]);saved.resources[0].machinery=state;
+  const original=structuredClone(saved), time=JulianDate.now();
+  const positions=(id:string)=>f.source().entities.getById(`rail-safety:machine:crane:${id}`)!.polygon!.hierarchy!.getValue(time).positions as Cartesian3[];
+  try {
+    f.scene.setContext(saved);await settled(f.scene);
+    const work=positions('work-range'),fall=positions('envelope'),activity=positions('activity-range');
+    assert.equal(f.scene.getResults()[0].classification,'A');
+    const live=structuredClone(state);live.placement={...unprojectLocalToWgs84({x:100,y:30},origin),heading:90};
+    f.scene.setLiveStates(new Map([['crane',live]]));await settled(f.scene);
+    assert.notDeepEqual(positions('work-range'),work);assert.notDeepEqual(positions('envelope'),fall);assert.deepEqual(positions('activity-range'),activity);
+    const result=f.scene.getResults()[0];assert.equal(result.classification,'C');assert.equal(result.activityStatus,'outside');assert.deepEqual(result.alarms.map(a=>a.kind),['activity']);
+    const publicState=f.scene.getMachineState('crane')!;publicState.placement.longitude=0;assert.equal(f.scene.getMachineState('crane')!.placement.longitude,live.placement.longitude);
+    f.scene.setLayers({workRanges:false,envelopes:false});
+    f.scene.setLiveStates(new Map([['crane',state]]));await settled(f.scene);
+    assert.equal(f.scene.getResults()[0].activityStatus,'inside');assert.equal(f.scene.getResults()[0].classification,'A');
+    assert.ok(!f.scene.getSnapshot().entityIds.includes('rail-safety:machine:crane:work-range'));assert.ok(f.scene.getSnapshot().entityIds.includes('rail-safety:machine:crane:alarm'));
+    assert.deepEqual(saved,original);
+  } finally {f.scene.dispose();}
+});
+
+test('activity alarm survives missing limits and unavailable automatic fall geometry', async () => {
+  const f=fixture(),state={...machinery(),constructionClass:'C' as const};state.parameters.boom_elevation_deg=0;
+  const outside=unprojectLocalToWgs84({x:100,y:0},origin);
+  const saved=context([record('config',{schemaVersion:1,kind:'machine',resourceId:'crane',selectedLimitIds:[],activityPolygon:square(outside,10)})]);
+  saved.resources[0].machinery=state;
+  try {
+    f.scene.setContext(saved);await settled(f.scene);
+    const result=f.scene.getResults()[0];assert.equal(result.classification,'unknown');assert.equal(result.activityStatus,'outside');assert.deepEqual(result.alarms.map(a=>a.kind),['activity']);
+    assert.ok(f.scene.getSnapshot().entityIds.includes('rail-safety:machine:crane:work-range'));assert.ok(f.scene.getSnapshot().entityIds.includes('rail-safety:machine:crane:alarm'));
+  } finally {f.scene.dispose();}
+});
+
+test('live extension and elevation rebuild automatic work and fall ranges together', async () => {
+  const f=fixture(),saved=context([record('config',{schemaVersion:1,kind:'machine',resourceId:'crane',selectedLimitIds:[]})]);
+  try {
+    f.scene.setContext(saved);await settled(f.scene);
+    const first=f.scene.getResults()[0],state=machinery();state.parameters.boom_length_m*=2;state.parameters.boom_elevation_deg=45;
+    f.scene.setLiveStates(new Map([['crane',state]]));await settled(f.scene);
+    const second=f.scene.getResults()[0];assert.ok(second.workRadiusMeters!>first.workRadiusMeters!);assert.ok(second.maxDistanceMeters!>first.maxDistanceMeters!);
+    assert.equal(second.workRangeSource,'model-rotation');assert.equal(second.draft,true);
+  } finally {f.scene.dispose();}
+});
+
+test('unfinished machine range drafts preserve saved hazards without publishing a new clear result', async () => {
+  const f=fixture(),state={...machinery(),constructionClass:'C' as const},attached={polygon:square(origin,3),anchor:state.placement};
+  const outside=unprojectLocalToWgs84({x:100,y:0},origin);
+  const config=record('config',{schemaVersion:1,kind:'machine',resourceId:'crane',selectedLimitIds:['equipment'],workRange:attached,fallRange:attached,activityPolygon:square(outside,10)});
+  const saved=context([config,record('equipment',{schemaVersion:1,kind:'limit',polygon:square(origin,2)})]);saved.resources[0].machinery=state;
+  try {
+    f.scene.setContext(saved);await settled(f.scene);assert.equal(f.scene.getResults()[0].alarms.length,3);
+    f.scene.setDraft({id:config.id,name:config.name,definition:{...config.definition,constructionZones:[{id:'new',name:'未完成区域',classification:'window',polygon:[]}]} as never});await settled(f.scene);
+    const result=f.scene.getResults()[0];assert.equal(result.classification,'A');assert.equal(result.classificationComplete,false);assert.equal(result.alarms.length,3);
+    assert.match(result.message,/已保存机械管控配置/);assert.ok(f.scene.getSnapshot().entityIds.includes('rail-safety:machine:crane:alarm'));
+    f.scene.setDraft(undefined);await settled(f.scene);assert.equal(f.scene.getResults()[0].classificationComplete,true);
+    const clear={...saved,records:[config,record('equipment',{schemaVersion:1,kind:'limit',polygon:square(outside,2)})]};
+    f.scene.setContext(clear);await settled(f.scene);
+    f.scene.setDraft({id:config.id,name:config.name,definition:{...config.definition,workRange:{anchor:state.placement,polygon:[]}} as never});await settled(f.scene);
+    assert.equal(f.scene.getResults()[0].classification,'unknown');assert.equal(f.scene.getResults()[0].status,'unknown');assert.equal(f.scene.getResults()[0].activityStatus,'outside');
+  } finally {f.scene.dispose();}
+});
+
+test('unfinished limit drafts retain alarms against saved boundaries and remain explicitly incomplete', async () => {
+  const f=fixture(),state={...machinery(),constructionClass:'C' as const},attached={polygon:square(origin,3),anchor:state.placement};
+  const line=record('line',{schemaVersion:1,kind:'limit',limitType:'line',polygon:square(origin,2)});
+  const saved=context([record('config',{schemaVersion:1,kind:'machine',resourceId:'crane',selectedLimitIds:['line'],workRange:attached,fallRange:attached}),line]);
+  saved.resources[0].machinery=state;
+  try {
+    f.scene.setContext(saved);await settled(f.scene);assert.equal(f.scene.getResults()[0].classification,'A');
+    f.scene.setDraft({id:line.id,name:line.name,definition:{...line.definition,polygon:square(origin,2).slice(0,2)} as never});await settled(f.scene);
+    const result=f.scene.getResults()[0];assert.equal(result.status,'unknown');assert.equal(result.limits[0].status,'unknown');
+    assert.equal(result.classification,'A');assert.equal(result.classificationComplete,false);assert.equal(result.alarms.length,2);
+    assert.match(result.alarms[0].message,/已保存限界/);assert.ok(f.scene.getSnapshot().entityIds.includes('rail-safety:machine:crane:alarm'));
+    f.scene.setContext({...saved,records:saved.records.filter(record=>record.id!=='line')});await settled(f.scene);
+    assert.equal(f.scene.getResults()[0].classification,'unknown');assert.equal(f.scene.getResults()[0].alarms.length,0,'missing saved boundary must never be invented');
+  } finally {f.scene.dispose();}
+});
+
+test('an unfinished first-time machine configuration has no saved clear state to fall back to', async () => {
+  const f=fixture();
+  try {
+    f.scene.setContext(context([]));
+    f.scene.setDraft({id:'first-config',name:'首次配置',definition:{schemaVersion:1,kind:'machine',resourceId:'crane',selectedLimitIds:[],activityPolygon:[]}});await settled(f.scene);
+    const result=f.scene.getResults()[0];assert.equal(result.status,'unknown');assert.equal(result.classification,'unknown');assert.equal(result.classificationComplete,false);assert.deepEqual(result.alarms,[]);
+  } finally {f.scene.dispose();}
+});
+
+
+test('long machine alarm content wraps Chinese and mixed coordinates while preserving every reason', () => {
+  const reasons=['警报 · 跨线吊机','申报C类施工，当前范围已触及天窗点施工：倾覆范围触及铁路线路安全限界「沪昆铁路一号线路限界」；工作范围触及安全限界「沪昆铁路一号线路限界」','机械站位超出已设置的活动范围'];
+  const text=reasons.join('\n'),wrapped=wrapRailSafetyAlarmText(text);
+  assert.equal(wrapped.replaceAll('\n',''),text.replaceAll('\n',''));
+  assert.ok(wrapped.split('\n').length>reasons.length);
+  assert.ok(wrapped.split('\n').every(line=>Array.from(line).reduce((sum,c)=>sum+(/[\u0000-\u00ff]/.test(c)?0.55:1),0)<=28));
+  assert.ok(wrapped.endsWith(reasons[2]));
+});
+
+
+test('live declarations preserve separate A and window alarm types and support B plus window', async () => {
+  const f=fixture(),state={...machinery(),constructionClass:'C' as const};
+  const attached={polygon:square(origin,3),anchor:state.placement};
+  const saved=context([
+    record('config',{schemaVersion:1,kind:'machine',resourceId:'crane',selectedLimitIds:['line'],fallRange:attached,workRange:attached}),
+    record('line',{schemaVersion:1,kind:'limit',limitType:'line',polygon:square(origin,2)}),
+  ]);saved.resources[0].machinery=state;
+  try {
+    f.scene.setContext(saved);await settled(f.scene);
+    const time=JulianDate.now();
+    for (const declared of ['C','B','window','B+window','A'] as const) {
+      f.scene.setLiveStates(new Map([['crane',{...state,constructionClass:declared}]]));await settled(f.scene);
+      const result=f.scene.getResults()[0];
+      assert.equal(result.declaredClass,declared);assert.deepEqual(result.classifications,['A','window']);
+      const expected=declared==='A'?[]:declared==='window'||declared==='B+window'?['A']:['A','window'];
+      assert.deepEqual(result.alarms.map(alarm=>alarm.classification),expected);
+      const alarm=f.source().entities.getById('rail-safety:machine:crane:alarm');
+      if (!expected.length) { assert.equal(alarm,undefined); continue; }
+      const text=alarm!.label!.text!.getValue(time).replaceAll('\n','');
+      assert.match(text,/【A类施工报警】/);
+      assert.equal(text.includes('【天窗点施工报警】'),expected.includes('window'));
+    }
+    assert.deepEqual(saved.resources[0].machinery,state,'live previews do not rewrite saved declarations');
+  } finally {f.scene.dispose();}
 });

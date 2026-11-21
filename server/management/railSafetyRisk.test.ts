@@ -9,7 +9,7 @@ import { createManagementStore } from "../managementStore.ts";
 import type { ManagementCommandType } from "../../src/managementTypes.ts";
 import { MACHINERY_ASSET_VERSION, type MachineryMetadata } from "../../src/machineryTypes.ts";
 import { MACHINERY_PARAMETER_DEFAULTS } from "../../src/machineryValidation.ts";
-import { RAIL_SAFETY_RISK_METHOD, type RailSafetyRiskReportPayload } from "../../src/railSafetyRiskTypes.ts";
+import { RAIL_SAFETY_RISK_METHOD, RAIL_SAFETY_CUSTOM_RANGE_METHOD, type RailSafetyRiskReportPayload } from "../../src/railSafetyRiskTypes.ts";
 
 const projectId = "safety:project", now = "2026-10-14T07:00:00.000Z", password = `Risk-${randomUUID()}!`;
 const polygon = [
@@ -176,5 +176,22 @@ test("task and project sources cannot be substituted, and issue scope follows cu
     await f.ok("railSafety.save", { name: "机械改关联任务B", taskId: "B", definition: config() }, "config", 1);
     await f.login("only-a"); assert.equal((await f.state()).collections.issues.length, 0, "A issue must not expose current B-task model references");
     assert.equal((await f.request(`/__management/records/issues/risk?projectId=${projectId}`)).status, 403);
+  } finally { await f.close(); }
+});
+
+test("custom fall-range reports retain their source method and cannot claim the automatic sweep algorithm", async () => {
+  const f = await fixture(); try {
+    await seed(f);
+    const fallRange = { polygon: structuredClone(polygon), anchor: { ...model().placement } };
+    await f.ok("railSafety.save", { name: "自绘倾覆范围", definition: { ...config(), fallRange } }, "config", 1);
+    const payload = { ...report(), machineConfigRevision: 2 };
+    assert.equal((await f.command("railSafety.reportRisk", payload, "wrong-method", 0)).status, 400);
+    payload.screening.method = RAIL_SAFETY_CUSTOM_RANGE_METHOD;
+    const state = await f.ok("railSafety.reportRisk", payload, "custom-risk", 0);
+    const saved = state.collections.issues.find((issue: any) => issue.id === "custom-risk").railSafetyRisk;
+    assert.equal(saved.method, RAIL_SAFETY_CUSTOM_RANGE_METHOD);
+    assert.deepEqual(saved.machineConfigSnapshot.definition.fallRange, fallRange);
+    await f.restart();
+    assert.equal((await f.state()).collections.issues.find((issue: any) => issue.id === "custom-risk").railSafetyRisk.method, RAIL_SAFETY_CUSTOM_RANGE_METHOD);
   } finally { await f.close(); }
 });

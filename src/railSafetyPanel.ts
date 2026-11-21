@@ -2,8 +2,8 @@ import type { Cartesian2, Viewer } from "cesium";
 import type { ManagementRecord } from "./managementTypes";
 import type { MachineryPlacementPick, MachineryState } from "./machineryScene";
 import { readMachineryState } from "./machineryScene";
-import type { RailSafetyDefinition, RailSafetyPosition, RailSafetyPositionSample, RailSafetyPositioningResult, RailSafetyRecord } from "./railSafetyTypes";
-import { RAIL_SAFETY_MAX_REFERENCES, RAIL_SAFETY_MAX_VERTICES } from "./railSafetyTypes";
+import type { RailSafetyConstructionClass, RailSafetyDefinition, RailSafetyPolygon, RailSafetyPosition, RailSafetyPositionSample, RailSafetyPositioningResult, RailSafetyRecord } from "./railSafetyTypes";
+import { RAIL_SAFETY_CONSTRUCTION_LABELS, RAIL_SAFETY_DECLARED_CONSTRUCTION_LABELS, RAIL_SAFETY_MAX_REFERENCES, RAIL_SAFETY_MAX_VERTICES } from "./railSafetyTypes";
 import { RailSafetyScene, type RailSafetyMachineResult } from "./railSafetyScene";
 import type { RailSafetyFallDemoSnapshot } from "./railSafetyFallDemo";
 import { captureFallExportCamera, createFallExportProject, parseFallExportProject, restoreFallExportCamera, validateFallExportReplayScope, type FallExportSceneReference, type RailSafetyFallExportProject } from "./railSafetyFallExportProject";
@@ -15,8 +15,9 @@ import type { RailSafetyPositioningSnapshot } from "./railSafetyPositioningTrans
 import { validateRailSafetyDefinition, validateRailSafetyWorkArea } from "./railSafetyValidation";
 import { buildRailSafetyTaskView, exportRailSafetyTaskCsv } from "./railSafetyTaskView";
 import { renderRailSafetyOperations, type RailSafetyIssueFilter } from "./railSafetyOperationsView";
-import { RAIL_SAFETY_RISK_METHOD, RAIL_SAFETY_RISK_CLOSED_STATUSES, type RailSafetyRiskReportPayload, type RailSafetyRiskSnapshot } from "./railSafetyRiskTypes";
+import { RAIL_SAFETY_CUSTOM_RANGE_METHOD, RAIL_SAFETY_RISK_METHOD, RAIL_SAFETY_RISK_CLOSED_STATUSES, type RailSafetyRiskReportPayload, type RailSafetyRiskSnapshot } from "./railSafetyRiskTypes";
 import { MachineryDocumentsPanel } from "./machineryDocumentsPanel";
+import { MACHINE_RANGE_LABELS, machineRangePolygon, renderRailSafetyMachineRanges, type MachineRangeTarget } from "./railSafetyRangeEditor";
 import "./railSafetyPanel.css";
 
 type Tab = "machine" | "guard" | "limit";
@@ -100,7 +101,7 @@ export class RailSafetyPanel {
   private readonly networkPositionDevices = new Set<string>();
   private positionStates: Array<{ guardId: string; result: RailSafetyPositioningResult }> = [];
   private readonly positioningTimer: ReturnType<typeof setInterval>;
-  private pickingPurpose?: "simulation" | "workArea";
+  private pickingPurpose?: "simulation" | "workArea" | "machineRange";
   private fallDemo?: FallDemoState;
   private readonly fallRecorder: SceneVideoRecorder;
   private fallRecording?: SceneVideoRecorderSnapshot;
@@ -147,9 +148,9 @@ export class RailSafetyPanel {
         <div class="rs-results" data-role="results" aria-live="polite"></div>
         <div data-role="editor"></div>
         <div class="rs-picking" data-role="picking" hidden><p data-role="pick-message">点击场景地面添加顶点。</p><div class="rs-actions"><button type="button" data-action="undo-point">撤销一点</button><button type="button" data-action="finish-polygon">完成区域</button><button type="button" data-action="cancel-pick">取消绘制</button></div></div>
-        <div class="rs-layer-controls" aria-label="范围显示开关"><label><input type="checkbox" data-layer="guards" checked>人员及两类区域</label><label><input type="checkbox" data-layer="limits" checked>设备限界</label><label><input type="checkbox" data-layer="envelopes" checked>倾覆外包</label><p>人员图层包含防护责任区与人员工作区；开关只影响显示，隐藏的限界仍参与筛查。</p></div>
-        <div class="rs-legend" aria-label="范围图例"><span><i class="rs-dot" data-range-color="limit"></i>设备限界</span><span><i class="rs-dot" data-range-color="responsibility"></i>防护责任区</span><span><i class="rs-dot" data-range-color="envelope"></i>倾覆范围</span><span><i class="rs-dot" data-range-color="risk"></i>全方向潜在相交</span><span><i class="rs-dot" data-range-color="workArea"></i>人员工作区</span><span><i class="rs-dot" data-range-color="support"></i>计算支承区</span><p class="rs-legend-note">区域按所选颜色显示；人员定位点与状态文字继续提示区内、越界或待核实。模拟定位单独标注。</p></div>
-        <details class="rs-method"><summary>计算口径与适用范围</summary><p class="rs-note">汇总及相交区按完整模型 0–90° 扫掠的全方向保守外包进行平面筛查，假设固定支承线、水平地面、不滑移和不解体，包含采样余量且忽略首次触地挡止。按角度投影表示当前模型形态，不预测事故运动，也不改变全方向筛查结果。人员责任区仅核对已关联机械站位。</p></details>
+        <div class="rs-layer-controls" aria-label="范围显示开关"><label><input type="checkbox" data-layer="guards" checked>人员及两类区域</label><label><input type="checkbox" data-layer="limits" checked>设备及线路限界</label><label><input type="checkbox" data-layer="envelopes" checked>倾覆范围</label><label><input type="checkbox" data-layer="workRanges" checked>机械工作范围</label><label><input type="checkbox" data-layer="activityAreas" checked>机械活动范围</label><label><input type="checkbox" data-layer="constructionZones" checked>施工分类区域</label><p>人员图层包含防护责任区与人员工作区；开关只影响显示，隐藏的限界仍参与筛查。</p></div>
+        <div class="rs-legend" aria-label="范围图例"><span><i class="rs-dot" data-range-color="limit"></i>设备及线路限界</span><span><i class="rs-dot" data-range-color="responsibility"></i>防护责任区</span><span><i class="rs-dot" data-range-color="envelope"></i>倾覆范围</span><span><i class="rs-dot" data-range-color="risk"></i>全方向潜在相交</span><span><i class="rs-dot" data-range-color="workArea"></i>人员工作区</span><span><i class="rs-dot" data-range-color="support"></i>计算支承区</span><p class="rs-legend-note">区域按所选颜色显示；人员定位点与状态文字继续提示区内、越界或待核实。模拟定位单独标注。</p></div>
+        <details class="rs-method"><summary>计算口径与适用范围</summary><p class="rs-note">默认倾覆范围按完整模型 0–90° 扫掠的全方向保守外包进行平面筛查，假设固定支承线、水平地面、不滑移和不解体，包含采样余量且忽略首次触地挡止。设置自定义倾覆范围后，以用户绘制的范围筛查。按角度投影表示当前模型形态，不预测事故运动；实际机械姿态更新后，自动范围会重新计算。人员责任区仅核对已关联机械站位。</p></details>
         </div>
         <p class="rs-status" data-role="status" role="status">选择机械，或新增防护人员和安全限界。</p>
         <div class="rs-confirm" data-role="confirm" hidden><p data-role="confirm-text"></p><div class="rs-actions"><button type="button" data-action="confirm">放弃草稿并继续</button><button type="button" data-action="keep">继续编辑</button></div></div>
@@ -186,7 +187,7 @@ export class RailSafetyPanel {
       pickPosition: options.pickPosition,
       onResults: results => {
         if (this.destroyed || !this.context.canView) return;
-        this.results = results; this.renderStats(); this.renderResults(); this.renderOperations(); this.options.onDisplayChange?.();
+        this.results = results; this.renderStats(); this.renderResults(); this.renderConstructionStatus(); this.renderOperations(); this.options.onDisplayChange?.();
       },
       onFallDemoChange: state => { if (!this.destroyed) { this.fallDemo = state; this.checkFallExport(state); this.updateFallDemo(); } },
       onPickingChange: picking => {
@@ -195,7 +196,7 @@ export class RailSafetyPanel {
       },
       onPickProgress: progress => {
         if (this.destroyed) return;
-        this.find('[data-role="pick-message"]').textContent = progress.message || (progress.kind === "point" ? this.pickingPurpose === "simulation" ? "模拟定位：点选人员当前位置，仅用于本地测试，不改变已保存站位。按 Esc 取消。" : "在模型表面或地面点选人员站位。按 Esc 取消。" : `${this.pickingPurpose === "workArea" ? "人员工作区域：" : ""}已选 ${progress.points.length} 个顶点；至少 3 个，按顺序沿边界点选。`);
+        this.find('[data-role="pick-message"]').textContent = progress.message || (progress.kind === "point" ? this.pickingPurpose === "simulation" ? "模拟定位：点选人员当前位置，仅用于本地测试，不改变已保存站位。按 Esc 取消。" : "在模型表面或地面点选人员站位。按 Esc 取消。" : `${this.pickingPurpose === "workArea" ? "人员工作区域：" : this.pickingPurpose === "machineRange" ? "机械施工范围：" : ""}已选 ${progress.points.length} 个顶点；至少 3 个，按顺序沿边界点选。`);
         this.find<HTMLButtonElement>('[data-action="undo-point"]').hidden = progress.kind === "point";
         this.find<HTMLButtonElement>('[data-action="finish-polygon"]').hidden = progress.kind === "point";
         this.find<HTMLButtonElement>('[data-action="finish-polygon"]').disabled = progress.points.length < 3;
@@ -265,13 +266,13 @@ export class RailSafetyPanel {
       const assessed = results.get(resource.id);
       const result: RailSafetyMachineResult = assessed
         ? preparationReason ? { ...assessed, status: "unknown", label: "待核实", message: preparationReason } : assessed
-        : { resourceId: resource.id, resourceName: resource.name, recordId: config?.id, status: "unknown", label: "待核实", message: preparationReason || "尚未取得当前配置的计算结果", draft: false, warnings: [], limits: [], guards: [], signature: "" };
+        : { resourceId: resource.id, resourceName: resource.name, recordId: config?.id, status: "unknown", label: "待核实", message: preparationReason || "尚未取得当前配置的计算结果", draft: false, warnings: [], limits: [], guards: [], signature: "", classification: "unknown", classificationComplete: false, classificationReasons: [], alarms: [], activityStatus: "unconfigured" };
       return { ...result, modelReady, configurationReady, preparationReason };
     });
     return clone({ projectId: this.context.projectId, pending: !!this.scene.getSnapshot().pending, selectedResourceId: this.selectedResourceId || undefined, machines, machineCount: machines.length,
-      riskCount: machines.filter(machine => machine.status === "overlap" || machine.status === "touching").length,
+      riskCount: machines.filter(machine => machine.status === "overlap" || machine.status === "touching" || machine.alarms.length > 0).length,
       unknownCount: machines.filter(machine => machine.status === "unknown" || machine.limits.some(limit => limit.status === "unknown")).length,
-      clearCount: machines.filter(machine => machine.status === "clear" && !machine.limits.some(limit => limit.status === "unknown")).length,
+      clearCount: machines.filter(machine => machine.status === "clear" && !machine.alarms.length && !machine.limits.some(limit => limit.status === "unknown")).length,
       guardCount: records.filter(record => record.definition.kind === "guard").length,
       limitCount: records.filter(record => record.definition.kind === "limit").length });
   }
@@ -351,11 +352,20 @@ export class RailSafetyPanel {
   }
   getDisplayObjects() { return this.scene.getDisplayObjects(); }
   setDisplayVisibility(overrides: Record<string, boolean>, labelsVisible: boolean) { this.scene.setDisplayVisibility(overrides, labelsVisible); }
-  locateDisplayObject(id: string) { return this.scene.flyTo(id); }
+  private constructionZoneResource(id: string): string | undefined {
+    const definitions = this.records().map(record => record.definition);
+    if (this.draft) definitions.unshift(this.draft.definition);
+    for (const definition of definitions) {
+      if (definition.kind === "machine" && definition.constructionZones?.some(zone => id === definition.resourceId + ":" + zone.id)) return definition.resourceId;
+    }
+    return undefined;
+  }
+  locateDisplayObject(id: string) { return this.scene.flyTo(this.constructionZoneResource(id) ?? id); }
   selectDisplayObject(kind: string, id: string) {
-    if (!["machine", "envelope", "limit", "guard", "personnel", "responsibility", "workArea"].includes(kind)) return false;
-    const tab: Tab = kind === "envelope" ? "machine" : kind === "limit" ? "limit" : "guard";
-    return this.openFieldObject(kind === "machine" ? "machine" : tab, id);
+    if (!["machine", "envelope", "machineWorkRange", "machineActivity", "constructionZone", "limit", "guard", "personnel", "responsibility", "workArea"].includes(kind)) return false;
+    if (kind === "constructionZone") { const resourceId = this.constructionZoneResource(id); return resourceId ? this.openFieldObject("machine", resourceId) : false; }
+    const tab: Tab = ["machine", "envelope", "machineWorkRange", "machineActivity"].includes(kind) ? "machine" : kind === "limit" ? "limit" : "guard";
+    return this.openFieldObject(tab, id);
   }
   setMachineryPreview(id: string, state?: MachineryState) { if (!this.destroyed) this.scene.setMachineryPreview(id, state); }
   setLiveStates(states: ReadonlyMap<string, MachineryState>) { if (!this.destroyed) this.scene.setLiveStates(states); }
@@ -480,7 +490,7 @@ export class RailSafetyPanel {
       this.clearDraft(); this.selectedId = "";
       this.draft = { id: crypto.randomUUID(), name: "", definition: this.tab === "guard"
         ? { schemaVersion: 1, kind: "guard", station: { longitude: NaN, latitude: NaN, height: NaN }, polygon: [], resourceIds: [] }
-        : { schemaVersion: 1, kind: "limit", polygon: [] } };
+        : { schemaVersion: 1, kind: "limit", polygon: [], limitType: "equipment" } };
       this.dirty = true; this.render(); this.message(this.tab === "guard" ? "填写姓名，设置站位并绘制责任区域，再关联负责机械。" : "填写限界名称，按顺序点选或输入区域顶点。"); this.find<HTMLInputElement>('[data-field="name"]').focus();
     }, "新增对象会放弃当前未保存的修改。");
   }
@@ -551,7 +561,7 @@ export class RailSafetyPanel {
       resourceId, resourceRevision: resource.revision, machineConfigId: config.id, machineConfigRevision: config.revision,
       limitId, limitRevision: limit.revision, ...(task ? { taskId: task.id, taskRevision: task.revision } : {}),
       name: `${resource.name} · ${limit.name} · ${relation.status === "overlap" ? "潜在侵限" : "接触边界"}`.slice(0, 200),
-      screening: { schemaVersion: 1, source: "browser-geometric-screening", method: RAIL_SAFETY_RISK_METHOD,
+      screening: { schemaVersion: 1, source: "browser-geometric-screening", method: config.definition.kind === "machine" && config.definition.fallRange ? RAIL_SAFETY_CUSTOM_RANGE_METHOD : RAIL_SAFETY_RISK_METHOD,
         capturedAt: new Date().toISOString(), status: relation.status as "overlap" | "touching", distanceMeters: relation.distanceMeters!, maxDistanceMeters: result.maxDistanceMeters!, warnings: result.warnings },
     };
     this.busy = true; this.renderOperations(); this.controls(); this.message("正在登记机械筛查风险…");
@@ -691,18 +701,18 @@ export class RailSafetyPanel {
     const records = this.tab === "machine" ? this.resources() : this.records().filter(record => record.definition.kind === this.tab);
     for (const record of records) select.add(new Option(record.name || "未命名", record.id));
     select.value = this.selectedId;
-    this.find('[data-role="select-label"]').textContent = this.tab === "machine" ? "现场机械资源" : this.tab === "guard" ? "防护人员" : "铁路设备安全限界";
+    this.find('[data-role="select-label"]').textContent = this.tab === "machine" ? "现场机械资源" : this.tab === "guard" ? "防护人员" : "铁路安全限界";
     for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-tab]")) { const selected = button.dataset.tab === this.tab; button.classList.toggle("is-active", selected); button.setAttribute("aria-pressed", String(selected)); }
   }
   private renderStats() {
     const stats = this.find('[data-role="stats"]'); stats.replaceChildren();
     const resources = this.resources(), assessed = new Map(this.results.map(result => [result.resourceId, result]));
-    const risk = resources.filter(resource => ["overlap", "touching"].includes(assessed.get(resource.id)?.status || "")).length;
+    const risk = resources.filter(resource => ["overlap", "touching"].includes(assessed.get(resource.id)?.status || "") || !!assessed.get(resource.id)?.alarms.length).length;
     const unknown = resources.filter(resource => !assessed.has(resource.id) || assessed.get(resource.id)?.status === "unknown" || assessed.get(resource.id)?.limits.some(limit => limit.status === "unknown")).length;
-    for (const [key, label, value, tone] of [["machines", "机械", resources.length, ""], ["guards", "防护人员", this.records().filter(record => record.definition.kind === "guard").length, ""], ["risk", "潜在侵限", risk, risk ? "is-risk" : ""], ["unknown", "待核实", unknown, unknown ? "is-unknown" : ""]] as const) {
+    for (const [key, label, value, tone] of [["machines", "机械", resources.length, ""], ["guards", "防护人员", this.records().filter(record => record.definition.kind === "guard").length, ""], ["risk", "侵限 / 报警", risk, risk ? "is-risk" : ""], ["unknown", "待核实", unknown, unknown ? "is-unknown" : ""]] as const) {
       const card = element("div", "rs-stat " + tone); card.dataset.stat = key; card.append(element("strong", "", String(value)), element("span", "", label)); stats.append(card);
     }
-    const note = element("p", "rs-stats-note", unknown ? "按全方向保守外包筛查；待核实包括未选限界、配置缺失、计算中，0 不表示安全。" : "按全方向保守外包进行平面筛查，不随演示倾角改变，不代表施工安全批准。"); stats.append(note);
+    const note = element("p", "rs-stats-note", unknown ? "按当前机械范围筛查侵限和越界报警；待核实包括未选限界、配置缺失、计算中，0 不表示安全。" : "按当前机械范围进行平面筛查，不随演示倾角改变；实际模型姿态更新后重新计算。"); stats.append(note);
     if (this.positionStates.length) {
       const measured = this.positionStates.filter(({ result }) => result.isAlarm && result.source === "measured").length;
       const simulated = this.positionStates.filter(({ result }) => result.isAlarm && result.source === "simulated").length;
@@ -742,6 +752,13 @@ export class RailSafetyPanel {
     form.append(taskSection);
     if (definition.kind === "machine") this.renderMachine(form, definition);
     else {
+      if (definition.kind === "limit") {
+        const label = element("label", "rs-label"); label.append(element("span", "", "安全限界类型"));
+        const select = element("select"); select.dataset.field = "limitType";
+        select.add(new Option("铁路设备安全限界", "equipment")); select.add(new Option("铁路线路安全限界", "line"));
+        select.value = definition.limitType || "equipment"; label.append(select); form.append(label);
+        form.append(element("p", "rs-help", "工作范围触及关联安全限界为 A 类；倾覆范围触及铁路线路限界为天窗点施工，触及设备限界为 B 类。各类独立判定，同时命中时分列报警；A 类层级高于天窗点施工。仅本机勾选关联的限界参与判定。"));
+      }
       if (definition.kind === "guard") {
         const station = element("section", "rs-section"); station.append(element("h3", "", "人员站位"));
         const actions = element("div", "rs-actions"); actions.append(this.actionButton("pick-station", "场景点选站位")); station.append(actions);
@@ -782,7 +799,10 @@ export class RailSafetyPanel {
     const overview = element("section", "rs-machine-card");
     overview.append(element("strong", "", state ? ({ crane: "吊机", pile: "桩机", excavator: "挖机" }[state.assetId] || state.assetId) + " · 已设置模型" : "尚未设置有效机械模型"));
     if (state) overview.append(element("p", "rs-help", `整机朝向 ${state.placement.heading.toFixed(1)}° · 站位 ${state.placement.longitude.toFixed(6)}, ${state.placement.latitude.toFixed(6)}`));
-    overview.append(this.actionButton("edit-machinery", "调整机械尺寸与姿态")); form.append(overview);
+    overview.append(this.actionButton("edit-machinery", "调整机械尺寸、姿态与施工分类"));
+    const construction = element("div", "rs-construction-status"); construction.dataset.role = "construction-status"; overview.append(construction); form.append(overview);
+    this.fillConstructionStatus(construction, definition.resourceId);
+    form.append(renderRailSafetyMachineRanges(definition));
     const inspectionLabel = element("label", "rs-label"); inspectionLabel.append(element("span", "", "报验标记（手动记录）"));
     const inspection = element("select"); inspection.dataset.field = "inspectionStatus";
     for (const [id, label] of [["unknown", "未标记"], ["reported", "已报验"], ["unreported", "未报验"]]) inspection.add(new Option(label, id));
@@ -794,6 +814,90 @@ export class RailSafetyPanel {
     for (const [key, label] of [["length", "模型 X 向长度（m）"], ["width", "模型 Z 向宽度（m）"], ["centerX", "模型 X 向中心偏移（m）"], ["centerZ", "模型 Z 向中心偏移（m）"]] as const) grid.append(this.inputField(label, "support." + key, asInput(definition.support?.[key] ?? (key.startsWith("center") ? 0 : NaN)), "number"));
     support.append(grid, element("p", "rs-help", "模型原始朝向为 0° 时，+X 指向北、+Z 指向东；坐标轴未核定为实际车头朝向。未填写有效尺寸时不生成当前草稿结论。")); form.append(support);
   }
+  private fillConstructionStatus(host: HTMLElement, resourceId: string) {
+    host.replaceChildren();
+    const result = this.results.find(item => item.resourceId === resourceId);
+    const state = this.scene.getMachineState(resourceId) ?? readMachineryState(this.resources().find(item => item.id === resourceId)?.machinery);
+    const declared = result?.declaredClass ?? state?.constructionClass, actual = result?.classification;
+    const detected = result?.classifications ?? (actual && actual !== "unknown" ? [actual] : []);
+    const classifications = (["A", "window", "B", "C"] as RailSafetyConstructionClass[]).filter(value => detected.includes(value));
+    host.dataset.declaredClass = declared ?? "unknown"; host.dataset.classification = actual ?? "unknown";
+    host.dataset.classifications = classifications.join(",");
+    host.append(element("p", "rs-construction-classes", "申报分类：" + (declared ? RAIL_SAFETY_DECLARED_CONSTRUCTION_LABELS[declared] : "未设置") + " · 实时判定：" + (classifications.length ? classifications.map(value => RAIL_SAFETY_CONSTRUCTION_LABELS[value]).join("、") : "待核实")));
+    if (result && !result.classificationComplete) host.append(element("p", "rs-warning", "部分范围尚未完成核对，当前判定不能排除更高等级。"));
+    if (result?.classificationReasons?.length) host.append(element("p", "rs-help", result.classificationReasons.join("；")));
+    if (Number.isFinite(result?.workRadiusMeters)) host.append(element("p", "rs-measure", "当前工作旋转半径 " + result!.workRadiusMeters!.toFixed(2) + " m"));
+    if (result) host.append(element("p", "rs-help", "机械活动范围：" + ({ unconfigured: "尚未设置", inside: "站位在范围内", outside: "站位越界", unknown: "待核实" }[result.activityStatus])));
+    const alarmColumns = element("div", "rs-alarm-columns");
+    for (const key of ["A", "window", "B", "C", "activity", "unknown"] as const) {
+      const alarms = (result?.alarms ?? []).filter(alarm => (alarm.classification ?? (alarm.kind === "activity" ? "activity" : "unknown")) === key);
+      if (!alarms.length) continue;
+      const group = element("section", "rs-alarm-group"); group.dataset.alarmClass = key; group.setAttribute("role", "alert");
+      group.append(element("h4", "", key === "activity" ? "活动范围报警" : key === "unknown" ? "施工范围报警" : RAIL_SAFETY_CONSTRUCTION_LABELS[key] + "报警"));
+      for (const alarm of alarms) {
+        const warning = element("p", "rs-machine-alarm", alarm.message); warning.dataset.alarmKind = alarm.kind; group.append(warning);
+      }
+      alarmColumns.append(group);
+    }
+    if (alarmColumns.childElementCount) host.append(alarmColumns);
+    host.classList.toggle("is-alarm", !!result?.alarms.length);
+  }
+  private renderConstructionStatus() {
+    const host = this.root.querySelector<HTMLElement>('[data-role="construction-status"]');
+    if (host && this.draft?.definition.kind === "machine") this.fillConstructionStatus(host, this.draft.definition.resourceId);
+  }
+  private renderMachineRanges() {
+    if (this.draft?.definition.kind !== "machine") return;
+    this.root.querySelector('[data-role="machine-ranges"]')?.replaceWith(renderRailSafetyMachineRanges(this.draft.definition));
+    this.controls();
+  }
+  private machineRangeAction(action: string, button: HTMLButtonElement): boolean {
+    if (!["add-construction-zone", "draw-machine-range", "add-machine-vertex", "remove-machine-vertex", "reset-machine-range"].includes(action)) return false;
+    if (!this.editable || this.busy || this.picking || this.draft?.definition.kind !== "machine") return true;
+    const machine = this.draft.definition;
+    if (action === "add-construction-zone") {
+      if ((machine.constructionZones?.length ?? 0) >= RAIL_SAFETY_MAX_REFERENCES) { this.message("施工分类区域最多 " + RAIL_SAFETY_MAX_REFERENCES + " 个。", true); return true; }
+      (machine.constructionZones ??= []).push({ id: crypto.randomUUID(), name: "施工分类区域 " + ((machine.constructionZones?.length ?? 0) + 1), classification: "C", polygon: [] });
+      this.renderMachineRanges(); this.changed(); return true;
+    }
+    const target = button.dataset.range as MachineRangeTarget, zoneId = button.dataset.zoneId;
+    if (!["workRange", "fallRange", "activityPolygon", "zone"].includes(target)) return true;
+    const zone = target === "zone" ? machine.constructionZones?.find(item => item.id === zoneId) : undefined;
+    if (target === "zone" && !zone) return true;
+    const assignPolygon = (polygon: RailSafetyPolygon): boolean => {
+      if (target === "zone") { zone!.polygon = polygon; return true; }
+      if (target === "activityPolygon") { machine.activityPolygon = polygon; return true; }
+      const state = this.scene.getMachineState(machine.resourceId) ?? readMachineryState(this.resources().find(item => item.id === machine.resourceId)?.machinery);
+      if (!state) { this.message("请先设置有效机械模型和站位，再自定义随机械移动的范围。", true); return false; }
+      machine[target] = { polygon, anchor: clone(state.placement) }; return true;
+    };
+    if (action === "draw-machine-range") {
+      const id = this.draft.id, generation = this.generation;
+      this.scene.beginPolygon(points => {
+        if (!this.editable || this.generation !== generation || this.draft?.id !== id || this.draft.definition !== machine) return;
+        if (!assignPolygon(points.map(point => ({ longitude: point.longitude, latitude: point.latitude, height: point.height })))) return;
+        this.renderMachineRanges(); this.changed(); this.message(MACHINE_RANGE_LABELS[target] + "已绘制，保存配置后生效。");
+      });
+      this.pickingPurpose = "machineRange";
+      this.find('[data-role="pick-message"]').textContent = "绘制" + MACHINE_RANGE_LABELS[target] + "：在倾斜摄影模型表面沿边界依次点选至少 3 个角点。";
+      this.find('[data-role="picking"]').scrollIntoView({ block: "nearest" }); return true;
+    }
+    if (action === "reset-machine-range") {
+      if (target === "zone") machine.constructionZones = machine.constructionZones?.filter(item => item.id !== zoneId);
+      else delete machine[target];
+      this.renderMachineRanges(); this.changed(); return true;
+    }
+    let polygon = machineRangePolygon(machine, target, zoneId);
+    if (action === "add-machine-vertex") {
+      if ((polygon?.length ?? 0) >= RAIL_SAFETY_MAX_VERTICES) { this.message("一个区域最多 " + RAIL_SAFETY_MAX_VERTICES + " 个角点。", true); return true; }
+      if (!polygon) { if (!assignPolygon([])) return true; polygon = machineRangePolygon(machine, target, zoneId)!; }
+      const state = this.scene.getMachineState(machine.resourceId);
+      const height = target === "workRange" || target === "fallRange" ? machine[target]?.anchor.height : state?.placement.height;
+      polygon.push({ longitude: NaN, latitude: NaN, height: height ?? 0 });
+    } else if (polygon) polygon.splice(Number(button.dataset.index), 1);
+    this.renderMachineRanges(); this.changed(); return true;
+  }
+
   private availableLimits() {
     return this.records().filter(record => record.definition.kind === "limit" && (!record.taskId || record.taskId === this.draft?.taskId));
   }
@@ -1114,7 +1218,9 @@ export class RailSafetyPanel {
     if (!records.length) list.append(element("p", "rs-help", type === "limit" ? "暂无限界，请先在“安全限界”中绘制。" : "暂无机械资源，请先建立机械。"));
     for (const record of records) {
       const label = element("label", "rs-check"), checkbox = element("input"); checkbox.type = "checkbox"; checkbox.dataset.reference = type; checkbox.value = record.id; checkbox.checked = selectedIds.includes(record.id);
-      label.append(checkbox, document.createTextNode(record.name || record.id)); list.append(label);
+      const definition = (record as RailSafetyRecord).definition;
+      const labelText = (record.name || record.id) + (type === "limit" && definition?.kind === "limit" ? definition.limitType === "line" ? " · 铁路线路限界" : " · 铁路设备限界" : "");
+      label.append(checkbox, document.createTextNode(labelText)); list.append(label);
     }
     for (const id of selectedIds.filter(id => !records.some(record => record.id === id))) {
       const label = element("label", "rs-check is-missing"), checkbox = element("input"); checkbox.type = "checkbox"; checkbox.dataset.reference = type; checkbox.value = id; checkbox.checked = true;
@@ -1144,7 +1250,7 @@ export class RailSafetyPanel {
     if (this.tab === "machine" && this.selectedId) results = results.filter(result => result.resourceId === this.selectedId);
     else if (this.tab === "guard" && this.draft?.definition.kind === "guard") results = results.filter(result => this.draft!.definition.kind === "guard" && this.draft!.definition.resourceIds.includes(result.resourceId));
     else if (this.tab === "limit" && this.draft) results = results.filter(result => result.limits.some(limit => limit.id === this.draft!.id));
-    container.append(element("h3", "", "全方向保守外包 · 几何筛查"));
+    container.append(element("h3", "", "施工分类 · 实时范围筛查"));
     if (!results.length) { container.append(element("p", "rs-help", "暂无当前对象的筛查结果。先放置机械并选用限界。")); return; }
     for (const result of results) {
       const card = element("article", "rs-result rs-result-" + result.status); card.dataset.resourceId = result.resourceId; card.dataset.status = result.status;
@@ -1153,6 +1259,7 @@ export class RailSafetyPanel {
       const livePose = this.scene.hasLiveState(result.resourceId);
       heading.append(element("strong", "", result.resourceName), element("span", "rs-badge", livePose ? "实时姿态（未保存）" : result.draft ? "草稿预览" : "当前配置"), locate); card.append(heading);
       card.append(element("p", "rs-result-label", result.label), element("p", "rs-help", result.message));
+      const construction = element("div", "rs-construction-status"); this.fillConstructionStatus(construction, result.resourceId); card.append(construction);
       if (livePose) card.append(element("p", "rs-warning", "实时姿态尚未保存，停用关联并保存姿态后可登记。"));
       if (this.tab === "machine" && this.draft?.definition.kind === "machine" && !this.draft.definition.selectedLimitIds.length) card.append(this.actionButton("choose-limits", "选择安全限界"));
       if (Number.isFinite(result.maxDistanceMeters)) card.append(element("p", "rs-measure", `采样扫掠最远投影距站位 ${result.maxDistanceMeters!.toFixed(2)} m`));
@@ -1231,6 +1338,15 @@ export class RailSafetyPanel {
     if (input.dataset.display) { if (input.type === "range" || input.type === "color") this.updateDisplay(input); return; }
     if (!this.editable || this.busy || this.picking || !this.draft) return;
     const field = input.dataset.field, definition = this.draft.definition;
+    if (definition.kind === "machine" && input.dataset.machineCoordinate && input.dataset.range) {
+      const polygon = machineRangePolygon(definition, input.dataset.range as MachineRangeTarget, input.dataset.zoneId);
+      const point = polygon?.[Number(input.dataset.vertexIndex)]; if (!point) return;
+      point[input.dataset.machineCoordinate as keyof RailSafetyPosition] = numeric(input.value); this.changed(); return;
+    }
+    if (definition.kind === "machine" && input.dataset.zoneName) {
+      const zone = definition.constructionZones?.find(item => item.id === input.dataset.zoneName); if (!zone) return;
+      zone.name = input.value; this.changed(); return;
+    }
     if (field === "name") this.draft.name = input.value;
     else if (field?.startsWith("station.") && definition.kind === "guard") definition.station[field.slice(8) as keyof RailSafetyPosition] = numeric(input.value);
     else if (field === "workArea.deviceId" && definition.kind === "guard" && definition.workArea) definition.workArea.deviceId = input.value.trim() || undefined;
@@ -1262,7 +1378,12 @@ export class RailSafetyPanel {
     }
     if (!this.editable || this.busy || this.picking || !this.draft) return;
     const definition = this.draft.definition;
-    if (input.dataset.field === "taskId") { this.draft.taskId = input.value || undefined; if (definition.kind === "machine") this.renderLimitSelection(definition); }
+    if (input.dataset.field === "limitType" && definition.kind === "limit") definition.limitType = input.value as "equipment" | "line";
+    else if (input.dataset.zoneClass && definition.kind === "machine") {
+      const zone = definition.constructionZones?.find(item => item.id === input.dataset.zoneClass); if (!zone) return;
+      zone.classification = input.value as RailSafetyConstructionClass;
+    }
+    else if (input.dataset.field === "taskId") { this.draft.taskId = input.value || undefined; if (definition.kind === "machine") this.renderLimitSelection(definition); }
     else if (input.dataset.field === "inspectionStatus" && definition.kind === "machine") definition.inspectionStatus = input.value as "unknown" | "reported" | "unreported";
     else if (input.dataset.field === "work-area-enabled" && definition.kind === "guard") {
       definition.workArea = (input as HTMLInputElement).checked ? { polygon: [], staleAfterSeconds: 30 } : undefined; this.renderEditor();
@@ -1359,6 +1480,7 @@ export class RailSafetyPanel {
     if (action === "remove") { this.confirm(() => { void this.remove(); }, "删除后该对象将不再参与当前配置。关联引用会显示待核实，历史审计记录保留。", "确认删除"); return; }
     if (!this.draft) return;
     const definition = this.draft.definition;
+    if (definition.kind === "machine" && this.machineRangeAction(action, button)) return;
     if (action === "edit-machinery" && definition.kind === "machine") { const id = definition.resourceId; this.requestDiscard(() => { this.closeNow(); this.options.editMachinery(id); }, "打开机械参数会放弃当前未保存的管控配置。请先保存，或确认放弃。"); }
     else if (action === "pick-station" && definition.kind === "guard") {
       const id = this.draft.id, generation = this.generation;
@@ -1397,6 +1519,7 @@ export class RailSafetyPanel {
     } else if (definition.support) {
       if (!Object.values(definition.support).every(Number.isFinite) || definition.support.length <= 0 || definition.support.width <= 0) return "支承长度、宽度必须为有效正数，中心偏移必须填写数值。";
     }
+    try { validateRailSafetyDefinition(definition); } catch (error) { return errorText(error); }
     return;
   }
   private async save() {

@@ -2,6 +2,7 @@ import type { MachineryMetadata } from "./machineryTypes.ts";
 import type { RailSafetyLimit, RailSafetyMachine } from "./railSafetyTypes.ts";
 
 export const RAIL_SAFETY_RISK_METHOD = "support-line-rigid-0-90-sweep-convex-envelope/v2" as const;
+export const RAIL_SAFETY_CUSTOM_RANGE_METHOD = "user-defined-attached-range/v1" as const;
 export const RAIL_SAFETY_RISK_CLOSED_STATUSES = ["closed", "false-positive", "duplicate"] as const;
 
 /** A user captures a browser geometry screen. The server validates source revisions,
@@ -9,7 +10,7 @@ export const RAIL_SAFETY_RISK_CLOSED_STATUSES = ["closed", "false-positive", "du
 export type RailSafetyRiskScreening = {
   schemaVersion: 1;
   source: "browser-geometric-screening";
-  method: typeof RAIL_SAFETY_RISK_METHOD;
+  method: typeof RAIL_SAFETY_RISK_METHOD | typeof RAIL_SAFETY_CUSTOM_RANGE_METHOD;
   capturedAt: string;
   status: "overlap" | "touching";
   distanceMeters: number;

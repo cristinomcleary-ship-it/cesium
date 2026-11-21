@@ -1,3 +1,5 @@
+import type { RailSafetyDeclaredConstructionClass } from "./railSafetyTypes.ts";
+
 /** Versioned display geometry attached to an existing equipment resource.
  * This is neither equipment qualification nor a construction acceptance record. */
 export const MACHINERY_ASSET_VERSION = "2026-10-13-v1" as const;
@@ -27,4 +29,6 @@ export type MachineryMetadata = {
   parameters: Record<string, number>;
   placement: MachineryPlacement;
   visible: boolean;
+  /** User-declared construction class, independent of the current geometric assessment. */
+  constructionClass?: RailSafetyDeclaredConstructionClass;
 };

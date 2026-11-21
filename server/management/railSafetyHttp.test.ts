@@ -189,3 +189,32 @@ test("guard work area and device binding persist independently with strict valid
     assert.equal((await f.record("guard:replacement")).data.definition.workArea.deviceId, "tracker:01");
   } finally { await f.close(); }
 });
+
+test("both railway limit types and machine ranges survive HTTP persistence and validation is atomic", async () => {
+  const f = await fixture(); try {
+    await seed(f);
+    await f.ok("railSafety.save", { name: "线路安全限界", definition: { ...limit(), limitType: "line" } }, "line-limit", 0);
+    const attached = { polygon: structuredClone(polygon), anchor: { ...point(), heading: 90 } };
+    const definition = { ...machine(), selectedLimitIds: ["limit", "line-limit"], workRange: attached, fallRange: attached,
+      activityPolygon: structuredClone(polygon), constructionZones: ["window", "A", "B", "C"].map(classification => ({ id: "zone-" + classification, name: classification + "区", classification, polygon: structuredClone(polygon) })) };
+    await f.ok("railSafety.save", { name: "完整范围配置", definition }, "machine-config", 1);
+    assert.deepEqual((await f.record("machine-config")).data.definition, definition);
+    for (const invalid of [
+      { ...definition, workRange: { ...attached, anchor: { ...attached.anchor, heading: 360 } } },
+      { ...definition, workRange: { ...attached, polygon: polygon.slice(0, 2) } },
+      { ...definition, activityPolygon: polygon.slice(0, 2) },
+      { ...definition, constructionZones: [{ ...definition.constructionZones[0], classification: "D" }] },
+      { ...definition, constructionZones: [definition.constructionZones[0], definition.constructionZones[0]] },
+      { ...definition, constructionZones: [{ ...definition.constructionZones[0], name: " " }] },
+    ]) {
+      assert.equal((await f.command("railSafety.save", { name: "无效配置", definition: invalid }, "machine-config", 2)).status, 400);
+      assert.deepEqual((await f.record("machine-config")).data.definition, definition);
+    }
+    assert.equal((await f.command("railSafety.save", { name: "错误类型", definition: { ...limit(), limitType: "road" } }, "line-limit", 1)).status, 400);
+    await f.restart();
+    assert.deepEqual((await f.record("machine-config")).data.definition, definition);
+    assert.equal((await f.record("line-limit")).data.definition.limitType, "line");
+    assert.deepEqual((await f.record("limit")).data.definition, limit(), "legacy equipment limit is not rewritten");
+    assert.deepEqual((await f.record("guard")).data.definition, guard(), "personnel regions remain unchanged");
+  } finally { await f.close(); }
+});

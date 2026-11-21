@@ -458,3 +458,27 @@ test("machinery HTTP models read grant protects records, snapshots, receipts, co
     await f.restart(); assert.deepEqual((await f.record("machine")).data.machinery, metadata);
   } finally { await f.close(); }
 });
+
+test("construction classes persist through machinery HTTP and reject unsupported values atomically", async () => {
+  const f = await fixture(); try {
+    for (const constructionClass of ["window", "A", "B", "C", "B+window"] as const) {
+      const machinery = { ...model(), constructionClass };
+      await f.ok("machinery.create", { name: constructionClass, equipmentCode: "CLASS-" + constructionClass, machinery }, "class-" + constructionClass.replace("+", "-"), 0);
+      assert.equal((await f.record("class-" + constructionClass.replace("+", "-"))).data.machinery.constructionClass, constructionClass);
+    }
+    const invalid = await f.command("machinery.save", { machinery: { ...model(), constructionClass: "D" } }, "class-A", 1);
+    assert.equal(invalid.status, 400);
+    assert.equal((await f.record("class-A")).data.revision, 1);
+    await f.ok("machinery.save", { machinery: { ...model(), constructionClass: "B" } }, "class-A", 1);
+    await f.restart();
+    assert.equal((await f.record("class-A")).data.machinery.constructionClass, "B");
+    assert.equal((await f.record("class-B-window")).data.machinery.constructionClass, "B+window", "combined declaration survives server restart");
+    for (const constructionClass of ["A+window", "C+window", ["B", "window"], "window+B"]) {
+      const rejected = await f.command("machinery.save", { machinery: { ...model(), constructionClass } }, "class-B-window", 1);
+      assert.equal(rejected.status, 400); assert.equal((await f.record("class-B-window")).data.revision, 1);
+    }
+    await f.ok("machinery.save", { machinery: { ...model(), constructionClass: "B" } }, "class-B-window", 1);
+    assert.equal((await f.record("class-B-window")).data.machinery.constructionClass, "B", "window membership can be explicitly removed");
+    assert.deepEqual(validateMachineryMetadata(model()), model(), "legacy models keep their original shape");
+  } finally { await f.close(); }
+});

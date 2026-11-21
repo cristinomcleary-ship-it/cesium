@@ -15,3 +15,26 @@
 /* Object operations keep their live controls and drafts while changing category. */
 .rs-section-tabs{display:flex;gap:5px;padding:9px 14px;border-bottom:1px solid var(--rs-line);overflow-x:auto;flex:0 0 auto;scrollbar-width:thin}.rail-safety-panel .rs-section-tabs button{white-space:nowrap;min-height:32px;font-size:11px;padding:5px 8px;background:#142b3d;color:var(--rs-muted)}.rail-safety-panel .rs-section-tabs button.is-active,.rail-safety-panel .rs-document-tabs button.is-active{background:#23483f;border-color:#61a594;color:#d8fff8}.rs-object-section{min-width:0}.rs-documents-heading{display:flex;align-items:center;justify-content:space-between;gap:9px;margin-bottom:10px}.rs-documents-heading strong{overflow-wrap:anywhere}.rs-document-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-bottom:12px}.rail-safety-panel .rs-document-tabs button{font-size:11px;padding:6px 4px}.rs-document-upload{display:grid;gap:8px;font-size:12px}.rail-safety-panel .rs-document-upload input{max-width:100%;font-size:11px}.rs-document-list{display:grid;gap:9px}.rs-document-card{padding:11px;border:1px solid var(--rs-line);border-radius:8px;background:var(--rs-card);min-width:0}.rs-document-card>strong{display:block;overflow-wrap:anywhere;font-size:12px}.rs-document-card a{display:inline-flex;align-items:center;padding:6px 9px;min-height:32px;border:1px solid #496074;border-radius:7px;color:#b8eee6;text-decoration:none;font-size:12px}.rs-document-card a:focus-visible{outline:2px solid var(--rs-accent)}.rs-document-confirm{margin-top:10px;padding:9px;border:1px solid #8b7652;border-radius:7px;background:#3a332b;color:#f5e1bb}.rs-document-confirm p{margin:0 0 8px;font-size:12px}.rs-document-confirm button+button{margin-left:6px}
 .rail-safety-panel .rs-demo-export{display:grid;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--rs-line)}.rail-safety-panel .rs-demo-export .rs-actions{display:flex;flex-wrap:wrap;gap:6px}.rail-safety-panel .rs-demo-export [data-action="fall-download-video"],.rail-safety-panel .rs-demo-export [data-action="fall-download-project"]{border-color:var(--rs-accent);color:var(--rs-accent)}
+
+/* Machine ranges are confined to the existing rail-safety editor. */
+.rail-safety-panel .rs-machine-ranges{display:grid;gap:12px;padding-top:14px;border-top:1px solid var(--rs-line)}
+.rail-safety-panel .rs-machine-ranges>h3{font-size:14px;margin:0;color:#dcebf5}
+.rail-safety-panel .rs-machine-ranges>.rs-help{margin:0}
+.rail-safety-panel .rs-machine-range{padding:12px;border:1px solid #365e71;border-radius:8px;background:#142d3c;min-width:0}
+.rail-safety-panel .rs-range-heading{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px}
+.rail-safety-panel .rs-range-heading h4,.rail-safety-panel .rs-construction-zones>h4{font-size:12px;margin:0;color:#dcebf5}
+.rail-safety-panel .rs-machine-range[data-machine-range=activityPolygon]{border-color:#417b65;background:#132e29}
+.rail-safety-panel .rs-machine-range[data-machine-range=zone]{margin-top:10px;border-color:#6b6085;background:#29273a}
+.rail-safety-panel .rs-range-zone-fields{display:grid;gap:10px;margin-top:12px}
+.rail-safety-panel .rs-range-anchor{font-size:10px;line-height:1.65;color:#b6cad5;margin:8px 0;overflow-wrap:anywhere}
+.rail-safety-panel .rs-construction-zones>[data-action=add-construction-zone]{margin-top:10px}
+.rail-safety-panel .rs-construction-status{margin-top:10px;padding-top:8px;border-top:1px solid #496778}
+.rail-safety-panel .rs-construction-classes{font-size:12px;line-height:1.8;font-weight:600;color:#d8f0eb}
+.rail-safety-panel .rs-machine-alarm{padding:8px 10px;border:1px solid #ba5f64;border-radius:6px;background:#4c2530;color:#ffd0c9;font-size:12px;line-height:1.7}
+.rail-safety-panel .rs-construction-status.is-alarm .rs-construction-classes{color:#ffb2a8}
+
+.rail-safety-panel .rs-alarm-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}
+.rail-safety-panel .rs-alarm-group{min-width:0;padding:9px;border:1px solid #ba5f64;border-radius:7px;background:#4c2530}
+.rail-safety-panel .rs-alarm-group h4{margin:0 0 7px;color:#ffd0c9;font-size:12px;line-height:1.6}
+.rail-safety-panel .rs-alarm-group .rs-machine-alarm{margin:0;padding:6px 0;border:0;border-top:1px solid #ba5f6455;border-radius:0;background:transparent;font-size:11px;overflow-wrap:anywhere}
+.rail-safety-panel .rs-alarm-group[data-alarm-class=activity],.rail-safety-panel .rs-alarm-group[data-alarm-class=unknown]{grid-column:1/-1}

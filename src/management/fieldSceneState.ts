@@ -9,6 +9,7 @@ export function fieldMachineRisk(result: FieldResult | undefined, pending: boole
   const base = { draft: result?.draft };
   if (!placed) return { ...base, risk: 'unknown', riskLabel: '待布置', riskMessage: '尚未设置有效机械模型与位置' };
   if (pending) return { ...base, risk: 'unknown', riskLabel: '计算中', riskMessage: '正在按当前机械及限界版本重新计算' };
+  if (result?.alarms?.length) return { ...base, risk: 'crossing', riskLabel: '机械报警', riskMessage: result.alarms.map(alarm => alarm.message).join('；'), intersectionCount: result.limits.filter(limit => limit.status === 'overlap' || limit.status === 'touching').length };
   if (result?.draft) return { ...base, risk: 'unknown', riskLabel: '草稿待保存', riskMessage: '当前是未保存的布置预览；保存后再核对筛查结果' };
   if (!result || result.preparationReason || result.status === 'unknown') return {
     ...base, risk: 'unknown', riskLabel: '待核实', riskMessage: result?.preparationReason || result?.message || '尚无有效筛查结果，请核对参数和限界',

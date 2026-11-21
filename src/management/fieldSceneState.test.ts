@@ -4,6 +4,7 @@ import { fieldMachineRisk } from './fieldSceneState.ts';
 import type { RailSafetyMachineResult } from '../railSafetyScene.ts';
 const result = (patch: Partial<RailSafetyMachineResult> = {}): RailSafetyMachineResult => ({
   resourceId: 'm1', resourceName: '吊机', status: 'clear', label: '未发现交叉', message: '当前已选限界筛查', draft: false,
+  classification: 'unknown', classificationComplete: false, classificationReasons: [], alarms: [], activityStatus: 'unconfigured',
   warnings: [], limits: [{ id: 'l1', name: '限界', status: 'clear', distanceMeters: 1 }], guards: [], signature: 'current', ...patch,
 });
 test('missing model and missing result retain unknown without a numeric zero', () => {
@@ -32,4 +33,13 @@ test('known crossing remains visible when another selected limit is unresolved',
 });
 test('unknown engine status never displays an intersection count of zero', () => {
   const value = fieldMachineRisk(result({ status: 'unknown' }), false, true); assert.equal(value.risk, 'unknown'); assert.equal(value.intersectionCount, undefined);
+});
+
+test('live activity and construction alarms remain visible independently of saved geometry status', () => {
+  const alarms = [{ kind: 'activity' as const, message: '机械站位已超出活动范围' }, { kind: 'classification' as const, message: 'B类施工触及A类施工' }];
+  for (const draft of [false, true]) {
+    const value = fieldMachineRisk({ ...result({ status: 'unknown', alarms, draft }), preparationReason: '尚未选用安全限界' }, false, true);
+    assert.equal(value.risk, 'crossing'); assert.equal(value.riskLabel, '机械报警');
+    assert.match(value.riskMessage, /活动范围/); assert.match(value.riskMessage, /B类施工/);
+  }
 });
