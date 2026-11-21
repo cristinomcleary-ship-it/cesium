@@ -3,6 +3,7 @@ import { releaseBorrowedClippingPolygons } from './borrowedClippingPolygons';
 import { PreciseClippingPolygonCollection } from './engineeringComponents/preciseClipping';
 import { ContactClippingPolygonCollection } from './modelContactOcclusion/clipping';
 import type { ContactVolume } from './modelContactOcclusion/types';
+import { MODEL_PROJECTION_TARGET_LIMIT } from './modelContactOcclusion/types';
 import {
   Cartesian3, ClippingPolygon, ClippingPolygonCollection, Ellipsoid,
   type Cesium3DTileset, type Viewer,
@@ -34,6 +35,14 @@ export type ModelContactClippingScope = {
   setEnabled(enabled: boolean): void;
   remove(id: string): void; clear(): void; dispose(): void;
 };
+export type ModelProjectionClippingScope = Omit<ModelContactClippingScope, 'upsert'> & {
+  upsert(input: TemporaryWorksClipInput): TemporaryWorksClipStatus;
+};
+/** Per-target projection stops; the final combined GPU collection enforces its
+ * own identical ring/vertex capacity across all model and legacy contributors. */
+export const MODEL_PROJECTION_LIMITS = Object.freeze({
+  targets: MODEL_PROJECTION_TARGET_LIMIT, boundaryPoints: 65_536, polygons: 32_768, topologyChecks: 1_000_000,
+});
 export type ClippingScopeUsage = { contributors: number; boundaryPoints: number; polygons: number; topologyChecks: number };
 export type ClippingScopeLimits = Readonly<ClippingScopeUsage>;
 export type ClippingValidationPolicy = Readonly<{ minimumAreaSquareMeters?: number }>;
@@ -263,9 +272,15 @@ export class TemporaryWorksClippingManager {
     };
   }
 
-  /** Model geometry shares the same owner and leases as legacy clipping, but
-   * has no two-dimensional footprint that could erase an entire height column. */
-  createContactScope(id: string): ModelContactClippingScope {
+  /** Both model strategies share authoritative revocation and scene leases.
+   * Legacy temporary-work/surface scopes retain their original lifecycle. */
+  createContactScope(id: string): ModelContactClippingScope { return this.createManagedModelScope(id, false); }
+
+  createModelProjectionScope(id: string): ModelProjectionClippingScope { return this.createManagedModelScope(id, true); }
+
+  private createManagedModelScope(id: string, projection: boolean): Omit<ModelContactClippingScope, 'upsert'> & {
+    upsert(input: ModelContactClipInput | TemporaryWorksClipInput): TemporaryWorksClipStatus;
+  } {
     if (!id.trim() || this.scopes.has(id)) throw new Error('模型接触遮挡来源为空或已被占用。');
     const scope: Scope = { entries: new Map(), enabled: true, disposed: false,
       limits: DEFAULT_SCOPED_CLIPPING_LIMITS, precise: true };
@@ -283,19 +298,31 @@ export class TemporaryWorksClippingManager {
     return {
       upsert: input => {
         if (scope.disposed || !input.id.trim()) throw new Error('模型接触遮挡来源已释放或缺少编号。');
-        const matrix = input.volume?.worldFromLocal;
-        if (!matrix || matrix.length !== 16 || !matrix.every(Number.isFinite)
-          || matrix[3] !== 0 || matrix[7] !== 0 || matrix[11] !== 0 || matrix[15] !== 1
-          || !input.volume.geometry || input.volume.geometry.stats.sourceTriangles < 1)
-          throw new Error('模型接触遮挡缺少有效三维几何或定位。');
+        let volume: ContactVolume | undefined, footprints: readonly TemporaryWorksFootprint[] = [], polygons: ClippingPolygon[] = [];
+        let usage = { ...emptyUsage(), contributors: 1 };
+        if (projection) {
+          if (!('footprints' in input)) throw new Error('模型投影遮挡缺少真实投影轮廓。');
+          if (!scope.entries.has(input.id) && scope.entries.size >= MODEL_PROJECTION_LIMITS.targets) throw new Error('模型投影关联摄影超过 32 份预算。');
+          usage = estimateClippingScopeContribution(input.footprints);
+          checkScopeBudget(usage, { ...MODEL_PROJECTION_LIMITS, contributors: 1 });
+          const copyRing = (ring: readonly TemporaryWorksClipPoint[]) => Object.freeze(ring.map(point => Object.freeze({ ...point })));
+          footprints = Object.freeze(input.footprints.map(value => Object.freeze({ outer: copyRing(value.outer),
+            holes: value.holes ? Object.freeze(value.holes.map(copyRing)) : undefined })));
+          polygons = buildTemporaryWorksClipPolygons(footprints, input.tileset.ellipsoid, { minimumAreaSquareMeters: 0 });
+          checkScopeBudget({ ...usage, polygons: polygons.length }, { ...MODEL_PROJECTION_LIMITS, contributors: 1 });
+        } else {
+          if (!('volume' in input)) throw new Error('模型接触遮挡缺少有效三维几何或定位。');
+          const matrix = input.volume?.worldFromLocal;
+          if (!matrix || matrix.length !== 16 || !matrix.every(Number.isFinite)
+            || matrix[3] !== 0 || matrix[7] !== 0 || matrix[11] !== 0 || matrix[15] !== 1
+            || !input.volume.geometry || input.volume.geometry.stats.sourceTriangles < 1)
+            throw new Error('模型接触遮挡缺少有效三维几何或定位。');
+          volume = Object.freeze({ geometry: input.volume.geometry, worldFromLocal: Object.freeze([...matrix]) });
+        }
         const previous = scope.entries.get(input.id);
-        // Freeze the placement snapshot. Geometry is an immutable worker result;
-        // a subsequent model pose must submit a new contribution.
-        const volume: ContactVolume = Object.freeze({ geometry: input.volume.geometry,
-          worldFromLocal: Object.freeze([...matrix]) });
         this.changeDesired(() => {
-          scope.entries.set(input.id, { ...input, volume, footprints: [], polygons: [], scope,
-            usage: { ...emptyUsage(), contributors: 1 }, status: status('disabled', '三维接触遮挡待更新') });
+          scope.entries.set(input.id, { ...input, volume, footprints, polygons, scope, usage,
+            status: status('disabled', projection ? '模型投影遮挡待更新' : '三维接触遮挡待更新') });
           this.watch();
         }, () => { if (previous) scope.entries.set(input.id, previous); else scope.entries.delete(input.id); }, true, [input.tileset]);
         return getStatus(input.id)!;

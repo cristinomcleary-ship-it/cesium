@@ -34,7 +34,7 @@ export class EngineeringComponentPanel {
       <p class="ec-status" data-ec="status" role="status">选择已加载的重构模型，核验后接入构件。</p>
       <div class="ec-photography"><label>关联倾斜摄影<select data-ec="photography-target" aria-label="关联倾斜摄影" disabled><option value="">请选择要遮挡的倾斜摄影</option></select></label>
       <label><input type="checkbox" data-ec="photography-enabled" checked disabled> 启用工程模型摄影遮挡</label>
-      <small>与模型列表的“模型遮挡”共用开关。仅裁掉与实体或表面接触的摄影；隐藏构件仍保留遮挡。</small>
+      <small>与模型列表的“模型遮挡”共用开关。按构件投影范围遮挡摄影；隐藏构件仍保留遮挡。</small>
       <p data-ec="photography-status" role="status">请先接入工程构件，再选择关联摄影。</p>
       <div class="ec-actions"><button type="button" data-ec-action="photography-retry" disabled>重新计算遮挡</button><button type="button" data-ec-action="photography-cancel" disabled>取消计算</button></div></div>
       <div class="ec-controls"><label>查看范围<select data-ec="scope" disabled><option value="all">全线全部构件</option><option value="A001">A001# 墩 · 样板</option><option value="TN021">TN021 隧道 · 样板</option></select></label>

@@ -49,7 +49,7 @@ function validateMatrix(matrix: Matrix4, label: string): void {
   const d = values[0] * (values[5] * values[10] - values[6] * values[9])
     - values[4] * (values[1] * values[10] - values[2] * values[9])
     + values[8] * (values[1] * values[6] - values[2] * values[5]);
-  if (!Number.isFinite(d) || d === 0) throw new Error(`${label}不可逆，不能计算实际相交。`);
+  if (!Number.isFinite(d) || d === 0) throw new Error(`${label}不可逆，不能计算模型遮挡。`);
 }
 
 function readyGraph(model: Model): RuntimeGraph {
@@ -57,10 +57,10 @@ function readyGraph(model: Model): RuntimeGraph {
   if (!model.ready || model.isDestroyed() || !graph?.components?.transform || !graph.axisCorrectionMatrix || !Array.isArray(graph._runtimeNodes)) {
     throw new Error('模型运行时几何尚未就绪或已卸载。');
   }
-  if (model.minimumPixelSize !== 0 || model.activeAnimations.length) throw new Error('实际相交暂不支持动画或屏幕最小尺寸模型。');
-  if (model.heightReference !== undefined && model.heightReference !== HeightReference.NONE) throw new Error('实际相交暂不支持地形贴附形变。');
-  if ((model as RuntimeModel).hasVerticalExaggeration) throw new Error('实际相交暂不支持垂直夸张形变。');
-  if (model.customShader?.vertexShaderText?.trim()) throw new Error('实际相交暂不支持自定义顶点形变。');
+  if (model.minimumPixelSize !== 0 || model.activeAnimations.length) throw new Error('模型遮挡暂不支持动画或屏幕最小尺寸模型。');
+  if (model.heightReference !== undefined && model.heightReference !== HeightReference.NONE) throw new Error('模型遮挡暂不支持地形贴附形变。');
+  if ((model as RuntimeModel).hasVerticalExaggeration) throw new Error('模型遮挡暂不支持垂直夸张形变。');
+  if (model.customShader?.vertexShaderText?.trim()) throw new Error('模型遮挡暂不支持自定义顶点形变。');
   return graph;
 }
 
@@ -69,7 +69,7 @@ function readyGraph(model: Model): RuntimeGraph {
 export function runtimeModelWorldFromLocal(model: Model): number[] {
   const graph = readyGraph(model);
   const scale = Math.min(model.scale, model.maximumScale ?? Number.POSITIVE_INFINITY);
-  if (!Number.isFinite(scale) || scale <= 0) throw new Error('模型比例无效，实际相交未更新。');
+  if (!Number.isFinite(scale) || scale <= 0) throw new Error('模型比例无效，模型遮挡未更新。');
   validateMatrix(model.modelMatrix, '模型定位'); validateMatrix(graph.components.transform, '模型根变换');
   validateMatrix(graph.axisCorrectionMatrix, '模型坐标轴变换');
   const result = Matrix4.multiplyTransformation(model.modelMatrix, graph.components.transform, new Matrix4());
@@ -97,7 +97,7 @@ function selectedNodes(nodes: RuntimeGraph['_runtimeNodes'], options: RuntimeCon
 function assertStaticNode(node: RuntimeNode): void {
   if (node.userAnimated || node.runtimeSkin != null || node.node.skin != null || node.morphWeights?.length
       || node.runtimePrimitives.some(p => p.primitive.morphTargets?.length)) {
-    throw new Error(`节点 ${node.node.index} 含骨骼、变形目标或动态节点变换，实际相交尚不支持。`);
+    throw new Error(`节点 ${node.node.index} 含骨骼、变形目标或动态节点变换，模型遮挡尚不支持。`);
   }
 }
 

@@ -6,23 +6,33 @@ import { readRuntimeModelGeometry, runtimeModelWorldFromLocal } from './runtimeG
 import { ModelContactGeometryClient } from './client';
 import { acquireContactWorkLease } from './workQueue';
 import type { ContactGeometry, ContactMeshInput, ContactVolume } from './types';
+import { MODEL_PROJECTION_TARGET_LIMIT } from './types';
+import type { ModelProjectionGeometry } from './projection';
+import type { TemporaryWorksFootprint } from '../temporaryWorksClipping';
+type EffectGeometry = ContactGeometry | ModelProjectionGeometry;
+type EffectInput = { id: string; tileset: Cesium3DTileset; enabled?: boolean; visible?: boolean } &
+  ({ volume: ContactVolume } | { footprints: readonly TemporaryWorksFootprint[] });
+const isProjection = (geometry: EffectGeometry): geometry is ModelProjectionGeometry => 'kind' in geometry && geometry.kind === 'projection';
+const contribution = (id: string, tileset: Cesium3DTileset, geometry: EffectGeometry, world: number[]): EffectInput =>
+  isProjection(geometry) ? { id, tileset, footprints: geometry.projection.footprints, visible: true, enabled: true }
+    : { id, tileset, volume: { geometry, worldFromLocal: world }, visible: true, enabled: true };
 
 export type ModelContactInstance = { id: string; name: string; model: Model; url: string };
 export type ModelContactTarget = { id: string; name: string; tileset: Cesium3DTileset };
 export type ModelContactContext = { projectId: string; actorId?: string | null };
 export type ModelContactStatus = {
   enabled: boolean; targetId: string; busy: boolean; state: string; message: string; error: boolean;
-  partial: boolean; mode: 'none' | 'solid' | 'surface' | 'mixed'; componentCount: number;
+  partial: boolean; mode: 'none' | 'solid' | 'surface' | 'mixed' | 'projection'; componentCount: number;
   triangles: number; solidEntities: number; surfaceEntities: number;
 };
 type ContactScope = {
-  upsert(input: { id: string; tileset: Cesium3DTileset; volume: ContactVolume; enabled?: boolean; visible?: boolean }): void;
+  upsert(input: EffectInput): void;
   remove(id: string): void; clear(): void; dispose(): void; setEnabled(value: boolean): void;
   getStatus(id: string): { state: string; message: string } | undefined;
 };
 type Saved = { version: 1; url: string; identity: string; enabled: boolean; targetId: string; selectedNodes?: number[]; physicalNodes?: number[] };
 type Identity = { sha256: string; gltf?: unknown };
-type Client = Pick<ModelContactGeometryClient, 'build' | 'dispose'>;
+type Client = Pick<ModelContactGeometryClient<EffectGeometry>, 'build' | 'dispose'>;
 type Dependencies = {
   createScope(id: string): ContactScope;
   read(model: Model, options: { signal: AbortSignal; allowedNodeIndices?: readonly number[]; onProgress(message: string): void }): Promise<ContactMeshInput & { readStats?: { ignoredNonSurfacePrimitives?: number; rootScaleAffectsGeometry?: boolean } }>;
@@ -33,6 +43,8 @@ type Dependencies = {
   resolveComponents?(identity: Identity, instance: ModelContactInstance, context: ModelContactContext, signal: AbortSignal): Promise<{ bindings: readonly EngineeringBinding[]; state: EngineeringComponentState } | undefined>;
 };
 type Options = {
+  /** Contact remains the historical test/API default; the application opts into projection. */
+  effect?: 'contact' | 'projection';
   viewer: Viewer; getContext(): ModelContactContext | null; getInstances(): ModelContactInstance[]; getTargets(): ModelContactTarget[];
   onChanged?(): void; toast?(message: string, error?: boolean): void; storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
   /** CPU tests replace only resource/worker/GPU boundaries. */
@@ -42,13 +54,13 @@ type Entry = {
   instance: ModelContactInstance; context: ModelContactContext; key: string; identity: string; expectedIdentity: string;
   enabled: boolean; targetId: string; selectedNodes?: number[]; physicalNodes?: number[];
   bindings?: readonly EngineeringBinding[]; componentState?: EngineeringComponentState; unsubscribe?: () => void;
-  scope?: ContactScope; client?: Client; geometry?: ContactGeometry; request?: AbortController; generation: number;
+  scope?: ContactScope; client?: Client; geometry?: EffectGeometry; request?: AbortController; generation: number;
   attempted: boolean; pose: string; appliedTargets: Map<string, Cesium3DTileset>; status: ModelContactStatus;
   selectedCount: number; hasSaved: boolean; explicitChoice: boolean;
   identityData?: Identity; metadataResolved: boolean;
-  phase?: 'identity' | 'geometry';
+  phase?: 'identity' | 'geometry'; projectionPose?: string;
   geometryScale?: string; rootScaleAffectsGeometry?: boolean; ignoredPrimitives?: number;
-  appliedGeometry?: ContactGeometry; appliedWorld?: number[]; failedApplyKey?: string; failedApplyMessage?: string;
+  appliedGeometry?: EffectGeometry; appliedWorld?: number[]; failedApplyKey?: string; failedApplyMessage?: string;
 };
 const contextKey = (value: ModelContactContext | null) => value ? JSON.stringify([value.projectId, value.actorId ?? null]) : '';
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -116,9 +128,11 @@ export class ModelContactOcclusionController {
   private readonly stopWatching: () => void;
   constructor(private readonly options: Options) {
     this.dependencies = {
-      createScope: id => getTemporaryWorksClippingManager(options.viewer).createContactScope(id),
+      createScope: id => options.effect === 'projection'
+        ? getTemporaryWorksClippingManager(options.viewer).createModelProjectionScope(id)
+        : getTemporaryWorksClippingManager(options.viewer).createContactScope(id),
       read: readRuntimeModelGeometry, world: runtimeModelWorldFromLocal,
-      client: () => new ModelContactGeometryClient(), acquireWork: acquireContactWorkLease, identify, resolveComponents, ...options.dependencies,
+      client: () => new ModelContactGeometryClient<EffectGeometry>({ effect: options.effect }), acquireWork: acquireContactWorkLease, identify, resolveComponents, ...options.dependencies,
     };
     this.stopWatching = options.viewer.scene.preUpdate.addEventListener(() => this.synchronize());
   }
@@ -245,6 +259,14 @@ export class ModelContactOcclusionController {
     let world: number[], pose: string;
     try {
       world = this.dependencies.world(entry.instance.model); pose = world.join(',');
+      if (this.options.effect === 'projection') {
+        // A world-space projection cannot be reused at a new position. Abort
+        // pending work and withdraw the old location before scheduling a new job.
+        if (entry.projectionPose && entry.projectionPose !== pose) {
+          this.abort(entry); entry.geometry = undefined; entry.attempted = false; entry.failedApplyKey = undefined; this.withdraw(entry);
+        }
+        entry.projectionPose = pose;
+      }
       // An old selection may stay committed while its replacement is computed,
       // but never at a position the model has already left (including cancellation).
       if (!entry.geometry && entry.pose && entry.pose !== pose) this.withdraw(entry);
@@ -270,9 +292,16 @@ export class ModelContactOcclusionController {
       }
       this.report(entry, 'waiting', '等待已加载且有权限的倾斜摄影。'); return;
     }
+    if (this.options.effect === 'projection' && targets.length > MODEL_PROJECTION_TARGET_LIMIT) {
+      this.abort(entry); entry.attempted = false;
+      this.report(entry, 'error', `模型投影关联摄影超过 ${MODEL_PROJECTION_TARGET_LIMIT} 份预算；原有效遮挡保持，请选择单份关联摄影。`, true); return;
+    }
     if (!entry.geometry) {
       if (!entry.request && !entry.attempted) void this.prepare(entry);
       return;
+    }
+    if (isProjection(entry.geometry) && !entry.geometry.projection.footprints.length) {
+      this.withdraw(entry); this.report(entry, 'empty', '选中原三角面的投影面积为零，当前没有摄影裁剪范围。'); return;
     }
     const objectId = (value: object) => { let id = this.objectIds.get(value); if (!id) { id = ++this.nextObjectId; this.objectIds.set(value, id); } return id; };
     const applyKey = JSON.stringify([objectId(entry.geometry), pose, entry.targetId, targets.map(target => [target.id, objectId(target.tileset)])]);
@@ -283,7 +312,7 @@ export class ModelContactOcclusionController {
       entry.scope ??= this.dependencies.createScope(`model-contact:${crypto.randomUUID()}`);
       entry.scope.setEnabled(true);
       for (const target of targets) if (pose !== entry.pose || entry.geometry !== entry.appliedGeometry || entry.appliedTargets.get(target.id) !== target.tileset) {
-        entry.scope.upsert({ id: target.id, tileset: target.tileset, volume: { geometry: entry.geometry, worldFromLocal: world }, visible: true, enabled: true });
+        entry.scope.upsert(contribution(target.id, target.tileset, entry.geometry, world));
         changedTargets.add(target.id);
       }
       for (const [id] of previousTargets) if (!targets.some(target => target.id === id)) { entry.scope.remove(id); changedTargets.add(id); }
@@ -295,8 +324,12 @@ export class ModelContactOcclusionController {
       if (statuses.some(status => !status)) this.report(entry, 'waiting', '模型遮挡等待裁剪服务确认生效。');
       else if (blocked) this.report(entry, blocked.state, blocked.message, ['error', 'unsupported'].includes(blocked.state));
       else {
-        const stats = entry.geometry.stats, mode = stats.surfaceEntities ? stats.solidEntities ? '实体与表面混合' : '表面接触' : '实体体积';
-        this.report(entry, 'active', `${mode}遮挡已生效：${targets.length} 份摄影，${stats.sourceTriangles.toLocaleString()} 个原始三角面。${entry.ignoredPrimitives ? ` ${entry.ignoredPrimitives} 个线/点图元不作为实体。` : ''}`);
+        if (isProjection(entry.geometry)) {
+          this.report(entry, 'active', `模型投影遮挡已生效：${targets.length} 份摄影，${entry.geometry.projection.triangleCount.toLocaleString()} 个原始三角面；沿投影范围裁剪，保留二维孔洞。${entry.ignoredPrimitives ? ` ${entry.ignoredPrimitives} 个线/点图元不产生面投影。` : ''}`);
+        } else {
+          const stats = entry.geometry.stats, mode = stats.surfaceEntities ? stats.solidEntities ? '实体与表面混合' : '表面接触' : '实体体积';
+          this.report(entry, 'active', `${mode}遮挡已生效：${targets.length} 份摄影，${stats.sourceTriangles.toLocaleString()} 个原始三角面。${entry.ignoredPrimitives ? ` ${entry.ignoredPrimitives} 个线/点图元不作为实体。` : ''}`);
+        }
       }
     } catch (error) {
       // The manager rolls back each failed upsert. Undo any earlier successful
@@ -306,7 +339,7 @@ export class ModelContactOcclusionController {
         for (const id of changedTargets) if (!previousTargets.has(id)) entry.scope?.remove(id);
         if (previousGeometry && previousWorld) for (const [id, tileset] of previousTargets) {
           if (changedTargets.has(id) && authorized.some(target => target.id === id && target.tileset === tileset))
-            entry.scope?.upsert({ id, tileset, volume: { geometry: previousGeometry, worldFromLocal: previousWorld }, visible: true, enabled: true });
+            entry.scope?.upsert(contribution(id, tileset, previousGeometry, previousWorld));
         }
       } catch (failure) { rollbackError = failure; }
       entry.appliedTargets = previousTargets; entry.appliedGeometry = previousGeometry; entry.appliedWorld = previousWorld;
@@ -326,7 +359,7 @@ export class ModelContactOcclusionController {
     const current = () => this.current(entry) && entry.generation === epoch && !request.signal.aborted && entry.enabled && !this.suspensions && this.stable3D();
     const progress = (value: string) => { if (current()) this.report(entry, 'preparing', value, false, true); };
     try {
-      progress('正在核对模型资源与三维接触几何…');
+      progress(this.options.effect === 'projection' ? '正在核对模型资源与原三角投影…' : '正在核对模型资源与三维接触几何…');
       if (!entry.identity) {
         const identity = await this.dependencies.identify(entry.instance, request.signal); if (!current()) return;
         entry.identityData = identity;
@@ -357,7 +390,7 @@ export class ModelContactOcclusionController {
         entry.request = undefined; entry.attempted = false; this.check(entry); return;
       }
       entry.phase = 'geometry';
-      progress('等待模型三维计算队列…');
+      progress(this.options.effect === 'projection' ? '等待模型投影计算队列…' : '等待模型三维计算队列…');
       releaseWork = await this.dependencies.acquireWork(request.signal);
       if (!current()) return;
       const input = await this.dependencies.read(entry.instance.model, { signal: request.signal, allowedNodeIndices: entry.selectedNodes, onProgress: progress });
@@ -367,21 +400,25 @@ export class ModelContactOcclusionController {
       entry.ignoredPrimitives = input.readStats?.ignoredNonSurfacePrimitives;
       entry.client ??= this.dependencies.client();
       const geometry = await entry.client.build(input, request.signal, progress); if (!current()) return;
+      if (this.options.effect === 'projection' && this.dependencies.world(entry.instance.model).join(',') !== input.worldFromLocal.join(',')) {
+        entry.attempted = false; entry.geometry = undefined; this.withdraw(entry); return;
+      }
       entry.geometry = geometry; entry.pose = ''; entry.request = undefined; this.check(entry);
     } catch (error) {
       if (current()) {
-        if ((error as Error)?.name === 'AbortError') { entry.attempted = false; this.report(entry, 'waiting', '模型位置已变化，重新准备接触几何。'); }
+        if ((error as Error)?.name === 'AbortError') { entry.attempted = false; this.report(entry, 'waiting', '模型位置已变化，重新准备遮挡几何。'); }
         else this.report(entry, 'error', `模型遮挡未更新：${message(error)}`, true);
       }
     } finally { releaseWork?.(); if (entry.request === request) entry.request = undefined; }
   }
   private report(entry: Entry, state: string, text: string, error = false, busy = false) {
-    const stats = entry.geometry?.stats;
+    const projection = entry.geometry && isProjection(entry.geometry) ? entry.geometry.projection : undefined;
+    const stats = entry.geometry && !isProjection(entry.geometry) ? entry.geometry.stats : undefined;
     const next: ModelContactStatus = { enabled: entry.enabled, targetId: entry.targetId, busy, state, message: text, error,
       partial: !!entry.physicalNodes?.length && !!entry.selectedNodes?.length && entry.selectedNodes.length < entry.physicalNodes.length,
       componentCount: entry.selectedCount,
-      triangles: stats?.sourceTriangles ?? 0, solidEntities: stats?.solidEntities ?? 0, surfaceEntities: stats?.surfaceEntities ?? 0,
-      mode: !stats ? 'none' : stats.surfaceEntities ? stats.solidEntities ? 'mixed' : 'surface' : 'solid' };
+      triangles: projection?.triangleCount ?? stats?.sourceTriangles ?? 0, solidEntities: stats?.solidEntities ?? 0, surfaceEntities: stats?.surfaceEntities ?? 0,
+      mode: projection ? 'projection' : !stats ? 'none' : stats.surfaceEntities ? stats.solidEntities ? 'mixed' : 'surface' : 'solid' };
     if (JSON.stringify(entry.status) !== JSON.stringify(next)) { entry.status = next; this.notify(); }
   }
   private abort(entry: Entry) { entry.generation++; entry.request?.abort(); entry.request = undefined; }

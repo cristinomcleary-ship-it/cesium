@@ -1743,6 +1743,7 @@ try {
 
 try {
   modelContactOcclusion = new ModelContactOcclusionController({
+    effect: 'projection',
     viewer,
     getContext: () => {
       const state = managementWorkspace?.getWorkbenchMachineryState();

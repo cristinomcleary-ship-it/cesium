@@ -1,4 +1,5 @@
 export type ContactPoint = [number, number, number];
+export const MODEL_PROJECTION_TARGET_LIMIT = 32;
 export type ContactBounds = [number, number, number, number, number, number];
 export type ContactPrimitiveInput = {
   positions: Float64Array; indices: Uint32Array; groupId: string; nodeIndex: number;

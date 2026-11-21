@@ -35,6 +35,11 @@ type Gltf = { asset: { version: string }; scene?: number; scenes: { nodes: numbe
 type DecodedPrimitive = { positions: Float64Array; indices: Uint32Array };
 const GRID = 1e-8, SCALE = 1 / GRID, MAX_BYTES = 512 * 1024 * 1024;
 const MAX_TRIANGLES = 3_000_000, MAX_COORDINATE = 100_000, TIME_LIMIT_MS = 120_000;
+// A converted model may put hundreds of thousands of triangles in one node.
+// Bound each initial union, then reduce signed polygon results in a balanced
+// tree. Source triangles, integer grid and polygon winding remain unchanged.
+const TRIANGLES_PER_UNION = 2048, COMPONENT_MERGE_FANOUT = 8;
+const SPATIAL_TRIANGLE_THRESHOLD = TRIANGLES_PER_UNION * COMPONENT_MERGE_FANOUT ** 2;
 const fail = (message: string): never => { throw new Error(`工程精确轮廓：${message}`); };
 function matrix(value: readonly number[], label: string): Matrix4 {
   if (value.length !== 16 || !value.every(Number.isFinite) || value[3] !== 0 || value[7] !== 0 || value[11] !== 0 || value[15] !== 1)
@@ -188,33 +193,65 @@ export class EngineeringFootprintGeometry {
   }
 
   async project(worldFromGltf: readonly number[], componentIds: readonly string[], onProgress?: (message: string) => void): Promise<EngineeringFootprintResult> {
+    const ids = [...new Set(componentIds)]; if (ids.length !== componentIds.length) fail('启用构件重复');
+    for (const id of ids) if (!this.bindings.has(id)) fail(`未知物理构件 ${id}`);
+    const geometry = this;
+    // Decode at the same bounded per-component stage as the original parser;
+    // extracting the common kernel must not eagerly allocate the whole package.
+    const groups = ids.map(id => ({ id, get primitives() { return geometry.bindings.get(id)!.flatMap(n =>
+      geometry.primitives(geometry.gltf.nodes[n].mesh!).map(primitive => ({ ...primitive, transform: Matrix4.toArray(geometry.transforms.get(n)!) }))); } }));
+    return projectEngineeringTriangles(worldFromGltf, groups, { onProgress });
+  }
+}
+
+/** Common source-triangle projection kernel. The GLB and runtime readers only
+ * supply triangles/transforms; central projection, integer union and holes are
+ * deliberately identical to the previous delivered visual effect. */
+export type EngineeringProjectionGroup = { id: string; primitives: { positions: Float64Array; indices: Uint32Array; transform: readonly number[] }[] };
+export async function projectEngineeringTriangles(worldFromGltf: readonly number[], groups: readonly EngineeringProjectionGroup[],
+  options: { onProgress?: (message: string) => void; shouldAbort?: () => boolean } = {}): Promise<EngineeringFootprintResult> {
     const start = performance.now(), world = matrix(worldFromGltf, '实例');
     const origin = Matrix4.getTranslation(world, new Cartesian3());
     if (Cartesian3.magnitude(origin) < 6_000_000 || Cartesian3.magnitude(origin) > 10_000_000) fail('实例必须位于已定位的地球场景');
     const frame = Transforms.eastNorthUpToFixedFrame(origin), inverse = Matrix4.inverseTransformation(frame, new Matrix4());
     const projectedRoot = Matrix4.multiply(inverse, world, new Matrix4()), earth = Matrix4.multiplyByPoint(inverse, Cartesian3.ZERO, new Cartesian3());
-    const ids = [...new Set(componentIds)]; if (ids.length !== componentIds.length) fail('启用构件重复');
-    for (const id of ids) if (!this.bindings.has(id)) fail(`未知物理构件 ${id}`);
+    const ids = groups.map(group => group.id);
+    if (new Set(ids).size !== ids.length) fail('启用构件重复');
     const all: IntPath[][] = [], quantization = { intersection: 0 };
     let triangleCount = 0, maxInputQuantizationErrorMeters = 0, quantizationPasses = ids.length ? 3 : 0;
+    let maximumComponentUnionPasses = 1;
     const quantize = (value: number): number => {
       if (!Number.isFinite(value) || Math.abs(value) > MAX_COORDINATE) fail('投影范围超过 100 km，请检查实例矩阵');
       const integer = Math.round(value * SCALE);
       maxInputQuantizationErrorMeters = Math.max(maxInputQuantizationErrorMeters, Math.abs(integer / SCALE - value)); return integer;
     };
-    const check = () => { if (performance.now() - start > TIME_LIMIT_MS) fail('精确计算超过 120 秒预算，原有效遮挡保留'); };
+    const check = () => { if (options.shouldAbort?.()) throw new DOMException('轮廓计算已取消', 'AbortError'); if (performance.now() - start > TIME_LIMIT_MS) fail('精确计算超过 120 秒预算，原有效遮挡保留'); };
     for (let ci = 0; ci < ids.length; ci++) {
-      const paths: IntPath[] = [];
-      for (const n of this.bindings.get(ids[ci])!) {
-        const m = Matrix4.toArray(Matrix4.multiply(projectedRoot, this.transforms.get(n)!, new Matrix4()));
+      const primitives = groups[ci].primitives;
+      // Preserve the original source order until a group exceeds two merge
+      // levels. Spatial ordering is needed for converted whole-route nodes;
+      // smaller imports need not incur extra sorting or changed union order.
+      const spatialOrder = primitives.reduce((n, p) => n + p.indices.length / 3, 0) > SPATIAL_TRIANGLE_THRESHOLD;
+      let paths: IntPath[] = [];
+      let batches: { paths: IntPath[]; passes: number }[] = [];
+      const flush = async () => {
+        if (!paths.length) return;
+        batches.push({ paths: union(paths, quantization), passes: paths.length > 1 ? 1 : 0 });
+        paths = []; check();
+        options.onProgress?.(`正在分批合并精确轮廓 ${ci + 1}/${ids.length}，已读取 ${triangleCount.toLocaleString()} 个原三角面`);
+        await new Promise(resolve => setTimeout(resolve, 0)); check();
+      };
+      for (const primitive of primitives) {
+        const m = Matrix4.toArray(Matrix4.multiply(projectedRoot, matrix(primitive.transform, '节点'), new Matrix4()));
         // Remove only machine-roundoff residuals in the affine linear portion.
         for (const k of [0, 1, 2, 4, 5, 6, 8, 9, 10]) {
           const v = m[k], nearest = Math.round(v); if (Math.abs(v - nearest) <= Number.EPSILON * 64) m[k] = nearest;
         }
-        for (const primitive of this.primitives(this.gltf.nodes[n].mesh!)) {
+        {
           const { positions, indices } = primitive; triangleCount += indices.length / 3;
           if (triangleCount > MAX_TRIANGLES) fail('原始三角形数量超过 300 万预算');
           const xy = new Float64Array(positions.length / 3 * 2);
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
           for (let j = 0; j < positions.length; j += 3) {
             const x = m[0] * positions[j] + m[4] * positions[j + 1] + m[8] * positions[j + 2] + m[12];
             const y = m[1] * positions[j] + m[5] * positions[j + 1] + m[9] * positions[j + 2] + m[13];
@@ -224,24 +261,82 @@ export class EngineeringFootprintGeometry {
             if (!Number.isFinite(denominator) || denominator <= 1 || -earth.z / denominator <= 0) fail('三角形与投影平面平行或位于地心反向');
             xy[j / 3 * 2] = quantize(x - z * (x - earth.x) / denominator);
             xy[j / 3 * 2 + 1] = quantize(y - z * (y - earth.y) / denominator);
+            if (spatialOrder) {
+              minX = Math.min(minX, xy[j / 3 * 2]); maxX = Math.max(maxX, xy[j / 3 * 2]);
+              minY = Math.min(minY, xy[j / 3 * 2 + 1]); maxY = Math.max(maxY, xy[j / 3 * 2 + 1]);
+            }
+          }
+          // Imported material primitives often interleave distant structures.
+          // Order large inputs by their original projected triangle centroids,
+          // so each exact union has local overlap instead of the whole route.
+          // This changes processing order only, never geometry or precision.
+          let order: Uint32Array | undefined;
+          if (spatialOrder && indices.length / 3 > TRIANGLES_PER_UNION) {
+            const axis = maxX - minX >= maxY - minY ? 0 : 1;
+            const centers = new Float64Array(indices.length / 3);
+            for (let j = 0; j < indices.length; j += 3)
+              centers[j / 3] = (xy[indices[j] * 2 + axis] + xy[indices[j + 1] * 2 + axis] + xy[indices[j + 2] * 2 + axis]) / 3;
+            order = Uint32Array.from({ length: centers.length }, (_, i) => i);
+            order.sort((a, b) => centers[a] - centers[b]); check();
           }
           for (let j = 0; j < indices.length; j += 3) {
-            const path = [indices[j], indices[j + 1], indices[j + 2]].map(i => ({ X: xy[i * 2], Y: xy[i * 2 + 1] }));
+            const offset = order ? order[j / 3] * 3 : j;
+            const path = [indices[offset], indices[offset + 1], indices[offset + 2]].map(i => ({ X: xy[i * 2], Y: xy[i * 2 + 1] }));
             const signed = orientationOfIntegerTriangle(path); if (signed === 0) continue;
             if (signed < 0) path.reverse(); paths.push(path);
+            if (paths.length >= TRIANGLES_PER_UNION) await flush();
           }
         }
       }
-      all.push(union(paths, quantization)); check();
-      if (ci % 128 === 0 || ci + 1 === ids.length) { onProgress?.(`正在计算精确轮廓 ${ci + 1}/${ids.length}`); await new Promise(resolve => setTimeout(resolve, 0)); }
+      if (!batches.length) all.push(union(paths, quantization));
+      else {
+        await flush();
+        // Merge nearby signed batch results first, including results from
+        // different material primitives. Negative hole rings stay attached.
+        if (spatialOrder) {
+          const bounds = batches.map(batch => {
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const path of batch.paths) for (const p of path) {
+              minX = Math.min(minX, p.X); maxX = Math.max(maxX, p.X);
+              minY = Math.min(minY, p.Y); maxY = Math.max(maxY, p.Y);
+            }
+            return { batch, x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+          });
+          const xSpan = Math.max(...bounds.map(b => b.x)) - Math.min(...bounds.map(b => b.x));
+          const ySpan = Math.max(...bounds.map(b => b.y)) - Math.min(...bounds.map(b => b.y));
+          bounds.sort((a, b) => xSpan >= ySpan ? a.x - b.x : a.y - b.y);
+          batches = bounds.map(b => b.batch);
+        }
+        while (batches.length > 1) {
+          const next: typeof batches = [];
+          for (let i = 0; i < batches.length; i += COMPONENT_MERGE_FANOUT) {
+            const group = batches.slice(i, i + COMPONENT_MERGE_FANOUT), signedPaths = group.flatMap(batch => batch.paths);
+            options.onProgress?.(`正在分层合并精确轮廓 ${ci + 1}/${ids.length}，批次 ${Math.floor(i / COMPONENT_MERGE_FANOUT) + 1}/${Math.ceil(batches.length / COMPONENT_MERGE_FANOUT)}`);
+            // Negative hole rings from earlier unions must retain their signs.
+            // Normalizing them like input triangles would silently fill voids.
+            next.push({ paths: union(signedPaths, quantization),
+              passes: Math.max(...group.map(batch => batch.passes)) + (signedPaths.length > 1 ? 1 : 0) });
+            check(); await new Promise(resolve => setTimeout(resolve, 0)); check();
+          }
+          batches = next;
+        }
+        all.push(batches[0].paths);
+        maximumComponentUnionPasses = Math.max(maximumComponentUnionPasses, batches[0].passes);
+      }
+      check();
+      if (ci % 128 === 0 || ci + 1 === ids.length) { options.onProgress?.(`正在计算精确轮廓 ${ci + 1}/${ids.length}`); await new Promise(resolve => setTimeout(resolve, 0)); }
     }
+    // The previous three-stage allowance includes input snapping, one component
+    // union and final PolyTree. Add only extra serial rounds along the longest
+    // component branch, never the unrelated number of parallel batch operations.
+    quantizationPasses += maximumComponentUnionPasses - 1;
     let level = all;
     while (level.length > 32) {
       const next: IntPath[][] = [];
       for (let i = 0; i < level.length; i += 32) { next.push(union(level.slice(i, i + 32).flat(), quantization)); check(); await new Promise(resolve => setTimeout(resolve, 0)); }
       level = next; quantizationPasses++;
     }
-    onProgress?.('正在保留孔洞并核验最终轮廓');
+    options.onProgress?.('正在保留孔洞并核验最终轮廓');
     const polygons = polygonTree(level.flat(), quantization); check();
     let rawBoundaryPoints = 0, rawHoles = 0, rawAreaSquareMeters = 0, compiledAreaSquareMeters = 0;
     const rings: Point[][] = [];
@@ -266,5 +361,4 @@ export class EngineeringFootprintGeometry {
       quantizationGridMeters: GRID, maxQuantizationErrorMeters: Math.max(maxInputQuantizationErrorMeters, quantization.intersection),
       maxInputQuantizationErrorMeters, maxIntersectionQuantizationErrorMeters: quantization.intersection,
       quantizationPasses, quantizationDisplacementBudgetMeters: quantizationPasses * Math.SQRT2 * GRID / 2 };
-  }
 }

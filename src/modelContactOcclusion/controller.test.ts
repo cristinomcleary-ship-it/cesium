@@ -30,22 +30,22 @@ function state(instanceId = 'A') {
   return new EngineeringComponentState(catalog, { projectId: 'P', actorId: 'U', instanceId });
 }
 const bindings = [{ componentId: 'one', nodeIndices: [1] }, { componentId: 'two', nodeIndices: [2] }, { componentId: 'reference', nodeIndices: [3] }];
-function fixture(storage = new Map<string, string>(), initialIdentity = identity, noTargets = false) {
+function fixture(storage = new Map<string, string>(), initialIdentity = identity, noTargets = false, effect: 'contact' | 'projection' = 'contact') {
   const scopes: any[] = [], callbacks = new Set<() => void>(), reads: any[] = [], jobs: any[] = [];
   const model = () => ({ ready: true, show: true, destroyed: false, pose: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10, 20, 30, 1], isDestroyed() { return this.destroyed; } });
   const source = ['A', 'B'].map(id => ({ id, name: `${id}.skp`, model: model(), url: `/__library/files/${id}/data/model.glb` }));
   const targets = ['photo-one', 'photo-two'].map(id => ({ id, name: id, tileset: { isDestroyed: () => false } }));
   const scene = { mode: SceneMode.SCENE3D, morphTime: 1, preUpdate: { addEventListener(fn: () => void) { callbacks.add(fn); return () => callbacks.delete(fn); } } };
   const env: any = { context: { projectId: 'P', actorId: 'U' }, instances: [...source], targets: noTargets ? [] : [...targets], identity: initialIdentity, build: async () => geometry(), identify: undefined, resolved: undefined, changed: 0, scene };
-  const controller = new ModelContactOcclusionController({ viewer: { scene },
+  const controller = new ModelContactOcclusionController({ effect, viewer: { scene },
     getContext: () => env.context, getInstances: () => env.instances, getTargets: () => env.targets, onChanged: () => env.changed++,
     storage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) },
     dependencies: {
       identify: async (...args: any[]) => env.identify ? env.identify(...args) : { sha256: env.identity },
       resolveComponents: async (...args: any[]) => env.resolve ? env.resolve(...args) : env.resolved,
-      read: async (_model: unknown, options: any) => { reads.push(options); return { primitives: [], worldFromLocal: model().pose }; },
+      read: async (source: any, options: any) => { reads.push(options); return { primitives: [], worldFromLocal: [...source.pose] }; },
       world: (value: any) => [...value.pose],
-      client: () => ({ build: async (input: unknown, signal: AbortSignal) => { jobs.push({ input, signal }); return env.build(); }, dispose() {} }),
+      client: () => ({ build: async (input: unknown, signal: AbortSignal) => { jobs.push({ input, signal }); return env.build(input); }, dispose() {} }),
       createScope: () => {
         const scope = { values: new Map(), enabled: true, calls: 0, disposed: false, fail: false,
           upsert(value: any) { this.calls++; if (this.fail || env.failedTarget === value.id) throw new Error('injected GPU failure'); this.values.set(value.id, value); },
@@ -54,6 +54,7 @@ function fixture(storage = new Map<string, string>(), initialIdentity = identity
         scopes.push(scope); return scope;
       },
     } });
+  if (effect === 'projection') env.build = async (input: any) => projected(input.worldFromLocal);
   controller.synchronize();
   return { env, source, targets, storage, scopes, reads, jobs, controller, callbacks, cleanup: () => controller.dispose() };
 }
@@ -286,4 +287,69 @@ test('morphing cancels queued and active geometry work and late results cannot a
     f.env.build=async()=>geometry();Object.assign(f.env.scene,{mode:SceneMode.SCENE3D,morphTime:1});f.controller.synchronize();await settle();
     assert.equal(f.reads.length,3);assert.equal(f.scopes.length,2);assert.equal(f.controller.getState('A').state,'active');assert.equal(f.controller.getState('B').state,'active');
   }finally{pending.resolve(geometry());await settle();f.cleanup();}
+});
+
+function projected(world: number[]) { return { kind: 'projection', worldFromLocal: [...world], projection: {
+  triangleCount: 12, footprints: [{ outer: [{ longitude: 121, latitude: 31 }, { longitude: 121.001, latitude: 31 }, { longitude: 121, latitude: 31.001 }] }],
+} }; }
+
+test('projection strategy retains model owners, all photography targets and hidden/component controls without submitting volumes', async () => {
+  const f=fixture(undefined,undefined,false,'projection');try{const a=state();a.apply({kind:'all'},{occlusionEnabled:true});f.controller.bindComponentSelection('A',bindings,a);
+    f.controller.toggle('A');f.controller.toggle('B');await settle();assert.equal(f.scopes.length,2);assert(f.scopes.every(s=>s.values.size===2));
+    assert.equal(f.controller.getState('A').mode,'projection');assert.match(f.controller.getState('A').message,/投影遮挡/);
+    assert(f.scopes.every(s=>[...s.values.values()].every((v:any)=>v.footprints.length===1&&!('volume' in v))));
+    const reads=f.reads.length;f.source[0].model.show=false;a.apply({kind:'all'},{visible:false});f.controller.synchronize();await settle();assert.equal(f.reads.length,reads);
+    a.applyIds(['one'],{occlusionEnabled:false});await settle();assert.deepEqual(f.reads.at(-1).allowedNodeIndices,[2]);assert.equal(f.controller.getState('A').partial,true);
+    f.controller.setEnabled('A',false);assert.equal(f.scopes[0].disposed,true);assert.equal(f.scopes[1].values.size,2);
+  }finally{f.cleanup();}
+});
+
+test('projection movement withdraws the old position immediately, aborts stale work and recomputes exactly once at the final pose', async()=>{
+  const f=fixture(undefined,undefined,false,'projection');try{f.controller.toggle('A');await settle();const first=f.scopes[0],pending=deferred<any>();
+    f.env.build=()=>pending.promise;f.source[0].model.pose[12]+=5;f.controller.synchronize();assert.equal(first.disposed,true);assert.equal(first.values.size,0);await settle();
+    const stale=f.jobs.at(-1);f.source[0].model.pose[12]+=7;f.controller.synchronize();assert.equal(stale.signal.aborted,true);
+    f.env.build=async(input:any)=>projected(input.worldFromLocal);pending.resolve(projected(stale.input.worldFromLocal));await settle();f.controller.synchronize();await settle();
+    assert.equal(f.controller.getState('A').state,'active');assert.equal(f.jobs.length,3);assert.equal(f.scopes.at(-1).values.size,2);
+    for(let i=0;i<20;i++)f.controller.synchronize();assert.equal(f.jobs.length,3);
+  }finally{f.cleanup();}
+});
+
+test('projection completion compares actual current placement even before the next scene callback',async()=>{
+  const f=fixture(undefined,undefined,false,'projection');try{const pending=deferred<any>();f.env.build=()=>pending.promise;f.controller.toggle('A');await settle();
+    const old=f.jobs[0].input.worldFromLocal;f.source[0].model.pose[12]+=1;pending.resolve(projected(old));await settle();assert.equal(f.scopes.length,0);
+    f.env.build=async(input:any)=>projected(input.worldFromLocal);f.controller.synchronize();await settle();assert.equal(f.controller.getState('A').state,'active');assert.equal(f.jobs.length,2);
+  }finally{f.cleanup();}
+});
+
+test('same-pose projection selection failures retain the previous authorized footprint, but cancellation followed by movement revokes it',async()=>{
+  const f=fixture(undefined,undefined,false,'projection');try{const a=state();a.apply({kind:'all'},{occlusionEnabled:true});f.controller.bindComponentSelection('A',bindings,a);f.controller.toggle('A');await settle();
+    const scope=f.scopes[0],before=scope.values.get('photo-one');f.env.build=async()=>{throw Error('projection budget');};a.applyIds(['one'],{occlusionEnabled:false});await settle();
+    assert.equal(scope.values.get('photo-one'),before);assert.equal(f.controller.getState('A').state,'error');
+    const pending=deferred<any>();f.env.build=()=>pending.promise;f.controller.retry('A');await settle();f.controller.cancel('A');assert.equal(scope.values.get('photo-one'),before);
+    f.source[0].model.pose[12]+=5;f.controller.synchronize();assert.equal(scope.disposed,true);assert.equal(scope.values.size,0);
+    f.controller.setEnabled('A',false);pending.resolve(projected(f.source[0].model.pose));await settle();assert(f.scopes.every(s=>s.values.size===0));
+  }finally{f.cleanup();}
+});
+
+test('projection multi-target update rolls back successful earlier targets and keeps retries explicit',async()=>{
+  const f=fixture(undefined,undefined,false,'projection');try{f.controller.select('A','photo-one',true);await settle();const scope=f.scopes[0],before=scope.values.get('photo-one');
+    f.env.failedTarget='photo-two';f.controller.setTarget('A','all');assert.equal(f.controller.getState('A').state,'error');assert.equal(scope.values.get('photo-one'),before);assert.equal(scope.values.size,1);
+    const calls=scope.calls;for(let i=0;i<20;i++)f.controller.synchronize();assert.equal(scope.calls,calls);
+    f.env.failedTarget=undefined;f.controller.retry('A');assert.equal(scope.values.size,2);assert.equal(f.controller.getState('A').state,'active');
+  }finally{f.cleanup();}
+});
+
+test('projection saved preferences and 3D roundtrip retain selection and completed geometry without another Worker',async()=>{
+  const storage=new Map<string,string>(),f=fixture(storage,undefined,false,'projection');f.controller.toggle('A');await settle();f.cleanup();
+  const r=fixture(storage,undefined,false,'projection');try{await settle();assert.equal(r.controller.getState('A').enabled,true);assert.equal(r.controller.getState('A').mode,'projection');
+    const count=r.jobs.length,footprints=r.scopes[0].values.get('photo-one').footprints;r.env.scene.mode=SceneMode.SCENE2D;r.controller.synchronize();assert.equal(r.scopes[0].disposed,true);
+    r.env.scene.mode=SceneMode.SCENE3D;r.controller.synchronize();await settle();assert.equal(r.jobs.length,count);assert.equal(r.scopes.at(-1).values.get('photo-one').footprints,footprints);
+  }finally{r.cleanup();}
+});
+
+test('projection target capacity is checked before reading geometry or applying partial target updates',async()=>{
+  const f=fixture(undefined,undefined,false,'projection');try{f.env.targets=Array.from({length:33},(_,i)=>({id:'target-'+i,name:'target-'+i,tileset:{isDestroyed:()=>false}}));
+    f.controller.toggle('A');await settle();assert.match(f.controller.getState('A').message,/32 份预算/);assert.equal(f.reads.length,0);assert.equal(f.jobs.length,0);assert.equal(f.scopes.length,0);
+    f.controller.setTarget('A','target-0');await settle();assert.equal(f.controller.getState('A').state,'active');assert.equal(f.scopes[0].values.size,1);
+  }finally{f.cleanup();}
 });
