@@ -10,6 +10,7 @@ export type EngineeringPanelActions = {
   setState(id: string | null, group: boolean, key: 'visible' | 'occlusionEnabled', value: boolean): void;
   search(value: string): void; locate(): void; pick(enabled: boolean): void;
   detection(enabled: boolean, offset: number): void; alignDetection(): void;
+  photography(targetId: string, enabled: boolean): void; retryPhotography(): void; cancelPhotography(): void;
   exportState(): void; importState(file: File): void;
 };
 
@@ -31,6 +32,11 @@ export class EngineeringComponentPanel {
     this.root.innerHTML = `<header><strong>工程构件</strong><button type="button" data-ec-action="close" aria-label="关闭工程构件">×</button></header>
       <div class="ec-connect"><label>已定位模型<select data-ec="instance" aria-label="选择已定位工程模型"></select></label><button type="button" data-ec-action="connect">接入构件</button><button type="button" data-ec-action="disconnect" disabled>解除接入</button></div>
       <p class="ec-status" data-ec="status" role="status">选择已加载的重构模型，核验后接入构件。</p>
+      <div class="ec-photography"><label>关联倾斜摄影<select data-ec="photography-target" aria-label="关联倾斜摄影" disabled><option value="">请选择要遮挡的倾斜摄影</option></select></label>
+      <label><input type="checkbox" data-ec="photography-enabled" checked disabled> 启用工程模型摄影遮挡</label>
+      <small>勾选构件的“遮挡”后，裁掉其真实轮廓内的关联摄影；隐藏构件仍保留遮挡。</small>
+      <p data-ec="photography-status" role="status">请先接入工程构件，再选择关联摄影。</p>
+      <div class="ec-actions"><button type="button" data-ec-action="photography-retry" disabled>重新计算遮挡</button><button type="button" data-ec-action="photography-cancel" disabled>取消计算</button></div></div>
       <div class="ec-controls"><label>查看范围<select data-ec="scope" disabled><option value="all">全线全部构件</option><option value="A001">A001# 墩 · 样板</option><option value="TN021">TN021 隧道 · 样板</option></select></label>
       <input type="search" data-ec="search" placeholder="搜索编号、名称或构件类型" aria-label="搜索工程构件" disabled>
       <div class="ec-actions"><label><input type="checkbox" data-ec="pick" disabled> 三维选择</label><button type="button" data-ec-action="locate" disabled>定位所选</button></div>
@@ -63,7 +69,8 @@ export class EngineeringComponentPanel {
   setBusy(busy: boolean) { this.root.querySelector<HTMLButtonElement>('[data-ec-action="connect"]')!.disabled = busy || this.bound; }
   setBound(bound: boolean, units: readonly { id: string; name?: string }[] = []) {
     this.bound = bound;
-    this.root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('.ec-controls input,.ec-controls select,.ec-controls button,.ec-detection input,.ec-detection button,footer input,footer button').forEach(el => { el.disabled = !bound; });
+    this.root.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('.ec-controls input,.ec-controls select,.ec-controls button,.ec-detection input,.ec-detection button,.ec-photography input,.ec-photography select,.ec-photography button,footer input,footer button').forEach(el => { el.disabled = !bound; });
+    this.root.querySelector<HTMLButtonElement>('[data-ec-action="photography-cancel"]')!.disabled = true;
     this.root.querySelector<HTMLButtonElement>('[data-ec-action="disconnect"]')!.disabled = !bound;
     this.root.querySelector<HTMLButtonElement>('[data-ec-action="connect"]')!.disabled = bound;
     this.root.querySelector<HTMLSelectElement>('[data-ec="instance"]')!.disabled = bound;
@@ -77,6 +84,19 @@ export class EngineeringComponentPanel {
   setSelection(description: string) { this.root.querySelector('[data-ec="selection"]')!.textContent = description; }
   setPick(active: boolean) { this.input('pick').checked = active; }
   setDetection(active: boolean) { this.input('detection').checked = active; }
+  setPhotographyTargets(items: readonly { id: string; name: string }[], selected: string, enabled: boolean) {
+    const select = this.root.querySelector<HTMLSelectElement>('[data-ec="photography-target"]')!;
+    const entries = [{ id: '', name: '请选择要遮挡的倾斜摄影' }, ...items];
+    if (selected && !items.some(item => item.id === selected)) entries.push({ id: selected, name: '关联摄影未加载或无访问权限' });
+    if (JSON.stringify([...select.options].map(o => [o.value, o.text])) !== JSON.stringify(entries.map(i => [i.id, i.name]))) select.replaceChildren(...entries.map(item => new Option(item.name, item.id)));
+    select.value = selected; this.input('photography-enabled').checked = enabled;
+  }
+  setPhotographyStatus(message: string, error = false, busy = false) {
+    const el = this.root.querySelector<HTMLElement>('[data-ec="photography-status"]')!;
+    el.textContent = message; el.classList.toggle('error', error);
+    this.root.querySelector<HTMLButtonElement>('[data-ec-action="photography-cancel"]')!.disabled = !busy;
+    this.root.querySelector<HTMLButtonElement>('[data-ec-action="photography-retry"]')!.disabled = !this.bound || busy;
+  }
   setRows(rows: EngineeringTreeRow[], summary: { count: number; visible: boolean | 'mixed'; occlusionEnabled: boolean | 'mixed' }, label: string) {
     this.rows = rows;
     this.root.querySelector('[data-ec="scope-label"]')!.textContent = `${label} · ${summary.count.toLocaleString()} 件`;
@@ -120,6 +140,8 @@ export class EngineeringComponentPanel {
     else if (action === 'locate') this.actions.locate();
     else if (action === 'align') this.actions.alignDetection();
     else if (action === 'export') this.actions.exportState();
+    else if (action === 'photography-retry') this.actions.retryPhotography();
+    else if (action === 'photography-cancel') this.actions.cancelPhotography();
   };
   private change = (event: Event) => {
     const input = event.target as HTMLInputElement, row = input.closest<HTMLElement>('[data-component-id]');
@@ -127,6 +149,7 @@ export class EngineeringComponentPanel {
     else if (input.dataset.ec === 'all-visible' || input.dataset.ec === 'all-occlusion') this.actions.setState(null, true, input.dataset.ec === 'all-visible' ? 'visible' : 'occlusionEnabled', input.checked);
     else if (input.dataset.ec === 'scope') this.actions.scope(input.value);
     else if (input.dataset.ec === 'pick') this.actions.pick(input.checked);
+    else if (input.dataset.ec === 'photography-target' || input.dataset.ec === 'photography-enabled') this.actions.photography(this.root.querySelector<HTMLSelectElement>('[data-ec="photography-target"]')!.value, this.input('photography-enabled').checked);
     else if (input.dataset.ec === 'detection' || input.dataset.ec === 'offset') this.actions.detection(this.input('detection').checked, Number(this.input('offset').value));
     else if (input.dataset.ec === 'import' && input.files?.[0]) { this.actions.importState(input.files[0]); input.value = ''; }
   };

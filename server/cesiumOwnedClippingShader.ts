@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import type { Plugin as EsbuildPlugin } from 'esbuild';
 import type { Plugin } from 'vite';
-import { OWNED_FRAGMENT_CLIPPING } from '../src/ownedClippingPolygons.ts';
+import { OWNED_FRAGMENT_CLIPPING, PRECISE_FRAGMENT_CLIPPING } from '../src/ownedClippingPolygons.ts';
 
 // Cesium 1.144.0 / @cesium/engine 26.2.0. This adapter intentionally fails on
 // dependency changes: revalidate GPU coverage/performance before updating it.
@@ -47,7 +47,9 @@ export function transformCesiumClippingPipeline(source: string): string {
     if (source.split(needle).length !== 2) throw new Error('Cesium clipping adapter signature is not unique');
   }
   return source
-    .replace(collection, collection + '\n  const platformOwnedClipping = Object.hasOwn(clippingPolygons, ' + JSON.stringify(OWNED_FRAGMENT_CLIPPING) + ') && clippingPolygons[' + JSON.stringify(OWNED_FRAGMENT_CLIPPING) + '] === true;')
+    .replace(collection, collection + '\n  const platformOwnedClipping = Object.hasOwn(clippingPolygons, ' + JSON.stringify(OWNED_FRAGMENT_CLIPPING) + ') && clippingPolygons[' + JSON.stringify(OWNED_FRAGMENT_CLIPPING) + '] === true;' +
+      '\n  if (platformOwnedClipping && Object.hasOwn(clippingPolygons, ' + JSON.stringify(PRECISE_FRAGMENT_CLIPPING) + ')) {' +
+      '\n    clippingPolygons[' + JSON.stringify(PRECISE_FRAGMENT_CLIPPING) + '].process(renderResources, model, frameState, ShaderDestination);\n    return;\n  }')
     .replace(uniform, '"model_clippingExtents",\n    platformOwnedClipping ? ShaderDestination.BOTH : ShaderDestination.VERTEX,')
     .replace(fragment, 'shaderBuilder.addFragmentLines(platformOwnedClipping ? ' + JSON.stringify(OWNED_CLIPPING_FRAGMENT_SHADER) + ' : ModelClippingPolygonsStageFS);');
 }

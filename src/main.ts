@@ -1747,6 +1747,14 @@ try {
       const url = record?.files.data?.url ?? record?.files.source?.url;
       return url && !model.isDestroyed() ? [{ id: item.id, name: item.name, model, url, visible: isImportDisplayed(item) }] : [];
     }),
+    getPhotographyTargets: () => {
+      if (!managementWorkspace?.getWorkbenchLayerAccess().files) return [];
+      return imports.flatMap(item => {
+        if (item.kind !== '3D Tiles' || !isImportAllowed(item)) return [];
+        const tileset = item.resource as Cesium3DTileset;
+        return !tileset.isDestroyed() ? [{ id: item.id, name: item.name, tileset }] : [];
+      });
+    },
     canPick: () => !modelPlacementPending && !modelLoadBusy && !videoModelOverlay?.active && !photogrammetryEditor?.isOpen
       && !document.body.classList.contains('workbench-machinery-open') && !markupTools?.hasActiveInteraction && !foundationPitMonitoring.hasActiveInteraction,
     beginInteractionSession: () => {

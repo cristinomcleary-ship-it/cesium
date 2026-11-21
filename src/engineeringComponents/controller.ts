@@ -4,6 +4,7 @@ import { EngineeringComponentState, type EngineeringFlags, type EngineeringSumma
 import { EngineeringRenderAdapter } from './renderAdapter';
 import { EngineeringOcclusionRenderer } from './occlusion';
 import { EngineeringComponentPanel, type EngineeringTreeRow } from './panel';
+import { EngineeringPhotographyController, type EngineeringNamedPhotographyTarget } from './photographyController';
 
 export type EngineeringInstance = { id: string; name: string; model: Model; url: string; visible: boolean };
 export type EngineeringContext = { projectId: string; actorId?: string | null };
@@ -11,6 +12,7 @@ type AssetFile = { url: string; sha256: string; bytes: number };
 type Manifest = { available: boolean; message?: string; fingerprint: string; catalog: AssetFile; fullModel: AssetFile; index: AssetFile; units: { id: string; count: number; sha256: string; modelUrl: string; structureUrl: string }[] };
 type Options = {
   viewer: Viewer; getInstances(): EngineeringInstance[]; getContext(): EngineeringContext | null;
+  getPhotographyTargets?(): EngineeringNamedPhotographyTarget[];
   canPick(): boolean; beginInteractionSession(): () => void; toast(message: string, error?: boolean): void;
 };
 const textError = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -55,6 +57,7 @@ export class EngineeringComponentsController {
   private state?: EngineeringComponentState;
   private adapter?: EngineeringRenderAdapter;
   private renderer?: EngineeringOcclusionRenderer;
+  private photography?: EngineeringPhotographyController;
   private instance?: EngineeringInstance;
   private ids = new Set<string>();
   private reviewScope: EngineeringScope = { kind: 'all' };
@@ -83,6 +86,8 @@ export class EngineeringComponentsController {
       setState: (id, group, key, value) => this.setState(id, group, { [key]: value }),
       search: value => { this.search = value.trim().toLocaleLowerCase(); this.refresh(); }, locate: () => this.locate(), pick: enabled => this.setPicking(enabled),
       detection: (enabled, offset) => this.setDetection(enabled, offset), alignDetection: () => this.alignDetection(),
+      photography: (targetId, enabled) => this.photography?.select(targetId, enabled),
+      retryPhotography: () => this.photography?.retry(), cancelPhotography: () => this.photography?.cancel(),
       exportState: () => this.exportState(), importState: file => { void this.importState(file); },
     });
     this.stopWatching = options.viewer.scene.preUpdate.addEventListener(() => {
@@ -92,6 +97,7 @@ export class EngineeringComponentsController {
       const permitted = this.currentContext !== null && this.currentContext === contextKey(options.getContext());
       this.adapter?.setExternalEnabled(permitted && this.instance.model.show && !this.suspensions);
       if (!permitted) { this.synchronize(); return; }
+      this.photography?.check();
       const error = this.renderer?.getStats().error;
       if (error && (this.detection || error !== this.lastRenderError)) { this.lastRenderError = error; this.setDetection(false, this.detectionOffset); this.panel.setStatus(`遮挡检测失败：${error}`, true); }
     });
@@ -100,6 +106,7 @@ export class EngineeringComponentsController {
   get isPicking() { return !!this.handler; }
   get snapshot() { return this.state?.serialize(); }
   get renderStats() { return this.renderer?.getStats(); }
+  get photographyStats() { return this.photography?.status; }
 
   open() { this.synchronize(); this.panel.open(); }
   close() { this.cancelLoading(); this.setPicking(false); this.setDetection(false, this.detectionOffset); this.panel.close(); }
@@ -163,9 +170,16 @@ export class EngineeringComponentsController {
       this.expanded = new Set(catalog.rootGroupIds); this.search = ''; this.lastRenderError = undefined;
       const units = [...catalog.unitMembers.keys()].filter(key => catalog.getMembers({ kind: 'unit', id: key }).some(value => this.ids.has(value))).map(key => ({ id: key, name: key === 'A001' ? 'A001# 墩 · 样板' : key === 'TN021' ? 'TN021 隧道 · 样板' : key }));
       this.panel.setBound(true, units); this.panel.setScope(unit?.id ?? 'all');
+      this.photography = new EngineeringPhotographyController({
+        viewer: this.options.viewer, model: instance.model, bytes: glbBytes,
+        bindings: mappings.bindings.filter(binding => catalog.itemsById.get(binding.componentId)?.kind !== 'reference'), state,
+        getTargets: () => this.options.getPhotographyTargets?.() ?? [], canMutate: () => this.canMutate(),
+        onTargets: (items, selected, enabled) => this.panel.setPhotographyTargets(items, selected, enabled),
+        onStatus: (message, error, busy) => this.panel.setPhotographyStatus(message, error, busy),
+      });
       this.applyRenderState([...this.ids]);
       if (state.selectedId && this.ids.has(state.selectedId)) this.select(state.selectedId, false);
-      this.unsubscribe = state.subscribe(change => { this.applyRenderState(change.componentIds); if (change.selectionChanged) this.adapter?.setSelection(state.selectedId ? [state.selectedId] : []); this.save(); this.refresh(); });
+      this.unsubscribe = state.subscribe(change => { this.applyRenderState(change.componentIds); this.photography?.updateFlags(); if (change.selectionChanged) this.adapter?.setSelection(state.selectedId ? [state.selectedId] : []); this.save(); this.refresh(); });
       try { localStorage.setItem(this.bindingKey(), id); } catch { restoreWarning += '；浏览器未允许保存接入状态'; }
       this.refresh(); this.panel.setStatus(`已核验接入 ${mappings.bindings.length.toLocaleString()} 个对象，源模型结构保持原样${restoreWarning}`);
     } catch (error) {
@@ -288,17 +302,37 @@ export class EngineeringComponentsController {
   }
   suspendExternalSceneEffects(): () => void {
     this.suspensions++; this.cancelLoading(); this.setPicking(false);
-    const adapter = this.adapter, renderer = this.renderer;
-    const restoreAdapter = adapter?.suspend(), restoreDepth = renderer?.suspend();
+    const adapter = this.adapter, renderer = this.renderer, photography = this.photography;
+    const releases: (() => void)[] = [];
+    const restore = () => {
+      const errors: unknown[] = [];
+      for (const release of releases.splice(0).reverse()) { try { release(); } catch (error) { errors.push(error); } }
+      this.suspensions = Math.max(0, this.suspensions - 1);
+      if (this.adapter === adapter) {
+        try { this.adapter?.setExternalEnabled(!this.suspensions); } catch (error) { errors.push(error); }
+        try { photography?.setSuspended(!!this.suspensions); } catch (error) { errors.push(error); }
+      }
+      if (errors.length) throw new AggregateError(errors, '工程构件场景恢复失败。');
+    };
+    try {
+      photography?.setSuspended(true);
+      if (adapter) releases.push(adapter.suspend());
+      if (renderer) releases.push(renderer.suspend());
+    } catch (error) {
+      try { restore(); } catch (restoreError) { throw new AggregateError([error, restoreError], '工程构件场景暂停及恢复失败。'); }
+      throw error;
+    }
     let restored = false;
-    return () => { if (restored) return; restored = true; this.suspensions = Math.max(0, this.suspensions - 1); restoreDepth?.(); restoreAdapter?.(); if (this.adapter === adapter) this.adapter?.setExternalEnabled(!this.suspensions); };
+    return () => { if (restored) return; restored = true; restore(); };
   }
   detachInstance(id: string) { if (this.instance?.id === id) this.detach(false); }
   private detach(forget: boolean) {
     this.cancelLoading(); this.setPicking(false); this.unsubscribe?.(); this.unsubscribe = undefined;
+    this.photography?.dispose(); this.photography = undefined;
     this.renderer?.dispose(); this.renderer = undefined; this.adapter?.dispose(); this.adapter = undefined;
     this.instance = undefined; this.catalog = undefined; this.state = undefined; this.ids.clear(); this.detectionAnchor = undefined; this.detection = false; this.selectedScope = undefined;
     this.panel.setBound(false); this.panel.setDetection(false); this.panel.setStatus('选择已加载的重构模型，核验后接入构件。');
+    this.panel.setPhotographyTargets([], '', true); this.panel.setPhotographyStatus('接入工程模型后，选择关联倾斜摄影。');
     if (forget && this.currentContext) { try { localStorage.removeItem(this.bindingKey()); } catch { /* Current binding is still released. */ } this.automaticAttempt = this.currentContext; }
   }
   private exportState() {

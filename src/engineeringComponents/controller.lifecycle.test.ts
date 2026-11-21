@@ -12,9 +12,9 @@ const root = resolve(import.meta.dirname, '../..');
 const output = join(root, 'output/engineering-catalog'); mkdirSync(output, { recursive: true });
 const compiled = join(mkdtempSync(join(output, 'controller-test-')), 'controller.mjs');
 const boundary = `
-export const adapters=[],renderers=[],panels=[];
+export const adapters=[],renderers=[],panels=[],photographies=[];
 export let failApply=false;
-export function reset(){adapters.length=renderers.length=panels.length=0;failApply=false;}
+export function reset(){adapters.length=renderers.length=panels.length=photographies.length=0;failApply=false;}
 export function failNextApply(){failApply=true;}
 export class EngineeringComponentPanel{
  constructor(actions){this.actions=actions;this.status='';this.rows=[];this.bound=false;panels.push(this);}
@@ -24,7 +24,10 @@ export class EngineeringComponentPanel{
  setScope(value){this.scope=value;}setSelection(value){this.selection=value;}setPick(value){this.pick=value;}
  setDetection(value){this.detection=value;}setSaved(value){this.saved=value;}reveal(id){this.revealed=id;}
  setRows(rows,summary,label){this.rows=rows;this.summary=summary;this.label=label;}
+ setPhotographyTargets(items,selected,enabled){this.photographyTargets=items;this.photographyTarget=selected;this.photographyEnabled=enabled;}
+ setPhotographyStatus(message,error,busy){this.photographyStatus=message;this.photographyError=error;this.photographyBusy=busy;}
 }
+export class EngineeringPhotographyController{constructor(options){this.options=options;this.suspended=false;photographies.push(this);}check(){}updateFlags(){}select(){}retry(){}cancel(){}setSuspended(value){this.suspended=value;}dispose(){this.disposed=true;}}
 export class EngineeringRenderAdapter{
  constructor(viewer,model,bindings){this.model=model;this.states=new Map();this.suspensions=0;this.original=new Map(model.shows);this.active=true;
  for(const binding of bindings)this.states.set(binding.componentId,{visible:true,occlusion:true});adapters.push(this);}
@@ -49,7 +52,7 @@ export class ScreenSpaceEventHandler{constructor(){this.events=new Map();}setInp
 const bundle = await build({ stdin: { contents: `export {EngineeringComponentsController} from './src/engineeringComponents/controller.ts';export * from 'engineering-test-boundary';`, resolveDir: root },
   bundle: true, write: false, platform: 'node', format: 'esm', target: 'node24', plugins: [{ name: 'engineering-lifecycle-boundaries', setup(builder) {
     builder.onResolve({ filter: /^engineering-test-math$/ }, () => ({ path: 'cesium', external: true }));
-    builder.onResolve({ filter: /^(cesium|engineering-test-boundary)$|^\.\/(panel|renderAdapter|occlusion)$/ }, () => ({ path: 'boundary', namespace: 'boundary' }));
+    builder.onResolve({ filter: /^(cesium|engineering-test-boundary)$|^\.\/(panel|renderAdapter|occlusion|photographyController)$/ }, () => ({ path: 'boundary', namespace: 'boundary' }));
     builder.onLoad({ filter: /.*/, namespace: 'boundary' }, () => ({ contents: boundary, loader: 'js' }));
   } }] });
 writeFileSync(compiled, bundle.outputFiles[0].text);
@@ -207,6 +210,29 @@ test('an AR lease acquired while loading prevents new unsuspended effects from e
     assert.equal(f.controller.activeInstanceId, undefined); assert.equal(code.adapters.length, 0);
     release();
   } finally { f.cleanup(); }
+});
+
+test('failed scene suspension restores prior owners and does not leak a permission lock; nested leases still resume only once', async () => {
+  for (const boundary of ['photography', 'adapter', 'depth']) {
+    const f = environment(); try {
+      await f.controller.connect('M');
+      const photography = code.photographies[0], adapter = code.adapters[0], depth = code.renderers[0];
+      const owner = boundary === 'photography' ? photography : boundary === 'adapter' ? adapter : depth;
+      const key = boundary === 'photography' ? 'setSuspended' : 'suspend', original = owner[key];
+      owner[key] = function(value: boolean) {
+        if (boundary !== 'photography' || value) throw new Error(`injected-${boundary}-suspension`);
+        return original.call(this, value);
+      };
+      assert.throws(() => f.controller.suspendExternalSceneEffects(), new RegExp(`injected-${boundary}-suspension`));
+      owner[key] = original;
+      assert.equal(photography.suspended, false); assert.equal(adapter.suspensions, 0); assert.equal(depth.suspensions, 0);
+      f.panel.actions.setState('C0', false, 'visible', false); assert.equal(f.model.shows.get('C0'), false, 'failed lease must not leave the controller read-only');
+      const outer = f.controller.suspendExternalSceneEffects(), inner = f.controller.suspendExternalSceneEffects();
+      outer(); outer(); assert.equal(photography.suspended, true); assert.equal(adapter.suspensions, 1); assert.equal(depth.suspensions, 1);
+      inner(); assert.equal(photography.suspended, false); assert.equal(adapter.suspensions, 0); assert.equal(depth.suspensions, 0);
+      assert.equal(f.model.shows.get('C0'), false);
+    } finally { f.cleanup(); }
+  }
 });
 
 test('an error while publishing verified state rolls back the entire attachment', async () => {

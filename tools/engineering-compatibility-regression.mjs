@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { mkdir, mkdtemp, readFile, writeFile, realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { resolve, join, basename } from 'node:path';
+import { resolve, join, basename, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const kind = process.argv[2];
@@ -23,7 +23,9 @@ const data = join(output, 'isolated-data');
 await mkdir(data);
 const require = createRequire(import.meta.url);
 const actualVite = pathToFileURL(require.resolve('vite')).href;
-const dependencyRealPrefix = '/@fs/' + (await realpath(resolve('node_modules'))).replaceAll('\\', '/') + '/';
+// Dependencies can be individual junctions while node_modules itself is local.
+const dependencyRealPrefix = '/@fs/' + dirname(dirname(require.resolve('cesium/package.json'))).replaceAll('\\', '/') + '/';
+const viteEnvironmentPath = '/@fs/' + (await realpath(join(dirname(require.resolve('vite/package.json')), 'dist/client/env.mjs'))).replaceAll('\\', '/');
 const dependencyCandidatePrefix = '/@fs/' + resolve('node_modules').replaceAll('\\', '/') + '/';
 const shim = join(output, 'vite-shim.mjs');
 const preload = join(output, 'preload.mjs');
@@ -47,7 +49,7 @@ export async function createServer(options = {}) {
       server.middlewares.use(async (request,response,next) => {
         // Vite recognizes its environment module by its real path; transform it
         // before sending rather than rewriting away that exact module identity.
-        if (request.url?.split('?')[0] === ${JSON.stringify(dependencyRealPrefix + 'vite/dist/client/env.mjs')}) {
+        if (request.url?.split('?')[0] === ${JSON.stringify(viteEnvironmentPath)}) {
           try {
             const result=await server.transformRequest(request.url);
             if(!result) return next(new Error('Vite environment module transform failed'));
